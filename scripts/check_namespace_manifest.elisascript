@@ -1,12 +1,19 @@
 # Compiler-free namespace, include, and visibility audit.
 #
 # The source tree is treated as a stable checkout while this audit runs. File
-# sizes are preflighted, rechecked immediately before read_text, and checked
-# again after it returns. read_text itself is not a bounded-read primitive and
-# therefore retains a TOCTOU peak-memory caveat for concurrently modified or
-# adversarial trees. Directory enumeration
+# sizes are preflighted and every source read is bounded at the descriptor
+# boundary. Directory enumeration
 # is iterative; each `Path.iterdir` result is checked against a per-directory
 # limit immediately after the runtime's bounded materialization.
+
+include "../src/runtime/encoding.elisa"
+include "../src/runtime/file_posix.elisa"
+include "../src/runtime/directory_posix.elisa"
+include "../src/runtime/stdio_posix.elisa"
+
+using EsEncoding
+using EsRuntime
+
 
 module EsNamespaceManifestAudit:
     private:
@@ -17,6 +24,9 @@ module EsNamespaceManifestAudit:
             ENTRIES_PER_DIRECTORY: usize = 16384
             SOURCE_FILE_BYTES: usize = 2097152
             SOURCE_TOTAL_BYTES: usize = 16777216
+            PATH_BYTES: usize = 4096
+            READ_CHUNK_BYTES: usize = 16384
+            READ_EINTR_RETRIES: usize = 4
 
 
         const module Paths:
@@ -47,6 +57,151 @@ module EsNamespaceManifestAudit:
         struct SourceFile:
             path: sview
             text: sview
+
+
+        struct BoundedSourceRead:
+            text: sview = ""
+            failure: bool = false
+            changed: bool = false
+            exceeded_limit: bool = false
+
+
+        const enum SourceReadPhase of u8:
+            ReadChunk
+            Done
+
+
+        def namespace_source_open(path_value: cstr, flags: int) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_open(path_value, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def namespace_source_stat(path_value: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_stat(path_value, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def namespace_source_fstat(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def namespace_source_same_file(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return left.device == right.device and left.inode == right.inode
+
+
+        def namespace_source_stable_file(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return namespace_source_same_file(left, right) and left.size == right.size and left.modify_time == right.modify_time and left.change_time == right.change_time
+
+
+        def namespace_source_text_valid(source: sview) -> bool:
+            cursor: mutable EsEncoding::Utf8Cursor = EsEncoding::Utf8Cursor{}
+            for offset in 0..<len(source) |source, cursor|:
+                return false if not EsEncoding::utf8_feed(sview_at(source, offset), cursor)
+            return EsEncoding::utf8_complete(cursor)
+
+
+        # Retain at most maximum_bytes and one overflow byte. NONBLOCK prevents
+        # a path swapped to a FIFO after discovery from hanging the audit.
+        def read_namespace_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            if path_text == "" or len(path_text) >= Limits::PATH_BYTES or sview_contains_byte(path_text, 0):
+                return BoundedSourceRead{failure: true}
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            named_before_open: mutable ElisascriptStat = zeroed
+            if not namespace_source_stat(path_pointer, named_before_open) or (named_before_open.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR:
+                return BoundedSourceRead{failure: true}
+            open_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = namespace_source_open(path_pointer, open_flags)
+            return BoundedSourceRead{failure: true} if descriptor < 0
+            opened: mutable ElisascriptStat = zeroed
+            if not namespace_source_fstat(descriptor, opened) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not namespace_source_same_file(named_before_open, opened):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedSourceRead{failure: true}
+            named_after_open: mutable ElisascriptStat = zeroed
+            if not namespace_source_stat(path_pointer, named_after_open) or not namespace_source_same_file(opened, named_after_open):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedSourceRead{changed: true}
+
+            chunk: mutable darray[u8] = []
+            chunk.reserve(Limits::READ_CHUNK_BYTES)
+            for _ in 0..<Limits::READ_CHUNK_BYTES |chunk|:
+                chunk.push(0u8)
+            source: mutable darray[u8] = []
+            initial_capacity: usize = maximum_bytes if maximum_bytes < Limits::READ_CHUNK_BYTES else Limits::READ_CHUNK_BYTES
+            source.reserve(initial_capacity)
+            phase: mutable SourceReadPhase = SourceReadPhase.ReadChunk
+            interrupted: mutable usize = 0
+            machine over phase while phase != SourceReadPhase.Done:
+                state ReadChunk
+                start ReadChunk
+
+                ReadChunk, SourceReadPhase.ReadChunk:
+                    remaining: usize = maximum_bytes - source.count
+                    probe_capacity: usize = remaining + 1
+                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                    chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
+                    amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
+                            interrupted <- interrupted + 1
+                            -> ReadChunk
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{failure: true}
+                    if amount == 0:
+                        phase <- SourceReadPhase.Done
+                        continue
+                    read_count: usize = amount.usize()
+                    if read_count > capacity:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{failure: true}
+                    if read_count > remaining:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedSourceRead{exceeded_limit: true}
+                    for offset in 0..<read_count |source, chunk|:
+                        source.push(chunk[offset])
+                    interrupted <- 0
+                    -> ReadChunk
+
+                ReadChunk, SourceReadPhase.Done:
+                    break
+
+            final_opened: mutable ElisascriptStat = zeroed
+            final_named: mutable ElisascriptStat = zeroed
+            stable: bool = namespace_source_fstat(descriptor, final_opened) and namespace_source_stat(path_pointer, final_named) and namespace_source_stable_file(opened, final_opened) and namespace_source_same_file(final_opened, final_named)
+            close_status: int = elisascript_posix_close(descriptor)
+            if close_status != 0:
+                return BoundedSourceRead{failure: true}
+            if not stable:
+                return BoundedSourceRead{changed: true}
+            text: sview = bytes_view(source)
+            return BoundedSourceRead{failure: true} if not namespace_source_text_valid(text)
+            return BoundedSourceRead{text: text}
 
 
         struct NamespaceFile:
@@ -432,13 +587,14 @@ module EsNamespaceManifestAudit:
                 if current_size > input.size or current_size > Limits::SOURCE_FILE_BYTES:
                     eprint(f"check_namespace_manifest: source file changed or exceeds audit limit: {input.path}")
                     return 2i64
-                source: sview = try read_text(path(input.path)) else err:
+                bounded: BoundedSourceRead = read_namespace_source(path(input.path), input.size)
+                if bounded.failure:
                     eprint(f"check_namespace_manifest: unable to read source file: {input.path}")
                     return 2i64
-                if len(source) > Limits::SOURCE_FILE_BYTES or len(source) > input.size:
+                if bounded.changed or bounded.exceeded_limit or len(bounded.text) > Limits::SOURCE_FILE_BYTES or len(bounded.text) > input.size:
                     eprint(f"check_namespace_manifest: source file changed or exceeds audit limit: {input.path}")
                     return 2i64
-                files.push(SourceFile{path: input.path, text: source})
+                files.push(SourceFile{path: input.path, text: bounded.text})
 
             module_names_raw: mutable darray[sview] = []
             extension_names_raw: mutable darray[sview] = []
@@ -567,12 +723,14 @@ module EsNamespaceManifestAudit:
             if current_parser_size > parser_size or current_parser_size > Limits::SOURCE_FILE_BYTES:
                 eprint("check_namespace_manifest: parser token source exceeds audit limit")
                 return 2i64
-            parser_tokens: sview = try read_text(parser_path) else err:
+            bounded_parser: BoundedSourceRead = read_namespace_source(parser_path, parser_size)
+            if bounded_parser.failure:
                 eprint(f"check_namespace_manifest: parser token source is missing: {parser_tokens_path}")
                 return 1i64
-            if len(parser_tokens) > Limits::SOURCE_FILE_BYTES or len(parser_tokens) > parser_size:
+            if bounded_parser.changed or bounded_parser.exceeded_limit or len(bounded_parser.text) > Limits::SOURCE_FILE_BYTES or len(bounded_parser.text) > parser_size:
                 eprint("check_namespace_manifest: parser token source exceeds audit limit")
                 return 2i64
+            parser_tokens: sview = bounded_parser.text
 
             parse_error_kinds: darray[sview] = extract_enum_members(parser_tokens, "enum ParseErrorKind:", "struct ParseError:")
             parse_error_renderer: sview = extract_region(driver, "        def parse_error_detail", "        def report_program_failure")
