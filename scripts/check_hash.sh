@@ -12,7 +12,7 @@ docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
 for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
-    [[ -f "$required_file" ]] || { printf 'hash audit: missing %s\n' "$required_file" >&2; exit 1; }
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'hash audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 rg -q '^module EsHash:' "$model"
