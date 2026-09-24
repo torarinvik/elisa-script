@@ -1,0 +1,69 @@
+# Strict JSON-file adapter for the flat textual configuration precedence model.
+#
+# The adapter borrows keys and scalar payloads from a sealed JsonDocument.
+# Callers must keep that document alive for as long as the returned layer or
+# any resolved ConfigValue remains in use. Structured values are rejected
+# rather than silently flattened or stringified.
+
+module EsConfigJson:
+    using EsData
+    using EsJson
+    using EsConfig
+
+    public:
+        error ConfigJsonError:
+            RootCountInvalid
+            RootNotObject
+            DuplicatePolicyNotStrict
+            StructuredValueUnsupported
+
+
+    private:
+        def config_json_key_view(document: JsonDocument&, member: JsonMember) -> sview error[JsonContractError]:
+            raise JsonContractError.InvalidMemberKey if member.key_start > document.key_bytes.count
+            raise JsonContractError.InvalidMemberKey if member.key_bytes > document.key_bytes.count - member.key_start
+            key_bytes: sview = bytes_view(document.key_bytes)
+            end: usize = member.key_start + member.key_bytes
+            return string_view_slice(key_bytes, member.key_start.i64(), end.i64())
+
+
+        def config_json_scalar_view(document: JsonDocument&, node: JsonNode) -> sview error[JsonContractError, ConfigJsonError]:
+            if node.kind == JsonNodeKind.Text or node.kind == JsonNodeKind.Number:
+                raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+                raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
+                scalar_bytes: sview = bytes_view(document.scalar_data)
+                end: usize = node.scalar_start + node.scalar_bytes
+                return string_view_slice(scalar_bytes, node.scalar_start.i64(), end.i64())
+            elif node.kind == JsonNodeKind.Bool:
+                return "true" if node.bool_value else "false"
+            elif node.kind == JsonNodeKind.Null:
+                return "null"
+            raise ConfigJsonError.StructuredValueUnsupported
+
+
+    public:
+        # ConfigEntry is intentionally a textual interchange type. JSON
+        # strings become decoded UTF-8; numbers retain their exact lexeme;
+        # booleans and null use their canonical JSON spellings. Nested arrays
+        # and objects require a typed schema adapter and are rejected here.
+        def flat_json_config_layer(document: JsonDocument&) -> ConfigLayer error[JsonContractError, ConfigError, ConfigJsonError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise ConfigJsonError.RootCountInvalid if document.roots.count != 1
+            raise ConfigJsonError.DuplicatePolicyNotStrict if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.Reject
+            root_index: usize = document.roots[0]
+            raise ConfigJsonError.RootNotObject if root_index >= document.nodes.count
+            raise ConfigJsonError.RootNotObject if document.nodes[root_index].kind != JsonNodeKind.Object
+            root: JsonNode = document.nodes[root_index]
+            raise ConfigError.EntryLimitExceeded if root.member_count > EsConfig::Limits::ENTRIES_PER_LAYER
+            layer: mutable ConfigLayer = ConfigLayer{source: ConfigSource.File}
+            if root.member_count != 0:
+                member_end: usize = root.member_start + root.member_count
+                for member_index in root.member_start..<member_end |document, layer|:
+                    member: JsonMember = document.members[member_index]
+                    raise JsonContractError.InvalidMemberValue if member.value_index >= document.nodes.count
+                    key: sview = try config_json_key_view(document, member)
+                    value: sview = try config_json_scalar_view(document, document.nodes[member.value_index])
+                    layer.entries.push(ConfigEntry{key: key, value: value})
+            try validate_config_layers([layer])
+            return layer

@@ -2880,6 +2880,16 @@ consulting files, process-global environment, or command-line state; adapters
 must provide those observations as explicit layers and keep their storage alive
 for the returned views.
 
+`EsConfigJson::flat_json_config_layer` adapts a sealed, single-root JSON object
+to the `File` layer, enforcing the layer-entry ceiling before allocating its
+entry table. It requires strict duplicate-key rejection, preserves
+decoded strings and exact number lexemes, and represents booleans/null with
+their canonical JSON spellings. Its values borrow the `JsonDocument`; callers
+must retain that document while using the layer or resolved values. Nested
+arrays/objects are rejected and require the typed schema materializer instead.
+This is a bounded flat-JSON slice of A06, not complete JSON/TOML or host-source
+precedence integration.
+
 `EsDirectoryMutation` validates recursive copy/remove plans before a host
 adapter mutates the filesystem. Source and destination containment compares
 trim trailing separators (while preserving the root separator), so an equal

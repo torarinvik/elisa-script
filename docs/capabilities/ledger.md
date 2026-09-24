@@ -929,6 +929,10 @@ aggregate payload ceilings plus per-entry lengths are checked before mutation.
 Resolution keeps the highest
 priority value, preserves present-but-empty values, and returns borrowed values
 in deterministic bytewise key order; lookup never reads process-global state.
+EsConfigJson adapts one strict flat JSON object to the File layer, enforcing its
+entry ceiling before materialization and retaining exact number spellings and
+document-borrowed decoded scalar text; structures require the typed schema
+adapter. TOML and environment/CLI capture are open.
 The focused IR fixture, namespace inclusion, documentation, and
 check_config_model.sh audit are static evidence; file/environment/CLI adapters,
 storage-lifetime enforcement, and compiler/runtime qualification remain open.
