@@ -54,6 +54,11 @@ guard is not an OS-enforced memory cap. On a nonzero child exit, bounded stdout
 and stderr are included in the retained wrapper log to make failures
 diagnosable.
 
+Before creating its external workspace, the harness also invokes the candidate
+with the existing repository root as the build-directory argument. It requires
+status 2, the exact source-tree refusal diagnostic, and empty stderr. This
+preflight case should not create, remove, or overwrite any repository path.
+
 ## Evidence status
 
 The fixture source encodes both expected outcomes, but no CMake configure/build,
