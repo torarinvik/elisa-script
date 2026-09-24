@@ -52,6 +52,7 @@ for fixture_pattern in \
     'toml_schema_rejects_unknown_and_missing_required_fields' \
     'toml_schema_recursively_validates_nested_inline_tables_and_arrays' \
     'toml_schema_rejects_malformed_numeric_override_separators' \
+    'toml_schema_materializes_typed_multisource_array_and_object_winners' \
     'SchemaTypeNode{kind: SchemaValueKind.Array, array_item_type_index: 0}' \
     'SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 0, object_field_count: 2}' \
     'SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 2, object_field_count: 2}' \
