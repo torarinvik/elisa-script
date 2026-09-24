@@ -741,8 +741,11 @@ parity, or runtime qualification follows from this entry.
 `EsBuildBatch` now pairs graph nodes with process-batch job identities,
 dispatches only dependency-ready nodes under both parallelism limits, reserves
 the graph-wide output budget before admission, and applies token-validated
-terminal receipts to both state machines. Its fixtures cover refill after a
-dependency completes, fail-fast sibling drain, and acknowledged cancellation;
+terminal receipts to both state machines. Cancellation before Begin now closes
+both state machines immediately and returns no host-stop work; once execution
+has begun, cancellation still waits for host termination/reap acknowledgement.
+Its fixtures cover refill after a dependency completes, fail-fast sibling drain,
+and acknowledged cancellation;
 it also rejects integrated sessions whose ready queue omits a currently ready
 node, duplicate terminal receipts, and over-budget output without consuming
 the live reservation. Receipt admission also reuses `validate_process_result`
