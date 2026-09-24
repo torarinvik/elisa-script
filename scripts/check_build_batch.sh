@@ -69,6 +69,7 @@ for fixture_case in \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
     'incomplete_acknowledgement_rejected' \
+    'stale_acknowledgement_rejected' \
     'acknowledge_build_batch_stop(session, stop_requests)'; do
     rg -Fq "$fixture_case" "$fixture"
 done
