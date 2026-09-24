@@ -9,10 +9,11 @@ model="$repo_root/src/runtime/build_incremental_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$ir" "$fixture" "$transition_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -33,6 +34,8 @@ for declaration in \
     'Phony' \
     'const enum BuildIncrementalDecision of u8:' \
     'struct BuildIncrementalTarget:' \
+    'struct BuildIncrementalRecipeTarget:' \
+    'struct BuildIncrementalPlan:' \
     'struct BuildIncrementalResolvedManifest:' \
     'struct BuildIncrementalStaleOutput:' \
     'struct BuildIncrementalObservation:' \
@@ -47,6 +50,10 @@ for declaration in \
     'def build_sort_incremental_path_owners(' \
     'def classify_build_incremental_target(' \
     'def classify_build_incremental_manifest(' \
+    'def build_incremental_find_target_index(' \
+    'def build_incremental_recipe_shape_matches(' \
+    'def build_incremental_materialize_recipe_targets(' \
+    'def plan_build_incremental_transition(' \
     'def build_incremental_target_decision_validated(' \
     'def build_incremental_target_valid(target)' \
     'def build_incremental_dependency_order(' \
@@ -131,7 +138,17 @@ for fixture_check in \
     rg -Fq "$fixture_check" "$fixture"
 done
 
+for transition_check in \
+    'build_incremental_transition_rebuilds_changed_and_new_targets' \
+    'build_incremental_transition_plans_removed_outputs_only_after_success' \
+    'plan_build_incremental_transition(previous, current, observations)' \
+    'BuildIncrementalDecision.RecipeChanged' \
+    'BuildIncrementalDecision.DependencyDirty' \
+    'stale_outputs_after_success'; do
+    rg -Fq "$transition_check" "$transition_fixture"
+done
+
 rg -Fq '`EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary' "$docs"
 rg -Fq '`EsBuildIncremental` adds the bounded pure manifest boundary' "$ledger"
 
-printf 'incremental build audit: bounded recipe/input/output decisions and dependency ordering are present\n'
+printf 'incremental build audit: bounded cached-to-current recipe transitions and post-success cleanup plans are present\n'
