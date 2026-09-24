@@ -1,16 +1,19 @@
 # Descriptor-relative file opening for the incremental build observer.
 #
-# This adapter only resolves and classifies a file. The caller owns a returned
-# descriptor and must close it after content hashing; a missing file is data,
-# while permission, symlink, and I/O failures remain typed errors.
+# This adapter resolves each path beneath a directory capability, hashes file
+# contents through the retained descriptor, and rejects observed mutation. A
+# missing file is data; permission, symlink, and I/O failures stay typed.
 
 module EsBuildIncrementalPosix:
     using EsBuildIncremental
     using EsRuntime
+    using EsIr
 
     public:
         const module Limits:
             OPEN_EINTR_RETRIES: usize = 8
+            READ_EINTR_RETRIES: usize = 8
+            READ_CALLS: usize = 1048576
             FILE_BYTES: usize = 268435456
 
 
@@ -18,17 +21,35 @@ module EsBuildIncrementalPosix:
             present: bool = false
             descriptor: int = -1
             size: usize = 0
+            device: u32 = 0
+            inode: u64 = 0
+            modify_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
+            change_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
 
 
         error OpenError:
             InvalidDirectoryDescriptor
             InvalidPath
-            ComponentAllocationFailed
             OpenFailed(path: sview, errno: i32)
             MetadataFailed(path: sview)
             NotRegularFile(path: sview)
             FileTooLarge(path: sview)
             CloseFailed(path: sview)
+
+
+        error ObserveError:
+            ReadFailed(path: sview, errno: i32)
+            ReadIncomplete(path: sview)
+            MetadataFailed(path: sview)
+            ChangedDuringRead(path: sview)
+            HashFailed(path: sview)
+            ZeroFingerprint(path: sview)
+
+
+        const enum BuildIncrementalReadState of u8:
+            Read
+            Done
+            Failed
 
 
     private:
@@ -61,19 +82,74 @@ module EsBuildIncrementalPosix:
             return elisascript_posix_close(descriptor) == 0
 
 
+        def build_incremental_posix_read_fully(descriptor: int, bytes: mutable darray[u8]&, expected_count: usize, errno_out: mutable i32&) -> bool can[Blocking.IO, Unsafe.PointerCast]:
+            state: mutable BuildIncrementalReadState = BuildIncrementalReadState.Read
+            offset: mutable usize = 0
+            calls: mutable usize = 0
+            interrupted: mutable usize = 0
+            errno_out[0] <- 0
+            machine over state:
+                state Read
+                start Read
+
+                Read, BuildIncrementalReadState.Read if offset >= expected_count:
+                    state <- BuildIncrementalReadState.Done
+                    -> Read
+                Read, BuildIncrementalReadState.Read:
+                    if calls >= Limits::READ_CALLS:
+                        state <- BuildIncrementalReadState.Failed
+                        -> Read
+                    remaining: usize = expected_count - offset
+                    destination: mutable u8& = bytes.items + offset
+                    amount: isize = elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)
+                    calls <- calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        errno_out[0] <- errno[0]
+                        if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
+                            interrupted <- interrupted + 1
+                            -> Read
+                        state <- BuildIncrementalReadState.Failed
+                        -> Read
+                    if amount == 0 or amount.usize() > remaining:
+                        state <- BuildIncrementalReadState.Failed
+                        -> Read
+                    offset <- offset + amount.usize()
+                    bytes.count <- offset
+                    interrupted <- 0
+                    -> Read
+                Read, BuildIncrementalReadState.Done:
+                    break
+                Read, BuildIncrementalReadState.Failed:
+                    break
+            return state == BuildIncrementalReadState.Done
+
+
+        def build_incremental_opened_file_matches(opened: OpenedFile, current: ElisascriptStat&) -> bool:
+            return (current.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR
+                and current.device == opened.device
+                and current.inode == opened.inode
+                and current.size >= 0
+                and current.size.usize().i64() == current.size
+                and current.size.usize() == opened.size
+                and current.modify_time.seconds == opened.modify_time.seconds
+                and current.modify_time.nanoseconds == opened.modify_time.nanoseconds
+                and current.change_time.seconds == opened.change_time.seconds
+                and current.change_time.nanoseconds == opened.change_time.nanoseconds
+
+
     public:
         # Resolve each path segment independently beneath `root_fd`. O_NOFOLLOW
         # therefore applies to every component, not merely the leaf. On success
         # the caller owns `result.descriptor`; root_fd is never closed here.
-        def open_build_incremental_file_at(root_fd: int, path: sview) -> OpenedFile error[OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        def open_build_incremental_file_at(root_fd: int, path: sview) -> OpenedFile error[OpenError] can[Blocking.IO, Unsafe.PointerCast]:
             raise OpenError.InvalidPath if not build_incremental_path_is_canonical_relative(path)
             root_info: mutable ElisascriptStat = zeroed
             raise OpenError.InvalidDirectoryDescriptor if root_fd < 0 or not build_incremental_posix_fstat(root_fd, root_info) or (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
 
             path_length: usize = sview_len(path)
-            component_storage: mutable dstr = ctx_fstr_alloc(path_length + 1)
-            raise OpenError.ComponentAllocationFailed if component_storage.items == null
-            component: mutable u8& = component_storage.items
+            component_storage: mutable u8[Limits::PATH_BYTES] = zeroed
+            component: mutable u8& = (&component_storage[0])
             current_fd: mutable int = root_fd
             segment_start: mutable usize = 0
             while segment_start < path_length |component, current_fd, segment_start|:
@@ -118,7 +194,7 @@ module EsBuildIncrementalPosix:
                     if not close_ok:
                         _ = elisascript_posix_close(next_fd)
                         raise OpenError.CloseFailed(path)
-                    return OpenedFile{present: true, descriptor: next_fd, size: file_info.size.usize()}
+                    return OpenedFile{present: true, descriptor: next_fd, size: file_info.size.usize(), device: file_info.device, inode: file_info.inode, modify_time: file_info.modify_time, change_time: file_info.change_time}
 
                 directory_info: mutable ElisascriptStat = zeroed
                 if not build_incremental_posix_fstat(next_fd, directory_info) or (directory_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
@@ -133,3 +209,51 @@ module EsBuildIncrementalPosix:
                 current_fd <- next_fd
                 segment_start <- segment_end + 1
             raise OpenError.InvalidPath
+
+
+        # Hash exactly the bytes read from the retained descriptor. Temporary
+        # file contents live in the caller's scratch arena and are rewound
+        # before returning; no per-file read buffer accumulates across a build.
+        # Metadata is captured before and after reading to reject concurrent
+        # modification rather than publishing a mixed-content fingerprint.
+        def observe_build_incremental_file_at(scratch: mutable Arena&, root_fd: int, path: sview) -> BuildIncrementalObservation error[OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
+            return BuildIncrementalObservation{path: path} if not opened.present
+            mark: ArenaMark = arena_snapshot(scratch)
+            bytes: mutable darray[u8] = []
+            if opened.size != 0:
+                _ = arena_da_reserve(scratch, bytes, opened.size)
+            read_errno: mutable i32 = 0
+            read_ok: bool = build_incremental_posix_read_fully(opened.descriptor, bytes, opened.size, read_errno)
+            current_info: mutable ElisascriptStat = zeroed
+            metadata_ok: bool = build_incremental_posix_fstat(opened.descriptor, current_info)
+            stable: bool = metadata_ok and build_incremental_opened_file_matches(opened, current_info)
+            digest_ok: mutable bool = false
+            fingerprint: mutable u64 = 0
+            if read_ok and stable and bytes.count == opened.size:
+                fingerprint <- EsIr::canonical_bytes_sha256_word(bytes, 0)
+                digest_ok <- true
+            close_status: int = elisascript_posix_close(opened.descriptor)
+            arena_rewind(scratch, mark)
+            raise OpenError.CloseFailed(path) if close_status != 0
+            raise ObserveError.ReadIncomplete(path) if not read_ok and read_errno == 0
+            raise ObserveError.ReadFailed(path, read_errno) if not read_ok
+            raise ObserveError.MetadataFailed(path) if not metadata_ok
+            raise ObserveError.ChangedDuringRead(path) if not stable
+            raise ObserveError.ReadIncomplete(path) if bytes.count != opened.size
+            raise ObserveError.HashFailed(path) if not digest_ok
+            raise ObserveError.ZeroFingerprint(path) if fingerprint == 0
+            return BuildIncrementalObservation{path: path, present: true, fingerprint: fingerprint}
+
+
+        # Collect precisely the validated path set for a recipe manifest. Each
+        # file is read, hashed, and released from scratch before the next path,
+        # so memory use is bounded by the largest admitted file rather than
+        # the sum of every source and output in the build graph.
+        def observe_build_incremental_recipes_at(scratch: mutable Arena&, root_fd: int, recipes: darray[BuildIncrementalRecipeTarget]) -> darray[BuildIncrementalObservation] error[BuildIncrementalError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            paths: darray[sview] = try build_incremental_observation_paths(recipes)
+            observations: mutable darray[BuildIncrementalObservation] = []
+            for path in paths |observations, scratch|:
+                observation: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, path)
+                observations.push(observation)
+            return observations
