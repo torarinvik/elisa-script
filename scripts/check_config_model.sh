@@ -155,7 +155,7 @@ rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixt
 rg -Fq 'config_precedence_accepts_toml_table_file_values' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
 rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$json_file_fixture"
-rg -Fq 'toml_configuration_parses_bounded_scalar_subset' "$toml_fixture"
+rg -Fq 'toml_configuration_parses_bounded_scalar_and_array_subset' "$toml_fixture"
 rg -Fq '0xDEAD_BEEF' "$toml_fixture"
 rg -Fq '+1_000' "$toml_fixture"
 rg -Fq 'ConfigTomlValueKind.Array' "$toml_fixture"
