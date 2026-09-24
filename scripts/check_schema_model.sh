@@ -50,9 +50,11 @@ done
 for fixture_pattern in \
     'toml_schema_binds_typed_config_and_text_overrides' \
     'toml_schema_rejects_unknown_and_missing_required_fields' \
+    'toml_schema_recursively_validates_nested_inline_tables_and_arrays' \
     'toml_schema_rejects_malformed_numeric_override_separators' \
     'SchemaTypeNode{kind: SchemaValueKind.Array, array_item_type_index: 0}' \
     'SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 0, object_field_count: 2}' \
+    'SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 2, object_field_count: 2}' \
     'toml_schema_binds_one_table_and_ignores_siblings_and_descendants' \
     'source_name: "workers"' \
     'SchemaTomlValueKind.Integer' \
@@ -62,6 +64,8 @@ for fixture_pattern in \
     'SchemaTomlMaterializeError.UnknownField' \
     'SchemaTomlMaterializeError.InvalidNumber' \
     'wrong_item_rejected' \
+    'wrong_nested_rejected' \
+    'missing_nested_rejected' \
     'duplicate_rejected' \
     'missing_inline_rejected' \
     'SchemaContractError.RequiredFieldMissing'; do
