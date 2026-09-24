@@ -37,7 +37,8 @@ system library `m` cannot be deduplicated or emitted using the wrong form.
 `LinkLibrary` requirements explicitly choose `SearchName`, `Path`, or
 `LinkerArgument`; the model rejects mismatched spellings, and the candidate
 lowers each form without guessing. Absolute/relative paths and prefixed
-linker items remain literal argv entries.
+linker items remain literal argv entries; relative paths are prefixed with
+`./` to prevent option/response-file interpretation by the compiler driver.
 
 `test/script_parity/target_usage_launcher_test.elisascript` runs the CMake
 configure/build/CTest route and the candidate build in separate fresh roots,
