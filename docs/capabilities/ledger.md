@@ -1134,13 +1134,16 @@ next byte is rejected. Planned sessions must start empty; sum overflow and
 terminal mutation remain typed `error[RecordAggregateError]`. The focused IR fixture, namespace inclusion,
 documentation, and check_record_aggregate.sh audit are static evidence; signed
 numeric policies, joins, spill-to-disk aggregation, and host execution remain
-open. Performance is not qualified: `record_aggregate_index` linearly scans
-groups, and every transition calls `validate_record_aggregate`, whose duplicate
-key validation is a nested scan. With G groups this makes one transition
-O(G^2), and inserting N distinct-key events can accumulate O(N^3) validation
-work. The million-group policy ceiling is therefore only a memory/accounting
-bound, not a practical throughput claim; C03 acceptance remains open until
-indexed lookup and verifiable session invariants remove this scaling failure.
+open. The collector now keeps insertion-ordered groups alongside a bounded
+open-addressed FNV index; Add/AddValue use constant-size header checks and
+indexed lookup rather than rescanning all groups, while seal/query validation
+audits index completeness and group accounting. Rehashing is occasional and
+bounded by the configured group/index ceilings. The hash is non-cryptographic,
+so collision-heavy worst-case throughput is not established. The focused
+runtime fixture and compiler-free source audit are static evidence only; no
+runtime or performance validation was run. C03 acceptance remains open until
+high-cardinality throughput is measured within declared bounds and collision,
+allocation, and host-integration behavior are qualified.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces

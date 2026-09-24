@@ -6,10 +6,13 @@
 
 module EsRecordAggregate:
     public:
-        const RECORD_AGGREGATE_MAX_GROUPS: usize = 1048576
-        const RECORD_AGGREGATE_MAX_EVENTS: usize = 1048576
-        const RECORD_AGGREGATE_MAX_KEY_BYTES: usize = 268435456
-        const RECORD_AGGREGATE_MAX_SUM: u64 = 67108864
+        const module Limits:
+            GROUPS: usize = 1048576
+            EVENTS: usize = 1048576
+            KEY_BYTES: usize = 268435456
+            SUM: u64 = 67108864
+            INDEX_SLOTS: usize = 2097152
+            INDEX_MINIMUM: usize = 8
 
 
         const enum RecordAggregateState of u8:
@@ -30,10 +33,10 @@ module EsRecordAggregate:
 
 
         struct RecordAggregatePolicy:
-            max_groups: usize = RECORD_AGGREGATE_MAX_GROUPS
-            max_events: usize = RECORD_AGGREGATE_MAX_EVENTS
-            max_key_bytes: usize = RECORD_AGGREGATE_MAX_KEY_BYTES
-            max_sum: u64 = RECORD_AGGREGATE_MAX_SUM
+            max_groups: usize = Limits::GROUPS
+            max_events: usize = Limits::EVENTS
+            max_key_bytes: usize = Limits::KEY_BYTES
+            max_sum: u64 = Limits::SUM
 
 
         struct RecordAggregateGroup:
@@ -47,6 +50,9 @@ module EsRecordAggregate:
             policy: RecordAggregatePolicy
             state: RecordAggregateState = RecordAggregateState.Planned
             groups: darray[RecordAggregateGroup] = []
+            # Open-addressed lookup slots index insertion-ordered `groups`.
+            # Zero means empty; otherwise the slot stores group_index + 1.
+            index_slots: darray[usize] = []
             event_count: usize = 0
             key_bytes: usize = 0
 
@@ -77,7 +83,7 @@ module EsRecordAggregate:
 
 
         def record_aggregate_policy_valid(policy: RecordAggregatePolicy) -> bool:
-            return policy.max_groups != 0 and policy.max_groups <= RECORD_AGGREGATE_MAX_GROUPS and policy.max_events != 0 and policy.max_events <= RECORD_AGGREGATE_MAX_EVENTS and policy.max_key_bytes != 0 and policy.max_key_bytes <= RECORD_AGGREGATE_MAX_KEY_BYTES and policy.max_sum != 0 and policy.max_sum <= RECORD_AGGREGATE_MAX_SUM
+            return policy.max_groups != 0 and policy.max_groups <= Limits::GROUPS and policy.max_events != 0 and policy.max_events <= Limits::EVENTS and policy.max_key_bytes != 0 and policy.max_key_bytes <= Limits::KEY_BYTES and policy.max_sum != 0 and policy.max_sum <= Limits::SUM
 
 
         def record_aggregate_key_valid(key: sview, policy: RecordAggregatePolicy) -> bool:
@@ -87,24 +93,99 @@ module EsRecordAggregate:
             return sview_len(key) <= policy.max_key_bytes and not sview_contains_byte(key, 0)
 
 
-        def record_aggregate_index(session: RecordAggregateSession&, key: sview) -> usize:
-            for index in 0..<session.groups.count |session, key|:
-                return index if session.groups[index].key == key
-            return session.groups.count
+        const module Hash:
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
 
 
-    public:
-        def validate_record_aggregate(session: RecordAggregateSession&) -> bool error[RecordAggregateError]:
+        def record_aggregate_key_hash(key: sview) -> u64:
+            hash: mutable u64 = Hash::FNV_OFFSET
+            for byte in key |key, hash|:
+                hash <- (hash ^ byte.u64()) * Hash::FNV_PRIME
+            return hash
+
+
+        def record_aggregate_index_capacity_limit(max_groups: usize) -> usize:
+            required: usize = max_groups * 2
+            capacity: mutable usize = Limits::INDEX_MINIMUM
+            while capacity < required:
+                capacity <- capacity * 2
+            return capacity
+
+
+        def record_aggregate_index_shape_valid(session: RecordAggregateSession&) -> bool:
+            if session.index_slots.count == 0:
+                return session.groups.count == 0
+            return false if session.index_slots.count > Limits::INDEX_SLOTS or session.groups.count * 2 > session.index_slots.count
+            return false if session.index_slots.count < Limits::INDEX_MINIMUM
+            return (session.index_slots.count & (session.index_slots.count - 1)) == 0
+
+
+        def record_aggregate_index_find(groups: darray[RecordAggregateGroup], slots: darray[usize], key: sview) -> usize error[RecordAggregateError]:
+            return groups.count if slots.count == 0
+            slot: mutable usize = (record_aggregate_key_hash(key) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |groups, slots, key, slot|:
+                stored: usize = slots[slot]
+                return groups.count if stored == 0
+                group_index: usize = stored - 1
+                raise RecordAggregateError.AccountingInvalid if group_index >= groups.count
+                return group_index if groups[group_index].key == key
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            return groups.count
+
+
+        def record_aggregate_index_place(groups: darray[RecordAggregateGroup], slots: mutable darray[usize]&, group_index: usize) -> void error[RecordAggregateError]:
+            raise RecordAggregateError.AccountingInvalid if slots.count == 0 or group_index >= groups.count
+            slot: mutable usize = (record_aggregate_key_hash(groups[group_index].key) % slots.count.u64()).usize()
+            for probe in 0..<slots.count |groups, slots, group_index, slot|:
+                if slots[slot] == 0:
+                    slots[slot] <- group_index + 1
+                    return
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise RecordAggregateError.AccountingInvalid
+
+
+        def record_aggregate_ensure_index_capacity(session: mutable RecordAggregateSession&) -> void error[RecordAggregateError]:
+            required: usize = (session.groups.count + 1) * 2
+            capacity: mutable usize = Limits::INDEX_MINIMUM if session.index_slots.count == 0 else session.index_slots.count
+            while capacity < required:
+                capacity <- capacity * 2
+            raise RecordAggregateError.GroupLimitExceeded if capacity > record_aggregate_index_capacity_limit(session.policy.max_groups) or capacity > Limits::INDEX_SLOTS
+            if capacity == session.index_slots.count:
+                return
+
+            slots: mutable darray[usize] = []
+            for offset in 0..<capacity |slots|:
+                slots.push(0)
+            for index in 0..<session.groups.count |session, slots|:
+                try record_aggregate_index_place(session.groups, slots, index)
+            session.index_slots <- slots
+
+
+        def validate_record_aggregate_header(session: RecordAggregateSession&) -> bool error[RecordAggregateError]:
             raise RecordAggregateError.InvalidState if not record_aggregate_state_valid(session.state)
             raise RecordAggregateError.PolicyInvalid if not record_aggregate_policy_valid(session.policy)
             raise RecordAggregateError.GroupLimitExceeded if session.groups.count > session.policy.max_groups
             raise RecordAggregateError.EventLimitExceeded if session.event_count > session.policy.max_events
             raise RecordAggregateError.KeyBytesLimitExceeded if session.key_bytes > session.policy.max_key_bytes
+            raise RecordAggregateError.AccountingInvalid if not record_aggregate_index_shape_valid(session)
+            return true
+
+
+    public:
+        def validate_record_aggregate(session: RecordAggregateSession&) -> bool error[RecordAggregateError]:
+            try validate_record_aggregate_header(session)
             raise RecordAggregateError.AccountingInvalid if session.state == RecordAggregateState.Planned and (session.groups.count != 0 or session.event_count != 0 or session.key_bytes != 0)
             accounted_keys: mutable usize = 0
             accounted_events: mutable usize = 0
+            indexed_groups: mutable usize = 0
             previous_first_ordinal: mutable usize = 0
             has_previous_ordinal: mutable bool = false
+            for slot in session.index_slots:
+                if slot != 0:
+                    raise RecordAggregateError.AccountingInvalid if slot - 1 >= session.groups.count
+                    indexed_groups <- indexed_groups + 1
+            raise RecordAggregateError.AccountingInvalid if indexed_groups != session.groups.count
             for index in 0..<session.groups.count |session, accounted_keys, accounted_events, previous_first_ordinal, has_previous_ordinal|:
                 group: RecordAggregateGroup = session.groups[index]
                 raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(group.key, session.policy)
@@ -113,11 +194,9 @@ module EsRecordAggregate:
                 raise RecordAggregateError.EventLimitExceeded if group.count == 0 or group.count > session.event_count
                 raise RecordAggregateError.EventLimitExceeded if group.count > session.policy.max_events - accounted_events
                 raise RecordAggregateError.SumLimitExceeded if group.sum > session.policy.max_sum
+                indexed: usize = try record_aggregate_index_find(session.groups, session.index_slots, group.key)
+                raise RecordAggregateError.KeyInvalid if indexed != index
                 accounted_events <- accounted_events + group.count
-                # The strict previous-ordinal check above already excludes
-                # duplicates against every earlier group.
-                for earlier in 0..<index |session, group|:
-                    raise RecordAggregateError.KeyInvalid if session.groups[earlier].key == group.key
                 raise RecordAggregateError.KeyBytesLimitExceeded if sview_len(group.key) > session.policy.max_key_bytes - accounted_keys
                 accounted_keys <- accounted_keys + sview_len(group.key)
                 previous_first_ordinal <- group.first_ordinal
@@ -131,7 +210,7 @@ module EsRecordAggregate:
             try validate_record_aggregate(session)
             raise RecordAggregateError.LookupNotReady if session.state != RecordAggregateState.Sealed
             raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(key, session.policy)
-            index: usize = record_aggregate_index(session, key)
+            index: usize = try record_aggregate_index_find(session.groups, session.index_slots, key)
             raise RecordAggregateError.GroupIndexInvalid if index == session.groups.count
             return session.groups[index].count
 
@@ -140,14 +219,17 @@ module EsRecordAggregate:
             try validate_record_aggregate(session)
             raise RecordAggregateError.LookupNotReady if session.state != RecordAggregateState.Sealed
             raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(key, session.policy)
-            index: usize = record_aggregate_index(session, key)
+            index: usize = try record_aggregate_index_find(session.groups, session.index_slots, key)
             raise RecordAggregateError.GroupIndexInvalid if index == session.groups.count
             return session.groups[index].sum
 
 
         def advance_record_aggregate(session: mutable RecordAggregateSession&, event: RecordAggregateEvent, key: sview = "", value: u64 = 0) -> RecordAggregateState error[RecordAggregateError]:
-            try validate_record_aggregate(session)
             raise RecordAggregateError.InvalidEvent if not record_aggregate_event_valid(event)
+            if event == RecordAggregateEvent.Add or event == RecordAggregateEvent.AddValue:
+                try validate_record_aggregate_header(session)
+            else:
+                try validate_record_aggregate(session)
             if event == RecordAggregateEvent.Begin:
                 raise RecordAggregateError.InvalidState if session.state != RecordAggregateState.Planned
                 session.state <- RecordAggregateState.Collecting
@@ -156,11 +238,14 @@ module EsRecordAggregate:
                 raise RecordAggregateError.EventLimitExceeded if session.event_count >= session.policy.max_events
                 raise RecordAggregateError.KeyInvalid if not record_aggregate_key_valid(key, session.policy)
                 raise RecordAggregateError.SumLimitExceeded if event == RecordAggregateEvent.AddValue and value > session.policy.max_sum
-                index: usize = record_aggregate_index(session, key)
+                index: mutable usize = try record_aggregate_index_find(session.groups, session.index_slots, key)
                 if index == session.groups.count:
                     raise RecordAggregateError.GroupLimitExceeded if session.groups.count >= session.policy.max_groups
                     raise RecordAggregateError.KeyBytesLimitExceeded if sview_len(key) > session.policy.max_key_bytes - session.key_bytes
+                    try record_aggregate_ensure_index_capacity(session)
+                    index <- session.groups.count
                     session.groups.push(RecordAggregateGroup{key: key, count: 1, first_ordinal: session.event_count, sum: value if event == RecordAggregateEvent.AddValue else 0})
+                    try record_aggregate_index_place(session.groups, session.index_slots, index)
                     session.key_bytes <- session.key_bytes + sview_len(key)
                 else:
                     raise RecordAggregateError.EventLimitExceeded if session.groups[index].count >= session.policy.max_events

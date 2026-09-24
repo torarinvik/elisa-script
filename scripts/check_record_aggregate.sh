@@ -19,18 +19,19 @@ repo_root="$(CDPATH= cd -- "$repo_root_operand" 2>/dev/null && pwd 2>/dev/null)"
 model="$repo_root/src/runtime/record_aggregate_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/record_aggregate_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 candidate="$repo_root/scripts/check_record_aggregate.elisascript"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger" "$candidate"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger" "$candidate"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'record aggregate audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 max_source_bytes=16777216
 max_total_source_bytes=4194304
 total_source_bytes=0
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     source_bytes="$(LC_ALL=C wc -c < "$required_file")"
     if (( source_bytes > max_source_bytes || total_source_bytes > max_total_source_bytes - source_bytes )); then
         printf 'record aggregate audit: source exceeds audit limit: %s\n' "$required_file" >&2
@@ -101,10 +102,17 @@ for declaration in \
 done
 
 for boundary in \
-    'RECORD_AGGREGATE_MAX_GROUPS' \
-    'RECORD_AGGREGATE_MAX_EVENTS' \
-    'RECORD_AGGREGATE_MAX_KEY_BYTES' \
-    'RECORD_AGGREGATE_MAX_SUM' \
+    'const module Limits:' \
+    'GROUPS: usize = 1048576' \
+    'EVENTS: usize = 1048576' \
+    'KEY_BYTES: usize = 268435456' \
+    'SUM: u64 = 67108864' \
+    'INDEX_SLOTS: usize = 2097152' \
+    'record_aggregate_key_hash' \
+    'record_aggregate_index_find' \
+    'record_aggregate_index_place' \
+    'record_aggregate_ensure_index_capacity' \
+    'validate_record_aggregate_header' \
     'record_aggregate_key_valid' \
     'sview_len\(key\) <= policy.max_key_bytes' \
     'RecordAggregateError.GroupLimitExceeded' \
@@ -123,6 +131,12 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
+rg -q 'indexed_groups != session.groups.count' "$model"
+rg -q 'record_aggregate_index_find\(session.groups, session.index_slots, group.key\)' "$model"
+rg -q 'try validate_record_aggregate_header\(session\)' "$model"
+rg -q 'try record_aggregate_ensure_index_capacity\(session\)' "$model"
+! rg -q 'record_aggregate_index\(session, key\)' "$model"
+
 for fixture_pattern in \
     'using EsRecordAggregate' \
     'typed_record_aggregate_contract_is_bounded_and_insertion_ordered' \
@@ -137,5 +151,7 @@ done
 
 rg -q 'EsRecordAggregate::RecordAggregateSession' "$docs"
 rg -q 'ES-SCRIPT-027' "$ledger"
+rg -q 'record_aggregate_hash_index_preserves_order_and_rejects_damage' "$runtime_fixture"
+rg -q 'damaged.index_slots\[index\] <- 0' "$runtime_fixture"
 
 printf 'record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n'
