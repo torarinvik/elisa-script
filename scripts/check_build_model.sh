@@ -178,6 +178,13 @@ for boundary in \
 done
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
+rg -Fq 'using EsBuild' "$executor_fixture"
+rg -Fq 'build_executor_rejects_late_unsupported_command_before_any_launch' "$executor_fixture"
+rg -Fq 'executable: "/usr/bin/touch"' "$executor_fixture"
+rg -Fq 'environment_mode: ProcessEnvironmentMode.Replace' "$executor_fixture"
+rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
+rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
+rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
 rg -Fq 'execute_build_graph_incremental(' "$incremental_executor_fixture"
 rg -Fq 'incremental_executor_marks_up_to_date_nodes_as_cache_hits' "$incremental_executor_fixture"
 rg -Fq 'commit_build_incremental_execution(result, graph, previous, recipes, observations)' "$incremental_executor_fixture"
