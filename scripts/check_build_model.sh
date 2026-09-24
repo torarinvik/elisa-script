@@ -187,12 +187,15 @@ for boundary in \
     'LOG_BYTES - graph.log_bytes'; do
     rg -Fq "$boundary" "$executor_model"
 done
+rg -Fq 'while offset < command.environment.count |command, environment, offset|' "$executor_model"
+rg -Fq 'offset <- offset + 2' "$executor_model"
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
 rg -Fq 'using EsBuild' "$executor_fixture"
 rg -Fq 'build_executor_rejects_late_unsupported_command_before_any_launch' "$executor_fixture"
 rg -Fq 'executable: "/usr/bin/touch"' "$executor_fixture"
 rg -Fq 'environment_mode: ProcessEnvironmentMode.Replace' "$executor_fixture"
+rg -Fq 'environment: ["LC_ALL", "C", "TZ", "UTC"]' "$executor_fixture"
 rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
 rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
 rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
