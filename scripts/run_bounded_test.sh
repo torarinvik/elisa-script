@@ -530,7 +530,11 @@ for source_file in "$@"; do
         exit 125
     fi
     metadata_finalized=0
-    "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
+    # Let guarded fixtures distinguish this process-tree-monitored path from a
+    # direct compiler invocation. This is an attestation hint, not a security
+    # boundary: callers can reproduce the variable, so the wrapper gate and RSS
+    # monitor remain the actual safety controls.
+    ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
     compiler_pid=$!
     compiler_pgid="$(process_group_for_pid "$compiler_pid")"
     if ! {
