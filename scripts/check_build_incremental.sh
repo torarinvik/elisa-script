@@ -12,12 +12,13 @@ executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
+posix_fixture="$repo_root/test/runtime/build_incremental_posix_test.elisa"
 cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
 executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -94,6 +95,10 @@ rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
 rg -Fq 'def build_incremental_observation_paths(' "$model"
 rg -Fq 'segment_length == 2 and sview_at(path, segment_start) == 46' "$model"
 rg -Fq 'build_incremental_manifest_rejects_unsafe_relative_paths' "$transition_fixture"
+rg -Fq 'def open_build_incremental_file_at(' "$repo_root/src/runtime/build_incremental_posix.elisa"
+rg -Fq 'DarwinOpenFlags::NOFOLLOW' "$repo_root/src/runtime/build_incremental_posix.elisa"
+rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"
+rg -Fq 'incremental_file_open_rejects_invalid_capability_and_paths' "$posix_fixture"
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 
 for cache_fixture_check in \

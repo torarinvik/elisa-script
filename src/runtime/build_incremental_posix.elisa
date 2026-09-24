@@ -1,0 +1,135 @@
+# Descriptor-relative file opening for the incremental build observer.
+#
+# This adapter only resolves and classifies a file. The caller owns a returned
+# descriptor and must close it after content hashing; a missing file is data,
+# while permission, symlink, and I/O failures remain typed errors.
+
+module EsBuildIncrementalPosix:
+    using EsBuildIncremental
+    using EsRuntime
+
+    public:
+        const module Limits:
+            OPEN_EINTR_RETRIES: usize = 8
+            FILE_BYTES: usize = 268435456
+
+
+        struct OpenedFile:
+            present: bool = false
+            descriptor: int = -1
+            size: usize = 0
+
+
+        error OpenError:
+            InvalidDirectoryDescriptor
+            InvalidPath
+            ComponentAllocationFailed
+            OpenFailed(path: sview, errno: i32)
+            MetadataFailed(path: sview)
+            NotRegularFile(path: sview)
+            FileTooLarge(path: sview)
+            CloseFailed(path: sview)
+
+
+    private:
+        def build_incremental_posix_openat(directory_fd: int, component: cstr, flags: int, errno_out: mutable i32&) -> int can[Blocking.IO, Unsafe.PointerCast]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_openat(directory_fd, component, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                errno_out[0] <- errno[0]
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::OPEN_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def build_incremental_posix_fstat(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::OPEN_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def build_incremental_posix_close_owned(descriptor: int, root_fd: int) -> bool can[Blocking.IO]:
+            return true if descriptor == root_fd
+            return elisascript_posix_close(descriptor) == 0
+
+
+    public:
+        # Resolve each path segment independently beneath `root_fd`. O_NOFOLLOW
+        # therefore applies to every component, not merely the leaf. On success
+        # the caller owns `result.descriptor`; root_fd is never closed here.
+        def open_build_incremental_file_at(root_fd: int, path: sview) -> OpenedFile error[OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise OpenError.InvalidPath if not build_incremental_path_is_canonical_relative(path)
+            root_info: mutable ElisascriptStat = zeroed
+            raise OpenError.InvalidDirectoryDescriptor if root_fd < 0 or not build_incremental_posix_fstat(root_fd, root_info) or (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
+
+            path_length: usize = sview_len(path)
+            component_storage: mutable dstr = ctx_fstr_alloc(path_length + 1)
+            raise OpenError.ComponentAllocationFailed if component_storage.items == null
+            component: mutable u8& = component_storage.items
+            current_fd: mutable int = root_fd
+            segment_start: mutable usize = 0
+            while segment_start < path_length |component, current_fd, segment_start|:
+                segment_end: mutable usize = segment_start
+                while segment_end < path_length and sview_at(path, segment_end) != 47:
+                    segment_end <- segment_end + 1
+                segment_length: usize = segment_end - segment_start
+                for offset in 0..<segment_length |component, offset|:
+                    component[offset] <- sview_at(path, segment_start + offset)
+                component[segment_length] <- 0
+                is_leaf: bool = segment_end == path_length
+                flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+                flags <- flags | DarwinOpenFlags::NONBLOCK if is_leaf
+                flags <- flags | DarwinOpenFlags::DIRECTORY if not is_leaf
+                failure_errno: mutable i32 = 0
+                next_fd: int = build_incremental_posix_openat(current_fd, component.cast[cstr], flags, failure_errno)
+                if next_fd < 0:
+                    close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                    raise OpenError.CloseFailed(path) if not close_ok
+                    return OpenedFile{} if failure_errno == DarwinErrno::ENOENT
+                    raise OpenError.OpenFailed(path, failure_errno)
+
+                if is_leaf:
+                    file_info: mutable ElisascriptStat = zeroed
+                    metadata_ok: bool = build_incremental_posix_fstat(next_fd, file_info)
+                    if not metadata_ok:
+                        leaf_close_ok: bool = elisascript_posix_close(next_fd) == 0
+                        parent_close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                        raise OpenError.CloseFailed(path) if not leaf_close_ok or not parent_close_ok
+                        raise OpenError.MetadataFailed(path)
+                    if (file_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR:
+                        leaf_close_ok: bool = elisascript_posix_close(next_fd) == 0
+                        parent_close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                        raise OpenError.CloseFailed(path) if not leaf_close_ok or not parent_close_ok
+                        raise OpenError.NotRegularFile(path)
+                    if file_info.size < 0 or file_info.size.usize().i64() != file_info.size or file_info.size.usize() > Limits::FILE_BYTES:
+                        leaf_close_ok: bool = elisascript_posix_close(next_fd) == 0
+                        parent_close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                        raise OpenError.CloseFailed(path) if not leaf_close_ok or not parent_close_ok
+                        raise OpenError.FileTooLarge(path)
+                    close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                    if not close_ok:
+                        _ = elisascript_posix_close(next_fd)
+                        raise OpenError.CloseFailed(path)
+                    return OpenedFile{present: true, descriptor: next_fd, size: file_info.size.usize()}
+
+                directory_info: mutable ElisascriptStat = zeroed
+                if not build_incremental_posix_fstat(next_fd, directory_info) or (directory_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                    directory_close_ok: bool = elisascript_posix_close(next_fd) == 0
+                    parent_close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                    raise OpenError.CloseFailed(path) if not directory_close_ok or not parent_close_ok
+                    raise OpenError.MetadataFailed(path)
+                close_ok: bool = build_incremental_posix_close_owned(current_fd, root_fd)
+                if not close_ok:
+                    _ = elisascript_posix_close(next_fd)
+                    raise OpenError.CloseFailed(path)
+                current_fd <- next_fd
+                segment_start <- segment_end + 1
+            raise OpenError.InvalidPath
