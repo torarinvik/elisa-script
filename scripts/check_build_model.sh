@@ -143,6 +143,7 @@ for boundary in \
     'link_only: true' \
     'dependency_result.exported_compile' \
     'dependency_result.exported_link' \
+    'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count' \
     'TOTAL_INPUTS - total_inputs'; do
     rg -Fq "$boundary" "$usage_model"
 done
