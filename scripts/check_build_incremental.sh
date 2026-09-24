@@ -82,6 +82,7 @@ for declaration in \
     'recipe_fingerprints: darray[u64]' \
     'def build_incremental_observed_commit_file(' \
     'def build_incremental_observations_match_paths(' \
+    'def validate_build_incremental_stable_sources(' \
     'def commit_build_incremental_success(' \
     'def build_incremental_target_decision_validated(' \
     'def build_incremental_target_valid(target)' \
@@ -98,11 +99,15 @@ rg -Fq 'build_recipe_signatures_for_actions(commands, recipes, toolchains)' "$gr
 rg -Fq 'def execute_build_graph_incremental_at(' "$posix_executor"
 rg -Fq 'def commit_build_incremental_execution_at(' "$posix_executor"
 rg -Fq 'ToolchainObservationError.ToolchainChanged' "$posix_executor"
+rg -Fq 'validate_build_incremental_stable_sources(execution.recipes, execution.pre_execution_observations, observations)' "$posix_executor"
+rg -Fq 'BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations}' "$posix_executor"
 rg -Fq 'def validate_build_recipe_toolchain_paths(' "$posix_executor"
 rg -Fq 'ToolchainObservationError.ToolchainCommandMismatch' "$posix_executor"
 rg -Fq 'ToolchainObservationError.InvalidToolchainPath' "$posix_executor"
 rg -Fq 'toolchain_resolution_must_match_graph_command_before_observation' "$posix_executor_fixture"
 rg -Fq 'ToolchainObservationError.InvalidToolchainPath(0)' "$posix_executor_fixture"
+rg -Fq 'stable_source_validation_rejects_mid_build_changes' "$posix_executor_fixture"
+rg -Fq 'generated_change_allowed' "$posix_executor_fixture"
 rg -Fq 'graph.state != BuildGraphState.Planned' "$graph_model"
 rg -Fq 'def sign_build_incremental_graph(' "$recipe_signature"
 rg -Fq 'def build_recipe_signatures_for_actions(' "$recipe_signature"
