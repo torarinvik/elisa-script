@@ -22,6 +22,7 @@ module EsBuildExecutor:
             None
             Invocation
             NonzeroExit
+            OutputMissing
 
 
         struct BuildExecutionNodeResult:
@@ -32,6 +33,12 @@ module EsBuildExecutor:
             exit_status: i64 = 0
             stdout: sview = ""
             stderr: sview = ""
+            missing_output: sview = ""
+
+
+        struct BuildExecutionNodeOutputs:
+            target_name: sview
+            paths: darray[sview] = []
 
 
         struct BuildExecutionResult:
@@ -45,6 +52,8 @@ module EsBuildExecutor:
             GraphNotPlanned
             UnsupportedCommand
             NodeResultLimitExceeded
+            OutputListMismatch
+            OutputPathInvalid
             LogAccountingInvalid
             ExecutionNotSuccessful
             ExecutionResultMismatch
@@ -85,6 +94,27 @@ module EsBuildExecutor:
             return try capture_process_result_in_directory_with_environment(executable_value, command.arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
 
 
+        def build_executor_output_sets_valid(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool:
+            return true if output_sets.count == 0
+            return false if output_sets.count != graph.nodes.count
+            for index in 0..<output_sets.count |graph, output_sets|:
+                for path_index in 0..<output_sets[index].paths.count |output_sets, index|:
+                    output_path: sview = output_sets[index].paths[path_index]
+                    return false if output_path == "" or sview_contains_byte(output_path, 0) or not path_is_absolute(path(output_path))
+                    for prior_index in 0..<index |output_sets, output_path|:
+                        for prior_path in output_sets[prior_index].paths:
+                            return false if prior_path == output_path
+                    for earlier_path in 0..<path_index |output_sets, index, output_path|:
+                        return false if output_sets[index].paths[earlier_path] == output_path
+            return true
+
+
+        def build_executor_first_missing_output(outputs: BuildExecutionNodeOutputs) -> sview can[Memory.Allocate, Abort.Panic, File.Read]:
+            for output_path in outputs.paths |outputs|:
+                return output_path if not is_file(path(output_path))
+            return ""
+
+
         def build_executor_incremental_execution_result_matches(result: BuildExecutionResult, graph: BuildGraph, recipes: darray[BuildIncrementalRecipeTarget]) -> bool:
             return false if result.graph_state != BuildGraphState.Succeeded or graph.state != BuildGraphState.Succeeded
             return false if result.nodes.count != graph.nodes.count or recipes.count != graph.nodes.count
@@ -95,7 +125,7 @@ module EsBuildExecutor:
                 recipe: BuildIncrementalRecipeTarget = recipes[index]
                 return false if graph.nodes[index].state != BuildNodeState.Succeeded
                 return false if graph.nodes[index].name != recipe.name or graph.nodes[index].fingerprint != recipe.recipe_fingerprint or graph.nodes[index].recipe_signature != recipe.recipe_signature
-                return false if node_result.target_name != recipe.name or node_result.failure != BuildExecutionFailureKind.None
+                return false if node_result.target_name != recipe.name or node_result.failure != BuildExecutionFailureKind.None or node_result.missing_output != ""
                 return false if node_result.started == node_result.cache_hit or node_result.exit_status != 0
                 if node_result.cache_hit:
                     return false if node_result.stdout != "" or node_result.stderr != "" or graph.nodes[index].log_bytes != 0
@@ -124,7 +154,7 @@ module EsBuildExecutor:
         # semantics. Each command's timeout/output policy remains explicit;
         # the graph-wide retained log ceiling is enforced by reducing each
         # invocation's capture budget to the remaining capacity.
-        def execute_build_graph_serial_with_decisions(graph: mutable BuildGraph&, decisions: darray[BuildIncrementalDecision]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+        def execute_build_graph_serial_with_decisions(graph: mutable BuildGraph&, decisions: darray[BuildIncrementalDecision], output_sets: darray[BuildExecutionNodeOutputs]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, File.Read, Process.Run]:
             valid_graph: mutable bool = false
             catch validate_build_graph(graph):
                 ok value:
@@ -135,6 +165,11 @@ module EsBuildExecutor:
             raise BuildExecutionError.GraphNotPlanned if graph.state != BuildGraphState.Planned
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > Limits::NODE_RESULTS
             raise BuildExecutionError.GraphInvalid if decisions.count != 0 and decisions.count != graph.nodes.count
+            raise BuildExecutionError.OutputListMismatch if output_sets.count != 0 and output_sets.count != graph.nodes.count
+            if output_sets.count != 0:
+                for index in 0..<output_sets.count |graph, output_sets|:
+                    raise BuildExecutionError.OutputListMismatch if output_sets[index].target_name != graph.nodes[index].name
+                raise BuildExecutionError.OutputPathInvalid if not build_executor_output_sets_valid(graph, output_sets)
 
             # Preflight every command that will execute before the first
             # external side effect; cache-hit nodes are intentionally skipped.
@@ -193,21 +228,36 @@ module EsBuildExecutor:
                         results[node_index].failure <- BuildExecutionFailureKind.NonzeroExit
                         _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
                         break
+                    if output_sets.count != 0:
+                        missing_output: sview = try build_executor_first_missing_output(output_sets[node_index])
+                        if missing_output != "":
+                            results[node_index].failure <- BuildExecutionFailureKind.OutputMissing
+                            results[node_index].missing_output <- missing_output
+                            _ = try advance_build_graph(graph, BuildGraphEvent.NodeFailure, node_index)
+                            break
                     _ = try advance_build_graph(graph, BuildGraphEvent.NodeSuccess, node_index)
 
             return BuildExecutionResult{graph_state: graph.state, nodes: results, log_bytes: graph.log_bytes}
 
 
     public:
-        def execute_build_graph_serial(graph: mutable BuildGraph&) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, Process.Run]:
-            return try execute_build_graph_serial_with_decisions(graph, [])
+        def execute_build_graph_serial(graph: mutable BuildGraph&) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, File.Read, Process.Run]:
+            return try execute_build_graph_serial_with_decisions(graph, [], [])
+
+
+        # Verify each declared absolute file output immediately after its
+        # producer exits successfully and before the graph exposes NodeSuccess.
+        # This is the fresh-build counterpart to incremental commit's
+        # post-execution observation check.
+        def execute_build_graph_serial_with_outputs(graph: mutable BuildGraph&, output_sets: darray[BuildExecutionNodeOutputs]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic, File.Read, Process.Run]:
+            return try execute_build_graph_serial_with_decisions(graph, [], output_sets)
 
 
         # Classify against the current graph and observed filesystem snapshot,
         # then skip only nodes that the pure planner admits as UpToDate.
-        def execute_build_graph_incremental(graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+        def execute_build_graph_incremental(graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic, File.Read, Process.Run]:
             plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, current_recipes, observations)
-            return try execute_build_graph_serial_with_decisions(graph, plan.decisions)
+            return try execute_build_graph_serial_with_decisions(graph, plan.decisions, [])
 
 
         # Only a successful, aligned execution can create the next cache
