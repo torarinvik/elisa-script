@@ -1,0 +1,306 @@
+# Bounded TOML configuration subset with explicit rejection of unsupported
+# constructs. Parsed keys and scalar values are copied into the result wrapper,
+# so the resulting File layer does not borrow the input source buffer.
+
+module EsConfigToml:
+    using EsConfig
+    using EsEncoding
+
+    public:
+        const CONFIG_TOML_MAX_BYTES: usize = 16777216
+
+
+        struct ConfigTomlLayer:
+            layer: ConfigLayer
+            key_storage: darray[darray[u8]] = []
+            value_storage: darray[darray[u8]] = []
+
+
+        error ConfigTomlError:
+            InputLimitExceeded
+            InvalidUtf8
+            InvalidTable
+            DuplicateTable
+            ArrayTableUnsupported
+            InvalidKey
+            ExpectedEquals
+            InvalidString
+            UnsupportedEscape
+            UnsupportedValue
+            InvalidNumber
+            OutputLimitExceeded
+            OutputBytesExceeded
+
+
+    private:
+        const enum TomlNumberState of u8:
+            Start
+            Minus
+            Zero
+            Integer
+            DecimalPoint
+            Fraction
+            Exponent
+            ExponentSign
+            ExponentDigits
+            Invalid
+
+
+        def config_toml_space(byte: u8) -> bool:
+            return byte == 32 or byte == 9
+
+
+        def config_toml_trim_start(source: sview, start: usize, end: usize) -> usize:
+            cursor: mutable usize = start
+            while cursor < end and config_toml_space(sview_at(source, cursor)):
+                cursor <- cursor + 1
+            return cursor
+
+
+        def config_toml_trim_end(source: sview, start: usize, end: usize) -> usize:
+            cursor: mutable usize = end
+            while cursor > start and config_toml_space(sview_at(source, cursor - 1)):
+                cursor <- cursor - 1
+            return cursor
+
+
+        def config_toml_comment_end(source: sview, start: usize, end: usize) -> usize:
+            quote: mutable u8 = 0
+            escaped: mutable bool = false
+            cursor: mutable usize = start
+            while cursor < end:
+                byte: u8 = sview_at(source, cursor)
+                if quote == 34 and escaped:
+                    escaped <- false
+                elif quote == 34 and byte == 92:
+                    escaped <- true
+                elif quote != 0 and byte == quote:
+                    quote <- 0
+                elif quote == 0 and (byte == 34 or byte == 39):
+                    quote <- byte
+                elif quote == 0 and byte == 35:
+                    return cursor
+                cursor <- cursor + 1
+            return end
+
+
+        def config_toml_bare_key_byte(byte: u8) -> bool:
+            return (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or (byte >= 48 and byte <= 57) or byte == 95 or byte == 45
+
+
+        def config_toml_parse_key_path(source: sview, start: usize, end: usize) -> darray[u8] error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            key: mutable darray[u8] = []
+            cursor: mutable usize = config_toml_trim_start(source, start, end)
+            segments: mutable usize = 0
+            while cursor < end:
+                segment_start: usize = cursor
+                while cursor < end and config_toml_bare_key_byte(sview_at(source, cursor)):
+                    cursor <- cursor + 1
+                raise ConfigTomlError.InvalidKey if cursor == segment_start
+                segment_end: usize = cursor
+                if segments != 0:
+                    key.push(46u8)
+                for offset in segment_start..<segment_end |key, source|:
+                    key.push(sview_at(source, offset))
+                segments <- segments + 1
+                cursor <- config_toml_trim_start(source, cursor, end)
+                if cursor < end:
+                    raise ConfigTomlError.InvalidKey if sview_at(source, cursor) != 46
+                    cursor <- config_toml_trim_start(source, cursor + 1, end)
+                    raise ConfigTomlError.InvalidKey if cursor >= end
+            raise ConfigTomlError.InvalidKey if segments == 0
+            return key
+
+
+        def config_toml_tables_unique(tables: darray[darray[u8]]) -> bool can[Memory.Allocate, Abort.Panic]:
+            views: mutable darray[sview] = []
+            for table in tables |tables, views|:
+                views.push(bytes_view(table))
+            ordered: darray[sview] = sorted(views)
+            for index in 1..<ordered.count |ordered|:
+                return false if ordered[index - 1] == ordered[index]
+            return true
+
+
+        def config_toml_number_state(state: TomlNumberState, byte: u8) -> TomlNumberState:
+            digit: bool = byte >= 48 and byte <= 57
+            if state == TomlNumberState.Start:
+                return TomlNumberState.Minus if byte == 45
+                return TomlNumberState.Zero if byte == 48
+                return TomlNumberState.Integer if byte >= 49 and byte <= 57
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.Minus:
+                return TomlNumberState.Zero if byte == 48
+                return TomlNumberState.Integer if byte >= 49 and byte <= 57
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.Zero:
+                return TomlNumberState.DecimalPoint if byte == 46
+                return TomlNumberState.Exponent if byte == 101 or byte == 69
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.Integer:
+                return TomlNumberState.Integer if digit
+                return TomlNumberState.DecimalPoint if byte == 46
+                return TomlNumberState.Exponent if byte == 101 or byte == 69
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.DecimalPoint:
+                return TomlNumberState.Fraction if digit
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.Fraction:
+                return TomlNumberState.Fraction if digit
+                return TomlNumberState.Exponent if byte == 101 or byte == 69
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.Exponent:
+                return TomlNumberState.ExponentSign if byte == 43 or byte == 45
+                return TomlNumberState.ExponentDigits if digit
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.ExponentSign:
+                return TomlNumberState.ExponentDigits if digit
+                return TomlNumberState.Invalid
+            elif state == TomlNumberState.ExponentDigits:
+                return TomlNumberState.ExponentDigits if digit
+                return TomlNumberState.Invalid
+            return TomlNumberState.Invalid
+
+
+        def config_toml_number_valid(source: sview, start: usize, end: usize) -> bool:
+            return false if start >= end
+            state: mutable TomlNumberState = TomlNumberState.Start
+            for offset in start..<end |source, state|:
+                state <- config_toml_number_state(state, sview_at(source, offset))
+                return false if state == TomlNumberState.Invalid
+            return state == TomlNumberState.Zero or state == TomlNumberState.Integer or state == TomlNumberState.Fraction or state == TomlNumberState.ExponentDigits
+
+
+        def config_toml_parse_string(source: sview, start: usize, end: usize) -> darray[u8] error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            quote: u8 = sview_at(source, start)
+            cursor: mutable usize = start + 1
+            value: mutable darray[u8] = []
+            closed: mutable bool = false
+            while cursor < end and not closed:
+                byte: u8 = sview_at(source, cursor)
+                if byte == quote:
+                    closed <- true
+                    cursor <- cursor + 1
+                elif quote == 34 and byte == 92:
+                    cursor <- cursor + 1
+                    raise ConfigTomlError.InvalidString if cursor >= end
+                    escaped: u8 = sview_at(source, cursor)
+                    if escaped == 34 or escaped == 92:
+                        value.push(escaped)
+                    elif escaped == 98:
+                        value.push(8u8)
+                    elif escaped == 116:
+                        value.push(9u8)
+                    elif escaped == 110:
+                        value.push(10u8)
+                    elif escaped == 102:
+                        value.push(12u8)
+                    elif escaped == 114:
+                        value.push(13u8)
+                    else:
+                        raise ConfigTomlError.UnsupportedEscape
+                    cursor <- cursor + 1
+                else:
+                    raise ConfigTomlError.InvalidString if byte < 32 and byte != 9
+                    value.push(byte)
+                    cursor <- cursor + 1
+            raise ConfigTomlError.InvalidString if not closed
+            cursor <- config_toml_trim_start(source, cursor, end)
+            raise ConfigTomlError.InvalidString if cursor != end
+            return value
+
+
+        def config_toml_parse_scalar(source: sview, start: usize, end: usize) -> darray[u8] error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            value_start: usize = config_toml_trim_start(source, start, end)
+            value_end: usize = config_toml_trim_end(source, value_start, end)
+            raise ConfigTomlError.UnsupportedValue if value_start >= value_end
+            first: u8 = sview_at(source, value_start)
+            if first == 34 or first == 39:
+                return try config_toml_parse_string(source, value_start, value_end)
+            if first == 91 or first == 123:
+                raise ConfigTomlError.UnsupportedValue
+            if string_view_slice(source, value_start.i64(), value_end.i64()) == "true" or string_view_slice(source, value_start.i64(), value_end.i64()) == "false":
+                parsed_bool: mutable darray[u8] = []
+                for offset in value_start..<value_end |parsed_bool, source|:
+                    parsed_bool.push(sview_at(source, offset))
+                return parsed_bool
+            raise ConfigTomlError.InvalidNumber if not config_toml_number_valid(source, value_start, value_end)
+            number: mutable darray[u8] = []
+            for offset in value_start..<value_end |number, source|:
+                number.push(sview_at(source, offset))
+            return number
+
+
+        def config_toml_utf8_valid(source: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<sview_len(source) |source, cursor|:
+                return false if not utf8_feed(sview_at(source, offset), cursor)
+            return utf8_complete(cursor)
+
+
+    public:
+        def parse_toml_config(source: sview) -> ConfigTomlLayer error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigTomlError.InputLimitExceeded if sview_len(source) > CONFIG_TOML_MAX_BYTES
+            raise ConfigTomlError.InvalidUtf8 if not config_toml_utf8_valid(source)
+            result: mutable ConfigTomlLayer = ConfigTomlLayer{layer: ConfigLayer{source: ConfigSource.File}}
+            table_prefix: mutable darray[u8] = []
+            declared_tables: mutable darray[darray[u8]] = []
+            table_bytes: mutable usize = 0
+            layer_bytes: mutable usize = 0
+            line_start: mutable usize = 0
+            while line_start <= sview_len(source):
+                line_end: mutable usize = line_start
+                while line_end < sview_len(source) and sview_at(source, line_end) != 10:
+                    line_end <- line_end + 1
+                content_end: mutable usize = line_end
+                content_end <- content_end - 1 if content_end > line_start and sview_at(source, content_end - 1) == 13
+                comment_end: usize = config_toml_comment_end(source, line_start, content_end)
+                start: usize = config_toml_trim_start(source, line_start, comment_end)
+                end: usize = config_toml_trim_end(source, start, comment_end)
+                if start < end:
+                    first: u8 = sview_at(source, start)
+                    if first == 91:
+                        raise ConfigTomlError.ArrayTableUnsupported if start + 1 < end and sview_at(source, start + 1) == 91
+                        raise ConfigTomlError.InvalidTable if sview_at(source, end - 1) != 93
+                        parsed_table: darray[u8] = try config_toml_parse_key_path(source, start + 1, end - 1)
+                        raise ConfigTomlError.OutputLimitExceeded if declared_tables.count >= EsConfig::Limits::ENTRIES_PER_LAYER
+                        raise ConfigTomlError.OutputLimitExceeded if parsed_table.count >= EsConfig::Limits::KEY_BYTES
+                        remaining_table_bytes: mutable usize = EsConfig::Limits::LAYER_BYTES - table_bytes
+                        raise ConfigTomlError.OutputBytesExceeded if parsed_table.count > remaining_table_bytes
+                        table_bytes <- table_bytes + parsed_table.count
+                        declared_tables.push(parsed_table)
+                        table_prefix <- declared_tables[declared_tables.count - 1]
+                    else:
+                        equals: mutable usize = start
+                        while equals < end and sview_at(source, equals) != 61:
+                            equals <- equals + 1
+                        raise ConfigTomlError.ExpectedEquals if equals >= end
+                        parsed_key: darray[u8] = try config_toml_parse_key_path(source, start, equals)
+                        full_key: mutable darray[u8] = []
+                        for byte in table_prefix |full_key|:
+                            full_key.push(byte)
+                        if full_key.count != 0:
+                            full_key.push(46u8)
+                        for byte in parsed_key |full_key|:
+                            full_key.push(byte)
+                        value: darray[u8] = try config_toml_parse_scalar(source, equals + 1, end)
+                        raise ConfigTomlError.OutputLimitExceeded if result.layer.entries.count >= EsConfig::Limits::ENTRIES_PER_LAYER
+                        raise ConfigTomlError.OutputLimitExceeded if full_key.count >= EsConfig::Limits::KEY_BYTES or value.count >= EsConfig::Limits::VALUE_BYTES
+                        remaining: mutable usize = EsConfig::Limits::LAYER_BYTES - layer_bytes
+                        raise ConfigTomlError.OutputBytesExceeded if full_key.count > remaining
+                        remaining <- remaining - full_key.count
+                        raise ConfigTomlError.OutputBytesExceeded if value.count > remaining
+                        remaining <- remaining - value.count
+                        raise ConfigTomlError.OutputBytesExceeded if remaining < 2
+                        layer_bytes <- layer_bytes + full_key.count + value.count + 2
+                        result.key_storage.push(full_key)
+                        result.value_storage.push(value)
+                        key_view: sview = bytes_view(result.key_storage[result.key_storage.count - 1])
+                        value_view: sview = bytes_view(result.value_storage[result.value_storage.count - 1])
+                        result.layer.entries.push(ConfigEntry{key: key_view, value: value_view})
+                if line_end == sview_len(source):
+                    break
+                line_start <- line_end + 1
+            raise ConfigTomlError.DuplicateTable if not config_toml_tables_unique(declared_tables)
+            try validate_config_layers([result.layer])
+            return result

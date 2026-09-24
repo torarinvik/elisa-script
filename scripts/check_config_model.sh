@@ -10,6 +10,8 @@ json_model="$repo_root/src/runtime/config_json_model.elisa"
 environment_model="$repo_root/src/runtime/config_environment_model.elisa"
 cli_model="$repo_root/src/runtime/config_cli_model.elisa"
 json_file_model="$repo_root/src/runtime/config_json_file_posix.elisa"
+toml_model="$repo_root/src/runtime/config_toml_model.elisa"
+toml_file_model="$repo_root/src/runtime/config_toml_file_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runtime_fixture="$repo_root/test/runtime/config_model_test.elisa"
@@ -19,11 +21,30 @@ cli_fixture="$repo_root/test/runtime/config_cli_model_test.elisa"
 integration_fixture="$repo_root/test/runtime/config_precedence_integration_test.elisa"
 json_file_fixture="$repo_root/test/runtime/config_json_file_posix_test.elisa"
 json_file_data="$repo_root/test/runtime/config_json_file_fixture.json"
+toml_fixture="$repo_root/test/runtime/config_toml_model_test.elisa"
+toml_file_fixture="$repo_root/test/runtime/config_toml_file_posix_test.elisa"
+toml_file_data="$repo_root/test/runtime/config_toml_file_fixture.toml"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+for toml_boundary in \
+    'module EsConfigToml:' \
+    'CONFIG_TOML_MAX_BYTES' \
+    'def parse_toml_config(' \
+    'ArrayTableUnsupported' \
+    'UnsupportedEscape' \
+    'validate_config_layers([result.layer])'; do
+    rg -Fq "$toml_boundary" "$toml_model"
+done
+for toml_file_boundary in \
+    'module EsConfigTomlFilePosix:' \
+    'def read_config_toml_file(' \
+    'EsBoundedText::read_utf8(input_path, maximum_bytes)' \
+    'parse_toml_config(source)'; do
+    rg -Fq "$toml_file_boundary" "$toml_file_model"
 done
 for json_file_boundary in \
     'module EsConfigJsonFilePosix:' \
@@ -105,9 +126,11 @@ done
 
 rg -Fq 'include "../runtime/config_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_json_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/config_toml_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_environment_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_cli_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_json_file_posix.elisa"' "$ir"
+rg -Fq 'include "../runtime/config_toml_file_posix.elisa"' "$ir"
 rg -Fq 'using EsConfig' "$fixture"
 for fixture_check in \
     'typed_config_precedence_is_explicit_and_deterministic' \
@@ -130,6 +153,13 @@ rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
 rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$json_file_fixture"
+rg -Fq 'toml_configuration_parses_bounded_scalar_subset' "$toml_fixture"
+rg -Fq 'toml_configuration_rejects_unsupported_values_and_escapes' "$toml_fixture"
+rg -Fq 'quoted_key_rejected' "$toml_fixture"
+rg -Fq '123.name' "$toml_fixture"
+rg -Fq 'bounded_toml_configuration_file_returns_owned_layer' "$toml_file_fixture"
+rg -Fq 'bounded_toml_configuration_file_rejects_invalid_budget_before_reading' "$toml_file_fixture"
+rg -Fq 'mode = "release"' "$toml_file_data"
 rg -Fq '"name":"ElisaScript","count":23,"enabled":true' "$json_file_data"
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"
