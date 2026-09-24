@@ -2,6 +2,15 @@
 # containment audit in check_migration_roots.sh. It reads metadata only; it
 # never scans or executes anything inside a declared project root.
 
+include "../src/runtime/encoding.elisa"
+include "../src/runtime/file_posix.elisa"
+include "../src/runtime/directory_posix.elisa"
+include "../src/runtime/stdio_posix.elisa"
+
+using EsEncoding
+using EsRuntime
+
+
 module EsMigrationRootsAudit:
     public:
         error MigrationRootsError:
@@ -20,6 +29,8 @@ module EsMigrationRootsAudit:
             ROWS: usize = 4096
             FIELD_BYTES: usize = 65536
             PATH_BYTES: usize = 4096
+            READ_CHUNK_BYTES: usize = 16384
+            READ_EINTR_RETRIES: usize = 4
 
 
         const module Syntax:
@@ -43,6 +54,149 @@ module EsMigrationRootsAudit:
             relative_path: sview
             owner: sview
             review_status: sview
+
+
+        struct BoundedManifestRead:
+            contents: sview = ""
+            failure: bool = false
+            changed: bool = false
+            exceeded_limit: bool = false
+
+
+        const enum ManifestReadPhase of u8:
+            ReadChunk
+            Done
+
+
+        def roots_manifest_open(path_value: cstr) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::CLOSE_ON_EXEC
+            while true:
+                descriptor: int = elisascript_posix_open(path_value, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def roots_manifest_stat(path_value: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_stat(path_value, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def roots_manifest_fstat(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def roots_manifest_same_file(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return left.device == right.device and left.inode == right.inode
+
+
+        def roots_manifest_stable_file(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return roots_manifest_same_file(left, right) and left.size == right.size and left.modify_time == right.modify_time and left.change_time == right.change_time
+
+
+        def roots_manifest_utf8_valid(contents: sview) -> bool:
+            cursor: mutable EsEncoding::Utf8Cursor = EsEncoding::Utf8Cursor{}
+            for offset in 0..<len(contents) |contents, cursor|:
+                return false if not EsEncoding::utf8_feed(sview_at(contents, offset), cursor)
+            return EsEncoding::utf8_complete(cursor)
+
+
+        def read_manifest_bounded(manifest_path: Path, maximum_bytes: usize) -> BoundedManifestRead can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            path_text: sview = f"{manifest_path}"
+            if path_text == "" or len(path_text) >= Limits::PATH_BYTES or sview_contains_byte(path_text, 0):
+                return BoundedManifestRead{failure: true}
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            named_before_open: mutable ElisascriptStat = zeroed
+            if not roots_manifest_stat(path_pointer, named_before_open) or (named_before_open.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR:
+                return BoundedManifestRead{failure: true}
+            descriptor: int = roots_manifest_open(path_pointer)
+            return BoundedManifestRead{failure: true} if descriptor < 0
+            opened: mutable ElisascriptStat = zeroed
+            if not roots_manifest_fstat(descriptor, opened) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not roots_manifest_same_file(named_before_open, opened):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedManifestRead{failure: true}
+            named_after_open: mutable ElisascriptStat = zeroed
+            if not roots_manifest_stat(path_pointer, named_after_open) or not roots_manifest_same_file(opened, named_after_open):
+                _ = elisascript_posix_close(descriptor)
+                return BoundedManifestRead{changed: true}
+
+            chunk: mutable darray[u8] = []
+            chunk.reserve(Limits::READ_CHUNK_BYTES)
+            for _ in 0..<Limits::READ_CHUNK_BYTES |chunk|:
+                chunk.push(0u8)
+            bytes: mutable darray[u8] = []
+            initial_capacity: usize = maximum_bytes if maximum_bytes < Limits::READ_CHUNK_BYTES else Limits::READ_CHUNK_BYTES
+            bytes.reserve(initial_capacity)
+            phase: mutable ManifestReadPhase = ManifestReadPhase.ReadChunk
+            interrupted: mutable usize = 0
+            machine over phase while phase != ManifestReadPhase.Done:
+                state ReadChunk
+                start ReadChunk
+
+                ReadChunk, ManifestReadPhase.ReadChunk:
+                    remaining: usize = maximum_bytes - bytes.count
+                    probe_capacity: usize = remaining + 1
+                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                    chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
+                    amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
+                            interrupted <- interrupted + 1
+                            -> ReadChunk
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedManifestRead{failure: true}
+                    if amount == 0:
+                        phase <- ManifestReadPhase.Done
+                        continue
+                    read_count: usize = amount.usize()
+                    if read_count > capacity:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedManifestRead{failure: true}
+                    if read_count > remaining:
+                        _ = elisascript_posix_close(descriptor)
+                        return BoundedManifestRead{exceeded_limit: true}
+                    for offset in 0..<read_count |bytes, chunk|:
+                        bytes.push(chunk[offset])
+                    interrupted <- 0
+                    -> ReadChunk
+
+                ReadChunk, ManifestReadPhase.Done:
+                    break
+
+            final_opened: mutable ElisascriptStat = zeroed
+            final_named: mutable ElisascriptStat = zeroed
+            stable: bool = roots_manifest_fstat(descriptor, final_opened) and roots_manifest_stat(path_pointer, final_named) and roots_manifest_stable_file(opened, final_opened) and roots_manifest_same_file(final_opened, final_named)
+            close_status: int = elisascript_posix_close(descriptor)
+            if close_status != 0:
+                return BoundedManifestRead{failure: true}
+            if not stable:
+                return BoundedManifestRead{changed: true}
+            contents: sview = bytes_view(bytes)
+            return BoundedManifestRead{failure: true} if not roots_manifest_utf8_valid(contents)
+            return BoundedManifestRead{contents: contents}
 
 
         def relative_root_path_valid(value: sview) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -124,7 +278,7 @@ module EsMigrationRootsAudit:
             return row_count if contents.endswith("\n") else row_count - 1
 
 
-        def read_manifest(manifest_path: Path) -> sview error[MigrationRootsError] can[Memory.Allocate, Abort.Panic, File.Read]:
+        def read_manifest(manifest_path: Path) -> sview error[MigrationRootsError] can[Memory.Allocate, Abort.Panic, File.Read, Blocking.IO, Unsafe.PointerCast]:
             original_size: usize = try file_size(manifest_path) else err:
                 raise MigrationRootsError.RecordShapeInvalid
             raise MigrationRootsError.InputLimitExceeded if original_size > Limits::MANIFEST_BYTES
@@ -133,10 +287,11 @@ module EsMigrationRootsAudit:
                 raise MigrationRootsError.RecordShapeInvalid
             raise MigrationRootsError.InputLimitExceeded if current_size > Limits::MANIFEST_BYTES or current_size > original_size
 
-            contents: sview = try read_text(manifest_path) else err:
+            bounded: BoundedManifestRead = read_manifest_bounded(manifest_path, original_size)
+            if bounded.failure:
                 raise MigrationRootsError.RecordShapeInvalid
-            raise MigrationRootsError.InputLimitExceeded if len(contents) > Limits::MANIFEST_BYTES or len(contents) > original_size
-            return contents
+            raise MigrationRootsError.InputLimitExceeded if bounded.changed or bounded.exceeded_limit or len(bounded.contents) > Limits::MANIFEST_BYTES or len(bounded.contents) > original_size
+            return bounded.contents
 
 
     public:
@@ -161,7 +316,7 @@ module EsMigrationRootsAudit:
             return shell_readable_root_count(contents, rows.count)
 
 
-        def run(coding_projects_root: Path, manifest_path: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+        def run(coding_projects_root: Path, manifest_path: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read, Blocking.IO, Unsafe.PointerCast]:
             if not is_directory(coding_projects_root):
                 eprint(f"{Messages::ROOT_MISSING}{coding_projects_root}")
                 return 2i64
@@ -216,7 +371,7 @@ module EsMigrationRootsAudit:
             return 0i64
 
 
-        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read, Blocking.IO, Unsafe.PointerCast]:
             root: Path = try repository_root() else err:
                 eprint(Messages::ROOT_CANONICAL_FAILED)
                 return 2i64
@@ -225,7 +380,7 @@ module EsMigrationRootsAudit:
             return run(coding_projects_root, manifest_path)
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read]:
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Directory.Read, Blocking.IO, Unsafe.PointerCast]:
     if arguments.count > 2:
         eprint("usage: check_migration_roots [CODING_PROJECTS_ROOT [MANIFEST]]")
         return 2i64
