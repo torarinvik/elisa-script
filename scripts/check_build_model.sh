@@ -27,7 +27,7 @@ minimal_native_main="$minimal_native_root/src/main.c"
 minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_parity" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -327,6 +327,12 @@ rg -Fq 'rebuilt=compile-main' "$minimal_native_parity"
 rg -Fq 'rebuilt=minimal-native' "$minimal_native_parity"
 rg -Fq 'main.c.o' "$minimal_native_parity"
 rg -Fq 'Linking C static library' "$minimal_native_parity"
+rg -Fq 'remove_generated_headers' "$minimal_native_parity"
+rg -Fq 'reference_missing_output_frontier_matches' "$minimal_native_parity"
+rg -Fq 'candidate_missing_output_matches' "$minimal_native_parity"
+rg -Fq 'candidate_recovered_noop_matches' "$minimal_native_parity"
+rg -Fq 'was not recreated byte-for-byte' "$minimal_native_parity"
+rg -Fq 'cmake-reconfigure-minimal-native-missing-output' "$minimal_native_parity"
 rg -Fq 'def generated_header_artifacts_match(' "$minimal_native_parity"
 rg -Fq '"-DCMAKE_AR=/usr/bin/ar"' "$minimal_native_parity"
 rg -Fq 'MAX_GENERATED_HEADER_BYTES: usize = 4096' "$minimal_native_parity"
