@@ -2,19 +2,21 @@
 #
 # The codec is pure. Decoded path/name views borrow the input byte buffer, so a
 # caller must retain that buffer for at least as long as the returned targets.
-# Wire v2 is: `ESBC`, version byte, u32 target count, then topologically ordered
-# target records (name, kind byte, recipe fingerprint, dependency texts, input
-# path/SHA-256 pairs, output path/SHA-256 pairs), followed by an FNV-1a
+# Wire v3 is: `ESBC`, version byte, u32 target count, then topologically ordered
+# target records (name, kind byte, compact recipe key, four-word recipe SHA-256,
+# dependency texts, input path/SHA-256 pairs, output path/SHA-256 pairs),
+# followed by an FNV-1a
 # u64 over every preceding byte. All integers are little-endian. Host adapters
 # own file reads, locks, atomic publication, and corruption policy.
 
 module EsBuildIncrementalCache:
+    using EsBuild
     using EsBuildIncremental
 
     public:
         const module Limits:
             CACHE_BYTES: usize = 268435456
-            FORMAT_VERSION: u8 = 2
+            FORMAT_VERSION: u8 = 3
             HEADER_BYTES: usize = 9
             CHECKSUM_BYTES: usize = 8
 
@@ -130,7 +132,7 @@ module EsBuildIncrementalCache:
         # list order are preserved byte-for-byte; all integer fields are LE.
         def encode_build_incremental_cache(targets: darray[BuildIncrementalTarget]) -> darray[u8] error[BuildIncrementalCacheError] can[Memory.Allocate, Abort.Panic]:
             valid: bool = false
-            catch validate_build_incremental_manifest(targets):
+            catch validate_build_incremental_signed_manifest(targets):
                 ok value:
                     valid <- value
                 error failure:
@@ -149,6 +151,10 @@ module EsBuildIncrementalCache:
                 try cache_append_text(output, target.name)
                 try cache_append_byte(output, target.kind.u8())
                 try cache_append_u64(output, target.recipe_fingerprint)
+                try cache_append_u64(output, target.recipe_signature.word0)
+                try cache_append_u64(output, target.recipe_signature.word1)
+                try cache_append_u64(output, target.recipe_signature.word2)
+                try cache_append_u64(output, target.recipe_signature.word3)
                 raise BuildIncrementalCacheError.CacheSizeLimitExceeded if target.dependencies.count.u32().usize() != target.dependencies.count
                 try cache_append_u32(output, target.dependencies.count.u32())
                 for dependency in target.dependencies |output|:
@@ -206,6 +212,13 @@ module EsBuildIncrementalCache:
                 raise BuildIncrementalCacheError.InvalidTargetKind if not kind_valid
                 recipe_fingerprint: u64 = try cache_read_u64(bytes, payload_end, offset)
                 raise BuildIncrementalCacheError.FingerprintMissing if recipe_fingerprint == 0
+                recipe_signature: BuildRecipeSignature = BuildRecipeSignature{
+                    word0: try cache_read_u64(bytes, payload_end, offset),
+                    word1: try cache_read_u64(bytes, payload_end, offset),
+                    word2: try cache_read_u64(bytes, payload_end, offset),
+                    word3: try cache_read_u64(bytes, payload_end, offset)
+                }
+                raise BuildIncrementalCacheError.FingerprintMissing if not build_recipe_signature_valid(recipe_signature)
                 dependency_count: usize = try cache_read_count(bytes, payload_end, offset, EsBuildIncremental::Limits::DEPENDENCIES)
                 dependencies: mutable darray[sview] = []
                 for _ in 0..<dependency_count |bytes, payload_end, offset, dependencies|:
@@ -230,11 +243,11 @@ module EsBuildIncrementalCache:
                     fingerprint_word3: u64 = try cache_read_u64(bytes, payload_end, offset)
                     raise BuildIncrementalCacheError.FingerprintMissing if fingerprint == 0 and fingerprint_word1 == 0 and fingerprint_word2 == 0 and fingerprint_word3 == 0
                     outputs.push(BuildIncrementalFile{path: path, fingerprint: fingerprint, fingerprint_word1: fingerprint_word1, fingerprint_word2: fingerprint_word2, fingerprint_word3: fingerprint_word3})
-                targets.push(BuildIncrementalTarget{name: name, kind: kind, recipe_fingerprint: recipe_fingerprint, inputs: inputs, outputs: outputs, dependencies: dependencies})
+                targets.push(BuildIncrementalTarget{name: name, kind: kind, recipe_fingerprint: recipe_fingerprint, recipe_signature: recipe_signature, inputs: inputs, outputs: outputs, dependencies: dependencies})
 
             raise BuildIncrementalCacheError.TrailingBytes if offset != payload_end
             valid_manifest: bool = false
-            catch validate_build_incremental_manifest(targets):
+            catch validate_build_incremental_signed_manifest(targets):
                 ok value:
                     valid_manifest <- value
                 error failure:

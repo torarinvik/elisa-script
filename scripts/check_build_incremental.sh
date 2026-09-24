@@ -27,7 +27,7 @@ done
 for cache_declaration in \
     'module EsBuildIncrementalCache:' \
     'CACHE_BYTES: usize' \
-    'FORMAT_VERSION: u8 = 2' \
+    'FORMAT_VERSION: u8 = 3' \
     'def encode_build_incremental_cache(' \
     'def decode_build_incremental_cache(' \
     'BuildIncrementalCacheError.ChecksumMismatch' \
@@ -95,6 +95,7 @@ done
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
 rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
 rg -Fq 'def build_incremental_observation_paths(' "$model"
+rg -Fq 'def validate_build_incremental_signed_manifest(' "$model"
 rg -Fq 'segment_length == 2 and sview_at(path, segment_start) == 46' "$model"
 rg -Fq 'build_incremental_manifest_rejects_unsafe_relative_paths' "$transition_fixture"
 rg -Fq 'def open_build_incremental_file_at(' "$repo_root/src/runtime/build_incremental_posix.elisa"
@@ -134,6 +135,7 @@ for signature_input in \
 done
 for recipe_signature_check in \
     'build_recipe_signature_binds_command_target_and_toolchain' \
+    'sign_build_incremental_recipe' \
     'changed_command' \
     'changed_recipe' \
     'changed_toolchain'; do
@@ -143,7 +145,8 @@ done
 for cache_fixture_check in \
     'incremental_cache_codec_round_trips_a_valid_manifest' \
     'incremental_cache_codec_rejects_checksum_corruption' \
-    'incremental_cache_codec_rejects_truncated_v1_records' \
+    'incremental_cache_codec_rejects_scalar_recipe_v2_records' \
+    'incremental_cache_codec_rejects_unsigned_recipe_manifests' \
     'decode_build_incremental_cache(encoded)' \
     'BuildIncrementalCacheError.ChecksumMismatch'; do
     rg -Fq "$cache_fixture_check" "$cache_fixture"
@@ -159,6 +162,7 @@ done
 
 for boundary in \
     'BuildIncrementalDecision.UpToDate' \
+    'build_incremental_transition_rebuilds_on_signature_change_without_scalar_change' \
     'BuildIncrementalDecision.RecipeChanged' \
     'BuildIncrementalDecision.DependencyDirty' \
     'BuildIncrementalDecision.InputChanged' \

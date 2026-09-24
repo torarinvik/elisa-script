@@ -68,6 +68,7 @@ module EsBuildIncremental:
             name: sview
             kind: BuildIncrementalTargetKind
             recipe_fingerprint: u64
+            recipe_signature: BuildRecipeSignature = BuildRecipeSignature{}
             inputs: darray[BuildIncrementalFile] = []
             outputs: darray[BuildIncrementalFile] = []
             dependencies: darray[sview] = []
@@ -80,6 +81,7 @@ module EsBuildIncremental:
             name: sview
             kind: BuildIncrementalTargetKind
             recipe_fingerprint: u64
+            recipe_signature: BuildRecipeSignature = BuildRecipeSignature{}
             inputs: darray[sview] = []
             outputs: darray[sview] = []
             dependencies: darray[sview] = []
@@ -89,6 +91,7 @@ module EsBuildIncremental:
             decisions: darray[BuildIncrementalDecision] = []
             target_names: darray[sview] = []
             recipe_fingerprints: darray[u64] = []
+            recipe_signatures: darray[BuildRecipeSignature] = []
             rebuild_target_indices: darray[usize] = []
             # Cleanup is post-success intent only. The host must revalidate
             # each path's ownership/identity before deleting it.
@@ -390,10 +393,12 @@ module EsBuildIncremental:
             return owners.count
 
 
-        def build_incremental_target_shape_valid(target: BuildIncrementalTarget) -> bool error[BuildIncrementalError]:
+        def build_incremental_target_shape_valid(target: BuildIncrementalTarget, require_recipe_signature: bool = false) -> bool error[BuildIncrementalError]:
             raise BuildIncrementalError.InvalidTargetKind if not build_incremental_target_kind_valid(target.kind)
             raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(target.name)
             raise BuildIncrementalError.FingerprintMissing if target.recipe_fingerprint == 0
+            raise BuildIncrementalError.FingerprintMissing if require_recipe_signature and not build_recipe_signature_valid(target.recipe_signature)
+            raise BuildIncrementalError.CurrentRecipeShapeInvalid if require_recipe_signature and target.recipe_fingerprint != build_recipe_scheduler_fingerprint(target.recipe_signature)
             raise BuildIncrementalError.InputLimitExceeded if target.inputs.count > Limits::INPUTS
             raise BuildIncrementalError.OutputForbidden if target.kind == BuildIncrementalTargetKind.Phony and target.outputs.count != 0
             raise BuildIncrementalError.OutputRequired if target.outputs.count == 0 and target.kind != BuildIncrementalTargetKind.Phony
@@ -451,8 +456,8 @@ module EsBuildIncremental:
             return false
 
 
-        def build_incremental_target_decision_validated(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], sorted_observation_indices: darray[usize], dependency_dirty: bool) -> BuildIncrementalDecision:
-            return BuildIncrementalDecision.RecipeChanged if current_recipe_fingerprint != target.recipe_fingerprint
+        def build_incremental_target_decision_validated(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], sorted_observation_indices: darray[usize], dependency_dirty: bool, current_recipe_signature: BuildRecipeSignature = BuildRecipeSignature{}) -> BuildIncrementalDecision:
+            return BuildIncrementalDecision.RecipeChanged if current_recipe_fingerprint != target.recipe_fingerprint or current_recipe_signature != target.recipe_signature
             return BuildIncrementalDecision.DependencyDirty if dependency_dirty
             for input in target.inputs:
                 observation_index: usize = build_incremental_observation_index(observations, sorted_observation_indices, input.path)
@@ -492,7 +497,7 @@ module EsBuildIncremental:
             return sorted(previous_inputs) == sorted(current.inputs) and sorted(previous_outputs) == sorted(current.outputs)
 
 
-        def build_incremental_materialize_recipe_targets(recipes: darray[BuildIncrementalRecipeTarget]) -> darray[BuildIncrementalTarget] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+        def build_incremental_materialize_recipe_targets(recipes: darray[BuildIncrementalRecipeTarget], require_recipe_signatures: bool = false) -> darray[BuildIncrementalTarget] error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             raise BuildIncrementalError.TargetLimitExceeded if recipes.count > Limits::TARGETS
             targets: mutable darray[BuildIncrementalTarget] = []
             total_inputs: mutable usize = 0
@@ -501,6 +506,8 @@ module EsBuildIncremental:
                 raise BuildIncrementalError.InvalidTargetKind if not build_incremental_target_kind_valid(recipe.kind)
                 raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(recipe.name)
                 raise BuildIncrementalError.FingerprintMissing if recipe.recipe_fingerprint == 0
+                raise BuildIncrementalError.FingerprintMissing if require_recipe_signatures and not build_recipe_signature_valid(recipe.recipe_signature)
+                raise BuildIncrementalError.CurrentRecipeShapeInvalid if require_recipe_signatures and recipe.recipe_fingerprint != build_recipe_scheduler_fingerprint(recipe.recipe_signature)
                 raise BuildIncrementalError.InputLimitExceeded if recipe.inputs.count > Limits::INPUTS
                 raise BuildIncrementalError.OutputLimitExceeded if recipe.outputs.count > Limits::OUTPUTS
                 raise BuildIncrementalError.DependencyLimitExceeded if recipe.dependencies.count > Limits::DEPENDENCIES
@@ -518,7 +525,7 @@ module EsBuildIncremental:
                     outputs.push(BuildIncrementalFile{path: output_path, fingerprint: 1})
                 for dependency in recipe.dependencies:
                     raise BuildIncrementalError.InvalidTargetName if not build_incremental_name_valid(dependency)
-                targets.push(BuildIncrementalTarget{name: recipe.name, kind: recipe.kind, recipe_fingerprint: recipe.recipe_fingerprint, inputs: inputs, outputs: outputs, dependencies: recipe.dependencies})
+                targets.push(BuildIncrementalTarget{name: recipe.name, kind: recipe.kind, recipe_fingerprint: recipe.recipe_fingerprint, recipe_signature: recipe.recipe_signature, inputs: inputs, outputs: outputs, dependencies: recipe.dependencies})
             return targets
 
 
@@ -555,11 +562,11 @@ module EsBuildIncremental:
             return resolution
 
 
-        def build_incremental_manifest_resolution(targets: darray[BuildIncrementalTarget]) -> BuildIncrementalResolvedManifest error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+        def build_incremental_manifest_resolution(targets: darray[BuildIncrementalTarget], require_recipe_signatures: bool = false) -> BuildIncrementalResolvedManifest error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             raise BuildIncrementalError.EmptyManifest if targets.count == 0
             raise BuildIncrementalError.TargetLimitExceeded if targets.count > Limits::TARGETS
             for target in targets:
-                try build_incremental_target_shape_valid(target)
+                try build_incremental_target_shape_valid(target, require_recipe_signatures)
             resolution: BuildDependencyResolution = try build_incremental_dependency_resolution(targets)
             output_owners: darray[BuildIncrementalPathOwner] = try build_incremental_path_owners(targets, true)
             if output_owners.count > 1:
@@ -631,6 +638,14 @@ module EsBuildIncremental:
             return true
 
 
+        # Cache publication and incremental reuse require the stronger action
+        # identity; the legacy structural validator above remains useful for
+        # path/graph-only diagnostics but cannot authorize a cache hit.
+        def validate_build_incremental_signed_manifest(targets: darray[BuildIncrementalTarget]) -> bool error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            try build_incremental_manifest_resolution(targets, true)
+            return true
+
+
         # Validate and resolve the existing named-target manifest into the
         # canonical graph-edge representation consumed by EsBuild.
         def resolve_incremental_build_dependencies(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
@@ -675,8 +690,8 @@ module EsBuildIncremental:
         # stale outputs.
         def commit_build_incremental_success(previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], post_success_observations: darray[BuildIncrementalObservation]) -> BuildIncrementalCommit error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             raise BuildIncrementalError.EmptyManifest if current_recipes.count == 0
-            recipe_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes)
-            recipe_manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(recipe_targets)
+            recipe_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes, true)
+            recipe_manifest: BuildIncrementalResolvedManifest = try build_incremental_manifest_resolution(recipe_targets, true)
             observation_paths: darray[sview] = try build_incremental_observation_paths_from_manifest(recipe_manifest)
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(post_success_observations)
             _ = try build_incremental_observations_match_paths(observation_paths, post_success_observations, sorted_observation_indices)
@@ -690,16 +705,15 @@ module EsBuildIncremental:
                     inputs.push(try build_incremental_observed_commit_file(input_path, false, post_success_observations, sorted_observation_indices))
                 for output_path in recipe.outputs |post_success_observations, sorted_observation_indices, outputs|:
                     outputs.push(try build_incremental_observed_commit_file(output_path, true, post_success_observations, sorted_observation_indices))
-                committed_targets.push(BuildIncrementalTarget{name: validated_recipe.name, kind: validated_recipe.kind, recipe_fingerprint: recipe.recipe_fingerprint, inputs: inputs, outputs: outputs, dependencies: validated_recipe.dependencies})
-            try build_incremental_manifest_resolution(committed_targets)
+                committed_targets.push(BuildIncrementalTarget{name: validated_recipe.name, kind: validated_recipe.kind, recipe_fingerprint: recipe.recipe_fingerprint, recipe_signature: recipe.recipe_signature, inputs: inputs, outputs: outputs, dependencies: validated_recipe.dependencies})
+            try build_incremental_manifest_resolution(committed_targets, true)
             stale_outputs: darray[BuildIncrementalStaleOutput] = try plan_build_incremental_cleanup(previous_targets, committed_targets)
             return BuildIncrementalCommit{targets: committed_targets, stale_outputs_after_success: stale_outputs}
 
 
-        # Return the first deterministic reason a target is stale. `UpToDate`
-        # means every declared input/output and dependency was observed and
-        # matched; the scheduler may then admit a cache hit without launching a
-        # compiler or linker.
+        # Scalar-only compatibility diagnostic. It returns the first
+        # deterministic reason a target is stale, but it is not a cache-hit
+        # proof; scheduler admission requires a signed BuildIncrementalPlan.
         def classify_build_incremental_target(target: BuildIncrementalTarget, current_recipe_fingerprint: u64, observations: darray[BuildIncrementalObservation], dependencies: darray[BuildIncrementalDependencyObservation]) -> BuildIncrementalDecision error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             try build_incremental_target_valid(target)
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
@@ -714,7 +728,9 @@ module EsBuildIncremental:
             return build_incremental_target_decision_validated(target, current_recipe_fingerprint, observations, sorted_observation_indices, false)
 
 
-        # Classify the complete topologically ordered manifest in one pass.
+        # Scalar-only compatibility diagnostic. It does not authorize scheduler
+        # reuse; use plan_build_incremental_transition with signed recipes.
+        # This classifies a complete topologically ordered manifest in one pass.
         # Dependency-current flags are derived from earlier target decisions,
         # not supplied by a caller that could accidentally admit a stale cache
         # hit. The returned decision at index i belongs to targets[i].
@@ -742,21 +758,22 @@ module EsBuildIncremental:
         # are returned only as post-success cleanup candidates. Dependency
         # dirtiness is derived in the current graph's topological order.
         def plan_build_incremental_transition(previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildIncrementalPlan error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
-            current_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes)
+            current_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes, true)
             previous_manifest: mutable BuildIncrementalResolvedManifest = BuildIncrementalResolvedManifest{}
             current_manifest: mutable BuildIncrementalResolvedManifest = BuildIncrementalResolvedManifest{}
             if previous_targets.count != 0:
-                previous_manifest <- try build_incremental_manifest_resolution(previous_targets)
+                previous_manifest <- try build_incremental_manifest_resolution(previous_targets, true)
             if current_targets.count != 0:
-                current_manifest <- try build_incremental_manifest_resolution(current_targets)
+                current_manifest <- try build_incremental_manifest_resolution(current_targets, true)
             sorted_observation_indices: darray[usize] = try build_incremental_observation_order(observations)
             observation_paths: darray[sview] = try build_incremental_observation_paths_from_manifest(current_manifest)
             _ = try build_incremental_observations_match_paths(observation_paths, observations, sorted_observation_indices)
             decisions: mutable darray[BuildIncrementalDecision] = []
             target_names: mutable darray[sview] = []
             recipe_fingerprints: mutable darray[u64] = []
+            recipe_signatures: mutable darray[BuildRecipeSignature] = []
             rebuild_indices: mutable darray[usize] = []
-            for current_index in 0..<current_recipes.count |previous_targets, current_recipes, previous_manifest, current_manifest, observations, sorted_observation_indices, decisions, target_names, recipe_fingerprints, rebuild_indices|:
+            for current_index in 0..<current_recipes.count |previous_targets, current_recipes, previous_manifest, current_manifest, observations, sorted_observation_indices, decisions, target_names, recipe_fingerprints, recipe_signatures, rebuild_indices|:
                 current: BuildIncrementalRecipeTarget = current_recipes[current_index]
                 previous_index: usize = build_incremental_find_target_index(previous_manifest.resolution, current.name)
                 decision: mutable BuildIncrementalDecision = BuildIncrementalDecision.RecipeChanged
@@ -767,13 +784,14 @@ module EsBuildIncremental:
                         dependency_dirty: mutable bool = false
                         for dependency_index in current_manifest.resolution.dependencies[current_index] |decisions, dependency_dirty|:
                             dependency_dirty <- true if decisions[dependency_index] != BuildIncrementalDecision.UpToDate
-                        decision <- build_incremental_target_decision_validated(previous, current.recipe_fingerprint, observations, sorted_observation_indices, dependency_dirty)
+                        decision <- build_incremental_target_decision_validated(previous, current.recipe_fingerprint, observations, sorted_observation_indices, dependency_dirty, current.recipe_signature)
                 decisions.push(decision)
                 target_names.push(current.name)
                 recipe_fingerprints.push(current.recipe_fingerprint)
+                recipe_signatures.push(current.recipe_signature)
                 rebuild_indices.push(current_index) if decision != BuildIncrementalDecision.UpToDate
             stale_outputs: darray[BuildIncrementalStaleOutput] = try plan_build_incremental_cleanup(previous_targets, current_targets)
-            return BuildIncrementalPlan{decisions: decisions, target_names: target_names, recipe_fingerprints: recipe_fingerprints, rebuild_target_indices: rebuild_indices, stale_outputs_after_success: stale_outputs}
+            return BuildIncrementalPlan{decisions: decisions, target_names: target_names, recipe_fingerprints: recipe_fingerprints, recipe_signatures: recipe_signatures, rebuild_target_indices: rebuild_indices, stale_outputs_after_success: stale_outputs}
 
 
         # Validate the parallel recipe metadata against the exact command
@@ -788,7 +806,7 @@ module EsBuildIncremental:
             for index in 0..<graph.nodes.count |graph, current_recipes|:
                 node: BuildNode = graph.nodes[index]
                 recipe: BuildIncrementalRecipeTarget = current_recipes[index]
-                raise BuildIncrementalError.CurrentRecipeShapeInvalid if node.name != recipe.name or node.fingerprint != recipe.recipe_fingerprint
+                raise BuildIncrementalError.CurrentRecipeShapeInvalid if node.name != recipe.name or node.fingerprint != recipe.recipe_fingerprint or node.recipe_signature != recipe.recipe_signature or not build_recipe_signature_valid(node.recipe_signature)
                 raise BuildIncrementalError.CurrentRecipeShapeInvalid if node.dependencies.count != recipe.dependencies.count
                 for dependency_position in 0..<node.dependencies.count |graph, current_recipes, index, recipe|:
                     dependency_index: usize = node.dependencies[dependency_position]
