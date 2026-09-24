@@ -151,6 +151,8 @@ rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
 rg -Fq 'build_usage_interface_dependency_must_use_interface_visibility' "$usage_fixture"
+rg -Fq 'API_LEVEL=3' "$usage_fixture"
+rg -Fq 'core_usage.compile.count == 4' "$usage_fixture"
 
 for declaration in \
     'module EsBuildExecutor:' \
