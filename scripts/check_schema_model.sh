@@ -25,6 +25,9 @@ for declaration in \
     'using EsConfigToml' \
     'using EsSchema' \
     'using EsSchemaNumeric' \
+    'SCHEMA_TOML_MAX_VALUES' \
+    'SCHEMA_TOML_MAX_TYPES' \
+    'SCHEMA_TOML_MAX_NESTED_FIELDS' \
     'const enum SchemaTomlValueKind of u8:' \
     'struct SchemaTomlValue:' \
     'struct SchemaTomlRecord:' \
@@ -34,6 +37,9 @@ for declaration in \
     'schema_toml_key_is_direct_child(' \
     'schema_toml_integer_decimal_bytes(' \
     'schema_toml_separators_valid(' \
+    'schema_toml_type_value_valid(' \
+    'schema_toml_field_type_valid(' \
+    'schema_toml_table_fields_unique(' \
     'SchemaTomlValueKind.Missing' \
     'SchemaTomlValueKind.Array' \
     'SchemaTomlValueKind.Object' \
@@ -46,6 +52,8 @@ for fixture_pattern in \
     'toml_schema_binds_typed_config_and_text_overrides' \
     'toml_schema_rejects_unknown_and_missing_required_fields' \
     'toml_schema_rejects_malformed_numeric_override_separators' \
+    'SchemaTypeNode{kind: SchemaValueKind.Array, array_item_type_index: 0}' \
+    'SchemaTypeNode{kind: SchemaValueKind.Object, object_field_start: 0, object_field_count: 2}' \
     'toml_schema_binds_one_table_and_ignores_siblings_and_descendants' \
     'source_name: "workers"' \
     'SchemaTomlValueKind.Integer' \
@@ -54,6 +62,9 @@ for fixture_pattern in \
     'SchemaTomlValueKind.Object' \
     'SchemaTomlMaterializeError.UnknownField' \
     'SchemaTomlMaterializeError.InvalidNumber' \
+    'wrong_item_rejected' \
+    'duplicate_rejected' \
+    'missing_inline_rejected' \
     'SchemaContractError.RequiredFieldMissing'; do
     rg -Fq "$fixture_pattern" "$toml_fixture"
 done
@@ -188,6 +199,7 @@ done
 
 for boundary in \
     'numeric_source: bool = schema.source == SchemaSource.Json or schema.source == SchemaSource.Toml' \
+    'schema.source != SchemaSource.Json and schema.source != SchemaSource.Toml and (schema.types.count != 0 or schema.nested_fields.count != 0)' \
     'field.integer_target != SchemaIntegerTarget.None and numeric_source and field.kind != SchemaValueKind.Number' \
     'field.integer_target != SchemaIntegerTarget.None and not numeric_source and field.kind != SchemaValueKind.Text' \
     'field.decimal_target != SchemaDecimalTarget.None and numeric_source and field.kind != SchemaValueKind.Number' \
@@ -255,7 +267,8 @@ done
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
 rg -Fq '`EsSchemaToml` binds resolved TOML configuration' "$docs"
+rg -Fq 'Schema type graphs can validate scalar array items' "$docs"
 rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
 
-printf 'schema model audit: recursively typed JSON values, typed schema binding, and bounded CSV row batches are present\n'
+printf 'schema model audit: recursively typed JSON values, bounded TOML schema validation, and CSV row batches are present\n'

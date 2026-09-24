@@ -997,6 +997,20 @@ Fixtures, namespace inclusion, IR documentation, and compiler-free audit
 source are static only; decimal/float conversion, generated record
 constructors, and runtime qualification remain open.
 
+ES-SCRIPT-055 | EsSchemaToml binds resolved TOML values to the shared schema
+contract, either at the document root or within one canonical dotted table
+path. It applies aliases, requiredness, unknown-key rules, duplicate-key
+checks, scalar kinds, and exact numeric targets. Schema graphs validate scalar
+array items and fields of the currently supported one-level inline tables,
+including nested aliases and required/unknown policies. The record borrows the
+resolved TOML sidecar for retained strings and containers; it does not yet
+build an owned recursive value graph. It rejects more than 4,096 resolved
+values, top-level schema fields, type nodes, or nested fields before expensive
+descriptor validation. Recursively nested arrays/inline tables,
+typed structured overrides, and TOML date/time values remain unsupported.
+Focused fixtures and the compiler-free static audit are source-only; runtime
+and project-level parity qualification remain open under the validation hold.
+
 ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
 minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and
 stable-mismatch classifications, and explicit nondeterminism rejection/reporting.

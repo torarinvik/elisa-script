@@ -501,9 +501,14 @@ configuration for text, arrays, and inline-table contents, so both the schema
 and resolution must outlive it. `materialize_toml_schema_table` selects one
 canonical dotted table path (or the document root) and binds only its immediate
 keys; sibling tables and dotted descendants are left for separate schemas.
-This is currently a flat binding: recursive
-array-item and nested object schemas, nested inline tables/arrays, dates/times,
-and typed cross-source merging remain unsupported. Source fixtures and static
+Schema type graphs can validate scalar array items and one-level inline-table
+fields, including required/unknown-field rules and exact numeric targets. The
+adapter caps resolved values, schema fields, types, and nested fields at 4,096
+before descriptor validation to keep work predictable. The
+current parser cannot represent recursively nested TOML arrays or inline
+tables, and the record retains those supported nested payloads by source
+reference instead of constructing an owned nested typed graph. Dates/times and
+typed cross-source merging also remain unsupported. Source fixtures and static
 guards describe the behavior but are not runtime evidence while compiler
 validation is held.
 

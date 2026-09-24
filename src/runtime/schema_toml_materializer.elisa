@@ -13,6 +13,8 @@ module EsSchemaToml:
 
     public:
         const SCHEMA_TOML_MAX_VALUES: usize = 4096
+        const SCHEMA_TOML_MAX_TYPES: usize = 4096
+        const SCHEMA_TOML_MAX_NESTED_FIELDS: usize = 4096
         const SCHEMA_TOML_INDEX_NONE: usize = 4294967295
 
 
@@ -205,6 +207,116 @@ module EsSchemaToml:
             return true
 
 
+        def schema_toml_scalar_type_valid(schema: SchemaDescriptor&, type_index: usize, input_kind: ConfigTomlValueKind, text: darray[u8], source: ConfigSource) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaContractError.InvalidTypeReference if type_index >= schema.types.count
+            type_node: SchemaTypeNode = schema.types[type_index]
+            if type_node.kind == SchemaValueKind.Text:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Text
+            elif type_node.kind == SchemaValueKind.Bool:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Boolean and not (input_kind == ConfigTomlValueKind.Text and source != ConfigSource.File)
+                raise SchemaTomlMaterializeError.ValueKindMismatch if bytes_view(text) != "true" and bytes_view(text) != "false"
+            elif type_node.kind == SchemaValueKind.Number:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Integer and input_kind != ConfigTomlValueKind.Float and not (input_kind == ConfigTomlValueKind.Text and source != ConfigSource.File)
+                if type_node.integer_target != SchemaIntegerTarget.None:
+                    raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind == ConfigTomlValueKind.Float
+                    raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind == ConfigTomlValueKind.Text and not schema_toml_text_looks_integer(text)
+                    normalized_integer: darray[u8] = try schema_toml_integer_decimal_bytes(text)
+                    _ = try parse_schema_integer(normalized_integer, 0, normalized_integer.count, type_node.integer_target)
+                elif type_node.decimal_target == SchemaDecimalTarget.Exact:
+                    normalized_decimal: darray[u8] = try schema_toml_numeric_bytes(text)
+                    _ = try parse_schema_decimal(normalized_decimal, 0, normalized_decimal.count)
+                else:
+                    normalized_number: darray[u8] = try schema_toml_numeric_bytes(text)
+                    _ = try parse_schema_decimal(normalized_number, 0, normalized_number.count)
+            else:
+                raise SchemaTomlMaterializeError.UnsupportedValueKind
+
+
+        def schema_toml_nested_field_source_name(field: SchemaNestedField) -> sview:
+            return field.name if field.source_name == ""
+            return field.source_name
+
+
+        def schema_toml_name_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return true if sview_at(left, offset) < sview_at(right, offset)
+                return false if sview_at(left, offset) > sview_at(right, offset)
+            return left_length < right_length
+
+
+        def schema_toml_nested_field_index(schema: SchemaDescriptor&, type_node: SchemaTypeNode, input_name: sview) -> usize:
+            low: mutable usize = type_node.object_field_start
+            high: mutable usize = type_node.object_field_start + type_node.object_field_count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                candidate: sview = schema_toml_nested_field_source_name(schema.nested_fields[middle])
+                if candidate == input_name:
+                    return middle
+                if schema_toml_name_before(candidate, input_name):
+                    low <- middle + 1
+                else:
+                    high <- middle
+            return schema.nested_fields.count
+
+
+        def schema_toml_table_fields_unique(fields: darray[ConfigTomlTableField]) -> bool can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            for field in fields |names|:
+                names.push(bytes_view(field.key))
+            ordered: darray[sview] = sorted(names)
+            for index in 1..<ordered.count |ordered|:
+                return false if ordered[index - 1] == ordered[index]
+            return true
+
+
+        def schema_toml_field_type_valid(schema: SchemaDescriptor&, type_index: usize, input_kind: ConfigTomlValueKind, text: darray[u8], items: darray[ConfigTomlArrayItem]) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaContractError.InvalidTypeReference if type_index >= schema.types.count
+            type_node: SchemaTypeNode = schema.types[type_index]
+            if type_node.kind == SchemaValueKind.Array:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Array
+                for item in items |schema, type_node|:
+                    try schema_toml_scalar_type_valid(schema, type_node.array_item_type_index, item.kind, item.text, ConfigSource.File)
+            elif type_node.kind == SchemaValueKind.Object:
+                # The current typed inline-table representation has no nested
+                # object payload on a table field, so fail closed here.
+                raise SchemaTomlMaterializeError.ValueKindMismatch
+            else:
+                try schema_toml_scalar_type_valid(schema, type_index, input_kind, text, ConfigSource.File)
+
+
+        def schema_toml_type_value_valid(schema: SchemaDescriptor&, type_index: usize, input_kind: ConfigTomlValueKind, text: darray[u8], items: darray[ConfigTomlArrayItem], fields: darray[ConfigTomlTableField], source: ConfigSource) -> void error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaContractError.InvalidTypeReference if type_index >= schema.types.count
+            type_node: SchemaTypeNode = schema.types[type_index]
+            if type_node.kind == SchemaValueKind.Array:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.Array
+                for item in items |schema, type_node|:
+                    try schema_toml_scalar_type_valid(schema, type_node.array_item_type_index, item.kind, item.text, ConfigSource.File)
+            elif type_node.kind == SchemaValueKind.Object:
+                raise SchemaTomlMaterializeError.ValueKindMismatch if input_kind != ConfigTomlValueKind.InlineTable
+                raise SchemaTomlMaterializeError.DuplicateField if not schema_toml_table_fields_unique(fields)
+                seen: mutable darray[bool] = []
+                for _ in 0..<schema.nested_fields.count |seen|:
+                    seen.push(false)
+                nested_end: usize = type_node.object_field_start + type_node.object_field_count
+                for input_field in fields |schema, type_node, seen, nested_end|:
+                    input_name: sview = bytes_view(input_field.key)
+                    matched_index: usize = schema_toml_nested_field_index(schema, type_node, input_name)
+                    if matched_index == schema.nested_fields.count:
+                        raise SchemaTomlMaterializeError.UnknownField if not type_node.allow_unknown
+                    else:
+                        raise SchemaTomlMaterializeError.DuplicateField if seen[matched_index]
+                        seen[matched_index] <- true
+                        nested_field: SchemaNestedField = schema.nested_fields[matched_index]
+                        try schema_toml_field_type_valid(schema, nested_field.type_index, input_field.kind, input_field.text, input_field.items)
+                for nested_index in type_node.object_field_start..<nested_end |schema, seen, type_node|:
+                    raise SchemaContractError.RequiredFieldMissing if schema.nested_fields[nested_index].required and not seen[nested_index]
+            else:
+                try schema_toml_scalar_type_valid(schema, type_index, input_kind, text, source)
+
+
         def schema_toml_materialize_value(schema: SchemaDescriptor&, field_index: usize, source_index: usize, resolution: ConfigTomlResolution&) -> SchemaTomlValue error[SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
             raise SchemaTomlMaterializeError.FieldIndexInvalid if field_index >= schema.fields.count
             raise SchemaTomlMaterializeError.SourceIndexInvalid if source_index >= resolution.values.count
@@ -212,6 +324,8 @@ module EsSchemaToml:
             input: ConfigTomlResolvedValue = resolution.values[source_index]
             raise SchemaTomlMaterializeError.ValueKindMismatch if not schema_toml_input_kind_matches(field.kind, input.kind, input.source)
             raise SchemaTomlMaterializeError.UnsupportedValueKind if field.kind == SchemaValueKind.Any or field.kind == SchemaValueKind.Null
+            if field.type_index != SCHEMA_TYPE_INDEX_NONE:
+                try schema_toml_type_value_valid(schema, field.type_index, input.kind, input.text, input.items, input.fields, input.source)
             value: mutable SchemaTomlValue = SchemaTomlValue{field_index: field_index, source_value_index: source_index, kind: SchemaTomlValueKind.Text}
             if input.kind == ConfigTomlValueKind.Text:
                 if field.kind == SchemaValueKind.Bool:
@@ -263,19 +377,16 @@ module EsSchemaToml:
 
 
     public:
-        def materialize_toml_schema_record(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
-            return try materialize_toml_schema_table(schema, resolution, "")
-
-
         # Bind only immediate values in one TOML table. Dotted descendants
         # belong to child tables and can be bound independently with their own
         # schema. The empty path is the document root.
         def materialize_toml_schema_table(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&, table_path: sview) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaTomlMaterializeError.InputLimitExceeded if resolution.values.count > SCHEMA_TOML_MAX_VALUES
+            raise SchemaTomlMaterializeError.InputLimitExceeded if schema.fields.count > SCHEMA_TOML_MAX_VALUES
+            raise SchemaTomlMaterializeError.InputLimitExceeded if schema.types.count > SCHEMA_TOML_MAX_TYPES or schema.nested_fields.count > SCHEMA_TOML_MAX_NESTED_FIELDS
             try validate_schema_descriptor(schema)
             raise SchemaTomlMaterializeError.InvalidSource if schema.source != SchemaSource.Toml
-            raise SchemaContractError.InvalidSource if schema.types.count != 0 or schema.nested_fields.count != 0
             raise SchemaTomlMaterializeError.InvalidSource if not schema_toml_table_path_valid(table_path)
-            raise SchemaTomlMaterializeError.InputLimitExceeded if resolution.values.count > SCHEMA_TOML_MAX_VALUES
 
             for source_index in 0..<resolution.values.count |resolution|:
                 raise SchemaTomlMaterializeError.InvalidSource if resolution.values[source_index].source not in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
@@ -309,3 +420,7 @@ module EsSchemaToml:
                 else:
                     record.values.push(try schema_toml_materialize_value(schema, field_index, source_index, resolution))
             return record
+
+
+        def materialize_toml_schema_record(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            return try materialize_toml_schema_table(schema, resolution, "")
