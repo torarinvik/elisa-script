@@ -27,3 +27,10 @@ audit. It reads the same seven inputs with per-file and aggregate byte caps,
 then checks the contract markers without launching `rg` or another child.
 Source presence is not yet shell/Elisascript parity evidence; the comparison
 remains gated by the explicit compiler-validation hold.
+
+`test/script_parity/cli_model_launcher_test.elisascript` is the gated
+public-launcher comparison for the clean-repository success case. It pins the
+reference, candidate, bounded reader, and `rg` identities, requires the pinned
+compiler-path environment plus the active RSS guard, and compares exact exit
+status/stdout/stderr. Missing-input/error fixtures and an executed evidence
+bundle remain open.
