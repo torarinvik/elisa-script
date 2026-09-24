@@ -2922,7 +2922,7 @@ the format-neutral precedence view still preserves the original array/table
 spelling. A compatibility projection also provides flat `items`/`fields` for
 values representable by the former one-level subset. The graph is bounded to
 16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
-item/table-field limits. Basic strings decode TOML's quote, slash, control, and
+item/table-field limits. Basic strings decode TOML's quote, backslash, control, and
 Unicode scalar escapes. Simple single- or double-quoted key segments are
 decoded, including `\"`, `\\`, `\uXXXX`, and `\UXXXXXXXX`; key escapes that
 produce forbidden control bytes are rejected. Quoted dotted keys remain
