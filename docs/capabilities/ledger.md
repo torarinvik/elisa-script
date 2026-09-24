@@ -734,6 +734,10 @@ completion/failure accounting, queue-gated cache hits, and cancellation transiti
 cancellation cannot relabel an already succeeded graph, and a pre-start cancellation
 marks every planned node terminal while keeping the scheduler and embedded graph
 ledgers synchronized.
+This remains a scheduler-state contract only: the current build host executor
+is serial, and `EsProcessSession`/`EsProcessBatch` do not yet launch or reap
+multiple children. No claim of bounded parallel process execution, CMake build
+parity, or runtime qualification follows from this entry.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
