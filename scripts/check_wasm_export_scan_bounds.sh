@@ -67,6 +67,20 @@ rg -Fq 'fstat_bounded_source_descriptor(descriptor, completed_stat)' "$candidate
 rg -Fq 'stat_bounded_source_path(path_pointer, named_completed_stat)' "$candidate"
 rg -Fq 'source_file_snapshot_matches(opened_stat, completed_stat)' "$candidate"
 rg -Fq 'source_file_snapshot_matches(opened_stat, named_completed_stat)' "$candidate"
+eof_branch_line="$(awk '/if amount == 0:/ { print NR; exit }' "$candidate")"
+eof_fstat_line="$(awk -v start="$eof_branch_line" 'NR > start && /fstat_bounded_source_descriptor\(descriptor, completed_stat\)/ { print NR; exit }' "$candidate")"
+eof_descriptor_snapshot_line="$(awk -v start="$eof_branch_line" 'NR > start && /source_file_snapshot_matches\(opened_stat, completed_stat\)/ { print NR; exit }' "$candidate")"
+eof_path_stat_line="$(awk -v start="$eof_branch_line" 'NR > start && /stat_bounded_source_path\(path_pointer, named_completed_stat\)/ { print NR; exit }' "$candidate")"
+eof_path_snapshot_line="$(awk -v start="$eof_branch_line" 'NR > start && /source_file_snapshot_matches\(opened_stat, named_completed_stat\)/ { print NR; exit }' "$candidate")"
+eof_close_line="$(awk -v start="$eof_branch_line" 'NR > start && /if elisascript_posix_close\(descriptor\) != 0:/ { print NR; exit }' "$candidate")"
+eof_accept_line="$(awk -v start="$eof_branch_line" 'NR > start && /return BoundedSourceRead\{source: bytes_view\(source\)\}/ { print NR; exit }' "$candidate")"
+if [ -z "$eof_branch_line" ] || [ -z "$eof_fstat_line" ] || [ -z "$eof_descriptor_snapshot_line" ] || [ -z "$eof_path_stat_line" ] || [ -z "$eof_path_snapshot_line" ] || [ -z "$eof_close_line" ] || [ -z "$eof_accept_line" ] || \
+    [ "$eof_branch_line" -ge "$eof_fstat_line" ] || [ "$eof_fstat_line" -gt "$eof_descriptor_snapshot_line" ] || \
+    [ "$eof_descriptor_snapshot_line" -ge "$eof_path_stat_line" ] || [ "$eof_path_stat_line" -gt "$eof_path_snapshot_line" ] || \
+    [ "$eof_path_snapshot_line" -ge "$eof_close_line" ] || [ "$eof_close_line" -ge "$eof_accept_line" ]; then
+    printf 'W09 bounds audit: EOF snapshot checks must precede descriptor close and source acceptance\n' >&2
+    exit 1
+fi
 rg -Fq 'probe_capacity: usize = remaining + 1' "$candidate"
 rg -Fq 'capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count' "$candidate"
 rg -Fq 'source.reserve(initial_source_capacity)' "$candidate"
