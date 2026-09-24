@@ -15,10 +15,11 @@ runtime_fixture="$repo_root/test/runtime/config_model_test.elisa"
 json_fixture="$repo_root/test/runtime/config_json_model_test.elisa"
 environment_fixture="$repo_root/test/runtime/config_environment_model_test.elisa"
 cli_fixture="$repo_root/test/runtime/config_cli_model_test.elisa"
+integration_fixture="$repo_root/test/runtime/config_precedence_integration_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for environment_boundary in \
@@ -110,6 +111,7 @@ rg -Fq 'environment_snapshot_uses_the_environment_entry_limit' "$environment_fix
 rg -Fq 'declared_config_cli_options_preserve_empty_and_passthrough_values' "$cli_fixture"
 rg -Fq 'declared_config_cli_options_reject_unknown_missing_and_duplicate_values' "$cli_fixture"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
+rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"
 

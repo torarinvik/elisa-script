@@ -2904,6 +2904,12 @@ are enforced before parsing; values remain borrowed from the caller's argv.
 Option keys also borrow the declared schema; both inputs must remain alive
 and unchanged while the result layer is used.
 
+The four-source precedence path has an integration fixture that composes
+explicit defaults, the strict JSON adapter, a sealed environment snapshot, and
+the application CLI parser, then checks winners, source attribution, explicit
+empty values, and still-defaulted/absent keys. It is source evidence only until
+run on the supported local compiler under the bounded validation policy.
+
 `EsDirectoryMutation` validates recursive copy/remove plans before a host
 adapter mutates the filesystem. Source and destination containment compares
 trim trailing separators (while preserving the root separator), so an equal

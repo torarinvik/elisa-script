@@ -943,6 +943,9 @@ preserving explicit empty values, negatable booleans, positionals, and the
 post-`--` tail; it remains separate from the compiler-launcher parser.
 Subcommands, short aliases, help rendering, and direct runtime qualification
 remain open.
+An integration fixture composes Defaults/File/Environment/CommandLine and
+asserts precedence, source attribution, present-empty values, fallback, and
+absence; its runtime result is not yet verified.
 The focused IR/runtime fixtures, namespace inclusion, documentation, and
 check_config_model.sh audit are static evidence; file reads, process-global
 environment capture, subcommands, storage-lifetime enforcement, and
