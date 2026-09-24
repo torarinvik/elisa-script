@@ -9,6 +9,7 @@ model="$repo_root/src/runtime/build_incremental_model.elisa"
 cache_model="$repo_root/src/runtime/build_incremental_cache_model.elisa"
 build_model="$repo_root/src/runtime/build_model.elisa"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
+graph_model="$repo_root/src/runtime/build_incremental_graph_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 transition_fixture="$repo_root/test/runtime/build_incremental_transition_test.elisa"
@@ -20,7 +21,7 @@ executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -75,9 +76,6 @@ for declaration in \
     'def build_incremental_recipe_shape_matches(' \
     'def build_incremental_materialize_recipe_targets(' \
     'def plan_build_incremental_transition(' \
-    'def plan_build_incremental_graph_transition(' \
-    'graph.state != BuildGraphState.Planned' \
-    'node.fingerprint != recipe.recipe_fingerprint' \
     'target_names: darray[sview]' \
     'recipe_fingerprints: darray[u64]' \
     'def build_incremental_observed_commit_file(' \
@@ -91,6 +89,19 @@ for declaration in \
     'def build_sort_incremental_observation_indices('; do
     rg -Fq "$declaration" "$model"
 done
+
+rg -Fq 'def plan_build_incremental_graph_transition(' "$graph_model"
+rg -Fq 'def validate_build_incremental_graph_signatures(' "$graph_model"
+rg -Fq 'build_recipe_signatures_for_actions(commands, recipes, toolchains)' "$graph_model"
+rg -Fq 'graph.state != BuildGraphState.Planned' "$graph_model"
+rg -Fq 'def sign_build_incremental_graph(' "$recipe_signature"
+rg -Fq 'def build_recipe_signatures_for_actions(' "$recipe_signature"
+rg -Fq 'toolchain_identity: BuildRecipeToolchainIdentity' "$model"
+rg -Fq 'def admit_build_incremental_graph(' "$repo_root/src/runtime/build_scheduler_model.elisa"
+if rg -Fq 'def admit_build_incremental_plan(' "$repo_root/src/runtime/build_scheduler_model.elisa"; then
+    printf 'incremental build audit: unsafe caller-supplied plan admission is public\n' >&2
+    exit 1
+fi
 
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
 rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
@@ -113,6 +124,7 @@ rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"
 rg -Fq 'incremental_file_open_rejects_invalid_capability_and_paths' "$posix_fixture"
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_recipe_signature.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_incremental_graph_model.elisa"' "$ir"
 rg -Fq 'def build_recipe_signature(' "$recipe_signature"
 rg -Fq 'EsIr::canonical_bytes_sha256_word(bytes, 3)' "$recipe_signature"
 for signature_input in \
@@ -155,11 +167,13 @@ done
 
 for executor_check in \
     'incremental_executor_marks_up_to_date_nodes_as_cache_hits' \
+    'command_mismatch_rejected' \
     'commit_build_incremental_execution(result, graph, previous, recipes, observations)' \
     'execute_build_graph_incremental(graph, previous, recipes, observations)' \
     'cache_hit and not result.nodes[0].started'; do
     rg -Fq "$executor_check" "$executor_fixture"
 done
+rg -Fq 'signature_mismatch_rejected' "$repo_root/test/runtime/build_incremental_scheduler_test.elisa"
 
 for boundary in \
     'BuildIncrementalDecision.UpToDate' \

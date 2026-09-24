@@ -15,13 +15,6 @@ module EsBuildRecipeSignature:
             ENCODED_BYTES: usize = 67108864
 
 
-        struct BuildRecipeToolchainIdentity:
-            word0: u64
-            word1: u64
-            word2: u64
-            word3: u64
-
-
         error BuildRecipeSignatureError:
             InvalidToolchainIdentity
             InvalidRecipe
@@ -30,7 +23,32 @@ module EsBuildRecipeSignature:
             HashFailed
 
 
+        struct BuildRecipeSignedGraph:
+            graph: BuildGraph
+            recipes: darray[BuildIncrementalRecipeTarget]
+
+
     private:
+        def signature_recipe_graph_valid(recipes: darray[BuildIncrementalRecipeTarget]) -> bool error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            normalized: mutable darray[BuildIncrementalRecipeTarget] = []
+            for recipe in recipes |normalized|:
+                normalized.push(BuildIncrementalRecipeTarget{
+                    name: recipe.name,
+                    kind: recipe.kind,
+                    recipe_fingerprint: 1,
+                    recipe_signature: BuildRecipeSignature{word0: 1},
+                    inputs: recipe.inputs,
+                    outputs: recipe.outputs,
+                    dependencies: recipe.dependencies
+                })
+            valid: mutable bool = false
+            catch build_incremental_observation_paths(normalized):
+                ok paths:
+                    _ = paths
+                    valid <- true
+                error failure:
+                    raise BuildRecipeSignatureError.InvalidRecipe
+            return valid
         const module Encoding:
             DOMAIN_0: u8 = 69
             DOMAIN_1: u8 = 83
@@ -115,29 +133,7 @@ module EsBuildRecipeSignature:
             return bytes
 
 
-    public:
-        def build_recipe_signature(recipes: darray[BuildIncrementalRecipeTarget], target_index: usize, command: ProcessCommand, toolchain: BuildRecipeToolchainIdentity) -> BuildRecipeSignature error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
-            raise BuildRecipeSignatureError.InvalidRecipe if target_index >= recipes.count
-            recipes_for_validation: mutable darray[BuildIncrementalRecipeTarget] = []
-            for recipe in recipes |recipes_for_validation|:
-                recipes_for_validation.push(BuildIncrementalRecipeTarget{
-                    name: recipe.name,
-                    kind: recipe.kind,
-                    recipe_fingerprint: 1,
-                    recipe_signature: BuildRecipeSignature{word0: 1},
-                    inputs: recipe.inputs,
-                    outputs: recipe.outputs,
-                    dependencies: recipe.dependencies
-                })
-            recipe_valid: mutable bool = false
-            catch build_incremental_observation_paths(recipes_for_validation):
-                ok paths:
-                    _ = paths
-                    recipe_valid <- true
-                error failure:
-                    raise BuildRecipeSignatureError.InvalidRecipe
-            raise BuildRecipeSignatureError.InvalidRecipe if not recipe_valid
-            recipe: BuildIncrementalRecipeTarget = recipes[target_index]
+        def signature_hash_recipe(recipe: BuildIncrementalRecipeTarget, command: ProcessCommand, toolchain: BuildRecipeToolchainIdentity) -> BuildRecipeSignature error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
             bytes: darray[u8] = try signature_encode_recipe(recipe, command, toolchain)
             signature: BuildRecipeSignature = BuildRecipeSignature{
                 word0: EsIr::canonical_bytes_sha256_word(bytes, 0),
@@ -147,6 +143,37 @@ module EsBuildRecipeSignature:
             }
             raise BuildRecipeSignatureError.HashFailed if signature.word0 == 0 and signature.word1 == 0 and signature.word2 == 0 and signature.word3 == 0
             return signature
+
+
+    public:
+        def build_recipe_signature(recipes: darray[BuildIncrementalRecipeTarget], target_index: usize, command: ProcessCommand, toolchain: BuildRecipeToolchainIdentity) -> BuildRecipeSignature error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildRecipeSignatureError.InvalidRecipe if target_index >= recipes.count
+            _ = try signature_recipe_graph_valid(recipes)
+            return try signature_hash_recipe(recipes[target_index], command, toolchain)
+
+
+        # Validate the recipe graph once, then hash aligned commands and
+        # toolchains in linear traversal order. This avoids revalidating all
+        # recipes once per target.
+        def build_recipe_signatures_for_actions(commands: darray[ProcessCommand], recipes: darray[BuildIncrementalRecipeTarget], toolchains: darray[BuildRecipeToolchainIdentity]) -> darray[BuildRecipeSignature] error[BuildRecipeSignatureError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildRecipeSignatureError.InvalidRecipe if commands.count != recipes.count or recipes.count != toolchains.count
+            _ = try signature_recipe_graph_valid(recipes)
+            signatures: mutable darray[BuildRecipeSignature] = []
+            for index in 0..<recipes.count |commands, recipes, toolchains, signatures|:
+                signatures.push(try signature_hash_recipe(recipes[index], commands[index], toolchains[index]))
+            return signatures
+
+
+        # Graph construction convenience: validate the graph and project its
+        # commands in canonical node order before signing the action vector.
+        def build_recipe_signatures_for_graph(graph: BuildGraph, recipes: darray[BuildIncrementalRecipeTarget], toolchains: darray[BuildRecipeToolchainIdentity]) -> darray[BuildRecipeSignature] error[BuildRecipeSignatureError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+            graph_valid: bool = try validate_build_graph(graph)
+            raise BuildRecipeSignatureError.InvalidRecipe if not graph_valid or graph.state != BuildGraphState.Planned
+            raise BuildRecipeSignatureError.InvalidRecipe if graph.nodes.count != recipes.count or recipes.count != toolchains.count
+            commands: mutable darray[ProcessCommand] = []
+            for node in graph.nodes |commands|:
+                commands.push(node.command)
+            return try build_recipe_signatures_for_actions(commands, recipes, toolchains)
 
 
         # Return a signed copy so graph construction need not mutate an
@@ -160,7 +187,32 @@ module EsBuildRecipeSignature:
                 kind: recipe.kind,
                 recipe_fingerprint: build_recipe_scheduler_fingerprint(signature),
                 recipe_signature: signature,
+                toolchain_identity: toolchain,
                 inputs: recipe.inputs,
                 outputs: recipe.outputs,
                 dependencies: recipe.dependencies
             }
+
+
+        # Sign a complete graph/recipe pair so command fingerprints cannot be
+        # accidentally copied from an unrelated graph construction step.
+        def sign_build_incremental_graph(graph: BuildGraph, recipes: darray[BuildIncrementalRecipeTarget], toolchains: darray[BuildRecipeToolchainIdentity]) -> BuildRecipeSignedGraph error[BuildRecipeSignatureError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+            signatures: darray[BuildRecipeSignature] = try build_recipe_signatures_for_graph(graph, recipes, toolchains)
+            signed_graph: mutable BuildGraph = graph
+            signed_recipes: mutable darray[BuildIncrementalRecipeTarget] = []
+            for index in 0..<recipes.count |graph, recipes, toolchains, signed_graph, signed_recipes|:
+                recipe: BuildIncrementalRecipeTarget = recipes[index]
+                signed_recipe: BuildIncrementalRecipeTarget = BuildIncrementalRecipeTarget{
+                    name: recipe.name,
+                    kind: recipe.kind,
+                    recipe_fingerprint: build_recipe_scheduler_fingerprint(signatures[index]),
+                    recipe_signature: signatures[index],
+                    toolchain_identity: toolchains[index],
+                    inputs: recipe.inputs,
+                    outputs: recipe.outputs,
+                    dependencies: recipe.dependencies
+                }
+                signed_graph.nodes[index].fingerprint <- signed_recipe.recipe_fingerprint
+                signed_graph.nodes[index].recipe_signature <- signed_recipe.recipe_signature
+                signed_recipes.push(signed_recipe)
+            return BuildRecipeSignedGraph{graph: signed_graph, recipes: signed_recipes}

@@ -1,42 +1,58 @@
-include "../../src/runtime/process_model.elisa"
-include "../../src/runtime/executable_model.elisa"
-include "../../src/runtime/build_model.elisa"
-include "../../src/runtime/build_incremental_model.elisa"
-include "../../src/runtime/build_executor_model.elisa"
+include "../../src/ir/ir.elisa"
 
 using EsProcess
 using EsExecutable
 using EsBuild
 using EsBuildIncremental
+using EsBuildRecipeSignature
+using EsBuildIncrementalGraph
 using EsBuildExecutor
 
 
 @test
 def incremental_executor_marks_up_to_date_nodes_as_cache_hits() -> void:
     can Memory.Allocate, Abort.Panic, Process.Run:
-        previous: darray[BuildIncrementalTarget] = [
-            BuildIncrementalTarget{name: "compile", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 31, recipe_signature: BuildRecipeSignature{word0: 31}, inputs: [BuildIncrementalFile{path: "src/main.c", fingerprint: 11}], outputs: [BuildIncrementalFile{path: "build/main.o", fingerprint: 22}]},
-            BuildIncrementalTarget{name: "link", kind: BuildIncrementalTargetKind.Executable, recipe_fingerprint: 41, recipe_signature: BuildRecipeSignature{word0: 41}, inputs: [BuildIncrementalFile{path: "build/main.o", fingerprint: 22}], outputs: [BuildIncrementalFile{path: "build/app", fingerprint: 42}], dependencies: ["compile"]}
-        ]
-        recipes: darray[BuildIncrementalRecipeTarget] = [
-            BuildIncrementalRecipeTarget{name: "compile", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 31, recipe_signature: BuildRecipeSignature{word0: 31}, inputs: ["src/main.c"], outputs: ["build/main.o"]},
-            BuildIncrementalRecipeTarget{name: "link", kind: BuildIncrementalTargetKind.Executable, recipe_fingerprint: 41, recipe_signature: BuildRecipeSignature{word0: 41}, inputs: ["build/main.o"], outputs: ["build/app"], dependencies: ["compile"]}
+        base_recipes: darray[BuildIncrementalRecipeTarget] = [
+            BuildIncrementalRecipeTarget{name: "compile", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 1, inputs: ["src/main.c"], outputs: ["build/main.o"]},
+            BuildIncrementalRecipeTarget{name: "link", kind: BuildIncrementalTargetKind.Executable, recipe_fingerprint: 1, inputs: ["build/main.o"], outputs: ["build/app"], dependencies: ["compile"]}
         ]
         observations: darray[BuildIncrementalObservation] = [
             BuildIncrementalObservation{path: "src/main.c", present: true, fingerprint: 11},
             BuildIncrementalObservation{path: "build/main.o", present: true, fingerprint: 22},
             BuildIncrementalObservation{path: "build/app", present: true, fingerprint: 42}
         ]
-        graph: mutable BuildGraph = BuildGraph{nodes: [
-            BuildNode{name: "compile", command: ProcessCommand{executable: "compiler-not-invoked"}, fingerprint: 31, recipe_signature: BuildRecipeSignature{word0: 31}},
-            BuildNode{name: "link", command: ProcessCommand{executable: "linker-not-invoked"}, dependencies: [0], fingerprint: 41, recipe_signature: BuildRecipeSignature{word0: 41}}
+        unsigned_graph: BuildGraph = BuildGraph{nodes: [
+            BuildNode{name: "compile", command: ProcessCommand{executable: "compiler-not-invoked", stdout_mode: ProcessStdioMode.Capture, stderr_mode: ProcessStdioMode.Capture, timeout_micros: 5000000}, fingerprint: 1},
+            BuildNode{name: "link", command: ProcessCommand{executable: "linker-not-invoked", stdout_mode: ProcessStdioMode.Capture, stderr_mode: ProcessStdioMode.Capture, timeout_micros: 5000000}, dependencies: [0], fingerprint: 1}
         ]}
+        toolchains: darray[BuildRecipeToolchainIdentity] = [BuildRecipeToolchainIdentity{word0: 1}, BuildRecipeToolchainIdentity{word0: 2}]
+        signed: BuildRecipeSignedGraph = sign_build_incremental_graph(unsigned_graph, base_recipes, toolchains)
+        graph: mutable BuildGraph = signed.graph
+        recipes: darray[BuildIncrementalRecipeTarget] = signed.recipes
+        previous: darray[BuildIncrementalTarget] = [
+            BuildIncrementalTarget{name: "compile", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: recipes[0].recipe_fingerprint, recipe_signature: recipes[0].recipe_signature, inputs: [BuildIncrementalFile{path: "src/main.c", fingerprint: 11}], outputs: [BuildIncrementalFile{path: "build/main.o", fingerprint: 22}]},
+            BuildIncrementalTarget{name: "link", kind: BuildIncrementalTargetKind.Executable, recipe_fingerprint: recipes[1].recipe_fingerprint, recipe_signature: recipes[1].recipe_signature, inputs: [BuildIncrementalFile{path: "build/main.o", fingerprint: 22}], outputs: [BuildIncrementalFile{path: "build/app", fingerprint: 42}], dependencies: ["compile"]}
+        ]
         result: BuildExecutionResult = execute_build_graph_incremental(graph, previous, recipes, observations)
         assert result.graph_state == BuildGraphState.Succeeded
         assert result.nodes.count == 2
         assert result.nodes[0].cache_hit and not result.nodes[0].started
         assert result.nodes[1].cache_hit and not result.nodes[1].started
         assert result.log_bytes == 0 and graph.log_bytes == 0
+
+        changed_graph: mutable BuildGraph = graph
+        changed_node: mutable BuildNode = changed_graph.nodes[0]
+        changed_command: mutable ProcessCommand = changed_node.command
+        changed_command.executable <- "different-compiler-not-invoked"
+        changed_node.command <- changed_command
+        changed_graph.nodes[0] <- changed_node
+        command_mismatch_rejected: mutable bool = false
+        catch commit_build_incremental_execution(result, changed_graph, previous, recipes, observations):
+            ok value:
+                assert false
+            error failure:
+                command_mismatch_rejected <- failure == BuildIncrementalError.CurrentRecipeShapeInvalid
+        assert command_mismatch_rejected
 
         committed: BuildIncrementalCommit = commit_build_incremental_execution(result, graph, previous, recipes, observations)
         assert committed.targets.count == 2 and committed.stale_outputs_after_success.count == 0

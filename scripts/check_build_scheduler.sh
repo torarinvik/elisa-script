@@ -10,10 +10,11 @@ build_model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 incremental_fixture="$repo_root/test/runtime/build_incremental_scheduler_test.elisa"
+incremental_graph_model="$repo_root/src/runtime/build_incremental_graph_model.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$ir" "$fixture" "$incremental_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$incremental_graph_model" "$ir" "$fixture" "$incremental_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'build scheduler audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -29,16 +30,21 @@ for declaration in \
     'struct BuildScheduler:' \
     'error BuildSchedulerError:' \
     'def validate_build_scheduler(' \
-    'def admit_build_incremental_plan(' \
+    'def admit_build_incremental_graph(' \
     'IncrementalPlanInvalid' \
     'IncrementalPlanMismatch' \
     'def advance_build_scheduler(' \
     'def scheduler_rebuild_ready('; do
     rg -Fq "$declaration" "$model"
 done
+if rg -Fq 'def admit_build_incremental_plan(' "$model"; then
+    printf 'build scheduler audit: hand-constructed plans remain publicly admissible\n' >&2
+    exit 1
+fi
 
 for integration_check in \
     'using EsBuildIncremental' \
+    'using EsBuildIncrementalGraph' \
     'plan.decisions.count != scheduler.graph.nodes.count' \
     'plan.target_names[index] != scheduler.graph.nodes[index].name' \
     'plan.recipe_fingerprints[index] != scheduler.graph.nodes[index].fingerprint' \
@@ -46,6 +52,7 @@ for integration_check in \
     'scheduler.cache <- admitted_cache'; do
     rg -Fq "$integration_check" "$model"
 done
+rg -Fq 'plan_build_incremental_graph_transition(previous_targets, scheduler.graph, current_recipes, observations)' "$model"
 
 for boundary in \
     'scheduler_dependency_ready' \
@@ -81,12 +88,10 @@ for boundary in \
 done
 
 for incremental_fixture_check in \
-    'incremental_plan_filters_scheduler_cache' \
-    'incremental_plan_mismatch_preserves_scheduler_cache' \
     'graph_aligned_incremental_plan_reaches_scheduler' \
-    'plan_build_incremental_graph_transition(previous, graph, recipes, observations)' \
-    'admit_build_incremental_plan(scheduler, plan)' \
-    'BuildSchedulerError.IncrementalPlanMismatch'; do
+    'admit_build_incremental_graph(scheduler, previous, recipes, observations)' \
+    'signature_mismatch_rejected' \
+    'BuildIncrementalError.CurrentRecipeShapeInvalid'; do
     rg -Fq "$incremental_fixture_check" "$incremental_fixture"
 done
 
