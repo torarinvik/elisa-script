@@ -151,6 +151,7 @@ rg -Fq 'declared_config_cli_options_preserve_empty_and_passthrough_values' "$cli
 rg -Fq 'declared_config_cli_options_reject_unknown_missing_and_duplicate_values' "$cli_fixture"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
+rg -Fq 'config_precedence_accepts_toml_table_file_values' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
 rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$json_file_fixture"
 rg -Fq 'toml_configuration_parses_bounded_scalar_subset' "$toml_fixture"
