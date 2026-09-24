@@ -1,0 +1,146 @@
+# Declared script-argument parser for configuration overrides.
+#
+# This is separate from EsCli, which parses compiler-launcher arguments. The
+# schema describes application options; parsing produces an explicit
+# CommandLine layer plus preserved positional/pass-through arguments. The
+# result borrows option keys from the schema and all values from the argv view;
+# both inputs must remain alive and unchanged while the result is used.
+
+module EsConfigCli:
+    using EsConfig
+
+    public:
+        const module Limits:
+            OPTIONS: usize = 256
+            ARGUMENTS: usize = 4096
+            POSITIONALS: usize = 4096
+            ARGUMENT_BYTES: usize = 65536
+            INPUT_BYTES: usize = 16777216
+
+
+        struct ConfigCliOption:
+            key: sview
+            option: sview
+            takes_value: bool
+            negative_option: sview = ""
+
+
+        struct ConfigCliResult:
+            layer: ConfigLayer
+            positionals: darray[sview] = []
+
+
+        error ConfigCliError:
+            OptionLimitExceeded
+            ArgumentLimitExceeded
+            PositionalLimitExceeded
+            InputBytesExceeded
+            ArgumentTooLong
+            EmbeddedNul
+            InvalidOptionSchema
+            UnknownOption
+            MissingValue
+            UnexpectedValue
+            DuplicateOption
+
+
+    private:
+        struct ConfigCliMatch:
+            index: usize
+            negative: bool = false
+
+
+        def config_cli_option_text_valid(option: sview) -> bool:
+            return false if sview_len(option) < 3 or sview_at(option, 0) != 45 or sview_at(option, 1) != 45
+            for index in 2..<sview_len(option) |option|:
+                byte: u8 = sview_at(option, index)
+                return false if byte == 0 or byte == 61 or byte <= 32 or byte == 127
+            return true
+
+
+        def config_cli_match(options: darray[ConfigCliOption], candidate: sview) -> ConfigCliMatch:
+            for index in 0..<options.count |options, candidate|:
+                spec: ConfigCliOption = options[index]
+                if candidate == spec.option:
+                    return ConfigCliMatch{index: index}
+                if spec.negative_option != "" and candidate == spec.negative_option:
+                    return ConfigCliMatch{index: index, negative: true}
+            return ConfigCliMatch{index: options.count}
+
+
+        def config_cli_validate_options(options: darray[ConfigCliOption]) -> bool error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigCliError.OptionLimitExceeded if options.count > Limits::OPTIONS
+            for index in 0..<options.count |options|:
+                option: ConfigCliOption = options[index]
+                raise ConfigCliError.InvalidOptionSchema if not config_cli_option_text_valid(option.option)
+                raise ConfigCliError.InvalidOptionSchema if option.negative_option != "" and (option.takes_value or not config_cli_option_text_valid(option.negative_option) or option.negative_option == option.option)
+                for earlier in 0..<index |options, option|:
+                    raise ConfigCliError.InvalidOptionSchema if options[earlier].option == option.option
+                    raise ConfigCliError.InvalidOptionSchema if options[earlier].negative_option != "" and (options[earlier].negative_option == option.option or options[earlier].negative_option == option.negative_option)
+                    raise ConfigCliError.InvalidOptionSchema if option.negative_option != "" and (option.negative_option == options[earlier].option or option.negative_option == options[earlier].negative_option)
+            # Validate keys through the same public contract as every other
+            # configuration source before accepting this option schema.
+            defaults: mutable darray[ConfigEntry] = []
+            for option in options |defaults|:
+                defaults.push(ConfigEntry{key: option.key, value: ""})
+            try validate_config_layers([ConfigLayer{source: ConfigSource.Defaults, entries: defaults}])
+            return true
+
+
+    public:
+        def parse_config_cli(arguments: darray[sview], options: darray[ConfigCliOption]) -> ConfigCliResult error[ConfigCliError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            try config_cli_validate_options(options)
+            raise ConfigCliError.ArgumentLimitExceeded if arguments.count > Limits::ARGUMENTS
+            input_bytes: mutable usize = 0
+            for argument in arguments |input_bytes|:
+                length: usize = sview_len(argument)
+                raise ConfigCliError.ArgumentTooLong if length >= Limits::ARGUMENT_BYTES
+                raise ConfigCliError.EmbeddedNul if sview_contains_byte(argument, 0)
+                raise ConfigCliError.InputBytesExceeded if input_bytes > Limits::INPUT_BYTES or length > Limits::INPUT_BYTES - input_bytes
+                input_bytes <- input_bytes + length
+
+            layer: mutable ConfigLayer = ConfigLayer{source: ConfigSource.CommandLine}
+            positionals: mutable darray[sview] = []
+            options_enabled: mutable bool = true
+            index: mutable usize = 0
+            while index < arguments.count:
+                argument: sview = arguments[index]
+                if options_enabled and argument == "--":
+                    options_enabled <- false
+                    index <- index + 1
+                elif options_enabled and sview_len(argument) > 1 and sview_at(argument, 0) == 45:
+                    option_end: mutable usize = sview_len(argument)
+                    for offset in 0..<sview_len(argument) |argument, option_end|:
+                        if sview_at(argument, offset) == 61:
+                            option_end <- offset
+                            break
+                    option_name: sview = string_view_slice(argument, 0, option_end.i64())
+                    match: ConfigCliMatch = config_cli_match(options, option_name)
+                    raise ConfigCliError.UnknownOption if match.index >= options.count
+                    spec: ConfigCliOption = options[match.index]
+                    inline_value: bool = option_end < sview_len(argument)
+                    if spec.takes_value:
+                        raise ConfigCliError.InvalidOptionSchema if match.negative
+                        value: sview = ""
+                        if inline_value:
+                            value <- string_view_slice(argument, (option_end + 1).i64(), sview_len(argument).i64())
+                        else:
+                            raise ConfigCliError.MissingValue if index + 1 >= arguments.count or arguments[index + 1] == "--"
+                            index <- index + 1
+                            value <- arguments[index]
+                        for previous in layer.entries |layer, spec|:
+                            raise ConfigCliError.DuplicateOption if previous.key == spec.key
+                        layer.entries.push(ConfigEntry{key: spec.key, value: value})
+                    else:
+                        raise ConfigCliError.UnexpectedValue if inline_value
+                        for previous in layer.entries |layer, spec|:
+                            raise ConfigCliError.DuplicateOption if previous.key == spec.key
+                        flag_value: sview = "false" if match.negative else "true"
+                        layer.entries.push(ConfigEntry{key: spec.key, value: flag_value})
+                    index <- index + 1
+                else:
+                    raise ConfigCliError.PositionalLimitExceeded if positionals.count >= Limits::POSITIONALS
+                    positionals.push(argument)
+                    index <- index + 1
+            try validate_config_layers([layer])
+            return ConfigCliResult{layer: layer, positionals: positionals}
