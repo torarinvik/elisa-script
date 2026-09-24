@@ -1,0 +1,225 @@
+# Read-only Elisascript coordinator for the migration inventory scanners.
+# It validates the partition manifest, then invokes the two Elisascript scanner
+# programs with explicit argv and prefixes their TSV rows with review metadata.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsInventoryProjectRoots:
+    public:
+        error InventoryRootsError:
+            ManifestInvalid
+            ManifestLimitExceeded
+
+
+        struct RootRow:
+            name: sview
+            relative_path: sview
+            owner: sview
+            review_status: sview
+            line_number: usize
+            # Bash's final `while read` loop skips a final record without LF,
+            # even though the preceding AWK validation pass accepts it.
+            shell_readable: bool
+            shell_skips_row: bool
+
+
+    private:
+        const module Limits:
+            MANIFEST_BYTES: usize = 1048576
+            ROWS: usize = 4096
+            FIELD_BYTES: usize = 65536
+            PATH_BYTES: usize = 4096
+            CHILD_TIMEOUT_MICROS: i64 = 120000000
+            CHILD_OUTPUT_BYTES: i64 = 67108864
+
+
+        const module Text:
+            HEADER: sview = "# name\trelative_path\towner\treview_status"
+            OUTPUT_HEADER: sview = "root_name\troot_path\tpath\tkind\towner\tentrypoint\tdisposition\trisk\tnotes"
+
+
+        def path_is_tsv_safe(value: sview) -> bool:
+            return value.index("\t") < 0 and value.index("\n") < 0 and value.index("\r") < 0
+
+
+        def row_field_valid(value: sview) -> bool:
+            return value != "" and len(value) <= Limits::FIELD_BYTES and not sview_contains_byte(value, 0)
+
+
+        def relative_manifest_path_valid(value: sview) -> bool:
+            return value != "" and len(value) < Limits::PATH_BYTES and not value.startswith("/") and value != ".." and value.index("../") < 0 and value.index("/..") < 0 and value.index("./") != 0
+
+
+        def parse_manifest(contents: sview) -> darray[RootRow] error[InventoryRootsError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = split(contents, "\n")
+            raise InventoryRootsError.ManifestInvalid if lines.count == 0 or lines[0] != Text::HEADER
+            rows: mutable darray[RootRow] = []
+            line_number: mutable usize = 1
+            for index in 1..<lines.count |lines, rows, line_number|:
+                line_number <- line_number + 1
+                line: sview = lines[index]
+                continue if line == ""
+                fields: darray[sview] = split(line, "\t")
+                raise InventoryRootsError.ManifestInvalid if fields.count != 4
+                for field in fields:
+                    raise InventoryRootsError.ManifestInvalid if not row_field_valid(field)
+                raise InventoryRootsError.ManifestInvalid if not relative_manifest_path_valid(fields[1])
+                raise InventoryRootsError.ManifestInvalid if fields[3] != "pending" and fields[3] != "reviewed" and fields[3] != "blocked"
+                raise InventoryRootsError.ManifestInvalid if fields[3] == "reviewed" and fields[2] == "unassigned"
+                for earlier in rows:
+                    raise InventoryRootsError.ManifestInvalid if earlier.name == fields[0] or earlier.relative_path == fields[1]
+                raise InventoryRootsError.ManifestLimitExceeded if rows.count >= Limits::ROWS
+                line_terminated: bool = index + 1 < lines.count or contents.endswith("\n")
+                rows.push(RootRow{name: fields[0], relative_path: fields[1], owner: fields[2], review_status: fields[3], line_number: line_number, shell_readable: line_terminated, shell_skips_row: fields[0] == "# name"})
+            raise InventoryRootsError.ManifestInvalid if rows.count == 0
+            return rows
+
+
+        def canonical_path_is_within(root: sview, candidate: sview) -> bool:
+            return true if root == candidate
+            prefix: sview = if root == "/": "/" else: root + "/"
+            return candidate.startswith(prefix)
+
+
+        def emit_candidate_rows(root: RootRow, display_root: sview, child_output: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            lines: darray[sview] = split(child_output, "\n")
+            for index in 1..<lines.count |lines|:
+                line: sview = lines[index]
+                continue if line == ""
+                fields: darray[sview] = split(line, "\t")
+                return false if fields.count != 7
+                notes: sview = "manifest=" + root.review_status + "; scanner_owner=" + fields[2] + "; " + fields[6]
+                output: sview = root.name + "\t" + display_root + "\t" + fields[0] + "\t" + fields[1] + "\t" + root.owner + "\t" + fields[3] + "\t" + fields[4] + "\t" + fields[5] + "\t" + notes + "\n"
+                _ = write_stdout(output)
+            return true
+
+
+        def emit_signal_rows(root: RootRow, display_root: sview, child_output: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            lines: darray[sview] = split(child_output, "\n")
+            for index in 1..<lines.count |lines|:
+                line: sview = lines[index]
+                continue if line == ""
+                fields: darray[sview] = split(line, "\t")
+                return false if fields.count != 3
+                notes: sview = "manifest=" + root.review_status + "; " + fields[2]
+                output: sview = root.name + "\t" + display_root + "\t" + fields[0] + "\tsignal\t" + root.owner + "\tnone\treview\t" + fields[1] + "\t" + notes + "\n"
+                _ = write_stdout(output)
+            return true
+
+
+    public:
+        def run(coding_projects_root: sview, manifest_path: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Process.Run, Unsafe.PointerCast]:
+            if not path_is_tsv_safe(coding_projects_root):
+                write_stderr("inventory_project_roots: coding-projects root contains a TSV delimiter or line break\n")
+                return 2i64
+            root_path: Path = path(coding_projects_root)
+            if not is_directory(root_path):
+                write_stderr("inventory_project_roots: coding-projects root does not exist: " + coding_projects_root + "\n")
+                return 2i64
+            if not is_file(manifest_path):
+                write_stderr("inventory_project_roots: root manifest does not exist: " + f"{manifest_path}" + "\n")
+                return 2i64
+            if not is_readable(manifest_path):
+                write_stderr("inventory_project_roots: unable to read manifest: " + f"{manifest_path}" + "\n")
+                return 1i64
+            manifest_size: usize = try file_size(manifest_path) else err:
+                write_stderr("inventory_project_roots: unable to read manifest: " + f"{manifest_path}" + "\n")
+                return 1i64
+            if manifest_size > Limits::MANIFEST_BYTES:
+                write_stderr("inventory_project_roots: manifest exceeds audit limit\n")
+                return 3i64
+            manifest: mutable sview = ""
+            catch EsBoundedText::read_utf8(manifest_path, Limits::MANIFEST_BYTES):
+                ok contents:
+                    manifest <- contents
+                error _:
+                    write_stderr("inventory_project_roots: unable to read manifest: " + f"{manifest_path}" + "\n")
+                    return 1i64
+            rows: mutable darray[RootRow] = []
+            catch parse_manifest(manifest):
+                ok parsed:
+                    rows <- parsed
+                error _:
+                    write_stderr("inventory_project_roots: malformed, duplicated, unsafe, or unowned reviewed manifest row\n")
+                    return 3i64
+            canonical_root: Path = try path_real(root_path) else err:
+                write_stderr("inventory_project_roots: unable to canonicalize coding-projects root\n")
+                return 2i64
+            canonical_root_text: sview = f"{canonical_root}"
+            script_path: Path = try path_absolute(Script::source_path()) else err:
+                write_stderr("inventory_project_roots: unable to resolve script path\n")
+                return 2i64
+            script_directory: Path = script_path.parent()
+            candidate_script: Path = script_directory.joinpath("inventory_candidates.elisascript")
+            signal_script: Path = script_directory.joinpath("inventory_signals.elisascript")
+
+            print(Text::OUTPUT_HEADER)
+            for row in rows:
+                continue if not row.shell_readable or row.shell_skips_row
+                if row.relative_path.index("..") >= 0:
+                    write_stderr("inventory_project_roots: unsafe relative path on row " + f"{row.line_number}" + "\n")
+                    return 3i64
+                display_root: sview = coding_projects_root + "/" + row.relative_path
+                declared_root: Path = path_join(root_path, row.relative_path)
+                if not is_directory(declared_root):
+                    write_stderr("inventory_project_roots: declared root is missing: " + display_root + "\n")
+                    return 3i64
+                canonical_declared: Path = try path_real(declared_root) else err:
+                    write_stderr("inventory_project_roots: unable to canonicalize declared root: " + display_root + "\n")
+                    return 3i64
+                canonical_declared_text: sview = f"{canonical_declared}"
+                if not canonical_path_is_within(canonical_root_text, canonical_declared_text):
+                    write_stderr("inventory_project_roots: declared root escapes coding-projects tree through a symlink: " + display_root + "\n")
+                    return 3i64
+                candidate_result: ProcessCapture = try capture_process_result(exe"elisascript", [f"{candidate_script}", canonical_declared_text], "", Limits::CHILD_TIMEOUT_MICROS, Limits::CHILD_OUTPUT_BYTES) else err:
+                    write_stderr("inventory_project_roots: candidate scan failed for " + row.name + "\n")
+                    return 3i64
+                _ = write_stderr(candidate_result.stderr)
+                if candidate_result.status != 0:
+                    write_stderr("inventory_project_roots: candidate scan failed for " + row.name + "\n")
+                    return 3i64
+                if not emit_candidate_rows(row, display_root, candidate_result.stdout):
+                    write_stderr("inventory_project_roots: candidate scanner output is malformed\n")
+                    return 3i64
+                signal_result: ProcessCapture = try capture_process_result(exe"elisascript", [f"{signal_script}", canonical_declared_text], "", Limits::CHILD_TIMEOUT_MICROS, Limits::CHILD_OUTPUT_BYTES) else err:
+                    write_stderr("inventory_project_roots: signal scan failed for " + row.name + "\n")
+                    return 3i64
+                _ = write_stderr(signal_result.stderr)
+                if signal_result.status != 0:
+                    write_stderr("inventory_project_roots: signal scan failed for " + row.name + "\n")
+                    return 3i64
+                if not emit_signal_rows(row, display_root, signal_result.stdout):
+                    write_stderr("inventory_project_roots: signal scanner output is malformed\n")
+                    return 3i64
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Process.Run, Unsafe.PointerCast]:
+            script_path: Path = try path_absolute(Script::source_path()) else err:
+                write_stderr("inventory_project_roots: unable to resolve script path\n")
+                return 2i64
+            repository_root: Path = script_path.parent().parent()
+            coding_root: Path = repository_root.parent().parent()
+            root_manifest: Path = repository_root.joinpath("docs").joinpath("migration-project-roots.tsv")
+            return run(f"{coding_root}", root_manifest)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Process.Run, Unsafe.PointerCast]:
+    if arguments.count > 2:
+        write_stderr("usage: inventory_project_roots [CODING_PROJECTS_ROOT] [ROOTS_TSV]\n")
+        return 2i64
+    defaults: Path = try path_absolute(Script::source_path()) else err:
+        write_stderr("inventory_project_roots: unable to resolve script path\n")
+        return 2i64
+    repository_root: Path = defaults.parent().parent()
+    coding_root: Path = repository_root.parent().parent()
+    root_manifest: mutable Path = repository_root.joinpath("docs").joinpath("migration-project-roots.tsv")
+    coding_root_text: mutable sview = f"{coding_root}"
+    if arguments.count >= 1 and arguments[0] != "":
+        coding_root_text <- arguments[0]
+    if arguments.count == 2 and arguments[1] != "":
+        root_manifest <- path(arguments[1])
+    return EsInventoryProjectRoots::run(coding_root_text, root_manifest)
