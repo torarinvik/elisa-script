@@ -10,6 +10,7 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 coding_projects_root="${1:-$(CDPATH= cd -- "$script_dir/../../.." && pwd)}"
 roots_file="${2:-$repo_root/docs/migration-project-roots.tsv}"
 candidate_file="$script_dir/check_migration_roots.elisascript"
+bounded_text_file="$script_dir/../src/runtime/bounded_text_posix.elisa"
 
 if [[ ! -d "$coding_projects_root" ]]; then
     printf 'migration roots audit: coding-projects root does not exist: %s\n' "$coding_projects_root" >&2
@@ -46,6 +47,19 @@ for bounded_read_invariant in \
     'ROWS: usize = 4096' \
     'FIELD_BYTES: usize = 65536' \
     'PATH_BYTES: usize = 4096' \
+    'include "../src/runtime/bounded_text_posix.elisa"' \
+    'EsBoundedText::read_utf8'; do
+    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
+        printf 'migration roots audit: candidate source read omits bounded-read invariant: %s\n' "$bounded_read_invariant" >&2
+        exit 1
+    fi
+done
+if [[ ! -f "$bounded_text_file" ]]; then
+    printf 'migration roots audit: bounded text runtime module is missing\n' >&2
+    exit 1
+fi
+for bounded_read_invariant in \
+    'MAX_BYTES: usize = 16777216' \
     'READ_CHUNK_BYTES: usize = 16384' \
     'maximum_bytes - bytes.count' \
     'probe_capacity: usize = remaining + 1' \
@@ -53,11 +67,15 @@ for bounded_read_invariant in \
     'elisascript_posix_fstat' \
     'roots_manifest_stable_file' \
     'EsEncoding::utf8_feed'; do
-    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
-        printf 'migration roots audit: candidate source read omits bounded-read invariant: %s\n' "$bounded_read_invariant" >&2
+    if ! grep -F "$bounded_read_invariant" "$bounded_text_file" >/dev/null 2>&1; then
+        printf 'migration roots audit: shared bounded reader omits invariant: %s\n' "$bounded_read_invariant" >&2
         exit 1
     fi
 done
+if grep -F 'read_text(' "$bounded_text_file" >/dev/null 2>&1; then
+    printf 'migration roots audit: shared bounded reader uses unbounded read_text\n' >&2
+    exit 1
+fi
 if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
     printf 'migration roots audit: candidate source read uses unbounded read_text\n' >&2
     exit 1
