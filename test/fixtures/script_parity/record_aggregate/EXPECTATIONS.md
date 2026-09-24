@@ -10,10 +10,13 @@ For explicit-root comparisons, give both implementations the same
 canonicalized repository-root path. Use a stable checkout or generated root
 with no symlink components: the shell reference uses `pwd` while the candidate
 uses `path_real`, so symlink spelling is not part of this contract. The
-generated root must contain a copy of the candidate at
-`scripts/check_record_aggregate.elisascript`, since the shell reference
-preflights that path. Keep that candidate file intact while mutating one of
-the five shared input files below.
+generated root must contain copies of both scripts at
+`scripts/check_record_aggregate.elisascript` and
+`scripts/check_record_aggregate.sh`, since the shell reference preflights those
+paths. It must also contain the bounded reader and its four direct runtime
+dependencies under `src/runtime/` so candidate-relative includes resolve.
+Keep those scripts and helper sources intact while mutating one of the six
+shared audit inputs below.
 
 Compare exit status and stdout/stderr bytes independently. For expected output,
 `{ROOT}` means the same canonical absolute path passed to both implementations;
@@ -36,9 +39,11 @@ patterns are complete or that the port is correct for other source trees.
 
 ## Isolated input failures
 
-Create a generated root containing all five valid, bounded inputs and copies
-of both scripts. For explicit-root cases, launch both script copies from that
-same generated root; this pins their source snapshots for the matrix.
+Create a generated root containing all six valid, bounded inputs, copies of
+both scripts, and copies of the five runtime include sources. For explicit-root
+cases, launch both script copies from that same generated root; this pins their
+source snapshots and compile-time includes for the matrix. Runtime include
+sources are not part of the audit's six-input byte accounting.
 In each row, make exactly the named file absent while leaving
 all other files valid. Missing-file parity is checked in the
 reference's declared order:
@@ -48,6 +53,7 @@ reference's declared order:
 | `src/runtime/record_aggregate_model.elisa` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
 | `src/ir/ir.elisa` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
 | `test/ir/elisascript_ir_test.elisa` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
+| `test/runtime/record_aggregate_model_test.elisa` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
 | `docs/ir.md` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
 | `docs/capabilities/ledger.md` | 1 | empty | `record aggregate audit: missing {INPUT}\n` |
 
@@ -64,7 +70,7 @@ input order; restore both files before continuing.
 
 Starting from a valid generated root, add harmless trailing UTF-8 `é`
 characters (plus one ASCII space if needed for odd byte alignment) to
-`docs/ir.md` so that the sum of the five shared input sizes is exactly
+`docs/ir.md` so that the sum of the six shared input sizes is exactly
 4,194,304 bytes. The candidate and reference must both accept this root with
 the same success tuple as the unmodified root. Add one more ASCII byte,
 leaving all other bytes unchanged; both must then return status 2, no stdout,
@@ -77,20 +83,20 @@ the 4,194,304-byte aggregate ceiling is stricter: no input can reach the
 per-file ceiling without already violating the aggregate ceiling. The
 per-file check therefore has no distinct observable boundary under the
 current constants and is not a separate parity claim. Keep generated inputs
-valid UTF-8 and stable for the full run; concurrent mutation and read/size
-TOCTOU behavior are explicitly outside this matrix.
+valid UTF-8. Concurrent mutation is not an exact parity case; the candidate is
+expected to fail closed if the bounded reader observes it.
 
 ## Semantic rejection cases
 
 Starting with the valid input set, remove or alter all matches of exactly one
-required source needle at a time in one of the five shared inputs, preserving
+required source needle at a time in one of the six shared inputs, preserving
 the other required needles. For every mutation, both programs must return
 status 1 with empty stdout and stderr. Include one isolated failure for every
 required needle in these categories:
 
 - model module declaration, include edge, and each required model declaration;
 - every aggregate bound/state/accounting/order/event boundary;
-- every IR-fixture contract token;
+- every IR and runtime-fixture contract token;
 - the model-name reference in `docs/ir.md`;
 - the capability identifier in `docs/capabilities/ledger.md`.
 
@@ -106,17 +112,20 @@ former also removes occurrences of the latter. Cover the `AddValue` pattern
 with its own mutation, then cover `Add` with a coupled mutation that removes
 both; do not claim those two as independent negative cases.
 
-The shell checks all required readable paths before checking sizes and only
-reads source contents after all size checks pass. The candidate now uses a
-readability preflight, an aggregate-size pass, then a source-read pass with an
-additional byte-size check immediately before each whole-file allocation; a
-generated case combines an over-limit `docs/ir.md` with a missing final input
-and requires the missing-input result to win. Permission-plus-size precedence
-is covered conditionally: when changing `docs/ir.md` to mode `000` makes it
-unreadable to the fixture process, combine that permission failure with the
-over-limit content and require the shell's missing-input result to win. The
-fixture restores the original mode before rewriting or cleaning up the file;
-platforms where mode `000` is still readable skip only this case.
+The shell checks all required readable paths before checking sizes. The
+candidate uses the same readability preflight and aggregate-size pass, then
+reads each source through `EsBoundedText::read_utf8`, whose fixed-size
+descriptor reads enforce the byte ceiling during allocation and reject
+descriptor/path identity, metadata-stability, and UTF-8 failures. A detected
+post-preflight shrink/growth reports `source changed during audit` or the
+source-limit diagnostic and exits nonzero. A generated case combines an
+over-limit `docs/ir.md` with a missing final input and requires
+the missing-input result to win. Permission-plus-size precedence is covered
+conditionally: when changing `docs/ir.md` to mode `000` makes it unreadable to
+the fixture process, combine that permission failure with the over-limit
+content and require the shell's missing-input result to win. The fixture
+restores the original mode before rewriting or cleaning up the file; platforms
+where mode `000` is still readable skip only this case.
 
 ## Invocation differences and execution status
 
@@ -128,10 +137,14 @@ root behavior stays independent of caller cwd. The source harness at
 the explicit-root success, no-operand default-root success, usage,
 missing-root, each single missing shared input, exact/over aggregate-byte
 boundary, and source-needle mutation cases.
-It pins the public launcher's digest before and after the matrix, passes both
-implementations the same sanitized environment, caps child output and timeout,
-preflights the five shared files to the 4 MiB aggregate bound, and separately
-caps the copied candidate source at 1 MiB. It expects the bounded outer
+It pins the public launcher's digest before and after the matrix and pins the
+reference, candidate, and all five runtime include sources before and after
+the run. Generated-root copies of the scripts and runtime sources are hashed
+against those pins. It passes both implementations the same sanitized
+environment, caps child output and timeout, preflights the six shared inputs
+to the 4 MiB aggregate bound, separately caps the five copied runtime include
+sources at 1 MiB each and 4 MiB total, and caps the copied candidate source at
+1 MiB. It expects the bounded outer
 validation wrapper. That wrapper's process-tree RSS guard is sampled/reactive
 rather than a kernel-enforced memory cap. No compiler, launcher, shell audit,
 or parity case has been run for this contract, and the record-aggregate port

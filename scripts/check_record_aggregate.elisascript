@@ -3,6 +3,11 @@
 # matching the shell reference even when the caller's working directory differs.
 # The candidate never starts rg or another child process.
 
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
 module EsRecordAggregateAudit:
     private:
         const module Limits:
@@ -22,6 +27,7 @@ module EsRecordAggregateAudit:
         error AuditReadError:
             Missing
             LimitExceeded
+            Changed
 
 
         def display_path(root: sview, relative: sview) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -33,20 +39,23 @@ module EsRecordAggregateAudit:
             _ = write_stderr(message + "\n")
 
 
-        def read_source(input_path: Path, source_size: usize) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, File.Read]:
-            # Narrow the preflight/read race before the whole-file allocation.
-            # The earlier aggregate pass remains authoritative for admission;
-            # a larger current size is rejected without calling read_text.
+        def read_source(input_path: Path, source_size: usize) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, Blocking.IO, Unsafe.PointerCast]:
             current_size: usize = try file_size(input_path) else err:
                 raise AuditReadError.Missing
             raise AuditReadError.LimitExceeded if current_size > source_size or current_size > Limits::SOURCE_BYTES
-            source: sview = try read_text(input_path) else err:
-                raise AuditReadError.Missing
-
-            # read_text is not a bounded-read primitive. Check for ordinary
-            # growth races after the read; the stable checkout assumption is
-            # documented so this audit does not claim an RSS guarantee.
-            raise AuditReadError.LimitExceeded if len(source) > source_size or len(source) > Limits::SOURCE_BYTES
+            raise AuditReadError.Changed if current_size < source_size
+            source: mutable sview = ""
+            catch EsBoundedText::read_utf8(input_path, source_size):
+                ok contents:
+                    source <- contents
+                error failure:
+                    if failure == EsBoundedText::ReadError.LimitExceeded:
+                        raise AuditReadError.LimitExceeded
+                    if failure == EsBoundedText::ReadError.Changed:
+                        raise AuditReadError.Changed
+                    raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if len(source) > source_size
+            raise AuditReadError.Changed if len(source) < source_size
             return source
 
 
@@ -64,7 +73,7 @@ module EsRecordAggregateAudit:
 
 
     public:
-        def run(repository_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read]:
+        def run(repository_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
             if repository_root == "":
                 write_diagnostic("record aggregate audit: missing repository root")
                 return 1i64
@@ -124,7 +133,10 @@ module EsRecordAggregateAudit:
                         if failure == AuditReadError.Missing:
                             write_diagnostic(f"record aggregate audit: missing {input_display}")
                             return 1i64
-                        write_diagnostic(f"record aggregate audit: source exceeds audit limit: {input_display}")
+                        if failure == AuditReadError.LimitExceeded:
+                            write_diagnostic(f"record aggregate audit: source exceeds audit limit: {input_display}")
+                            return 2i64
+                        write_diagnostic(f"record aggregate audit: source changed during audit: {input_display}")
                         return 2i64
 
             model: sview = sources[0]
@@ -232,7 +244,7 @@ module EsRecordAggregateAudit:
             return 0i64
 
 
-        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read]:
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
             script_path: Path = Script::source_path()
             absolute_script_path: Path = try path_absolute(script_path) else err:
                 write_diagnostic("record aggregate audit: missing repository root")
@@ -242,7 +254,7 @@ module EsRecordAggregateAudit:
             return run(f"{repository_root}")
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Directory.Read, File.Read]:
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
     if arguments.count > 1:
         _ = write_stderr("usage: record aggregate audit [repository-root]\n")
         return 2i64

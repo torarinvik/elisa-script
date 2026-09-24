@@ -23,8 +23,9 @@ runtime_fixture="$repo_root/test/runtime/record_aggregate_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 candidate="$repo_root/scripts/check_record_aggregate.elisascript"
+bounded_reader="$repo_root/src/runtime/bounded_text_posix.elisa"
 
-for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger" "$candidate"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger" "$candidate" "$bounded_reader"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'record aggregate audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -41,12 +42,24 @@ for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "
 done
 
 rg -Fq 'module EsRecordAggregateAudit:' "$candidate"
+rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate"
+rg -Fq 'EsBoundedText::read_utf8(input_path, source_size)' "$candidate"
+rg -Fq 'ReadError.LimitExceeded' "$candidate"
+rg -Fq 'AuditReadError.Changed' "$candidate"
+rg -Fq 'source changed during audit:' "$candidate"
+for bounded_read_invariant in 'MAX_BYTES: usize = 16777216' 'probe_capacity: usize = remaining + 1' 'ReadError.Changed' 'stable_file(opened, final_opened)'; do
+    rg -Fq "$bounded_read_invariant" "$bounded_reader"
+done
+if rg -Fq 'read_text(' "$candidate"; then
+    printf 'record aggregate audit: unbounded read_text API is forbidden in candidate\n' >&2
+    exit 1
+fi
 rg -Fq 'def read_source(' "$candidate"
 rg -Fq 'current_size: usize = try file_size(input_path)' "$candidate"
 pre_read_size_line="$(rg -n -m1 -F 'current_size: usize = try file_size(input_path)' "$candidate" | cut -d: -f1)"
-read_text_line="$(rg -n -m1 -F 'source: sview = try read_text(input_path)' "$candidate" | cut -d: -f1)"
-[[ -n "$pre_read_size_line" && -n "$read_text_line" ]]
-(( pre_read_size_line < read_text_line ))
+bounded_read_line="$(rg -n -m1 -F 'catch EsBoundedText::read_utf8(input_path, source_size)' "$candidate" | cut -d: -f1)"
+[[ -n "$pre_read_size_line" && -n "$bounded_read_line" ]]
+(( pre_read_size_line < bounded_read_line ))
 rg -Fq 'def run(repository_root: sview)' "$candidate"
 rg -Fq 'def run_default()' "$candidate"
 rg -Fq 'Script::source_path()' "$candidate"
