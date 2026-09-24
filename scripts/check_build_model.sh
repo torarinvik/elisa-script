@@ -146,6 +146,9 @@ rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' 
 
 for declaration in \
     'module EsBuildExecutor:' \
+    'const enum BuildExecutionFailureKind of u8:' \
+    'BuildExecutionFailureKind.Invocation' \
+    'BuildExecutionFailureKind.NonzeroExit' \
     'struct BuildExecutionNodeResult:' \
     'struct BuildExecutionResult:' \
     'error BuildExecutionError:' \
