@@ -140,10 +140,64 @@ module EsArtifactCache:
             state: ArtifactCacheWriterLockState = ArtifactCacheWriterLockState.Available
             owner_token: u64 = 0
             path: cstr = ""
-            stream: FileStream = FileStream{handle: null, path: "", mode: FileStreamMode.AppendBinary, state: FileStreamState.Closed, byte_budget: 1}
+            descriptor: int = -1
 
 
     private:
+        const module StageWriteLimits:
+            EINTR_RETRIES: usize = 16
+
+
+        const enum StageWriteState of u8:
+            Write
+            Done
+            Failed
+
+
+        struct StageWriteCursor:
+            state: StageWriteState = StageWriteState.Write
+            offset: usize = 0
+            calls: usize = 0
+            interrupted: usize = 0
+
+
+        def artifact_cache_write_descriptor_fully(descriptor: int, bytes: mutable darray[u8]&) -> bool can[Blocking.IO]:
+            cursor: mutable StageWriteCursor = StageWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, StageWriteState.Write if cursor.offset >= bytes.count:
+                    cursor.state <- StageWriteState.Done
+                    -> Write
+                Write, StageWriteState.Write:
+                    if cursor.calls >= bytes.count + StageWriteLimits::EINTR_RETRIES:
+                        cursor.state <- StageWriteState.Failed
+                        -> Write
+                    remaining: usize = bytes.count - cursor.offset
+                    buffer: mutable u8& = bytes.items + cursor.offset
+                    amount: isize = elisascript_posix_write(descriptor, buffer.cast[void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == DarwinErrno::EINTR and cursor.interrupted < StageWriteLimits::EINTR_RETRIES:
+                            cursor.interrupted <- cursor.interrupted + 1
+                            -> Write
+                        cursor.state <- StageWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- StageWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    -> Write
+
+                Write, StageWriteState.Done:
+                    break
+                Write, StageWriteState.Failed:
+                    break
+            return cursor.state == StageWriteState.Done
+
+
         def artifact_cache_read_bounded_file(a: mutable Arena&, path: cstr, byte_limit: usize = Limits::BYTES) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
             raise FileIoError.ReadFailed(path) if not artifact_cache_path_terminated(path)
             raise FileIoError.ReadFailed(path) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES
@@ -156,40 +210,18 @@ module EsArtifactCache:
             return bytes
 
 
-        def artifact_cache_write_staging(staging_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize = Limits::BYTES) -> void error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_write_staging(staging_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize = Limits::BYTES) -> void error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
             raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit or bytes.items == null
-            stream: mutable FileStream = try file_stream_open(staging_path, FileStreamMode.WriteBinary, bytes.count)
-            cleanup: mutable FileStreamCleanupGuard = file_stream_cleanup_begin()
-            offset: mutable usize = 0
-            while offset < bytes.count:
-                remaining: usize = bytes.count - offset
-                buffer: mutable u8& = bytes.items + offset
-                catch file_stream_write_chunk(stream, buffer, remaining):
-                    ok progress:
-                        if progress.count == 0 or progress.count > remaining:
-                            _ = file_stream_cleanup_abort(cleanup, stream)
-                            _ = remove_file(staging_path)
-                            raise ArtifactCacheIoError.StagingWriteFailed(staging_path)
-                        offset <- offset + progress.count
-                    error failure:
-                        _ = file_stream_cleanup_abort(cleanup, stream)
-                        _ = remove_file(staging_path)
-                        raise failure
-            catch file_stream_sync(stream):
-                ok:
-                    pass
-                error failure:
-                    _ = file_stream_cleanup_abort(cleanup, stream)
-                    _ = remove_file(staging_path)
-                    raise failure
-            catch file_stream_cleanup_commit(cleanup, stream):
-                ok:
-                    pass
-                error failure:
-                    _ = remove_file(staging_path)
-                    raise failure
-            raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if offset != bytes.count
+            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_open(staging_path, flags, 384u32)
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_path) if descriptor < 0
+            write_complete: bool = artifact_cache_write_descriptor_fully(descriptor, bytes)
+            sync_status: int = elisascript_posix_fsync(descriptor) if write_complete else -1
+            close_status: int = elisascript_posix_close(descriptor)
+            if not write_complete or sync_status != 0 or close_status != 0:
+                _ = remove_file(staging_path)
+                raise ArtifactCacheIoError.StagingWriteFailed(staging_path)
 
 
         def artifact_cache_sync_directory(directory_path: cstr) -> bool error[ArtifactCacheIoError] can[Blocking.IO, Memory.Release]:
@@ -204,7 +236,7 @@ module EsArtifactCache:
             return true
 
 
-        def artifact_cache_publish_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, decision: ArtifactCacheDecision, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_publish_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, decision: ArtifactCacheDecision, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
             raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
             raise ArtifactCacheIoError.PathTooLong(directory_path) if directory_path != "" and not artifact_cache_path_terminated(directory_path)
@@ -215,7 +247,6 @@ module EsArtifactCache:
                 ok:
                     pass
                 error failure:
-                    _ = remove_file(staging_path)
                     raise failure
             if elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&]) != 0:
                 _ = remove_file(staging_path)
@@ -233,7 +264,7 @@ module EsArtifactCache:
         # the existing staging, file sync, rename, directory sync, and
         # lock protocol used by artifact metadata. The caller validates the
         # payload format before entering this host boundary.
-        def artifact_cache_publish_payload_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_publish_payload_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
             raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
             raise ArtifactCacheIoError.PathTooLong(directory_path) if directory_path != "" and not artifact_cache_path_terminated(directory_path)
@@ -243,7 +274,6 @@ module EsArtifactCache:
                 ok:
                     pass
                 error failure:
-                    _ = remove_file(staging_path)
                     raise failure
             if elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&]) != 0:
                 _ = remove_file(staging_path)
@@ -257,7 +287,7 @@ module EsArtifactCache:
             return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count}
 
 
-        def artifact_cache_publish_payload_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_publish_payload_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, byte_limit: usize, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(lock_path) if not artifact_cache_path_terminated(lock_path)
             raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
             raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
@@ -313,11 +343,11 @@ module EsArtifactCache:
             return ArtifactCacheLoad{bytes: bytes, decision: classify_bytecode_artifact_cache(bytes)}
 
 
-        def publish_module_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def publish_module_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             return try artifact_cache_publish_file(staging_path, destination_path, bytes, classify_module_artifact_cache(bytes), directory_path)
 
 
-        def publish_bytecode_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def publish_bytecode_artifact_file(staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             return try artifact_cache_publish_file(staging_path, destination_path, bytes, classify_bytecode_artifact_cache(bytes), directory_path)
 
 
@@ -361,32 +391,29 @@ module EsArtifactCache:
             return state
 
 
-        def artifact_cache_writer_lock_acquire(lock: mutable ArtifactCacheWriterLock&, path: cstr, owner_token: u64) -> bool error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_writer_lock_acquire(lock: mutable ArtifactCacheWriterLock&, path: cstr, owner_token: u64) -> bool error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(path) if not artifact_cache_path_terminated(path)
             raise ArtifactCacheIoError.LockFailed(path) if owner_token == 0 or (lock.state != ArtifactCacheWriterLockState.Available and lock.state != ArtifactCacheWriterLockState.Released)
-            lock.stream <- try file_stream_open(path, FileStreamMode.AppendBinary, 1)
-            handle: mutable heap void& = lock.stream.handle
-            descriptor: int = elisascript_posix_fileno(handle)
+            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_open(path, flags, 384u32)
             if descriptor < 0 or elisascript_posix_flock(descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK) != 0:
-                _ = file_stream_close(lock.stream)
+                _ = elisascript_posix_close(descriptor) if descriptor >= 0
                 raise ArtifactCacheIoError.LockFailed(path)
             lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Acquire)
             lock.owner_token <- owner_token
             lock.path <- path
+            lock.descriptor <- descriptor
             return true
 
 
-        def artifact_cache_writer_lock_release(lock: mutable ArtifactCacheWriterLock&, owner_token: u64) -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:
+        def artifact_cache_writer_lock_release(lock: mutable ArtifactCacheWriterLock&, owner_token: u64) -> bool error[ArtifactCacheIoError] can[Blocking.IO]:
             return false if owner_token == 0 or lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token
-            catch file_stream_close(lock.stream):
-                ok:
-                    lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
-                    lock.owner_token <- 0
-                    return true
-                error failure:
-                    lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
-                    lock.owner_token <- 0
-                    raise failure
+            descriptor: int = lock.descriptor
+            lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
+            lock.owner_token <- 0
+            lock.descriptor <- -1
+            raise ArtifactCacheIoError.LockFailed(lock.path) if descriptor < 0 or elisascript_posix_close(descriptor) != 0
+            return true
 
 
     private:
@@ -394,7 +421,7 @@ module EsArtifactCache:
         # optional parent-directory sync sequence.  A publication failure still
         # reports its original cause after best-effort lock cleanup; a successful
         # publication treats a failed or stale release as a lock error.
-        def artifact_cache_publish_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, decision: ArtifactCacheDecision, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def artifact_cache_publish_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, decision: ArtifactCacheDecision, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             raise ArtifactCacheIoError.PathTooLong(lock_path) if not artifact_cache_path_terminated(lock_path)
             raise ArtifactCacheIoError.PathTooLong(staging_path) if not artifact_cache_path_terminated(staging_path)
             raise ArtifactCacheIoError.PathTooLong(destination_path) if not artifact_cache_path_terminated(destination_path)
@@ -420,11 +447,11 @@ module EsArtifactCache:
 
 
     public:
-        def publish_module_artifact_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def publish_module_artifact_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             return try artifact_cache_publish_locked(lock, lock_path, owner_token, staging_path, destination_path, bytes, classify_module_artifact_cache(bytes), directory_path)
 
 
-        def publish_bytecode_artifact_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+        def publish_bytecode_artifact_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePublication error[ArtifactCacheIoError] can[Blocking.IO]:
             return try artifact_cache_publish_locked(lock, lock_path, owner_token, staging_path, destination_path, bytes, classify_bytecode_artifact_cache(bytes), directory_path)
 
 
@@ -437,7 +464,7 @@ module EsArtifactCache:
             return bytes
 
 
-        def publish_build_incremental_cache_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, FileStreamError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def publish_build_incremental_cache_file_locked(lock: mutable ArtifactCacheWriterLock&, lock_path: cstr, owner_token: u64, staging_path: cstr, destination_path: cstr, bytes: mutable darray[u8]&, directory_path: cstr = "") -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             _ = try decode_build_incremental_cache(bytes)
             return try artifact_cache_publish_payload_locked(lock, lock_path, owner_token, staging_path, destination_path, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES, directory_path)
 
