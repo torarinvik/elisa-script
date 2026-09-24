@@ -11,13 +11,15 @@ configure_file(
     COPYONLY
 )
 
-add_executable(minimal-native
-    src/main.c
-    src/answer.c
-)
+add_library(minimal-answer STATIC src/answer.c)
+target_include_directories(minimal-answer PRIVATE include)
+
+add_executable(minimal-native src/main.c)
 target_include_directories(minimal-native PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(minimal-native PRIVATE minimal-answer)
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(minimal-answer PRIVATE -pedantic -Wall -Wextra -Werror)
     target_compile_options(minimal-native PRIVATE -pedantic -Wall -Wextra -Werror)
 endif()
 

@@ -1,4 +1,4 @@
-# E01/E06 candidate: build a native executable with a declared generated header.
+# E01/E02/E06 candidate: build a static library and executable with a generated header.
 # The caller supplies an absolute build directory outside this fixture; its
 # parent must exist. The recipe never deletes source-tree paths.
 
@@ -13,6 +13,8 @@ module EsMinimalNativeBuild:
     private:
         const module Toolchain:
             C_COMPILER: sview = "/usr/bin/cc"
+            ARCHIVER: sview = "/usr/bin/ar"
+            LIBRARY_FILENAME: sview = "libminimal-answer.a"
             TARGET_NAME: sview = "minimal-native"
             TIMEOUT_MICROS: u64 = 60000000u64
             OUTPUT_LIMIT_BYTES: usize = 1048576
@@ -107,6 +109,9 @@ module EsMinimalNativeBuild:
             answer_source: Path = project_directory.joinpath("src").joinpath("answer.c")
             generated_header_input: Path = project_directory.joinpath("include").joinpath("generated_build_config.h.in")
             generated_header_output: Path = build_directory.joinpath("generated_build_config.h")
+            answer_object: Path = build_directory.joinpath("answer.o")
+            main_object: Path = build_directory.joinpath("main.o")
+            static_library: Path = build_directory.joinpath(Toolchain::LIBRARY_FILENAME)
             include_directory: Path = project_directory.joinpath("include")
             output_path: Path = build_directory.joinpath(Toolchain::TARGET_NAME)
             if is_symlink(output_path):
@@ -116,6 +121,9 @@ module EsMinimalNativeBuild:
             answer_source_text: sview = f"{answer_source}"
             generated_header_input_text: sview = f"{generated_header_input}"
             generated_header_output_text: sview = f"{generated_header_output}"
+            answer_object_text: sview = f"{answer_object}"
+            main_object_text: sview = f"{main_object}"
+            static_library_text: sview = f"{static_library}"
             include_directory_text: sview = f"{include_directory}"
             output_path_text: sview = f"{output_path}"
 
@@ -129,9 +137,39 @@ module EsMinimalNativeBuild:
                 timeout_micros: Toolchain::TIMEOUT_MICROS,
                 capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
             }
-            compile_command: ProcessCommand = ProcessCommand{
+            compile_answer_command: ProcessCommand = ProcessCommand{
                 executable: Toolchain::C_COMPILER,
-                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-I", include_directory_text, "-I", build_directory_text, main_source_text, answer_source_text, "-o", output_path_text],
+                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-I", include_directory_text, "-c", answer_source_text, "-o", answer_object_text],
+                working_directory: project_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            archive_command: ProcessCommand = ProcessCommand{
+                executable: Toolchain::ARCHIVER,
+                arguments: ["rcs", static_library_text, answer_object_text],
+                working_directory: project_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            compile_main_command: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-I", include_directory_text, "-I", build_directory_text, "-c", main_source_text, "-o", main_object_text],
+                working_directory: project_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            link_command: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: [main_object_text, static_library_text, "-o", output_path_text],
                 working_directory: project_directory_text,
                 stdin_mode: ProcessStdioMode.Null,
                 stdout_mode: ProcessStdioMode.Capture,
@@ -151,13 +189,19 @@ module EsMinimalNativeBuild:
             graph: mutable BuildGraph = BuildGraph{
                 nodes: [
                     BuildNode{name: "generate-config-header", command: generate_header_command, dependencies: [], fingerprint: 1u64},
-                    BuildNode{name: Toolchain::TARGET_NAME, command: compile_command, dependencies: [0], fingerprint: 2u64},
-                    BuildNode{name: "run-minimal-native", command: run_command, dependencies: [1], fingerprint: 3u64}
+                    BuildNode{name: "compile-answer", command: compile_answer_command, dependencies: [], fingerprint: 2u64},
+                    BuildNode{name: "archive-answer", command: archive_command, dependencies: [1], fingerprint: 3u64},
+                    BuildNode{name: "compile-main", command: compile_main_command, dependencies: [0], fingerprint: 4u64},
+                    BuildNode{name: Toolchain::TARGET_NAME, command: link_command, dependencies: [2, 3], fingerprint: 5u64},
+                    BuildNode{name: "run-minimal-native", command: run_command, dependencies: [4], fingerprint: 6u64}
                 ],
                 max_parallel: 1
             }
             expected_outputs: darray[BuildExecutionNodeOutputs] = [
                 BuildExecutionNodeOutputs{target_name: "generate-config-header", paths: [generated_header_output_text]},
+                BuildExecutionNodeOutputs{target_name: "compile-answer", paths: [answer_object_text]},
+                BuildExecutionNodeOutputs{target_name: "archive-answer", paths: [static_library_text]},
+                BuildExecutionNodeOutputs{target_name: "compile-main", paths: [main_object_text]},
                 BuildExecutionNodeOutputs{target_name: Toolchain::TARGET_NAME, paths: [output_path_text]},
                 BuildExecutionNodeOutputs{target_name: "run-minimal-native", paths: []}
             ]
@@ -168,13 +212,16 @@ module EsMinimalNativeBuild:
                 error failure:
                     _ = write_stderr("minimal native build: build graph execution failed before completion\n")
                     return 1i64
-            if execution.graph_state != BuildGraphState.Succeeded or execution.nodes.count != 3:
+            if execution.graph_state != BuildGraphState.Succeeded or execution.nodes.count != 6:
                 report_failed_build_nodes(execution)
                 return 1i64
             return 1i64 if not execution.nodes[0].started or execution.nodes[0].exit_status != 0 or execution.nodes[0].failure != BuildExecutionFailureKind.None
             return 1i64 if not execution.nodes[1].started or execution.nodes[1].exit_status != 0 or execution.nodes[1].failure != BuildExecutionFailureKind.None
             return 1i64 if not execution.nodes[2].started or execution.nodes[2].exit_status != 0 or execution.nodes[2].failure != BuildExecutionFailureKind.None
-            if execution.nodes[2].stdout != "answer=42\n":
+            return 1i64 if not execution.nodes[3].started or execution.nodes[3].exit_status != 0 or execution.nodes[3].failure != BuildExecutionFailureKind.None
+            return 1i64 if not execution.nodes[4].started or execution.nodes[4].exit_status != 0 or execution.nodes[4].failure != BuildExecutionFailureKind.None
+            return 1i64 if not execution.nodes[5].started or execution.nodes[5].exit_status != 0 or execution.nodes[5].failure != BuildExecutionFailureKind.None
+            if execution.nodes[5].stdout != "answer=42\n":
                 print("minimal native build: executable output differed from answer=42")
                 return 1i64
             return 0i64

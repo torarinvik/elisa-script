@@ -1,6 +1,6 @@
 # Minimal native build parity contract
 
-This fixture is the E01/E06 starting point in `SCRIPT_TASKS.md`. It compares the
+This fixture is the E01/E02/E06 starting point in `SCRIPT_TASKS.md`. It compares the
 behavior of a small native executable produced by the CMake reference with the
 same program produced by `build.elisascript`. Build-tool diagnostics are not
 compared: CMake and ElisaScript are different build frontends. The executable's
@@ -12,6 +12,8 @@ stderr so compiler failures are actionable.
 ## Inputs and build contract
 
 - Sources: `src/main.c` and `src/answer.c`; include root: `include/`.
+- `src/answer.c` is built as the static library `minimal-answer`, which is a
+  private link dependency of the `minimal-native` executable.
 - `include/generated_build_config.h.in` produces
   `generated_build_config.h` in the build directory. CMake uses
   `configure_file(... COPYONLY)` at configure time; the Elisascript graph has
@@ -20,6 +22,7 @@ stderr so compiler failures are actionable.
 - Language mode: required ISO C11 with compiler extensions disabled.
 - GNU and Clang-family builds enable `-pedantic -Wall -Wextra -Werror`.
 - Target name: `minimal-native`.
+- Static archive name: `libminimal-answer.a`.
 - Build outputs must be placed in separate caller-provided directories outside
   the source repository. The fixture must not remove caller-owned paths.
 - The ElisaScript recipe submits compiler arguments as an argument vector and
@@ -41,10 +44,11 @@ The CMake route registers `minimal-native-output` with CTest and checks the
 `answer=42` output. The ElisaScript route declares the generated header and
 executable as outputs of their respective nodes, then has a dependent run node
 that checks the same exit status and captured stdout. The parity harness also
-requires both generated headers to match the template byte-for-byte, compares
-both executable process results (status, stdout, stderr), and verifies that
-both declared executable files exist and can be run. Header reads are bounded
-to the fixture's 4 KiB ceiling and reject symlink paths.
+requires both build routes to produce the static archive, requires both
+generated headers to match the template byte-for-byte, compares both
+executable process results (status, stdout, stderr), and verifies that both
+executables exist and can be run. Header reads are bounded to the fixture's
+4 KiB ceiling and reject symlink paths.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`
@@ -76,4 +80,4 @@ symlink are unchanged before workspace cleanup.
 The fixture source encodes both expected outcomes, but no CMake configure/build,
 CTest, ElisaScript compile/run, or cross-route process comparison has been
 executed. This contract and the unexecuted comparison test are not yet parity
-evidence or an E01 acceptance result.
+evidence or E01/E02/E06 acceptance results.
