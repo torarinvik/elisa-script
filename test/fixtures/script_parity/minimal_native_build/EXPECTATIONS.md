@@ -35,8 +35,21 @@ the same exit status and captured stdout. A parity harness should compare the
 two process results (status, stdout, stderr) and separately verify that both
 declared executable files exist and can be run.
 
+`test/script_parity/minimal_native_build_launcher_test.elisascript` implements
+the process-result comparison for prebuilt artifacts. Supply the absolute paths
+through `ELISASCRIPT_MINIMAL_NATIVE_CMAKE_BINARY` and
+`ELISASCRIPT_MINIMAL_NATIVE_ELISA_BINARY`; it rejects symlink paths, oversized
+files, paths inside the repository, and outputs sharing one directory. The
+fixture runs only those two executables, with an empty environment except for
+controlled locale and `PATH`, empty stdin, a fixed timeout, and a bounded
+combined output budget. The test is gated on explicit reauthorization and the
+RSS-supervised wrapper marker. It does not build either artifact and therefore
+does not attest build provenance; the caller must build them with the two
+recipes above before comparing their behavior.
+
 ## Evidence status
 
 The fixture source encodes both expected outcomes, but no CMake configure/build,
 CTest, ElisaScript compile/run, or cross-route process comparison has been
-executed. This contract is not yet parity evidence or an E01 acceptance result.
+executed. This contract and the unexecuted comparison test are not yet parity
+evidence or an E01 acceptance result.
