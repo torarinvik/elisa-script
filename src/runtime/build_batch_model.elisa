@@ -28,12 +28,14 @@ module EsBuildBatch:
             published: bool = false
             reserved_output_bytes: usize = 0
             process: ProcessResult = ProcessResult{kind: ProcessResultKind.SpawnFailure}
+            missing_output: sview = ""
 
 
         struct BuildBatchSession:
             scheduler: BuildScheduler
             processes: ProcessBatchSession
             results: darray[BuildBatchNodeResult] = []
+            output_sets: darray[BuildExecutionNodeOutputs] = []
             reserved_output_bytes: usize = 0
 
 
@@ -45,6 +47,9 @@ module EsBuildBatch:
             ResultInvalid
             ResultAlreadyPublished
             OutputLimitExceeded
+            OutputListMismatch
+            OutputPathInvalid
+            OutputMissing
             StopAcknowledgementMismatch
 
 
@@ -110,9 +115,18 @@ module EsBuildBatch:
 
     public:
         def build_batch_session_for_graph(graph: BuildGraph) -> BuildBatchSession error[BuildContractError, BuildExecutionError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            return try build_batch_session_for_graph_with_outputs(graph, [])
+
+
+        def build_batch_session_for_graph_with_outputs(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> BuildBatchSession error[BuildContractError, BuildExecutionError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
             valid: bool = try validate_build_graph(graph)
             raise BuildBatchError.InvalidSession if not valid or graph.state != BuildGraphState.Planned
             raise BuildBatchError.JobLimitExceeded if graph.nodes.count > Limits::NODES
+            raise BuildBatchError.OutputListMismatch if output_sets.count != 0 and output_sets.count != graph.nodes.count
+            if output_sets.count != 0:
+                for index in 0..<output_sets.count |graph, output_sets|:
+                    raise BuildBatchError.OutputListMismatch if output_sets[index].target_name != graph.nodes[index].name
+                raise BuildBatchError.OutputPathInvalid if not build_executor_output_sets_valid(graph, output_sets)
             jobs: mutable darray[ProcessBatchJob] = []
             results: mutable darray[BuildBatchNodeResult] = []
             for index in 0..<graph.nodes.count |graph, jobs, results|:
@@ -129,7 +143,8 @@ module EsBuildBatch:
             session: BuildBatchSession = BuildBatchSession{
                 scheduler: scheduler,
                 processes: process_session,
-                results: results
+                results: results,
+                output_sets: output_sets
             }
             _ = try validate_build_batch_session(session)
             return session
@@ -141,6 +156,11 @@ module EsBuildBatch:
             graph: BuildGraph = session.scheduler.graph
             raise BuildBatchError.InvalidSession if graph.nodes.count == 0 or graph.nodes.count > Limits::NODES
             raise BuildBatchError.InvalidSession if session.results.count != graph.nodes.count or session.processes.jobs.count != graph.nodes.count
+            raise BuildBatchError.OutputListMismatch if session.output_sets.count != 0 and session.output_sets.count != graph.nodes.count
+            if session.output_sets.count != 0:
+                for index in 0..<session.output_sets.count |graph, session|:
+                    raise BuildBatchError.OutputListMismatch if session.output_sets[index].target_name != graph.nodes[index].name
+                raise BuildBatchError.OutputPathInvalid if not build_executor_output_sets_valid(graph, session.output_sets)
             raise BuildBatchError.InvalidSession if session.processes.policy.max_jobs != graph.nodes.count
             raise BuildBatchError.InvalidSession if session.scheduler.cache.count != 0
             raise BuildBatchError.ParallelLimitExceeded if session.processes.policy.max_parallel != build_batch_parallel_limit(graph.max_parallel)
@@ -177,8 +197,16 @@ module EsBuildBatch:
                     raise BuildBatchError.InvalidSession if log_bytes > EsBuild::Limits::LOG_BYTES - total_logs
                     total_logs <- total_logs + log_bytes
                     raise BuildBatchError.ResultInvalid if node.state == BuildNodeState.Succeeded and not build_batch_process_succeeded(result.process)
-                    raise BuildBatchError.ResultInvalid if node.state == BuildNodeState.Failed and build_batch_process_succeeded(result.process)
+                    raise BuildBatchError.ResultInvalid if node.state == BuildNodeState.Failed and build_batch_process_succeeded(result.process) and result.missing_output == ""
+                    if result.missing_output != "":
+                        raise BuildBatchError.ResultInvalid if node.state != BuildNodeState.Failed or not build_batch_process_succeeded(result.process)
+                        raise BuildBatchError.ResultInvalid if session.output_sets.count != graph.nodes.count
+                        declared_missing: mutable bool = false
+                        for output_path in session.output_sets[index].paths:
+                            declared_missing <- true if output_path == result.missing_output
+                        raise BuildBatchError.ResultInvalid if not declared_missing
                 else:
+                    raise BuildBatchError.ResultInvalid if result.missing_output != ""
                     raise BuildBatchError.InvalidSession if node.log_bytes != 0
                     raise BuildBatchError.ResultInvalid if result.process.kind != ProcessResultKind.SpawnFailure or result.process.exit_status != 0 or result.process.signal != 0 or result.process.stdout != "" or result.process.stderr != "" or result.process.error_text != ""
             raise BuildBatchError.InvalidSession if reserved != session.reserved_output_bytes or total_logs != graph.log_bytes
@@ -257,11 +285,14 @@ module EsBuildBatch:
             return launches
 
 
-        # A receipt is accepted only after the host has completed/reaped the
-        # process. Every nonzero, signaled, spawn, timeout, output-limit, or
-        # host-I/O result enters fail-fast drain; successful siblings may still
-        # complete while that drain is in progress.
-        def report_build_batch_result(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+    private:
+        def build_batch_first_missing_output(outputs: BuildExecutionNodeOutputs) -> sview can[Memory.Allocate, Abort.Panic, File.Read]:
+            for output_path in outputs.paths |outputs|:
+                return output_path if not is_file(path(output_path))
+            return ""
+
+
+        def report_build_batch_result_impl(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult, missing_output: sview) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
             _ = try validate_build_batch_session(session)
             _ = try validate_process_batch_dispatch(session.processes, dispatch)
             node_index: usize = dispatch.job_index
@@ -270,6 +301,13 @@ module EsBuildBatch:
             raise BuildBatchError.ResultAlreadyPublished if prior.published
             raise BuildBatchError.ResultInvalid if not build_batch_result_kind_valid(process_result.kind)
             raise BuildBatchError.ResultInvalid if not build_batch_process_result_valid(process_result)
+            raise BuildBatchError.OutputMissing if missing_output != "" and not build_batch_process_succeeded(process_result)
+            if missing_output != "":
+                raise BuildBatchError.OutputMissing if session.output_sets.count != session.scheduler.graph.nodes.count
+                declared_path: mutable bool = false
+                for output_path in session.output_sets[node_index].paths:
+                    declared_path <- true if output_path == missing_output
+                raise BuildBatchError.OutputMissing if not declared_path
             log_bytes: usize = try build_batch_result_byte_count(process_result, prior.reserved_output_bytes)
             raise BuildBatchError.OutputLimitExceeded if log_bytes > node.command.capture_output_limit_bytes
 
@@ -279,8 +317,9 @@ module EsBuildBatch:
             session.results[node_index].reserved_output_bytes <- 0
             session.results[node_index].published <- true
             session.results[node_index].process <- process_result
+            session.results[node_index].missing_output <- missing_output
 
-            succeeded: bool = build_batch_process_succeeded(process_result)
+            succeeded: bool = build_batch_process_succeeded(process_result) and missing_output == ""
             if succeeded:
                 _ = try advance_process_batch(session.processes, ProcessBatchEvent.Complete, node_index, dispatch.attempt_token)
                 _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.NodeComplete, node_index)
@@ -292,6 +331,29 @@ module EsBuildBatch:
                 _ = try advance_process_batch(session.processes, ProcessBatchEvent.ReapAck, node_index, dispatch.attempt_token)
             _ = try validate_build_batch_session(session)
             return session.scheduler.state
+
+
+    public:
+        # A receipt is accepted only after the host has completed/reaped the
+        # process. Every nonzero, signaled, spawn, timeout, output-limit, or
+        # host-I/O result enters fail-fast drain; successful siblings may still
+        # complete while that drain is in progress. Sessions with declared
+        # outputs must use the checking variant below.
+        def report_build_batch_result(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError]:
+            raise BuildBatchError.InvalidSession if session.output_sets.count != 0
+            return try report_build_batch_result_impl(session, dispatch, process_result, "")
+
+
+        def report_build_batch_result_with_outputs(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            _ = try validate_build_batch_session(session)
+            _ = try validate_process_batch_dispatch(session.processes, dispatch)
+            raise BuildBatchError.ResultInvalid if not build_batch_process_result_valid(process_result)
+            prior: BuildBatchNodeResult = session.results[dispatch.job_index]
+            raise BuildBatchError.ResultAlreadyPublished if prior.published
+            missing_output: sview = ""
+            if build_batch_process_succeeded(process_result) and session.output_sets.count != 0:
+                missing_output <- try build_batch_first_missing_output(session.output_sets[dispatch.job_index])
+            return try report_build_batch_result_impl(session, dispatch, process_result, missing_output)
 
 
         # Ask the host to stop exactly the currently active attempts. The host

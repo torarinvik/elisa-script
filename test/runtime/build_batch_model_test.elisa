@@ -2,6 +2,7 @@ include "../../src/ir/ir.elisa"
 
 using EsBuild
 using EsBuildBatch
+using EsBuildExecutor
 using EsBuildScheduler
 using EsProcess
 using EsProcessBatch
@@ -282,3 +283,39 @@ def build_batch_rejects_output_overrun_without_consuming_reservation() -> void:
         assert session.results[0].process.kind == ProcessResultKind.OutputLimit
         assert session.scheduler.graph.log_bytes == 8
         assert validate_build_batch_session(session)
+
+
+@test
+def build_batch_missing_output_fails_before_dispatching_dependents() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Write:
+        temporary: Path = try temp_directory("build-batch-missing-output") else err:
+            assert false
+            return
+        output: Path = temporary.joinpath("generated.h")
+        output_text: sview = f"{output}"
+        command: ProcessCommand = build_batch_test_command()
+        graph: BuildGraph = BuildGraph{nodes: [
+            BuildNode{name: "generate", command: command, fingerprint: 61},
+            BuildNode{name: "compile", command: command, dependencies: [0], fingerprint: 62}
+        ]}
+        output_sets: darray[BuildExecutionNodeOutputs] = [
+            BuildExecutionNodeOutputs{target_name: "generate", paths: [output_text]},
+            BuildExecutionNodeOutputs{target_name: "compile"}
+        ]
+        session: mutable BuildBatchSession = build_batch_session_for_graph_with_outputs(graph, output_sets)
+        _ = begin_build_batch(session)
+        launches: darray[BuildBatchLaunch] = dispatch_build_batch_ready(session)
+        assert launches.count == 1 and launches[0].node_index == 0
+
+        state: BuildSchedulerState = report_build_batch_result_with_outputs(session, launches[0].dispatch, ProcessResult{kind: ProcessResultKind.Exited})
+        next_wave: mutable darray[BuildBatchLaunch] = []
+        if state == BuildSchedulerState.Running:
+            next_wave <- try dispatch_build_batch_ready(session)
+        output_absent: bool = not is_file(output)
+        removed_directory: bool = try remove_directory(temporary) else false
+        assert state == BuildSchedulerState.Failed and next_wave.count == 0
+        assert session.scheduler.graph.nodes[0].state == BuildNodeState.Failed
+        assert session.scheduler.graph.nodes[1].state == BuildNodeState.Cancelled
+        assert session.results[0].missing_output == output_text
+        assert session.results[0].process.exit_status == 0 and output_absent
+        assert removed_directory and validate_build_batch_session(session)
