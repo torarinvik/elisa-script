@@ -2922,9 +2922,11 @@ the format-neutral precedence view still preserves the original array/table
 spelling. A compatibility projection also provides flat `items`/`fields` for
 values representable by the former one-level subset. The graph is bounded to
 16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
-item/table-field limits. Dotted keys inside inline tables, dates/times,
-multiline strings, Unicode escapes, and quoted keys remain unsupported and are
-rejected; top-level dotted keys are supported. A source-only snapshot of the
+item/table-field limits. Simple single- or double-quoted key segments are
+decoded when they contain no dot or escape; quoted dotted keys remain rejected
+because the current flattened configuration-key view reserves dots for path
+separators. Dotted keys inside inline tables, dates/times, multiline strings,
+and Unicode escapes remain unsupported. A source-only snapshot of the
 observed `WasmBrowser/Cargo.toml` workspace/dependency subset has a fixture for
 multiline member arrays, nested inline dependency values, and package aliases;
 it has not been executed and does not establish Cargo compatibility.
