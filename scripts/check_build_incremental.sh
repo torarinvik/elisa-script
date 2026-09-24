@@ -92,6 +92,8 @@ done
 rg -Fq 'def execute_build_graph_incremental(' "$executor_model"
 rg -Fq 'def commit_build_incremental_execution(' "$executor_model"
 rg -Fq 'def build_incremental_observation_paths(' "$model"
+rg -Fq 'segment_length == 2 and sview_at(path, segment_start) == 46' "$model"
+rg -Fq 'build_incremental_manifest_rejects_unsafe_relative_paths' "$transition_fixture"
 rg -Fq 'include "../runtime/build_incremental_cache_model.elisa"' "$ir"
 
 for cache_fixture_check in \
