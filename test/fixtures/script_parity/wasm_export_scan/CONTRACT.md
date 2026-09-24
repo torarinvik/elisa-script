@@ -354,8 +354,11 @@ candidate-only case creates 4,096 unique sibling includes so the root plus
 those children reaches the independent 4,096-file ceiling; it cleans every
 generated file and avoids invoking the Python loader. Positive snapshots are
 also checked against their checked-in JSON. The Python adapter
-verifies the working-tree scanner blob against the pinned Git commit before
-calling it.
+reads the pinned scanner through a bounded regular-file descriptor, computes
+the Git blob ID from those captured bytes, compares it with the pinned commit,
+and compiles that exact verified snapshot. This avoids both an unbounded
+path-based `git hash-object` read and a second path-based Python import that
+could execute bytes different from the checked blob.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, path, path-component-work, directive, depth, and unique-file

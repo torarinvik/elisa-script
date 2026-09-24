@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-import importlib.util
 import json
 import os
 import stat
@@ -21,6 +20,9 @@ MAX_JSON_BYTES = 16 * 1024 * 1024
 # graph far below the 16 MiB maximum scanner output payload.
 MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024
 MAX_EXPECTED_JSON_DEPTH = 128
+# Pin and execute one bounded source snapshot, rather than hashing and importing
+# the mutable reference pathname in separate reads.
+MAX_REFERENCE_SOURCE_BYTES = 1 * 1024 * 1024
 # Keep one byte for the final LF under the differential runner's 64 MiB cap.
 MAX_CALLER_PAYLOAD_BYTES = 64 * 1024 * 1024 - 1
 MAX_PATH_BYTES = 4096
@@ -38,6 +40,20 @@ FLATTEN_PAYLOAD_OPTION = "--flatten-payload"
 
 def load_pinned_reference() -> ModuleType:
     reference_path = REFERENCE_ROOT / REFERENCE_RELATIVE
+    try:
+        named_before_open = reference_path.stat()
+        if not stat.S_ISREG(named_before_open.st_mode):
+            raise RuntimeError("pinned Python scanner is not a regular file")
+        if named_before_open.st_size > MAX_REFERENCE_SOURCE_BYTES:
+            raise RuntimeError("pinned Python scanner exceeds source limit")
+        reference_source = _read_bounded_regular_file(
+            reference_path, named_before_open, MAX_REFERENCE_SOURCE_BYTES
+        )
+    except OSError as error:
+        raise RuntimeError(f"unable to read pinned Python scanner: {error}") from error
+    if len(reference_source) > MAX_REFERENCE_SOURCE_BYTES:
+        raise RuntimeError("pinned Python scanner exceeds source limit")
+
     expected_blob = subprocess.run(
         [
             "git",
@@ -52,22 +68,18 @@ def load_pinned_reference() -> ModuleType:
         timeout=5,
     ).stdout.strip()
     current_blob = subprocess.run(
-        ["git", "-C", str(REFERENCE_ROOT), "hash-object", str(reference_path)],
+        ["git", "-C", str(REFERENCE_ROOT), "hash-object", "--stdin"],
+        input=reference_source,
         check=True,
         capture_output=True,
-        text=True,
         timeout=5,
-    ).stdout.strip()
+    ).stdout.decode("ascii").strip()
     if current_blob != expected_blob:
         raise RuntimeError("pinned Python scanner source differs from the recorded reference")
 
-    spec = importlib.util.spec_from_file_location("_pinned_wasm_export_scan", reference_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("unable to load the pinned Python scanner")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    if Path(module.__file__).resolve() != reference_path.resolve():
-        raise RuntimeError("Python imported an unexpected scanner module")
+    module = ModuleType("_pinned_wasm_export_scan")
+    module.__file__ = str(reference_path)
+    exec(compile(reference_source, str(reference_path), "exec"), module.__dict__)
     return module
 
 

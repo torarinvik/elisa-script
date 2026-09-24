@@ -114,6 +114,11 @@ rg -Fq 'return AbiBinding{binding: "scalar", wasm_type: "i32", failure: ""}' "$c
 rg -Fq 'scanner.parse_exports(source, component=component_mode)' "$reference"
 rg -Fq 'MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024' "$reference"
 rg -Fq 'MAX_EXPECTED_JSON_DEPTH = 128' "$reference"
+rg -Fq 'MAX_REFERENCE_SOURCE_BYTES = 1 * 1024 * 1024' "$reference"
+rg -Fq 'reference_source = _read_bounded_regular_file(' "$reference"
+rg -Fq '"hash-object", "--stdin"' "$reference"
+rg -Fq 'input=reference_source' "$reference"
+rg -Fq 'exec(compile(reference_source, str(reference_path), "exec"), module.__dict__)' "$reference"
 rg -Fq 'def read_bounded_expected_json(path: Path) -> Any:' "$reference"
 rg -Fq 'os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)' "$reference"
 rg -Fq 'stat.S_ISREG(os.fstat(descriptor).st_mode)' "$reference"
@@ -137,6 +142,10 @@ if rg -Fq 'Path(expected_json_argument).read_text' "$reference"; then
 fi
 if rg -Fq 'resolved_path.open("rb")' "$reference"; then
     printf 'W09 bounds audit: reference preflight must read through a checked descriptor\n' >&2
+    exit 1
+fi
+if rg -Fq '"hash-object", str(reference_path)' "$reference" || rg -Fq 'spec.loader.exec_module(module)' "$reference"; then
+    printf 'W09 bounds audit: the pinned oracle must hash and execute the same source snapshot\n' >&2
     exit 1
 fi
 rg -Fq 'def python_expected_json_failure(source_path: sview, expected_json_path: sview, expected_stderr: sview)' "$fixture"
