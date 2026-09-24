@@ -25,10 +25,16 @@ toml_fixture="$repo_root/test/runtime/config_toml_model_test.elisa"
 toml_file_fixture="$repo_root/test/runtime/config_toml_file_posix_test.elisa"
 toml_file_data="$repo_root/test/runtime/config_toml_file_fixture.toml"
 toml_cargo_data="$repo_root/test/runtime/config_toml_cargo_fixture.toml"
+application_cli_root="$repo_root/test/fixtures/script_parity/application_cli"
+application_cli_reference="$application_cli_root/reference.py"
+application_cli_candidate="$application_cli_root/candidate.elisascript"
+application_cli_golden="$application_cli_root/expected.txt"
+application_cli_contract="$application_cli_root/CONTRACT.md"
+application_cli_parity="$repo_root/test/script_parity/application_cli_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$application_cli_reference" "$application_cli_candidate" "$application_cli_golden" "$application_cli_contract" "$application_cli_parity" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for toml_boundary in \
@@ -187,6 +193,32 @@ rg -Fq 'def config_cli_command_help(' "$cli_model"
 rg -Fq 'option_end <- 2' "$cli_model"
 rg -Fq 'value_start: usize = option_end + 1 if inline_separator else option_end' "$cli_model"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
+rg -Fq 'application_cli_public_launcher_matches_independent_python_and_goldens' "$application_cli_parity"
+rg -Fq 'arguments: [f"{candidate_path}", "--parity-batch"]' "$application_cli_parity"
+rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$application_cli_parity"
+rg -Fq 'return false if candidate_run.exit_status != 0 or candidate_run.stdout != golden' "$application_cli_parity"
+rg -Fq '"--parity-batch"' "$application_cli_reference"
+rg -Fq '"--parity-batch"' "$application_cli_candidate"
+rg -Fq 'resolve_config_layers([defaults, parsed.parsed.layer])' "$application_cli_candidate"
+rg -Fq 'A05' "$application_cli_contract"
+for application_cli_case in \
+    'attached-and-passthrough' \
+    'separated-short-value' \
+    'equals-short-value' \
+    'negative-boolean' \
+    'root-help' \
+    'command-help' \
+    'empty-value-over-default' \
+    'missing-command' \
+    'unknown-command' \
+    'unknown-option' \
+    'missing-value' \
+    'duplicate-option' \
+    'unexpected-boolean-value' \
+    'build-defaults' \
+    'test-defaults'; do
+    rg -Fq "case=$application_cli_case" "$application_cli_golden"
+done
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
 rg -Fq 'config_precedence_accepts_toml_table_file_values' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"

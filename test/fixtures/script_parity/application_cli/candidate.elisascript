@@ -1,0 +1,164 @@
+# Application CLI candidate for SCRIPT_TASKS.md A05.
+
+include "../../../../src/runtime/config_model.elisa"
+include "../../../../src/runtime/config_cli_model.elisa"
+
+using EsConfigCli
+using EsConfig
+
+
+module EsApplicationCliCandidate:
+    private:
+        struct CliObservation:
+            status: i64 = 0i64
+            stdout: darray[u8] = []
+            stderr: darray[u8] = []
+
+
+        struct CliFixtureCase:
+            name: sview
+            arguments: darray[sview] = []
+
+
+        def command_schemas() -> darray[ConfigCliCommand]:
+            return [
+                ConfigCliCommand{
+                    name: "build",
+                    description: "Build artifacts",
+                    options: [
+                        ConfigCliOption{key: "jobs", option: "--jobs", short_option: "-j", takes_value: true, description: "Worker count"},
+                        ConfigCliOption{key: "verbose", option: "--verbose", short_option: "-v", takes_value: false, negative_option: "--no-verbose", description: "Show verbose output"}
+                    ]
+                },
+                ConfigCliCommand{
+                    name: "test",
+                    description: "Run tests",
+                    options: [
+                        ConfigCliOption{key: "verbose", option: "--verbose", short_option: "-v", takes_value: false, negative_option: "--no-verbose", description: "Show verbose output"}
+                    ]
+                }
+            ]
+
+
+        def fixture_cases() -> darray[CliFixtureCase]:
+            return [
+                CliFixtureCase{name: "attached-and-passthrough", arguments: ["build", "-j8", "-v", "src", "--", "--literal", ""]},
+                CliFixtureCase{name: "separated-short-value", arguments: ["build", "-j", "9"]},
+                CliFixtureCase{name: "equals-short-value", arguments: ["build", "-j=4"]},
+                CliFixtureCase{name: "negative-boolean", arguments: ["test", "--no-verbose", "suite"]},
+                CliFixtureCase{name: "root-help", arguments: ["--help"]},
+                CliFixtureCase{name: "command-help", arguments: ["build", "--help"]},
+                CliFixtureCase{name: "empty-value-over-default", arguments: ["build", "--jobs="]},
+                CliFixtureCase{name: "missing-command", arguments: []},
+                CliFixtureCase{name: "unknown-command", arguments: ["clean"]},
+                CliFixtureCase{name: "unknown-option", arguments: ["build", "--wat"]},
+                CliFixtureCase{name: "missing-value", arguments: ["build", "--jobs", "--"]},
+                CliFixtureCase{name: "duplicate-option", arguments: ["build", "--jobs=4", "-j8"]},
+                CliFixtureCase{name: "unexpected-boolean-value", arguments: ["test", "--verbose=true"]},
+                CliFixtureCase{name: "build-defaults", arguments: ["build"]},
+                CliFixtureCase{name: "test-defaults", arguments: ["test"]}
+            ]
+
+
+        def append_text(output: mutable darray[u8]&, text: sview) can[Memory.Allocate, Abort.Panic]:
+            for byte in text |output|:
+                output.push(byte)
+
+
+        def append_bytes(output: mutable darray[u8]&, bytes: darray[u8]) can[Memory.Allocate, Abort.Panic]:
+            for byte in bytes |output|:
+                output.push(byte)
+
+
+        def observe(arguments: darray[sview]) -> CliObservation can[Memory.Allocate, Abort.Panic]:
+            commands: darray[ConfigCliCommand] = command_schemas()
+            observation: mutable CliObservation = CliObservation{}
+            catch parse_config_cli_command(arguments, commands):
+                ok parsed:
+                    if parsed.parsed.help_requested:
+                        if parsed.command == "":
+                            catch config_cli_root_help("app", commands):
+                                ok help:
+                                    append_bytes(observation.stdout, help.bytes)
+                                    return observation
+                                error failure:
+                                    observation.status <- 2i64
+                                    append_text(observation.stderr, "error=invalid-schema\n")
+                                    return observation
+                        else:
+                            command: ConfigCliCommand = commands[0] if commands[0].name == parsed.command else commands[1]
+                            catch config_cli_command_help("app", command):
+                                ok help:
+                                    append_bytes(observation.stdout, help.bytes)
+                                    return observation
+                                error failure:
+                                    observation.status <- 2i64
+                                    append_text(observation.stderr, "error=invalid-schema\n")
+                                    return observation
+                    default_entries: mutable darray[ConfigEntry] = []
+                    if parsed.command == "build":
+                        default_entries.push(ConfigEntry{key: "jobs", value: "2"})
+                    default_entries.push(ConfigEntry{key: "verbose", value: "false"})
+                    defaults: ConfigLayer = ConfigLayer{source: ConfigSource.Defaults, entries: default_entries}
+                    resolved: darray[ConfigValue] = catch resolve_config_layers([defaults, parsed.parsed.layer]):
+                        ok values:
+                            values
+                        error failure:
+                            observation.status <- 2i64
+                            append_text(observation.stderr, "error=invalid-schema\n")
+                            return observation
+                    append_text(observation.stdout, "command=" + parsed.command + "\n")
+                    for entry in resolved |observation|:
+                        append_text(observation.stdout, entry.key + "=" + entry.value + "\n")
+                    for positional in parsed.parsed.positionals |observation|:
+                        append_text(observation.stdout, "positional=" + positional + "\n")
+                    return observation
+                error failure:
+                    observation.status <- 2i64
+                    diagnostic: mutable sview = "invalid-argument"
+                    if failure == ConfigCliError.MissingCommand:
+                        diagnostic <- "missing-command"
+                    elif failure == ConfigCliError.UnknownCommand:
+                        diagnostic <- "unknown-command"
+                    elif failure == ConfigCliError.UnknownOption:
+                        diagnostic <- "unknown-option"
+                    elif failure == ConfigCliError.MissingValue:
+                        diagnostic <- "missing-value"
+                    elif failure == ConfigCliError.UnexpectedValue:
+                        diagnostic <- "unexpected-value"
+                    elif failure == ConfigCliError.DuplicateOption:
+                        diagnostic <- "duplicate-option"
+                    elif failure == ConfigCliError.InvalidCommandSchema or failure == ConfigCliError.InvalidOptionSchema:
+                        diagnostic <- "invalid-schema"
+                    append_text(observation.stderr, "error=" + diagnostic + "\n")
+                    return observation
+
+
+        def render_batch() -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = []
+            cases: darray[CliFixtureCase] = fixture_cases()
+            for test_case in cases |output|:
+                observed: CliObservation = observe(test_case.arguments)
+                status_text: sview = "0" if observed.status == 0i64 else "2"
+                append_text(output, "case=" + test_case.name + "\nstatus=" + status_text + "\nstdout-begin\n")
+                append_bytes(output, observed.stdout)
+                append_text(output, "stdout-end\nstderr-begin\n")
+                append_bytes(output, observed.stderr)
+                append_text(output, "stderr-end\n")
+            return output
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write]:
+            if arguments.count == 1 and arguments[0] == "--parity-batch":
+                batch_output: darray[u8] = render_batch()
+                _ = write_stdout(bytes_view(batch_output))
+                return 0i64
+            observation: CliObservation = observe(arguments)
+            _ = write_stdout(bytes_view(observation.stdout)) if observation.stdout.count != 0
+            _ = write_stderr(bytes_view(observation.stderr)) if observation.stderr.count != 0
+            return observation.status
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write]:
+    return EsApplicationCliCandidate::run(arguments)
