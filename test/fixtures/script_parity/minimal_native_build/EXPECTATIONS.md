@@ -1,6 +1,6 @@
 # Minimal native build parity contract
 
-This fixture is the E01 starting point in `SCRIPT_TASKS.md`. It compares the
+This fixture is the E01/E06 starting point in `SCRIPT_TASKS.md`. It compares the
 behavior of a small native executable produced by the CMake reference with the
 same program produced by `build.elisascript`. Build-tool diagnostics are not
 compared: CMake and ElisaScript are different build frontends. The executable's
@@ -12,6 +12,11 @@ stderr so compiler failures are actionable.
 ## Inputs and build contract
 
 - Sources: `src/main.c` and `src/answer.c`; include root: `include/`.
+- `include/generated_build_config.h.in` produces
+  `generated_build_config.h` in the build directory. CMake uses
+  `configure_file(... COPYONLY)` at configure time; the Elisascript graph has
+  a declared generator node whose output is a dependency of compilation.
+  Compilation must not begin before that output exists.
 - Language mode: required ISO C11 with compiler extensions disabled.
 - GNU and Clang-family builds enable `-pedantic -Wall -Wextra -Werror`.
 - Target name: `minimal-native`.
@@ -33,10 +38,11 @@ stderr:      empty
 ```
 
 The CMake route registers `minimal-native-output` with CTest and checks the
-`answer=42` output. The ElisaScript route has a dependent run node that checks
-the same exit status and captured stdout. The parity harness additionally
-compares both executable process results (status, stdout, stderr) and verifies
-that both declared executable files exist and can be run.
+`answer=42` output. The ElisaScript route declares the generated header and
+executable as outputs of their respective nodes, then has a dependent run node
+that checks the same exit status and captured stdout. The parity harness
+additionally compares both executable process results (status, stdout, stderr)
+and verifies that both declared executable files exist and can be run.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`

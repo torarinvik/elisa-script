@@ -5,11 +5,17 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+configure_file(
+    include/generated_build_config.h.in
+    generated_build_config.h
+    COPYONLY
+)
+
 add_executable(minimal-native
     src/main.c
     src/answer.c
 )
-target_include_directories(minimal-native PRIVATE include)
+target_include_directories(minimal-native PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}")
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(minimal-native PRIVATE -pedantic -Wall -Wextra -Werror)
