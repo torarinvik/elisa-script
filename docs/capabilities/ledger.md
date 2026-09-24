@@ -755,6 +755,13 @@ the live reservation. Receipt admission also reuses `validate_process_result`
 to reject malformed status/signal combinations and invalid captured text before
 changing scheduler state or consuming reservations. This remains a host-neutral
 contract, not child launch or runtime evidence.
+`EsBuildUsage` target edges now carry PRIVATE/PUBLIC/INTERFACE visibility,
+separate from build-order edges. Resolution applies compile/link requirements
+locally and exports only the declared visibility; PRIVATE dependencies of
+static libraries reach consumers as link-only entries. Interface targets reject
+non-INTERFACE target edges. Focused source fixtures and the build-model audit
+cover these cases; no compiler or test execution was performed under the
+validation hold.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild

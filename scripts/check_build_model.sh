@@ -121,6 +121,7 @@ for declaration in \
     'const enum BuildUsageKind of u8:' \
     'const enum BuildUsageVisibility of u8:' \
     'struct BuildUsageRequirement:' \
+    'struct BuildUsageDependency:' \
     'struct BuildUsageTarget:' \
     'struct BuildUsageTargetResult:' \
     'error BuildUsageError:' \
@@ -136,6 +137,9 @@ for boundary in \
     'BuildUsageTargetKind.StaticLibrary' \
     'BuildUsageVisibility.Public' \
     'BuildUsageVisibility.Interface' \
+    'dependency.target_index' \
+    'dependency.visibility != BuildUsageVisibility.Private' \
+    'target.kind == BuildUsageTargetKind.StaticLibrary' \
     'link_only: true' \
     'dependency_result.exported_compile' \
     'dependency_result.exported_link' \
@@ -145,6 +149,8 @@ done
 
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
+rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
+rg -Fq 'build_usage_interface_dependency_must_use_interface_visibility' "$usage_fixture"
 
 for declaration in \
     'module EsBuildExecutor:' \
