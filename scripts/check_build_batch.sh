@@ -22,10 +22,12 @@ for declaration in \
     'struct BuildBatchSession:' \
     'error BuildBatchError:' \
     'def build_batch_session_for_graph(' \
+    'def build_batch_session_for_graph_with_outputs(' \
     'def validate_build_batch_session(' \
     'def begin_build_batch(' \
     'def dispatch_build_batch_ready(' \
     'def report_build_batch_result(' \
+    'def report_build_batch_result_with_outputs(' \
     'def build_batch_process_result_valid(' \
     'def cancel_build_batch(' \
     'def build_batch_stop_acknowledgements_match(' \
@@ -50,6 +52,14 @@ for invariant in \
     rg -Fq "$invariant" "$model"
 done
 
+for output_invariant in \
+    'build_executor_output_sets_valid(graph, output_sets)' \
+    'build_batch_first_missing_output(session.output_sets[dispatch.job_index])' \
+    'BuildBatchError.OutputMissing' \
+    'session.output_sets.count != 0'; do
+    rg -Fq "$output_invariant" "$model"
+done
+
 rg -Fq 'BuildBatchError.StopAcknowledgementMismatch' "$model"
 
 if rg -n 'Process\.Run|elisascript_posix_fork|capture_process_result' "$model"; then
@@ -66,6 +76,7 @@ for fixture_case in \
     'build_batch_rejects_duplicate_terminal_receipts' \
     'build_batch_rejects_malformed_process_result_without_consuming_reservation' \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
+    'build_batch_missing_output_fails_before_dispatching_dependents' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
     'incomplete_acknowledgement_rejected' \
@@ -77,4 +88,4 @@ done
 rg -Fq 'ES-SCRIPT-002 | EsBuildScheduler' "$ledger"
 rg -Fq 'EsBuildBatch pairs' "$ledger"
 
-printf 'build batch audit: ready dispatch, receipt correlation, bounded logs, failure drain, and cancellation are present\n'
+printf 'build batch audit: output verification, ready dispatch, receipt correlation, bounded logs, failure drain, and cancellation are present\n'
