@@ -207,6 +207,13 @@ unexecuted under the validation hold.
   budget, also without invoking Python. A growth-during-read fixture must still
   mutate an already-open file and verify prompt rejection; no runtime
   parity/safety evidence has been gathered.
+  The candidate still classifies the path with `is_file` before a separate
+  `FileStream` path open. A concurrent replacement with a FIFO/device between
+  those operations can defeat the regular-file check and may block `fopen`; the
+  byte ceiling does not close this identity race. For adversarial path safety,
+  use a nonblocking descriptor open followed by `fstat` of that same descriptor
+  (or explicitly constrain the source tree to be immutable during the read),
+  then include path-replacement/no-hang coverage before claiming acceptance.
 - Python `Path.read_text` universal-newline translation converts CRLF and bare
   CR to LF before `splitlines(keepends=True)`. The candidate makes that
   normalization explicit. Include directives are whole lines matching
