@@ -48,7 +48,8 @@ if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! rg -q '^path[[:space:]]+kind[[:space:]]+owner[[:space:]]+review_status[[:space:]]+entrypoint[[:space:]]+disposition[[:space:]]+risk[[:space:]]+notes$' "$review_file"; then
+expected_header="$(printf 'path\tkind\towner\treview_status\tentrypoint\tdisposition\trisk\tnotes')"
+if ! awk -v expected="$expected_header" 'NR == 1 { if ($0 != expected) exit 1; found=1; exit 0 } END { if (!found) exit 1 }' "$review_file"; then
     printf 'migration review audit: invalid manifest header\n' >&2
     exit 1
 fi
