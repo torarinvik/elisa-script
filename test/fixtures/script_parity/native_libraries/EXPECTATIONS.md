@@ -23,7 +23,9 @@ shared linking, client linking, and execution as a dependency graph with
 declared outputs and argv-only commands. It compiles separate static and
 shared object files: both use C11, the same warning/visibility flags, and the
 shared object additionally uses PIC, matching CMake's per-target compilation
-settings. It requires the caller to supply an
+settings. Its client-run nodes use the same 10-second timeout as the CTest
+entries while retaining a separate longer timeout for compilation and linking.
+It requires the caller to supply an
 existing empty absolute build directory outside the repository and never
 removes caller-owned paths. On graph failure, it reports the failed node,
 exit status or missing declared output, and retained bounded stdout/stderr on
