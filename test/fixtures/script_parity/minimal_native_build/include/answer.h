@@ -1,0 +1,6 @@
+#ifndef ELISASCRIPT_MINIMAL_BUILD_ANSWER_H
+#define ELISASCRIPT_MINIMAL_BUILD_ANSWER_H
+
+int answer(void);
+
+#endif
