@@ -24,6 +24,8 @@ for declaration in \
     'error BuildBatchError:' \
     'def build_batch_session_for_graph(' \
     'def build_batch_session_for_graph_with_outputs(' \
+    'def build_batch_output_sets_from_recipes(' \
+    'def build_batch_session_for_recipes(' \
     'def validate_build_batch_session(' \
     'def begin_build_batch(' \
     'def dispatch_build_batch_ready(' \
@@ -87,6 +89,7 @@ for fixture_case in \
     'build_batch_rejects_malformed_process_result_without_consuming_reservation' \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'build_batch_missing_output_fails_before_dispatching_dependents' \
+    'build_batch_maps_recipe_outputs_under_absolute_root' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
     'incomplete_acknowledgement_rejected' \
