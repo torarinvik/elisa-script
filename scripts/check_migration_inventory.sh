@@ -110,6 +110,12 @@ for candidate in "$repo_root/scripts/inventory_candidates.elisascript" "$repo_ro
         exit 1
     fi
 done
+if ! rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$script_dir/check_migration_inventory.elisascript" || \
+   ! rg -Fq 'EsBoundedText::read_utf8(input_path, Limits::FILE_BYTES)' "$script_dir/check_migration_inventory.elisascript" || \
+   rg -q 'read_text\(' "$script_dir/check_migration_inventory.elisascript"; then
+    printf 'migration inventory audit: Elisascript source reads are not descriptor-bounded\n' >&2
+    exit 1
+fi
 for walker_invariant in 'openat' 'fstatat' 'DarwinStatMode::SYMLINK' 'DIRECTORY_ENTRIES' 'DIRECTORY_DEPTH' 'PATH_BYTES' 'elisascript_posix_closedir' 'Phase.Unwind'; do
     if ! rg -Fq "$walker_invariant" "$walker_file"; then
         printf 'migration inventory audit: shared walker is missing invariant %s\n' "$walker_invariant" >&2
