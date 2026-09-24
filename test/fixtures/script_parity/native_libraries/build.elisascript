@@ -1,0 +1,185 @@
+# E02 source-only candidate: static/shared library linkage and runtime lookup.
+include "../../../../src/runtime/build_executor_model.elisa"
+
+using EsBuild
+using EsBuildExecutor
+using EsProcess
+
+
+module EsNativeLibrariesBuild:
+    private:
+        const module Toolchain:
+            C_COMPILER: sview = "/usr/bin/cc"
+            ARCHIVER: sview = "/usr/bin/ar"
+            STATIC_LIBRARY: sview = "libanswer_static.a"
+            SHARED_LIBRARY: sview = "libanswer_shared.dylib"
+            STATIC_CLIENT: sview = "static-client"
+            SHARED_CLIENT: sview = "shared-client"
+            TIMEOUT_MICROS: u64 = 60000000u64
+            OUTPUT_LIMIT_BYTES: usize = 262144
+
+
+        def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return true if root == candidate
+            prefix: sview = if root == "/": "/" else root + "/"
+            return candidate.startswith(prefix)
+
+
+    public:
+        def build(build_directory_argument: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, File.Read, Directory.Read, Process.Run, Unsafe.PointerCast]:
+            build_argument: Path = path(build_directory_argument)
+            if not path_is_absolute(build_argument) or is_symlink(build_argument) or not is_directory(build_argument):
+                print("native libraries build: require an existing absolute, non-symlink build directory")
+                return 2i64
+
+            script_path: Path = Script::source_path()
+            project_directory: Path = try path_real(path_absolute(script_path.parent())) else err:
+                print("native libraries build: missing project directory")
+                return 1i64
+            repository_directory: Path = project_directory.parent().parent().parent().parent()
+            repository_text: sview = f"{repository_directory}"
+            build_directory: Path = try path_real(path_absolute(build_argument)) else err:
+                print("native libraries build: unable to resolve build directory")
+                return 2i64
+            build_directory_text: sview = f"{build_directory}"
+            if build_directory_text == "/" or path_is_within(repository_text, build_directory_text):
+                print("native libraries build: refusing a build directory inside the source repository")
+                return 2i64
+
+            entries: darray[sview] = try list_directory(build_directory) else err:
+                print("native libraries build: unable to inspect build directory")
+                return 2i64
+            if entries.count != 0:
+                print("native libraries build: require a fresh empty build directory")
+                return 2i64
+
+            answer_source: Path = project_directory.joinpath("src").joinpath("answer.c")
+            main_source: Path = project_directory.joinpath("src").joinpath("main.c")
+            include_directory: Path = project_directory.joinpath("include")
+            object_path: Path = build_directory.joinpath("answer.o")
+            static_library_path: Path = build_directory.joinpath(Toolchain::STATIC_LIBRARY)
+            shared_library_path: Path = build_directory.joinpath(Toolchain::SHARED_LIBRARY)
+            static_client_path: Path = build_directory.joinpath(Toolchain::STATIC_CLIENT)
+            shared_client_path: Path = build_directory.joinpath(Toolchain::SHARED_CLIENT)
+
+            answer_source_text: sview = f"{answer_source}"
+            main_source_text: sview = f"{main_source}"
+            include_directory_text: sview = f"{include_directory}"
+            object_path_text: sview = f"{object_path}"
+            static_library_text: sview = f"{static_library_path}"
+            shared_library_text: sview = f"{shared_library_path}"
+            static_client_text: sview = f"{static_client_path}"
+            shared_client_text: sview = f"{shared_client_path}"
+
+            compile_answer: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fvisibility=hidden", "-fPIC", "-I", include_directory_text, "-c", answer_source_text, "-o", object_path_text],
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            archive_static: ProcessCommand = ProcessCommand{
+                executable: Toolchain::ARCHIVER,
+                arguments: ["rcs", static_library_text, object_path_text],
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            link_shared: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: ["-dynamiclib", "-Wl,-install_name,@rpath/libanswer_shared.dylib", "-fvisibility=hidden", "-I", include_directory_text, object_path_text, "-o", shared_library_text],
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            link_static_client: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fvisibility=hidden", "-I", include_directory_text, main_source_text, static_library_text, "-o", static_client_text],
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            link_shared_client: ProcessCommand = ProcessCommand{
+                executable: Toolchain::C_COMPILER,
+                arguments: ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", "-fvisibility=hidden", "-I", include_directory_text, main_source_text, "-L", build_directory_text, "-lanswer_shared", "-Wl,-rpath,@loader_path", "-o", shared_client_text],
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            run_static_client: ProcessCommand = ProcessCommand{
+                executable: static_client_text,
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+            run_shared_client: ProcessCommand = ProcessCommand{
+                executable: shared_client_text,
+                working_directory: build_directory_text,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Toolchain::TIMEOUT_MICROS,
+                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
+            }
+
+            graph: mutable BuildGraph = BuildGraph{
+                nodes: [
+                    BuildNode{name: "compile-answer", command: compile_answer, fingerprint: 1u64},
+                    BuildNode{name: "archive-static", command: archive_static, dependencies: [0], fingerprint: 2u64},
+                    BuildNode{name: "link-shared", command: link_shared, dependencies: [0], fingerprint: 3u64},
+                    BuildNode{name: "link-static-client", command: link_static_client, dependencies: [1], fingerprint: 4u64},
+                    BuildNode{name: "link-shared-client", command: link_shared_client, dependencies: [2], fingerprint: 5u64},
+                    BuildNode{name: "run-static-client", command: run_static_client, dependencies: [3], fingerprint: 6u64},
+                    BuildNode{name: "run-shared-client", command: run_shared_client, dependencies: [4], fingerprint: 7u64}
+                ],
+                max_parallel: 1
+            }
+            expected_outputs: darray[BuildExecutionNodeOutputs] = [
+                BuildExecutionNodeOutputs{target_name: "compile-answer", paths: [object_path_text]},
+                BuildExecutionNodeOutputs{target_name: "archive-static", paths: [static_library_text]},
+                BuildExecutionNodeOutputs{target_name: "link-shared", paths: [shared_library_text]},
+                BuildExecutionNodeOutputs{target_name: "link-static-client", paths: [static_client_text]},
+                BuildExecutionNodeOutputs{target_name: "link-shared-client", paths: [shared_client_text]},
+                BuildExecutionNodeOutputs{target_name: "run-static-client", paths: []},
+                BuildExecutionNodeOutputs{target_name: "run-shared-client", paths: []}
+            ]
+            execution: mutable BuildExecutionResult = BuildExecutionResult{}
+            catch execute_build_graph_serial_with_outputs(graph, expected_outputs):
+                ok value:
+                    execution <- value
+                error failure:
+                    print("native libraries build: build graph execution failed")
+                    return 1i64
+
+            return 1i64 if execution.graph_state != BuildGraphState.Succeeded or execution.nodes.count != 7
+            for node_index in 0..<7 |execution|:
+                return 1i64 if not execution.nodes[node_index].started or execution.nodes[node_index].exit_status != 0 or execution.nodes[node_index].failure != BuildExecutionFailureKind.None
+            if execution.nodes[5].stdout != "answer=42\n" or execution.nodes[5].stderr != "" or execution.nodes[6].stdout != "answer=42\n" or execution.nodes[6].stderr != "":
+                print("native libraries build: static/shared client output mismatch")
+                return 1i64
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, File.Read, Directory.Read, Process.Run, Unsafe.PointerCast]:
+    if arguments.count != 1:
+        print("usage: build.elisascript ABSOLUTE_EMPTY_BUILD_DIRECTORY")
+        return 2i64
+    return EsNativeLibrariesBuild::build(arguments[0])

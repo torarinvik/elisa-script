@@ -1,0 +1,263 @@
+# Compare CMake and ElisaScript static/shared library build outputs.
+# Run only through scripts/run_bounded_test.sh after explicit reauthorization.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsNativeLibrariesParity:
+    private:
+        const module Limits:
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            C_COMPILER: sview = "/usr/bin/cc"
+            CONTROLLED_SYSTEM_PATH: sview = "/usr/bin:/bin:/usr/sbin:/sbin"
+            TIMEOUT_STEPS: u64 = 60000
+            MAX_PROCESS_OUTPUT_BYTES: u64 = 262144
+            MAX_BINARY_OUTPUT_BYTES: u64 = 4096
+            MAX_TOOL_BYTES: usize = 67108864
+
+
+        struct Tools:
+            cmake: sview
+            ctest: sview
+            launcher: sview
+            cmake_directory: sview
+
+
+        def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return true if root == candidate
+            prefix: sview = if root == "/": "/" else: root + "/"
+            return candidate.startswith(prefix)
+
+
+        def canonical_external_file(raw_path: sview, repository_root: sview) -> sview can[Blocking.IO, Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            input: Path = path(raw_path)
+            return "" if not path_is_absolute(input)
+            resolved: Path = try path_real(input) else err:
+                return ""
+            return "" if not is_file(resolved)
+            resolved_size: usize = try file_size(resolved) else err:
+                return ""
+            resolved_text: sview = f"{resolved}"
+            return "" if resolved_size == 0 or resolved_size > Limits::MAX_TOOL_BYTES or path_is_within(repository_root, resolved_text)
+            return resolved_text
+
+
+        def tools_from_environment(repository_root: sview) -> Tools can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Environment.Read, File.Read, Directory.Read]:
+            cmake_argument: sview = try getenv("ELISASCRIPT_NATIVE_LIBRARIES_CMAKE", "") else err:
+                ""
+            launcher_argument: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+                ""
+            cmake: sview = canonical_external_file(cmake_argument, repository_root)
+            launcher: sview = canonical_external_file(launcher_argument, repository_root)
+            pinned_launcher: sview = canonical_external_file(Limits::PINNED_COMPILER, repository_root)
+            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: ""} if cmake == "" or launcher == "" or launcher != pinned_launcher or cmake == launcher
+            cmake_directory: sview = f"{path(cmake).parent()}"
+            ctest_path: Path = path(cmake_directory).joinpath("ctest")
+            ctest: sview = canonical_external_file(f"{ctest_path}", repository_root)
+            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: ""} if ctest == ""
+            return Tools{cmake: cmake, ctest: ctest, launcher: launcher, cmake_directory: cmake_directory}
+
+
+        def controlled_environment(cmake_directory: sview) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
+            return [
+                DifferentialEnvironmentEntry{name: "PATH", value: cmake_directory + ":" + Limits::CONTROLLED_SYSTEM_PATH},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "LANG", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Limits::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Limits::PINNED_COMPILER}
+            ]
+
+
+        def run_process(target: sview, arguments: darray[sview], working_directory: sview, name: sview, environment: darray[DifferentialEnvironmentEntry], output_limit: u64) -> DifferentialRun error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: name,
+                target: target,
+                arguments: arguments,
+                working_directory: working_directory,
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                stdin: "",
+                timeout_steps: Limits::TIMEOUT_STEPS,
+                max_output_bytes: output_limit
+            }
+            return try run_differential_process(runner)
+
+
+        def process_succeeded(run: DifferentialRun) -> bool:
+            return run.outcome == DifferentialRunOutcome.Completed and run.exit_status == 0
+
+
+        def run_checked_process(target: sview, arguments: darray[sview], working_directory: sview, name: sview, environment: darray[DifferentialEnvironmentEntry]) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, Unsafe.PointerCast]:
+            catch run_process(target, arguments, working_directory, name, environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                ok run:
+                    return true if process_succeeded(run)
+                    print("native library parity: " + name + " exited unsuccessfully")
+                    if run.stderr != "":
+                        print(run.stderr)
+                    if run.stdout != "":
+                        print(run.stdout)
+                    return false
+                error failure:
+                    print("native library parity: " + name + " exceeded its process bounds")
+                    return false
+
+
+        def run_binary(target: sview, working_directory: sview, name: sview) -> DifferentialRun error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            environment: darray[DifferentialEnvironmentEntry] = controlled_environment("/usr/bin")
+            return try run_process(target, [], working_directory, name, environment, Limits::MAX_BINARY_OUTPUT_BYTES)
+
+
+        def remove_workspace(root: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write]:
+            return try remove_tree(root) else false
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Limits::PINNED_COMPILER
+
+
+        def build_and_compare(repository_root: Path) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            repository_text: sview = f"{repository_root}"
+            tools: Tools = tools_from_environment(repository_text)
+            return false if tools.cmake == "" or tools.ctest == "" or tools.launcher == ""
+
+            fixture: Path = repository_root.joinpath("test").joinpath("fixtures").joinpath("script_parity").joinpath("native_libraries")
+            fixture_directory: Path = try path_real(fixture) else err:
+                return false
+            build_script: Path = fixture_directory.joinpath("build.elisascript")
+            return false if not is_file(build_script)
+
+            temporary_path: Path = try temp_directory("elisascript-native-libraries-parity") else err:
+                return false
+            workspace: Path = try path_real(temporary_path) else err:
+                _ = remove_workspace(temporary_path)
+                return false
+            workspace_text: sview = f"{workspace}"
+            if workspace_text == "/" or path_is_within(repository_text, workspace_text):
+                if workspace_text != "/":
+                    _ = remove_workspace(workspace)
+                return false
+
+            cmake_build: Path = workspace.joinpath("cmake-build")
+            elisa_build: Path = workspace.joinpath("elisa-build")
+            cmake_build_text: sview = f"{cmake_build}"
+            elisa_build_text: sview = f"{elisa_build}"
+            fixture_text: sview = f"{fixture_directory}"
+            build_script_text: sview = f"{build_script}"
+            workspace_ready: bool = try create_directory(cmake_build) else false
+            workspace_ready <- (try create_directory(elisa_build) else false) and workspace_ready
+            if not workspace_ready:
+                print("native library parity: unable to create isolated build directories")
+                _ = remove_workspace(workspace)
+                return false
+
+            environment: darray[DifferentialEnvironmentEntry] = controlled_environment(tools.cmake_directory)
+            configure_arguments: darray[sview] = ["-S", fixture_text, "-B", cmake_build_text, "-G", "Unix Makefiles", "-DCMAKE_C_COMPILER=" + Limits::C_COMPILER, "-DBUILD_TESTING=ON"]
+            configured: bool = run_checked_process(tools.cmake, configure_arguments, repository_text, "cmake-configure-native-libraries", environment)
+            if not configured:
+                _ = remove_workspace(workspace)
+                return false
+
+            build_arguments: darray[sview] = ["--build", cmake_build_text, "--parallel", "1"]
+            reference_built: bool = run_checked_process(tools.cmake, build_arguments, repository_text, "cmake-build-native-libraries", environment)
+            if not reference_built:
+                _ = remove_workspace(workspace)
+                return false
+
+            ctest_arguments: darray[sview] = ["--test-dir", cmake_build_text, "--output-on-failure"]
+            reference_tested: bool = run_checked_process(tools.ctest, ctest_arguments, repository_text, "ctest-native-libraries", environment)
+            if not reference_tested:
+                _ = remove_workspace(workspace)
+                return false
+
+            candidate_arguments: darray[sview] = [build_script_text, elisa_build_text]
+            candidate_built: bool = run_checked_process(tools.launcher, candidate_arguments, repository_text, "elisascript-build-native-libraries", environment)
+            if not candidate_built:
+                _ = remove_workspace(workspace)
+                return false
+
+            cmake_static_path: Path = cmake_build.joinpath("static-client")
+            cmake_shared_path: Path = cmake_build.joinpath("shared-client")
+            elisa_static_path: Path = elisa_build.joinpath("static-client")
+            elisa_shared_path: Path = elisa_build.joinpath("shared-client")
+            cmake_static: sview = canonical_external_file(f"{cmake_static_path}", repository_text)
+            cmake_shared: sview = canonical_external_file(f"{cmake_shared_path}", repository_text)
+            elisa_static: sview = canonical_external_file(f"{elisa_static_path}", repository_text)
+            elisa_shared: sview = canonical_external_file(f"{elisa_shared_path}", repository_text)
+            if cmake_static == "" or cmake_shared == "" or elisa_static == "" or elisa_shared == "":
+                print("native library parity: one or more static/shared clients were not built")
+                _ = remove_workspace(workspace)
+                return false
+
+            cmake_static_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_binary(cmake_static, cmake_build_text, "cmake-static-client"):
+                ok value:
+                    cmake_static_run <- value
+                error failure:
+                    _ = remove_workspace(workspace)
+                    return false
+            elisa_static_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_binary(elisa_static, elisa_build_text, "elisascript-static-client"):
+                ok value:
+                    elisa_static_run <- value
+                error failure:
+                    _ = remove_workspace(workspace)
+                    return false
+            cmake_shared_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_binary(cmake_shared, cmake_build_text, "cmake-shared-client"):
+                ok value:
+                    cmake_shared_run <- value
+                error failure:
+                    _ = remove_workspace(workspace)
+                    return false
+            elisa_shared_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_binary(elisa_shared, elisa_build_text, "elisascript-shared-client"):
+                ok value:
+                    elisa_shared_run <- value
+                error failure:
+                    _ = remove_workspace(workspace)
+                    return false
+
+            static_comparison: DifferentialComparison = compare_differential_runs(cmake_static_run, elisa_static_run)
+            shared_comparison: DifferentialComparison = compare_differential_runs(cmake_shared_run, elisa_shared_run)
+            static_matches: bool = process_succeeded(cmake_static_run) and process_succeeded(elisa_static_run) and static_comparison.equal
+            shared_matches: bool = process_succeeded(cmake_shared_run) and process_succeeded(elisa_shared_run) and shared_comparison.equal
+            static_matches <- cmake_static_run.stdout == "answer=42\n" and cmake_static_run.stderr == "" and static_matches
+            static_matches <- elisa_static_run.stdout == "answer=42\n" and elisa_static_run.stderr == "" and static_matches
+            shared_matches <- cmake_shared_run.stdout == "answer=42\n" and cmake_shared_run.stderr == "" and shared_matches
+            shared_matches <- elisa_shared_run.stdout == "answer=42\n" and elisa_shared_run.stderr == "" and shared_matches
+            if not static_matches or not shared_matches:
+                print("native library parity: static/shared client status/stdout/stderr mismatch")
+            cleanup_ok: bool = remove_workspace(workspace)
+            return static_matches and shared_matches and cleanup_ok
+
+
+@test
+def cmake_and_elisascript_static_shared_libraries_match_process_behavior() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        rss_guard: sview = try getenv("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        cmake: sview = try getenv("ELISASCRIPT_NATIVE_LIBRARIES_CMAKE", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        assert reauthorized == "1"
+        assert rss_guard == "active"
+        assert compiler == EsNativeLibrariesParity::pinned_compiler_path()
+        assert elisacore_bin == EsNativeLibrariesParity::pinned_compiler_path()
+        assert cmake != ""
+        assert launcher != ""
+
+        script_directory: Path = try path_real(Script::source_path().parent()) else err:
+            assert false
+            return
+        repository_root: Path = script_directory.parent().parent()
+        assert EsNativeLibrariesParity::build_and_compare(repository_root)
