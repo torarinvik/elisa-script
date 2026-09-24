@@ -41,15 +41,21 @@ stderr:      empty
 ```
 
 The CMake route registers `minimal-native-output` with CTest and checks the
-`answer=42` output. The ElisaScript route declares the generated header and
-executable as outputs of their respective nodes, then has a dependent run node
-that checks the same exit status and captured stdout. The parity harness also
-pins the reference compiler and archiver to `/usr/bin/cc` and `/usr/bin/ar`,
-requires both build routes to produce the static archive, requires both
-generated headers to match the template byte-for-byte, compares both
-executable process results (status, stdout, stderr), and verifies that both
-executables exist and can be run. Header reads are bounded to the fixture's
-4 KiB ceiling and reject symlink paths.
+`answer=42` output. The ElisaScript route declares the generated header,
+objects, archive, and executable as incremental recipe outputs, with the
+generated-header dependency feeding `compile-main`. Its cache lock spans
+manifest admission, the build graph, post-build observation, and atomic cache
+publication. The executable is captured as a separate process on every
+invocation, outside the cached graph, so a no-op build cannot skip its behavior
+check. The parity harness runs the same ElisaScript build twice and requires
+the second invocation to report `build_cache=up_to_date`.
+
+The harness also pins the reference compiler and archiver to `/usr/bin/cc` and
+`/usr/bin/ar`, requires both build routes to produce the static archive,
+requires both generated headers to match the template byte-for-byte, compares
+both executable process results (status, stdout, stderr), and verifies that
+both executables exist and can be run. Header reads are bounded to the
+fixture's 4 KiB ceiling and reject symlink paths.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`

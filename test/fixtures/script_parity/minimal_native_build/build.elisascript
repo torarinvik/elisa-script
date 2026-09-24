@@ -1,11 +1,16 @@
-# E01/E02/E06 candidate: build a static library and executable with a generated header.
+# E01/E02/E06/E07 candidate: incrementally build a library and executable with a generated header.
 # The caller supplies an absolute build directory outside this fixture; its
 # parent must exist. The recipe never deletes source-tree paths.
 
-include "../../../../src/runtime/build_executor_model.elisa"
+include "../../../../src/ir/ir.elisa"
 
 using EsBuild
 using EsBuildExecutor
+using EsBuildIncremental
+using EsBuildIncrementalPosixExecutor
+using EsBuildRecipeSignature
+using EsArtifactCache
+using EsRuntime
 using EsProcess
 
 
@@ -14,16 +19,45 @@ module EsMinimalNativeBuild:
         const module Toolchain:
             C_COMPILER: sview = "/usr/bin/cc"
             ARCHIVER: sview = "/usr/bin/ar"
+            COPY: sview = "/usr/bin/cp"
             LIBRARY_FILENAME: sview = "libminimal-answer.a"
             TARGET_NAME: sview = "minimal-native"
             TIMEOUT_MICROS: u64 = 60000000u64
             OUTPUT_LIMIT_BYTES: usize = 1048576
+            CACHE_LOCK: cstr = "elisascript-build.lock"
+            CACHE_NAME: cstr = "elisascript-build.cache"
+            CACHE_STAGING: cstr = "elisascript-build.stage"
 
 
         def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
             return true if root == candidate
             prefix: sview = if root == "/": "/" else: root + "/"
             return candidate.startswith(prefix)
+
+
+        def filesystem_root_relative(path_text: sview) -> sview:
+            return "" if not path_text.startswith("/") or len(path_text) <= 1
+            return sview(path_text, 1i64, len(path_text).i64())
+
+
+        def cstring_bytes(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable darray[u8] = []
+            for byte in value |bytes|:
+                bytes.push(byte)
+            bytes.push(0u8)
+            return bytes
+
+
+        def open_directory_capability(path_text: sview) -> int can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            bytes: darray[u8] = cstring_bytes(path_text)
+            return elisascript_posix_open((&bytes[0]).cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+
+
+        def every_build_node_was_cached(execution: BuildExecutionResult) -> bool:
+            return false if execution.nodes.count != 5
+            for node in execution.nodes:
+                return false if not node.cache_hit or node.started
+            return true
 
 
         def report_failed_build_nodes(execution: BuildExecutionResult) -> void can[Console.Write]:
@@ -107,6 +141,7 @@ module EsMinimalNativeBuild:
 
             main_source: Path = project_directory.joinpath("src").joinpath("main.c")
             answer_source: Path = project_directory.joinpath("src").joinpath("answer.c")
+            answer_header: Path = project_directory.joinpath("include").joinpath("answer.h")
             generated_header_input: Path = project_directory.joinpath("include").joinpath("generated_build_config.h.in")
             generated_header_output: Path = build_directory.joinpath("generated_build_config.h")
             answer_object: Path = build_directory.joinpath("answer.o")
@@ -119,6 +154,7 @@ module EsMinimalNativeBuild:
                 return 2i64
             main_source_text: sview = f"{main_source}"
             answer_source_text: sview = f"{answer_source}"
+            answer_header_text: sview = f"{answer_header}"
             generated_header_input_text: sview = f"{generated_header_input}"
             generated_header_output_text: sview = f"{generated_header_output}"
             answer_object_text: sview = f"{answer_object}"
@@ -126,9 +162,18 @@ module EsMinimalNativeBuild:
             static_library_text: sview = f"{static_library}"
             include_directory_text: sview = f"{include_directory}"
             output_path_text: sview = f"{output_path}"
+            main_source_relative: sview = filesystem_root_relative(main_source_text)
+            answer_source_relative: sview = filesystem_root_relative(answer_source_text)
+            answer_header_relative: sview = filesystem_root_relative(answer_header_text)
+            generated_header_input_relative: sview = filesystem_root_relative(generated_header_input_text)
+            generated_header_output_relative: sview = filesystem_root_relative(generated_header_output_text)
+            answer_object_relative: sview = filesystem_root_relative(answer_object_text)
+            main_object_relative: sview = filesystem_root_relative(main_object_text)
+            static_library_relative: sview = filesystem_root_relative(static_library_text)
+            output_path_relative: sview = filesystem_root_relative(output_path_text)
 
             generate_header_command: ProcessCommand = ProcessCommand{
-                executable: "/bin/cp",
+                executable: Toolchain::COPY,
                 arguments: [generated_header_input_text, generated_header_output_text],
                 working_directory: project_directory_text,
                 stdin_mode: ProcessStdioMode.Null,
@@ -177,52 +222,70 @@ module EsMinimalNativeBuild:
                 timeout_micros: Toolchain::TIMEOUT_MICROS,
                 capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
             }
-            run_command: ProcessCommand = ProcessCommand{
-                executable: output_path_text,
-                working_directory: project_directory_text,
-                stdin_mode: ProcessStdioMode.Null,
-                stdout_mode: ProcessStdioMode.Capture,
-                stderr_mode: ProcessStdioMode.Capture,
-                timeout_micros: Toolchain::TIMEOUT_MICROS,
-                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
-            }
             graph: mutable BuildGraph = BuildGraph{
                 nodes: [
                     BuildNode{name: "generate-config-header", command: generate_header_command, dependencies: [], fingerprint: 1u64},
                     BuildNode{name: "compile-answer", command: compile_answer_command, dependencies: [], fingerprint: 2u64},
                     BuildNode{name: "archive-answer", command: archive_command, dependencies: [1], fingerprint: 3u64},
                     BuildNode{name: "compile-main", command: compile_main_command, dependencies: [0], fingerprint: 4u64},
-                    BuildNode{name: Toolchain::TARGET_NAME, command: link_command, dependencies: [2, 3], fingerprint: 5u64},
-                    BuildNode{name: "run-minimal-native", command: run_command, dependencies: [4], fingerprint: 6u64}
+                    BuildNode{name: Toolchain::TARGET_NAME, command: link_command, dependencies: [2, 3], fingerprint: 5u64}
                 ],
                 max_parallel: 1
             }
-            expected_outputs: darray[BuildExecutionNodeOutputs] = [
-                BuildExecutionNodeOutputs{target_name: "generate-config-header", paths: [generated_header_output_text]},
-                BuildExecutionNodeOutputs{target_name: "compile-answer", paths: [answer_object_text]},
-                BuildExecutionNodeOutputs{target_name: "archive-answer", paths: [static_library_text]},
-                BuildExecutionNodeOutputs{target_name: "compile-main", paths: [main_object_text]},
-                BuildExecutionNodeOutputs{target_name: Toolchain::TARGET_NAME, paths: [output_path_text]},
-                BuildExecutionNodeOutputs{target_name: "run-minimal-native", paths: []}
+            recipes: darray[BuildIncrementalRecipeTarget] = [
+                BuildIncrementalRecipeTarget{name: "generate-config-header", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 1u64, inputs: [generated_header_input_relative], outputs: [generated_header_output_relative]},
+                BuildIncrementalRecipeTarget{name: "compile-answer", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 2u64, inputs: [answer_source_relative, answer_header_relative], outputs: [answer_object_relative]},
+                BuildIncrementalRecipeTarget{name: "archive-answer", kind: BuildIncrementalTargetKind.StaticLibrary, recipe_fingerprint: 3u64, inputs: [answer_object_relative], outputs: [static_library_relative], dependencies: ["compile-answer"]},
+                BuildIncrementalRecipeTarget{name: "compile-main", kind: BuildIncrementalTargetKind.GeneratedFile, recipe_fingerprint: 4u64, inputs: [main_source_relative, answer_header_relative, generated_header_output_relative], outputs: [main_object_relative], dependencies: ["generate-config-header"]},
+                BuildIncrementalRecipeTarget{name: Toolchain::TARGET_NAME, kind: BuildIncrementalTargetKind.Executable, recipe_fingerprint: 5u64, inputs: [main_object_relative, static_library_relative], outputs: [output_path_relative], dependencies: ["archive-answer", "compile-main"]}
             ]
-            execution: mutable BuildExecutionResult = BuildExecutionResult{}
-            catch execute_build_graph_serial_with_outputs(graph, expected_outputs):
+            toolchain_resolutions: darray[BuildRecipeToolchainPath] = [
+                BuildRecipeToolchainPath{command_executable: Toolchain::COPY, path: filesystem_root_relative(Toolchain::COPY)},
+                BuildRecipeToolchainPath{command_executable: Toolchain::C_COMPILER, path: filesystem_root_relative(Toolchain::C_COMPILER)},
+                BuildRecipeToolchainPath{command_executable: Toolchain::ARCHIVER, path: filesystem_root_relative(Toolchain::ARCHIVER)},
+                BuildRecipeToolchainPath{command_executable: Toolchain::C_COMPILER, path: filesystem_root_relative(Toolchain::C_COMPILER)},
+                BuildRecipeToolchainPath{command_executable: Toolchain::C_COMPILER, path: filesystem_root_relative(Toolchain::C_COMPILER)}
+            ]
+            root_fd: int = open_directory_capability("/")
+            if root_fd < 0:
+                print("minimal native build: unable to open filesystem-root capability")
+                return 1i64
+            cache_directory_fd: int = open_directory_capability(build_directory_text)
+            if cache_directory_fd < 0:
+                _ = elisascript_posix_close(root_fd)
+                print("minimal native build: unable to open build-directory capability")
+                return 1i64
+            arena: mutable Arena = zeroed
+            lock: mutable ArtifactCacheWriterLock = ArtifactCacheWriterLock{}
+            cached_run: mutable BuildIncrementalPosixCacheRun = BuildIncrementalPosixCacheRun{execution: BuildIncrementalPosixExecution{result: BuildExecutionResult{}, recipes: [], pre_execution_observations: []}, commit: BuildIncrementalCommit{}}
+            catch execute_build_graph_incremental_cached_at(arena, lock, 1u64, cache_directory_fd, Toolchain::CACHE_LOCK, Toolchain::CACHE_NAME, Toolchain::CACHE_STAGING, root_fd, graph, recipes, toolchain_resolutions):
                 ok value:
-                    execution <- value
+                    cached_run <- value
                 error failure:
+                    _ = elisascript_posix_close(cache_directory_fd)
+                    _ = elisascript_posix_close(root_fd)
                     _ = write_stderr("minimal native build: build graph execution failed before completion\n")
                     return 1i64
-            if execution.graph_state != BuildGraphState.Succeeded or execution.nodes.count != 6:
+            cache_close_status: int = elisascript_posix_close(cache_directory_fd)
+            root_close_status: int = elisascript_posix_close(root_fd)
+            if cache_close_status != 0 or root_close_status != 0:
+                print("minimal native build: unable to close build capabilities")
+                return 1i64
+            execution: BuildExecutionResult = cached_run.execution.result
+            if execution.graph_state != BuildGraphState.Succeeded or execution.nodes.count != 5:
                 report_failed_build_nodes(execution)
                 return 1i64
-            return 1i64 if not execution.nodes[0].started or execution.nodes[0].exit_status != 0 or execution.nodes[0].failure != BuildExecutionFailureKind.None
-            return 1i64 if not execution.nodes[1].started or execution.nodes[1].exit_status != 0 or execution.nodes[1].failure != BuildExecutionFailureKind.None
-            return 1i64 if not execution.nodes[2].started or execution.nodes[2].exit_status != 0 or execution.nodes[2].failure != BuildExecutionFailureKind.None
-            return 1i64 if not execution.nodes[3].started or execution.nodes[3].exit_status != 0 or execution.nodes[3].failure != BuildExecutionFailureKind.None
-            return 1i64 if not execution.nodes[4].started or execution.nodes[4].exit_status != 0 or execution.nodes[4].failure != BuildExecutionFailureKind.None
-            return 1i64 if not execution.nodes[5].started or execution.nodes[5].exit_status != 0 or execution.nodes[5].failure != BuildExecutionFailureKind.None
-            if execution.nodes[5].stdout != "answer=42\n":
-                print("minimal native build: executable output differed from answer=42")
+            for node in execution.nodes:
+                return 1i64 if node.exit_status != 0 or node.failure != BuildExecutionFailureKind.None
+            if every_build_node_was_cached(execution):
+                print("build_cache=up_to_date")
+            else:
+                print("build_cache=rebuilt")
+            program_result: ProcessCapture = try capture_process_result_in_directory(executable(output_path_text), [], "", build_directory, Toolchain::TIMEOUT_MICROS.i64(), Toolchain::OUTPUT_LIMIT_BYTES.i64()) else err:
+                print("minimal native build: unable to run built executable")
+                return 1i64
+            if program_result.status != 0 or program_result.stdout != "answer=42\n" or program_result.stderr != "":
+                print("minimal native build: executable status/stdout/stderr mismatch")
                 return 1i64
             return 0i64
 

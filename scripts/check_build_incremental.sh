@@ -105,6 +105,8 @@ rg -Fq 'publish_build_incremental_cache_at_held(lock, cache_directory_fd, lock_n
 rg -Fq 'def artifact_cache_writer_lock_matches_at(' "$repo_root/src/ir/artifact_cache.elisa"
 rg -Fq 'elisascript_posix_flock(lock.descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK)' "$repo_root/src/ir/artifact_cache.elisa"
 rg -Fq 'def admit_build_incremental_cache_at_held(' "$repo_root/src/ir/artifact_cache.elisa"
+rg -Fq 'manifest_bytes: darray[u8]' "$repo_root/src/ir/artifact_cache.elisa"
+rg -Fq 'manifest_bytes: bytes, previous_targets: targets' "$repo_root/src/ir/artifact_cache.elisa"
 rg -Fq 'def publish_build_incremental_cache_at_held(' "$repo_root/src/ir/artifact_cache.elisa"
 rg -Fq 'ToolchainObservationError.ToolchainChanged' "$posix_executor"
 rg -Fq 'validate_build_incremental_stable_sources(execution.recipes, execution.pre_execution_observations, observations)' "$posix_executor"
