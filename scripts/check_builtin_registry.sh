@@ -392,11 +392,8 @@ for name in $registry_names; do
                     exit 1
                 fi
                 ;;
-            print|println|echo|eprint)
+            print|printr|echo)
                 expected_opcode="WriteStdout"
-                if [[ "$name" == "eprint" ]]; then
-                    expected_opcode="WriteStderr"
-                fi
                 if ! rg -q 'registry_spec\.known and \(registry_spec\.opcode == "WriteStdout" or registry_spec\.opcode == "WriteStderr"\) and registry_spec\.argument_types == "print"' "$lowerer_file" || \
                    ! rg -q "name: \"$name\".*arity_min: 0.*arity_max: 4294967295.*argument_types: \"print\".*return_type: \"usize\".*effects: \"Console.Write\".*errors: \"ConsoleError\".*opcode: \"$expected_opcode\"" "$registry_file" || \
                    ! rg -q 'spec\.argument_types == "print"' "$receiver_semantic_file" || \

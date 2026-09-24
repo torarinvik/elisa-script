@@ -3079,8 +3079,8 @@ through the explicit state machine up to a bounded count before becoming
 `WriteStdout` and `WriteStderr` verify as `Text -> Int(unsigned, 64)` with
 `Console.Write` and `ConsoleError`. The reference interpreter drives input until EOF
 and drives output through explicit `Data/End/Error` and `Progress/Done/Error` stream
-machines, preserving partial-write semantics and owned read results. `print`,
-`echo`, `println`, and `eprint` lower their typed scalar arguments to formatting
+machines, preserving partial-write semantics and owned read results. `print`
+and `printr` lower their typed scalar arguments to formatting
 and `Concat` instructions before one final stream write; optional `sep` and `end`
 text controls are evaluated once and use the same typed concatenation path. An
 optional `flush: bool` control is type-checked and accepted for Python
@@ -3251,10 +3251,10 @@ It accepts only arrays whose scalar elements have a deterministic total order.
 The compiler-known `reversed(values)` builtin lowers to `ReverseArray` and
 returns a fresh owned array with the original element descriptor in reverse
 order, without requiring a mutable binding.
-The compiler-known `print(value, ...)` convenience formats each supported scalar,
-joins arguments with one space, appends a newline, and lowers directly to the
-existing `Concat` plus `WriteStdout` operations; `echo` and `println` are
-equivalent stdout aliases and `eprint` selects `WriteStderr`. The optional
+The compiler-known `print(value, ...)` and `printr(value, ...)` conveniences
+format each supported scalar, join arguments with one space, and lower directly
+to the existing `Concat` plus `WriteStdout` operations. `print` appends a newline
+by default; `printr` does not. The optional
 `flush: bool` control is accepted as a typed compatibility spelling because
 POSIX writes are unbuffered at this boundary. No command string or separate
 stdout runtime is introduced.

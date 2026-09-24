@@ -2039,10 +2039,10 @@ formats text, `char`, any integer width, `f32`/`f64`, `bool`, text-backed nomina
 dictionary arguments,
 joins them with the typed text control `sep` (default `" "`), appends the typed
 text control `end` (default `"\n"`), and delegates to the same stdout operation.
-`echo` and
-`println` are equivalent stdout aliases, while `eprint` writes the same typed
-line to stderr. All four accept positional value arguments followed by at most
-one `sep: sview`, one `end: sview`, and one `flush: bool` control. `flush` is a
+`print` appends a newline by default; `printr` writes without one. Both accept
+positional value arguments followed by at most one `sep: sview`, one
+`end: sview`, and one `flush: bool` control. An explicit `end` overrides the
+default. `flush` is a
 typed compatibility spelling: stream writes use POSIX `write` directly, so
 bytes are visible immediately and no additional user-space flush operation is
 needed. The unsupported Python `file` control remains statically rejected:
@@ -2080,7 +2080,7 @@ exact stdin or stream opcode. The lowerer admits these calls through the registr
 shape, result-type, and opcode fields rather than a second arity or opcode table;
 `input` adds its prompt-specific `Console.Write` effect in the same state-machine
 lowering after the registry supplies the base `Console.Read` contract. Variadic
-formatting (`print`, `println`, `echo`, `eprint`) remains an explicit lowerer
+formatting (`print`, `printr`) remains an explicit lowerer
 contract because its positional values and three optional controls do not fit the
 compact row yet.
 

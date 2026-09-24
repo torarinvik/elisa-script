@@ -52,7 +52,7 @@ inference, variadic shape, and f-string lowerer all consume the same
 | Panic control | `panic` | zero or one positional `any` message; records `Abort.Panic` and emits the non-recoverable `Panic` instruction |
 | Error propagation | `raise` | one declared `Error.Tag` reference or constructor; registry-owned `error -> void`/`Raise` identity combines with declaration-authoritative payload validation |
 | Dynamic continuation | `resume` | literal handler `text` plus one `any` payload; registry-owned exact arity and callback-shape metadata combines with enclosing return-type equality |
-| Console output | `print`, `println`, `echo`, `eprint` | variadic typed values with `sep: sview`, `end: sview`, and `flush: bool` controls; registry rows select `WriteStdout` or `WriteStderr` and the shared `Console.Write`/`ConsoleError` contract |
+| Console output | `print`, `printr` | variadic typed values with `sep: sview`, `end: sview`, and `flush: bool` controls; `print` appends a newline by default, `printr` does not, and both use `WriteStdout` with the shared `Console.Write`/`ConsoleError` contract |
 | Numeric absolute value | `abs` | one signed integer or float to the same exact numeric family; registry identity is the verified `Negate` primitive with `Compare,Negate,Select` lowering, while polymorphic inference preserves the operand type |
 | Polymorphic extrema | `min`, `max` | one orderable array or two-or-more orderable values; registry rows select the verified `SortArray`/`Index` composition while inference preserves the element family |
 | Map projections | `keys`, `values` | one dictionary to a concrete key/value array; registry rows select `MapKeys` or `MapValues` while structural inference preserves descriptors |
