@@ -902,9 +902,11 @@ ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/
 replacement ceilings, capture-group limits, shared work accounting, bounded
 replacement output, single/global match policy, and explicit
 completion/failure/cancellation edges; replacement sessions reject standalone
-match events so match accounting cannot be doubled. The
-focused IR fixture and check_regex_model.sh audit are static evidence; the
-engine's iterative-stack rewrite and adversarial execution corpus remain open.
+match events so match accounting cannot be doubled. Request validation now
+requires global mode for FindAll/Split and rejects it for Search/Match/FullMatch,
+leaving Replace's single/global policy explicit. Focused IR/runtime-model
+fixtures and check_regex_model.sh are static evidence; the engine's
+iterative-stack rewrite and adversarial execution corpus remain open.
 
 ES-SCRIPT-010 | EsEnvironment supplies bounded unique name/value entries,
 sealed lookup, deterministic set updates, tombstone unsets, aggregate text

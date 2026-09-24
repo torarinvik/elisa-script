@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/regex_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/regex_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'regex model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -42,6 +43,9 @@ for boundary in \
     'PatternLimitExceeded' \
     'InputLimitExceeded' \
     'ReplacementNotAllowed' \
+    'GlobalPolicyInvalid' \
+    '(request.operation == RegexOperation.FindAll or request.operation == RegexOperation.Split) and not request.global' \
+    '(request.operation == RegexOperation.Search or request.operation == RegexOperation.Match or request.operation == RegexOperation.FullMatch) and request.global' \
     'InvalidOperation if session.request.operation == RegexOperation.Replace' \
     'GroupLimitExceeded' \
     'MatchLimitExceeded' \
@@ -53,6 +57,9 @@ for boundary in \
     'CancelNotReady'; do
     rg -Fq "$boundary" "$model"
 done
+rg -Fq 'regex_request_global_policy_matches_operation_shape' "$runtime_fixture"
+rg -Fq 'find_all_without_global' "$runtime_fixture"
+rg -Fq 'split_without_global' "$runtime_fixture"
 
 rg -Fq 'include "../runtime/regex_model.elisa"' "$ir"
 rg -Fq 'using EsRegex' "$fixture"
