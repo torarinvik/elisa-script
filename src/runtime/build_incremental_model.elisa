@@ -88,6 +88,14 @@ module EsBuildIncremental:
             stale_outputs_after_success: darray[BuildIncrementalStaleOutput] = []
 
 
+        # A complete replacement cache value plus cleanup candidates. A host
+        # may publish this only after the whole build succeeded, and may
+        # delete candidates only after revalidating filesystem identity.
+        struct BuildIncrementalCommit:
+            targets: darray[BuildIncrementalTarget] = []
+            stale_outputs_after_success: darray[BuildIncrementalStaleOutput] = []
+
+
         # Observations are supplied by a host adapter after it has statted or
         # hashed a path. Missing paths carry no fingerprint, so a stale output
         # cannot be confused with a valid all-zero digest.
@@ -118,6 +126,9 @@ module EsBuildIncremental:
             ObservationLimitExceeded
             InvalidObservation
             InvalidDependencyObservation
+            CommitObservationMissing
+            CommitInputMissing
+            CommitOutputMissing
             TotalInputLimitExceeded
             TotalOutputLimitExceeded
             DependencyResolutionInvalid
@@ -470,6 +481,16 @@ module EsBuildIncremental:
             return targets
 
 
+        def build_incremental_observed_commit_file(path: sview, is_output: bool, observations: darray[BuildIncrementalObservation], sorted_observation_indices: darray[usize]) -> BuildIncrementalFile error[BuildIncrementalError]:
+            observation_index: usize = build_incremental_observation_index(observations, sorted_observation_indices, path)
+            raise BuildIncrementalError.CommitObservationMissing if observation_index == observations.count
+            observation: BuildIncrementalObservation = observations[observation_index]
+            raise BuildIncrementalError.CommitOutputMissing if is_output and not observation.present
+            raise BuildIncrementalError.CommitInputMissing if not is_output and not observation.present
+            raise BuildIncrementalError.FingerprintMissing if observation.fingerprint == 0
+            return BuildIncrementalFile{path: path, fingerprint: observation.fingerprint}
+
+
         def build_incremental_dependency_resolution(targets: darray[BuildIncrementalTarget]) -> BuildDependencyResolution error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
             node_names: mutable darray[sview] = []
             dependency_names: mutable darray[BuildDependencyNames] = []
@@ -565,6 +586,32 @@ module EsBuildIncremental:
                         raise BuildIncrementalError.CleanupOutputLimitExceeded if cleanup.count >= Limits::CLEANUP_OUTPUTS
                         cleanup.push(BuildIncrementalStaleOutput{target_name: previous.name, output: output})
             return cleanup
+
+
+        # Construct the next cache snapshot after the host has observed a
+        # fully successful build. All current input/output observations are
+        # required before this returns, so callers can publish the returned
+        # value atomically instead of exposing a partial cache update. This
+        # function does not execute commands, persist the manifest, or delete
+        # stale outputs.
+        def commit_build_incremental_success(previous_targets: darray[BuildIncrementalTarget], current_recipes: darray[BuildIncrementalRecipeTarget], post_success_observations: darray[BuildIncrementalObservation]) -> BuildIncrementalCommit error[BuildIncrementalError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildIncrementalError.EmptyManifest if current_recipes.count == 0
+            recipe_targets: darray[BuildIncrementalTarget] = try build_incremental_materialize_recipe_targets(current_recipes)
+            sorted_observation_indices: darray[usize] = try build_incremental_observation_order(post_success_observations)
+            committed_targets: mutable darray[BuildIncrementalTarget] = []
+            for index in 0..<current_recipes.count |current_recipes, recipe_targets, post_success_observations, sorted_observation_indices, committed_targets|:
+                recipe: BuildIncrementalRecipeTarget = current_recipes[index]
+                validated_recipe: BuildIncrementalTarget = recipe_targets[index]
+                inputs: mutable darray[BuildIncrementalFile] = []
+                outputs: mutable darray[BuildIncrementalFile] = []
+                for input_path in recipe.inputs |post_success_observations, sorted_observation_indices, inputs|:
+                    inputs.push(try build_incremental_observed_commit_file(input_path, false, post_success_observations, sorted_observation_indices))
+                for output_path in recipe.outputs |post_success_observations, sorted_observation_indices, outputs|:
+                    outputs.push(try build_incremental_observed_commit_file(output_path, true, post_success_observations, sorted_observation_indices))
+                committed_targets.push(BuildIncrementalTarget{name: validated_recipe.name, kind: validated_recipe.kind, recipe_fingerprint: recipe.recipe_fingerprint, inputs: inputs, outputs: outputs, dependencies: validated_recipe.dependencies})
+            try build_incremental_manifest_resolution(committed_targets)
+            stale_outputs: darray[BuildIncrementalStaleOutput] = try plan_build_incremental_cleanup(previous_targets, committed_targets)
+            return BuildIncrementalCommit{targets: committed_targets, stale_outputs_after_success: stale_outputs}
 
 
         # Return the first deterministic reason a target is stale. `UpToDate`

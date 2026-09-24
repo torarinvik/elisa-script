@@ -36,6 +36,7 @@ for declaration in \
     'struct BuildIncrementalTarget:' \
     'struct BuildIncrementalRecipeTarget:' \
     'struct BuildIncrementalPlan:' \
+    'struct BuildIncrementalCommit:' \
     'struct BuildIncrementalResolvedManifest:' \
     'struct BuildIncrementalStaleOutput:' \
     'struct BuildIncrementalObservation:' \
@@ -54,6 +55,8 @@ for declaration in \
     'def build_incremental_recipe_shape_matches(' \
     'def build_incremental_materialize_recipe_targets(' \
     'def plan_build_incremental_transition(' \
+    'def build_incremental_observed_commit_file(' \
+    'def commit_build_incremental_success(' \
     'def build_incremental_target_decision_validated(' \
     'def build_incremental_target_valid(target)' \
     'def build_incremental_dependency_order(' \
@@ -141,9 +144,12 @@ done
 for transition_check in \
     'build_incremental_transition_rebuilds_changed_and_new_targets' \
     'build_incremental_transition_plans_removed_outputs_only_after_success' \
+    'build_incremental_success_commit_is_complete_and_atomic' \
     'plan_build_incremental_transition(previous, current, observations)' \
+    'commit_build_incremental_success(previous, current, complete_observations)' \
     'BuildIncrementalDecision.RecipeChanged' \
     'BuildIncrementalDecision.DependencyDirty' \
+    'BuildIncrementalError.CommitObservationMissing' \
     'stale_outputs_after_success'; do
     rg -Fq "$transition_check" "$transition_fixture"
 done
