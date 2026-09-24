@@ -43,6 +43,7 @@ for toml_boundary in \
     'config_toml_array_value_end(' \
     'config_toml_skip_array_trivia(' \
     'config_toml_parse_inline_table(' \
+    'def bind_toml_config_winner(' \
     'DuplicateKey' \
     'def config_toml_parse_array(' \
     'def parse_toml_config(' \
@@ -171,6 +172,7 @@ rg -Fq 'config_precedence_accepts_toml_table_file_values' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
 rg -Fq 'bounded_json_configuration_file_rejects_over_limit_before_reading' "$json_file_fixture"
 rg -Fq 'toml_configuration_parses_bounded_scalar_array_and_inline_table_subset' "$toml_fixture"
+rg -Fq 'bind_toml_config_winner(project_arrays, winner)' "$toml_fixture"
 rg -Fq '0xDEAD_BEEF' "$toml_fixture"
 rg -Fq '+1_000' "$toml_fixture"
 rg -Fq 'ConfigTomlValueKind.Array' "$toml_fixture"

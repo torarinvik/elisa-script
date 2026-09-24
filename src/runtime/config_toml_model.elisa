@@ -48,6 +48,18 @@ module EsConfigToml:
             index: usize
 
 
+        struct ConfigTomlResolvedValue:
+            key: sview
+            # Borrowed from the winning ConfigValue. Typed payload arrays are
+            # independent owned copies so they can outlive the parser sidecar.
+            raw_value: sview
+            source: ConfigSource
+            kind: ConfigTomlValueKind
+            text: darray[u8] = []
+            items: darray[ConfigTomlArrayItem] = []
+            fields: darray[ConfigTomlTableField] = []
+
+
         struct ConfigTomlLayer:
             layer: ConfigLayer
             # Typed rows parallel to layer.entries. The latter remains the
@@ -71,6 +83,7 @@ module EsConfigToml:
             UnsupportedEscape
             UnsupportedValue
             InvalidNumber
+            TypedValueMissing
             OutputLimitExceeded
             OutputBytesExceeded
 
@@ -514,6 +527,27 @@ module EsConfigToml:
             return copied
 
 
+        def config_toml_copy_bytes(source: darray[u8]) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[u8] = []
+            for byte in source |source, copied|:
+                copied.push(byte)
+            return copied
+
+
+        def config_toml_copy_array_items(source: darray[ConfigTomlArrayItem]) -> darray[ConfigTomlArrayItem] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[ConfigTomlArrayItem] = []
+            for item in source |source, copied|:
+                copied.push(ConfigTomlArrayItem{kind: item.kind, text: config_toml_copy_bytes(item.text)})
+            return copied
+
+
+        def config_toml_copy_table_fields(source: darray[ConfigTomlTableField]) -> darray[ConfigTomlTableField] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[ConfigTomlTableField] = []
+            for field in source |source, copied|:
+                copied.push(ConfigTomlTableField{key: config_toml_copy_bytes(field.key), kind: field.kind, text: config_toml_copy_bytes(field.text), items: config_toml_copy_array_items(field.items)})
+            return copied
+
+
         def config_toml_utf8_valid(source: sview) -> bool:
             cursor: mutable Utf8Cursor = Utf8Cursor{}
             for offset in 0..<sview_len(source) |source, cursor|:
@@ -667,3 +701,27 @@ module EsConfigToml:
             for index in 0..<parsed.values.count |parsed, key|:
                 return index if parsed.values[index].key == key
             return parsed.values.count
+
+
+        # Restore TOML types after the generic precedence resolver has selected
+        # the winning source for a key. Non-file overrides are configuration
+        # strings and therefore become Text without trying to reinterpret them.
+        def bind_toml_config_winner(parsed: ConfigTomlLayer&, winner: ConfigValue) -> ConfigTomlResolvedValue error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            if winner.source != ConfigSource.File:
+                override_text: mutable darray[u8] = []
+                for offset in 0..<sview_len(winner.value) |winner, override_text|:
+                    override_text.push(sview_at(winner.value, offset))
+                return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: ConfigTomlValueKind.Text, text: override_text}
+            raise ConfigTomlError.TypedValueMissing if parsed.layer.source != ConfigSource.File
+            entry_index: mutable usize = parsed.layer.entries.count
+            for index in 0..<parsed.layer.entries.count |parsed, winner|:
+                if parsed.layer.entries[index].key == winner.key and parsed.layer.entries[index].value == winner.value:
+                    entry_index <- index
+                    break
+            raise ConfigTomlError.TypedValueMissing if entry_index >= parsed.values.count
+            raise ConfigTomlError.TypedValueMissing if parsed.values[entry_index].key != winner.key
+            typed: ConfigTomlValue = parsed.values[entry_index]
+            typed_text: darray[u8] = config_toml_copy_bytes(typed.text)
+            typed_items: darray[ConfigTomlArrayItem] = config_toml_copy_array_items(typed.items)
+            typed_fields: darray[ConfigTomlTableField] = config_toml_copy_table_fields(typed.fields)
+            return ConfigTomlResolvedValue{key: winner.key, raw_value: winner.value, source: winner.source, kind: typed.kind, text: typed_text, items: typed_items, fields: typed_fields}
