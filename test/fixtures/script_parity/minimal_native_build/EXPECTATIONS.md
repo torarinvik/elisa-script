@@ -5,6 +5,9 @@ behavior of a small native executable produced by the CMake reference with the
 same program produced by `build.elisascript`. Build-tool diagnostics are not
 compared: CMake and ElisaScript are different build frontends. The executable's
 observable process result is the parity surface.
+When its build graph fails, the ElisaScript recipe reports the failed node,
+exit status or missing declared output, and retained bounded stdout/stderr on
+stderr so compiler failures are actionable.
 
 ## Inputs and build contract
 

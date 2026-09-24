@@ -22,8 +22,9 @@ and the pinned local compiler path; it is not safe or enabled for ad-hoc runs.
 shared linking, client linking, and execution as a dependency graph with
 declared outputs and argv-only commands. It requires the caller to supply an
 existing empty absolute build directory outside the repository and never
-removes caller-owned paths. Its run nodes reject nonempty stderr as well as
-unexpected stdout.
+removes caller-owned paths. On graph failure, it reports the failed node,
+exit status or missing declared output, and retained bounded stdout/stderr on
+stderr. Its run nodes reject nonempty stderr as well as unexpected stdout.
 
 Evidence is source-only: no compiler, CMake, CTest, or parity process has been
 run. The fixture is Darwin-specific and not yet an E02 acceptance result.
