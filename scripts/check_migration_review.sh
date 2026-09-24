@@ -6,9 +6,34 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 review_file="$repo_root/docs/migration-review-current.tsv"
+candidate_file="$script_dir/check_migration_review.elisascript"
 
 if [[ ! -f "$review_file" ]]; then
     printf 'migration review audit: missing %s\n' "$review_file" >&2
+    exit 1
+fi
+
+# The candidate's manifest cap must apply to bytes read, not just metadata
+# observed before an unbounded text allocation.
+if [[ ! -f "$candidate_file" ]]; then
+    printf 'migration review audit: missing Elisascript candidate\n' >&2
+    exit 1
+fi
+for bounded_read_invariant in \
+    'FILE_BYTES: usize = 1048576' \
+    'maximum_bytes - bytes.count' \
+    'probe_capacity: usize = remaining + 1' \
+    'DarwinOpenFlags::NONBLOCK' \
+    'elisascript_posix_fstat' \
+    'migration_manifest_stable_file' \
+    'EsEncoding::utf8_feed'; do
+    if ! grep -F "$bounded_read_invariant" "$candidate_file" >/dev/null 2>&1; then
+        printf 'migration review audit: candidate source read omits bounded-read invariant: %s\n' "$bounded_read_invariant" >&2
+        exit 1
+    fi
+done
+if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
+    printf 'migration review audit: candidate source read uses unbounded read_text\n' >&2
     exit 1
 fi
 
