@@ -51,6 +51,22 @@ module EsArtifactCache:
                 return true if left_bytes[index] == 0
             return false
 
+
+        # A lock struct is ordinary data, so its Held tag alone is not a host
+        # lock proof. Re-check that the descriptor still names the lock leaf
+        # under this directory and that the descriptor can assert its flock.
+        def artifact_cache_writer_lock_matches_at(lock: ArtifactCacheWriterLock, directory_fd: int, lock_name: cstr, owner_token: u64) -> bool can[Blocking.IO]:
+            return false if lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token or owner_token == 0 or lock.descriptor < 0
+            return false if not artifact_cache_path_terminated(lock.path) or not artifact_cache_path_equal(lock.path, lock_name)
+            return false if not artifact_cache_directory_descriptor_valid(directory_fd)
+            descriptor_info: mutable ElisascriptStat = ElisascriptStat{}
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            return false if elisascript_posix_fstat(lock.descriptor, descriptor_info) != 0
+            return false if elisascript_posix_fstatat(directory_fd, lock_name, named_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0
+            return false if (descriptor_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or descriptor_info.link_count != 1
+            return false if descriptor_info.device != named_info.device or descriptor_info.inode != named_info.inode
+            return elisascript_posix_flock(lock.descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK) == 0
+
     public:
         const enum ArtifactCacheKind of u8:
             IrMetadata
@@ -581,6 +597,18 @@ module EsArtifactCache:
         def publish_build_incremental_cache_at_locked(lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             _ = try decode_build_incremental_cache(bytes)
             return try artifact_cache_publish_payload_at_locked(lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)
+
+
+        # Publish while a caller-held lock spans the larger build transaction.
+        # Unlike the convenience `_locked` form, this does not reacquire or
+        # release the lock; the owner must release it on both success and
+        # failure. Matching the stored lock name and owner token prevents an
+        # unrelated lease from authorizing publication through this handle;
+        # the descriptor and named lock inode are also revalidated.
+        def publish_build_incremental_cache_at_held(lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise ArtifactCacheIoError.LockFailed(lock_name) if not artifact_cache_writer_lock_matches_at(lock, directory_fd, lock_name, owner_token)
+            _ = try decode_build_incremental_cache(bytes)
+            return try artifact_cache_publish_payload_at(directory_fd, lock_name, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)
 
 
     public:
