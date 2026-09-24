@@ -52,10 +52,16 @@ the second invocation to report `build_cache=up_to_date`.
 
 The harness also pins the reference compiler and archiver to `/usr/bin/cc` and
 `/usr/bin/ar`, requires both build routes to produce the static archive,
-requires both generated headers to match the template byte-for-byte, compares
-both executable process results (status, stdout, stderr), and verifies that
-both executables exist and can be run. Header reads are bounded to the
-fixture's 4 KiB ceiling and reject symlink paths.
+requires both generated headers to match the selected template byte-for-byte,
+compares both executable process results (status, stdout, stderr), and verifies
+that both executables exist and can be run. It then changes only the generated
+header template to a second checked-in variant in the same build directories.
+The CMake build output must show recompilation of `main.c` and relinking while
+not recompiling `answer.c` or rebuilding the static library. The Elisascript
+candidate must report exactly the generated-header, main-compile, and
+executable-link targets as rebuilt; its second execution must still produce
+the same program behavior. Header reads are bounded to the fixture's 4 KiB
+ceiling and reject symlink paths.
 
 `test/script_parity/minimal_native_build_launcher_test.elisascript` is the
 end-to-end process parity harness. It accepts `ELISASCRIPT_MINIMAL_NATIVE_CMAKE`

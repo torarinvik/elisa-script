@@ -91,8 +91,9 @@ module EsMinimalNativeBuildParity:
             return run.outcome == DifferentialRunOutcome.Completed and run.exit_status == 0
 
 
-        def generated_header_artifacts_match(fixture: Path, cmake_build: Path, elisa_build: Path) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read]:
-            template: Path = fixture.joinpath("include").joinpath("generated_build_config.h.in")
+        def generated_header_artifacts_match(fixture: Path, cmake_build: Path, elisa_build: Path, use_variant: bool) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read]:
+            template_name: sview = "generated_build_config_variant.h.in" if use_variant else "generated_build_config.h.in"
+            template: Path = fixture.joinpath("include").joinpath(template_name)
             cmake_header: Path = cmake_build.joinpath("generated_build_config.h")
             elisa_header: Path = elisa_build.joinpath("generated_build_config.h")
             return false if is_symlink(template) or is_symlink(cmake_header) or is_symlink(elisa_header)
@@ -248,8 +249,51 @@ module EsMinimalNativeBuildParity:
                 print("minimal native parity: second Elisascript build was not an up-to-date no-op")
                 _ = remove_workspace(workspace)
                 return false
+            if not generated_header_artifacts_match(fixture_directory, cmake_build, elisa_build, false):
+                print("minimal native parity: clean generated-header bytes differ from the default template")
+                _ = remove_workspace(workspace)
+                return false
 
-            if not generated_header_artifacts_match(fixture_directory, cmake_build, elisa_build):
+            variant_template: Path = fixture_directory.joinpath("include").joinpath("generated_build_config_variant.h.in")
+            variant_template_text: sview = f"{variant_template}"
+            variant_configure_arguments: darray[sview] = ["-S", fixture_text, "-B", cmake_build_text, "-DMINIMAL_BUILD_CONFIG_INPUT=" + variant_template_text]
+            variant_configured: bool = run_checked_process(tools.cmake, variant_configure_arguments, repository_text, "cmake-configure-minimal-native-variant", environment)
+            if not variant_configured:
+                _ = remove_workspace(workspace)
+                return false
+
+            reference_variant_build: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_process(tools.cmake, ["--build", cmake_build_text, "--parallel", "1"], repository_text, "cmake-incremental-minimal-native", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                ok value:
+                    reference_variant_build <- value
+                error failure:
+                    print("minimal native parity: CMake incremental build could not complete")
+                    _ = remove_workspace(workspace)
+                    return false
+            reference_frontier_matches: bool = process_succeeded(reference_variant_build) and reference_variant_build.stdout.contains("main.c.o") and reference_variant_build.stdout.contains("Linking C executable") and not reference_variant_build.stdout.contains("answer.c.o") and not reference_variant_build.stdout.contains("Linking C static library")
+            if not reference_frontier_matches:
+                print("minimal native parity: CMake variant rebuild frontier was unexpected")
+                _ = remove_workspace(workspace)
+                return false
+
+            ctest_variant_arguments: darray[sview] = ["--test-dir", cmake_build_text, "--output-on-failure"]
+            if not run_checked_process(tools.ctest, ctest_variant_arguments, repository_text, "ctest-minimal-native-variant", environment):
+                _ = remove_workspace(workspace)
+                return false
+
+            candidate_variant_arguments: darray[sview] = [build_script_text, elisa_build_text, "variant"]
+            candidate_variant_matches: mutable bool = false
+            catch run_process(tools.launcher, candidate_variant_arguments, repository_text, "elisascript-incremental-minimal-native-variant", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                ok variant_run:
+                    candidate_variant_matches <- variant_run.outcome == DifferentialRunOutcome.Completed and variant_run.exit_status == 0 and variant_run.stdout == "build_cache=rebuilt\nrebuilt=generate-config-header\nrebuilt=compile-main\nrebuilt=minimal-native\n" and variant_run.stderr == ""
+                error failure:
+                    candidate_variant_matches <- false
+            if not candidate_variant_matches:
+                print("minimal native parity: Elisascript variant rebuild frontier was unexpected")
+                _ = remove_workspace(workspace)
+                return false
+
+            if not generated_header_artifacts_match(fixture_directory, cmake_build, elisa_build, true):
                 print("minimal native parity: generated header bytes differ from the configure_file input")
                 _ = remove_workspace(workspace)
                 return false

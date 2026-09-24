@@ -296,6 +296,7 @@ rg -Fq 'BuildExecutionError.ExecutionNotSuccessful' "$incremental_executor_fixtu
 # Keep the E06 fixture tied to the real CMake/custom-output shape: the
 # generated file is declared, and compilation is graph-dependent on it.
 rg -Fq 'configure_file(' "$minimal_native_cmake"
+rg -Fq 'MINIMAL_BUILD_CONFIG_INPUT' "$minimal_native_cmake"
 rg -Fq 'include/generated_build_config.h.in' "$minimal_native_cmake"
 rg -Fq 'generated_build_config.h' "$minimal_native_cmake"
 rg -Fq 'add_library(minimal-answer STATIC src/answer.c)' "$minimal_native_cmake"
@@ -319,6 +320,13 @@ rg -Fq 'Toolchain::CACHE_LOCK, Toolchain::CACHE_NAME, Toolchain::CACHE_STAGING' 
 rg -Fq 'program_result: ProcessCapture = try capture_process_result_in_directory(executable(output_path_text), [], "", build_directory,' "$minimal_native_candidate"
 rg -Fq 'execution.nodes.count != 5' "$minimal_native_candidate"
 rg -Fq 'every_build_node_was_cached(execution)' "$minimal_native_candidate"
+rg -Fq 'generated_build_config_variant.h.in' "$minimal_native_candidate"
+rg -Fq 'candidate_variant_arguments' "$minimal_native_parity"
+rg -Fq 'rebuilt=generate-config-header' "$minimal_native_parity"
+rg -Fq 'rebuilt=compile-main' "$minimal_native_parity"
+rg -Fq 'rebuilt=minimal-native' "$minimal_native_parity"
+rg -Fq 'main.c.o' "$minimal_native_parity"
+rg -Fq 'Linking C static library' "$minimal_native_parity"
 rg -Fq 'def generated_header_artifacts_match(' "$minimal_native_parity"
 rg -Fq '"-DCMAKE_AR=/usr/bin/ar"' "$minimal_native_parity"
 rg -Fq 'MAX_GENERATED_HEADER_BYTES: usize = 4096' "$minimal_native_parity"

@@ -5,8 +5,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+set(
+    MINIMAL_BUILD_CONFIG_INPUT
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/generated_build_config.h.in"
+    CACHE FILEPATH "Input template for the generated build configuration header"
+)
+
 configure_file(
-    include/generated_build_config.h.in
+    "${MINIMAL_BUILD_CONFIG_INPUT}"
     generated_build_config.h
     COPYONLY
 )
