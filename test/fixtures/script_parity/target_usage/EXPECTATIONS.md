@@ -34,8 +34,10 @@ propagation.
 Resolved link entries preserve target-artifact identity separately from
 literal linker names, so equal spellings such as a target named `m` and the
 system library `m` cannot be deduplicated or emitted using the wrong form.
-Absolute and relative library paths and already-prefixed linker items remain
-literal argv entries instead of being rewritten as `-l` search names.
+`LinkLibrary` requirements explicitly choose `SearchName`, `Path`, or
+`LinkerArgument`; the model rejects mismatched spellings, and the candidate
+lowers each form without guessing. Absolute/relative paths and prefixed
+linker items remain literal argv entries.
 
 `test/script_parity/target_usage_launcher_test.elisascript` runs the CMake
 configure/build/CTest route and the candidate build in separate fresh roots,

@@ -37,10 +37,19 @@ module EsBuildUsage:
             Interface
 
 
+        # Describes how one non-target LinkLibrary value becomes argv: a
+        # search name receives `-l`, while Path and LinkerArgument are literal.
+        const enum BuildUsageLibraryForm of u8:
+            SearchName
+            Path
+            LinkerArgument
+
+
         struct BuildUsageRequirement:
             kind: BuildUsageKind
             visibility: BuildUsageVisibility
             value: sview
+            library_form: BuildUsageLibraryForm = BuildUsageLibraryForm.SearchName
 
 
         struct BuildUsageDependency:
@@ -62,6 +71,7 @@ module EsBuildUsage:
         struct BuildUsageEntry:
             kind: BuildUsageKind
             value: sview
+            library_form: BuildUsageLibraryForm = BuildUsageLibraryForm.SearchName
             # Distinguishes a target artifact name from a literal linker name
             # such as `m`; spelling equality does not imply identity.
             target_artifact: bool = false
@@ -97,6 +107,7 @@ module EsBuildUsage:
             InvalidRequirementKind
             InvalidVisibility
             InvalidRequirementValue
+            InvalidLibraryForm
             InterfaceVisibilityRequired
             DependencyIndexInvalid
             DependencyOrderInvalid
@@ -117,6 +128,20 @@ module EsBuildUsage:
             return visibility in {BuildUsageVisibility.Private, BuildUsageVisibility.Public, BuildUsageVisibility.Interface}
 
 
+        def library_form_valid(form: BuildUsageLibraryForm) -> bool:
+            return form in {BuildUsageLibraryForm.SearchName, BuildUsageLibraryForm.Path, BuildUsageLibraryForm.LinkerArgument}
+
+
+        def library_form_matches_requirement(requirement: BuildUsageRequirement) -> bool:
+            return requirement.library_form == BuildUsageLibraryForm.SearchName if requirement.kind != BuildUsageKind.LinkLibrary
+            if requirement.library_form == BuildUsageLibraryForm.SearchName:
+                return not sview_contains_byte(requirement.value, 47) and not sview_contains_byte(requirement.value, 92) and not requirement.value.startswith("-")
+            if requirement.library_form == BuildUsageLibraryForm.Path:
+                return sview_contains_byte(requirement.value, 47) or sview_contains_byte(requirement.value, 92)
+            return requirement.value.startswith("-") if requirement.library_form == BuildUsageLibraryForm.LinkerArgument
+            return false
+
+
         def usage_kind_is_compile(kind: BuildUsageKind) -> bool:
             return kind == BuildUsageKind.IncludeDirectory or kind == BuildUsageKind.CompileDefinition or kind == BuildUsageKind.CompileOption
 
@@ -126,7 +151,7 @@ module EsBuildUsage:
 
 
         def usage_entry_equal(left: BuildUsageEntry, right: BuildUsageEntry) -> bool:
-            return left.kind == right.kind and left.value == right.value and left.target_artifact == right.target_artifact
+            return left.kind == right.kind and left.value == right.value and left.target_artifact == right.target_artifact and left.library_form == right.library_form
 
 
         def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, candidate: BuildUsageEntry, resolved_count: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
@@ -162,6 +187,7 @@ module EsBuildUsage:
                     raise BuildUsageError.InvalidRequirementKind if not usage_kind_valid(requirement.kind)
                     raise BuildUsageError.InvalidVisibility if not visibility_valid(requirement.visibility)
                     raise BuildUsageError.InvalidRequirementValue if sview_len(requirement.value) == 0 or sview_len(requirement.value) > Limits::VALUE_BYTES or sview_contains_byte(requirement.value, 0)
+                    raise BuildUsageError.InvalidLibraryForm if not library_form_valid(requirement.library_form) or not library_form_matches_requirement(requirement)
                     raise BuildUsageError.InterfaceVisibilityRequired if target.kind == BuildUsageTargetKind.InterfaceLibrary and requirement.visibility != BuildUsageVisibility.Interface
                 dependency_indices: mutable darray[usize] = []
                 for dependency_index in 0..<target.dependencies.count |target, dependency_indices|:
@@ -203,7 +229,7 @@ module EsBuildUsage:
                     is_link: bool = usage_kind_is_link(requirement.kind)
                     local: bool = requirement.visibility != BuildUsageVisibility.Interface and target.kind != BuildUsageTargetKind.InterfaceLibrary
                     exported: bool = requirement.visibility == BuildUsageVisibility.Public or requirement.visibility == BuildUsageVisibility.Interface
-                    entry: BuildUsageEntry = BuildUsageEntry{kind: requirement.kind, value: requirement.value}
+                    entry: BuildUsageEntry = BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form}
                     if is_compile and local:
                         _ = try append_usage_entry(result.compile, entry, resolved_count)
                     if is_link and local:
@@ -215,7 +241,7 @@ module EsBuildUsage:
                     # CMake static libraries retain a PRIVATE link dependency
                     # in their link interface, marked here as link-only.
                     if is_link and requirement.kind == BuildUsageKind.LinkLibrary and requirement.visibility == BuildUsageVisibility.Private and target.kind == BuildUsageTargetKind.StaticLibrary:
-                        _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: requirement.kind, value: requirement.value, link_only: true}, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form, link_only: true}, resolved_count)
 
                 for dependency in target.dependencies |target, results, result, resolved_count|:
                     dependency_result: BuildUsageTargetResult = results[dependency.target_index]
@@ -239,11 +265,11 @@ module EsBuildUsage:
                         if local:
                             # Link-only is an export modifier, not a limitation
                             # on the current target's own final link closure.
-                            _ = try append_usage_entry(result.link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact}, resolved_count)
+                            _ = try append_usage_entry(result.link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form}, resolved_count)
                         if exported:
                             _ = try append_usage_entry(result.exported_link, entry, resolved_count)
                         if not exported and target.kind == BuildUsageTargetKind.StaticLibrary:
-                            _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, link_only: true}, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form, link_only: true}, resolved_count)
 
                 results.push(result)
             return BuildUsageResolution{targets: results, resolved_entries: resolved_count}

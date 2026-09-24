@@ -128,7 +128,9 @@ for declaration in \
     'SharedLibrary' \
     'const enum BuildUsageKind of u8:' \
     'const enum BuildUsageVisibility of u8:' \
+    'const enum BuildUsageLibraryForm of u8:' \
     'struct BuildUsageRequirement:' \
+    'library_form: BuildUsageLibraryForm' \
     'struct BuildUsageDependency:' \
     'struct BuildUsageTarget:' \
     'struct BuildUsageTargetResult:' \
@@ -143,6 +145,7 @@ for boundary in \
     'InterfaceVisibilityRequired' \
     'DependencyOrderInvalid' \
     'InvalidDependencyTargetKind' \
+    'InvalidLibraryForm' \
     'DuplicateDependency' \
     'BuildUsageTargetKind.StaticLibrary' \
     'BuildUsageVisibility.Public' \
@@ -157,6 +160,8 @@ for boundary in \
     'dependency_target.kind == BuildUsageTargetKind.SharedLibrary' \
     'value: dependency_result.name' \
     'target_artifact: true' \
+    'library_form_matches_requirement' \
+    'left.library_form == right.library_form' \
     'left.target_artifact == right.target_artifact' \
     'target_artifact: entry.target_artifact' \
     'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count' \
@@ -173,6 +178,7 @@ rg -Fq 'ordered_target_names[name_index - 1] == ordered_target_names[name_index]
 rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "$usage_fixture"
 rg -Fq 'build_usage_shared_dependency_contributes_its_artifact' "$usage_fixture"
 rg -Fq 'build_usage_distinguishes_target_artifacts_from_linker_names' "$usage_fixture"
+rg -Fq 'build_usage_rejects_mismatched_library_forms' "$usage_fixture"
 rg -Fq 'build_usage_rejects_noncanonical_dependencies_and_interface_visibility' "$usage_fixture"
 rg -Fq 'build_usage_private_static_dependency_is_local_and_link_only_exported' "$usage_fixture"
 rg -Fq 'build_usage_interface_dependency_must_use_interface_visibility' "$usage_fixture"
@@ -188,9 +194,13 @@ rg -Fq 'assert app_usage.link[1].target_artifact' "$usage_fixture"
 rg -Fq 'value == "/opt/fixture/lib/libcustom.a"' "$usage_fixture"
 rg -Fq 'value == "deps/lib/librelative.a"' "$usage_fixture"
 rg -Fq 'value == "-lcustom"' "$usage_fixture"
+rg -Fq 'library_form == BuildUsageLibraryForm.Path' "$usage_fixture"
+rg -Fq 'library_form == BuildUsageLibraryForm.LinkerArgument' "$usage_fixture"
 rg -Fq 'BuildUsageError.InvalidDependencyTargetKind' "$usage_fixture"
 rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
-rg -Fq 'elif entry.value.contains("/") or entry.value.startswith("-"):' "$target_usage_candidate"
+rg -Fq 'entry.library_form == BuildUsageLibraryForm.Path' "$target_usage_candidate"
+rg -Fq 'entry.library_form == BuildUsageLibraryForm.LinkerArgument' "$target_usage_candidate"
+rg -Fq 'entry.library_form == BuildUsageLibraryForm.SearchName' "$target_usage_candidate"
 rg -Fq 'arguments.push("-l" + entry.value)' "$target_usage_candidate"
 if rg -n 'BuildUsageRequirement\{kind: BuildUsageKind.LinkLibrary, visibility: BuildUsageVisibility.Private, value: "(core|helper)"\}' "$target_usage_candidate"; then
     printf 'build model audit: target-usage parity candidate masks dependency propagation with an explicit core/helper link requirement\n' >&2
