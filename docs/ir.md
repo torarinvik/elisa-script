@@ -491,6 +491,19 @@ returns the owned batch atomically. Each batch is capped at 4,096 rows,
 allowed at a valid row boundary; out-of-range requests fail rather than
 truncate.
 
+`EsSchemaToml` binds a resolved typed TOML configuration to the common
+`SchemaDescriptor`. It enforces required fields, aliases, unknown-key policy,
+duplicate resolved keys, scalar kinds, array/inline-table container kinds, and
+exact integer/decimal targets. TOML numbers retain exact source spelling until
+conversion; environment and CLI strings are parsed only when a field declares
+a boolean or numeric target. The resulting record refers to the resolved
+configuration for text, arrays, and inline-table contents, so both the schema
+and resolution must outlive it. This is currently a flat binding: recursive
+array-item and nested object schemas, nested inline tables/arrays, dates/times,
+and typed cross-source merging remain unsupported. Source fixtures and static
+guards describe the behavior but are not runtime evidence while compiler
+validation is held.
+
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
 bytecode, or native artifact targets, destination paths, executable intent, and

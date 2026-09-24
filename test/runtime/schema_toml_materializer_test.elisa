@@ -1,0 +1,89 @@
+include "../../src/runtime/encoding.elisa"
+include "../../src/runtime/config_model.elisa"
+include "../../src/runtime/config_toml_model.elisa"
+include "../../src/runtime/record_numeric_model.elisa"
+include "../../src/runtime/schema_model.elisa"
+include "../../src/runtime/schema_integer_conversion.elisa"
+include "../../src/runtime/schema_toml_materializer.elisa"
+
+using EsConfig
+using EsConfigToml
+using EsSchema
+using EsSchemaNumeric
+using EsSchemaToml
+
+
+@test
+def toml_schema_binds_typed_config_and_text_overrides() -> void:
+    can Memory.Allocate, Abort.Panic:
+        parsed: ConfigTomlLayer = parse_toml_config("name = \"release\"\nenabled = true\nworkers = 1000\ntimeout = 1_25.5_0e+2\nfeatures = [\"thin-lto\", \"strip\"]\ndependency = { version = \"1.2\", optional = false }\n")
+        override_entries: darray[ConfigEntry] = [
+            ConfigEntry{key: "workers", value: "0x10"},
+            ConfigEntry{key: "enabled", value: "false"},
+        ]
+        overrides: ConfigLayer = ConfigLayer{source: ConfigSource.Environment, entries: override_entries}
+        resolution: ConfigTomlResolution = resolve_toml_config_layers(parsed, [overrides])
+        schema: SchemaDescriptor = SchemaDescriptor{name: "build", source: SchemaSource.Toml, fields: [
+            SchemaField{name: "name", kind: SchemaValueKind.Text},
+            SchemaField{name: "enabled", kind: SchemaValueKind.Bool},
+            SchemaField{name: "workers", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.U16},
+            SchemaField{name: "timeout", kind: SchemaValueKind.Number, decimal_target: SchemaDecimalTarget.Exact},
+            SchemaField{name: "features", kind: SchemaValueKind.Array},
+            SchemaField{name: "dependency", kind: SchemaValueKind.Object},
+        ]}
+        record: SchemaTomlRecord = materialize_toml_schema_record(schema, resolution)
+        assert record.values.count == 6
+        assert record.values[0].kind == SchemaTomlValueKind.Text
+        assert record.values[1].kind == SchemaTomlValueKind.Bool and not record.values[1].bool_value
+        assert record.values[2].kind == SchemaTomlValueKind.Integer
+        assert record.values[2].integer_value.unsigned_value == 16
+        assert record.values[3].kind == SchemaTomlValueKind.Decimal
+        assert record.values[3].decimal_value.coefficient_digits.count != 0
+        assert record.values[4].kind == SchemaTomlValueKind.Array
+        assert resolution.values[record.values[4].source_value_index].items.count == 2
+        assert record.values[5].kind == SchemaTomlValueKind.Object
+        assert resolution.values[record.values[5].source_value_index].fields.count == 2
+
+
+@test
+def toml_schema_rejects_unknown_and_missing_required_fields() -> void:
+    can Memory.Allocate, Abort.Panic:
+        unknown: ConfigTomlLayer = parse_toml_config("name = \"release\"\nextra = true\n")
+        unknown_resolution: ConfigTomlResolution = resolve_toml_config_layers(unknown, [])
+        schema: SchemaDescriptor = SchemaDescriptor{name: "build", source: SchemaSource.Toml, fields: [SchemaField{name: "name", kind: SchemaValueKind.Text}]}
+        unknown_rejected: mutable bool = false
+        catch materialize_toml_schema_record(schema, unknown_resolution):
+            ok record:
+                assert false
+            error failure:
+                unknown_rejected <- failure == SchemaTomlMaterializeError.UnknownField
+        assert unknown_rejected
+
+        missing: ConfigTomlLayer = parse_toml_config("other = \"value\"\n")
+        missing_resolution: ConfigTomlResolution = resolve_toml_config_layers(missing, [])
+        missing_rejected: mutable bool = false
+        catch materialize_toml_schema_record(schema, missing_resolution):
+            ok record:
+                assert false
+            error failure:
+                missing_rejected <- failure == SchemaContractError.RequiredFieldMissing
+        assert missing_rejected
+
+
+@test
+def toml_schema_rejects_malformed_numeric_override_separators() -> void:
+    can Memory.Allocate, Abort.Panic:
+        parsed: ConfigTomlLayer = parse_toml_config("workers = 10\n")
+        override_entries: darray[ConfigEntry] = [ConfigEntry{key: "workers", value: "1__0"}]
+        overrides: ConfigLayer = ConfigLayer{source: ConfigSource.Environment, entries: override_entries}
+        resolution: ConfigTomlResolution = resolve_toml_config_layers(parsed, [overrides])
+        schema: SchemaDescriptor = SchemaDescriptor{name: "build", source: SchemaSource.Toml, fields: [
+            SchemaField{name: "workers", kind: SchemaValueKind.Number, integer_target: SchemaIntegerTarget.U16},
+        ]}
+        rejected: mutable bool = false
+        catch materialize_toml_schema_record(schema, resolution):
+            ok record:
+                assert false
+            error failure:
+                rejected <- failure == SchemaTomlMaterializeError.InvalidNumber
+        assert rejected

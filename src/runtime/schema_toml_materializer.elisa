@@ -1,0 +1,262 @@
+# Typed TOML configuration projection into the shared schema contract.
+#
+# The schema record stores source indices for non-numeric values so strings,
+# arrays, inline tables, and array-table rows stay borrowed from the resolved
+# TOML layer. Numeric targets are parsed into exact owned representations.
+# Callers retain the ConfigTomlResolution and SchemaDescriptor while using the
+# record. Recursive element/object schema validation is not provided here.
+
+module EsSchemaToml:
+    using EsConfigToml
+    using EsSchema
+    using EsSchemaNumeric
+
+    public:
+        const SCHEMA_TOML_MAX_VALUES: usize = 4096
+        const SCHEMA_TOML_INDEX_NONE: usize = 4294967295
+
+
+        const enum SchemaTomlValueKind of u8:
+            Missing
+            Bool
+            Number
+            Integer
+            Decimal
+            Text
+            Array
+            Object
+
+
+        struct SchemaTomlValue:
+            field_index: usize
+            kind: SchemaTomlValueKind
+            source_value_index: usize = SCHEMA_TOML_INDEX_NONE
+            bool_value: bool = false
+            integer_value: SchemaIntegerValue = SchemaIntegerValue{}
+            decimal_value: SchemaDecimalValue = SchemaDecimalValue{}
+
+
+        struct SchemaTomlRecord:
+            schema_name: sview
+            values: darray[SchemaTomlValue] = []
+
+
+        error SchemaTomlMaterializeError:
+            InvalidSource
+            UnknownField
+            DuplicateField
+            ValueKindMismatch
+            UnsupportedValueKind
+            InvalidNumber
+            InputLimitExceeded
+            FieldIndexInvalid
+            SourceIndexInvalid
+
+
+    private:
+        def schema_toml_source_name(field: SchemaField) -> sview:
+            return field.name if field.source_name == ""
+            return field.source_name
+
+
+        def schema_toml_input_kind_matches(schema_kind: SchemaValueKind, input_kind: ConfigTomlValueKind, source: ConfigSource) -> bool:
+            if schema_kind == SchemaValueKind.Text:
+                return input_kind == ConfigTomlValueKind.Text
+            elif schema_kind == SchemaValueKind.Bool:
+                return input_kind == ConfigTomlValueKind.Boolean or (input_kind == ConfigTomlValueKind.Text and source != ConfigSource.File)
+            elif schema_kind == SchemaValueKind.Number:
+                return input_kind == ConfigTomlValueKind.Integer or input_kind == ConfigTomlValueKind.Float or (input_kind == ConfigTomlValueKind.Text and source != ConfigSource.File)
+            elif schema_kind == SchemaValueKind.Array:
+                return input_kind == ConfigTomlValueKind.Array
+            elif schema_kind == SchemaValueKind.Object:
+                return input_kind == ConfigTomlValueKind.InlineTable
+            return false
+
+
+        def schema_toml_digit(byte: u8) -> usize:
+            return (byte - 48).usize() if byte >= 48 and byte <= 57
+            return (byte - 65 + 10).usize() if byte >= 65 and byte <= 70
+            return (byte - 97 + 10).usize() if byte >= 97 and byte <= 102
+            return 16
+
+
+        def schema_toml_separators_valid(source: darray[u8], radix: usize) -> bool:
+            for index in 0..<source.count |source, radix|:
+                if source[index] == 95:
+                    return false if index == 0 or index + 1 >= source.count
+                    return false if schema_toml_digit(source[index - 1]) >= radix or schema_toml_digit(source[index + 1]) >= radix
+            return true
+
+
+        def schema_toml_integer_decimal_bytes(source: darray[u8]) -> darray[u8] error[SchemaTomlMaterializeError, SchemaIntegerError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaTomlMaterializeError.InvalidNumber if source.count == 0
+            radix: mutable usize = 10
+            cursor: mutable usize = 0
+            if source.count >= 2 and source[0] == 48:
+                prefix: u8 = source[1]
+                if prefix == 120 or prefix == 88:
+                    radix <- 16
+                    cursor <- 2
+                elif prefix == 111 or prefix == 79:
+                    radix <- 8
+                    cursor <- 2
+                elif prefix == 98 or prefix == 66:
+                    radix <- 2
+                    cursor <- 2
+            raise SchemaTomlMaterializeError.InvalidNumber if not schema_toml_separators_valid(source, radix)
+            if radix == 10:
+                decimal: mutable darray[u8] = []
+                for byte in source |source, decimal|:
+                    if byte != 95:
+                        decimal.push(byte)
+                return decimal
+
+            magnitude: mutable u64 = 0
+            maximum: u64 = 18446744073709551615u64
+            digits: mutable usize = 0
+            while cursor < source.count:
+                byte: u8 = source[cursor]
+                if byte != 95:
+                    digit: usize = schema_toml_digit(byte)
+                    raise SchemaTomlMaterializeError.InvalidNumber if digit >= radix
+                    digit_u64: u64 = digit.u64()
+                    radix_u64: u64 = radix.u64()
+                    raise SchemaIntegerError.TargetOutOfRange if magnitude > (maximum - digit_u64) / radix_u64
+                    magnitude <- magnitude * radix_u64 + digit_u64
+                    digits <- digits + 1
+                cursor <- cursor + 1
+            raise SchemaTomlMaterializeError.InvalidNumber if digits == 0
+            output_digits: mutable darray[u8] = []
+            while magnitude != 0:
+                output_digits.push(48u8 + (magnitude % 10).u8())
+                magnitude <- magnitude / 10
+            if output_digits.count == 0:
+                output_digits.push(48u8)
+            decimal_result: mutable darray[u8] = []
+            for offset in 0..<output_digits.count |output_digits, decimal_result|:
+                decimal_result.push(output_digits[output_digits.count - offset - 1])
+            return decimal_result
+
+
+        def schema_toml_decimal_bytes(source: darray[u8]) -> darray[u8] error[SchemaTomlMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaTomlMaterializeError.InvalidNumber if source.count == 0
+            raise SchemaTomlMaterializeError.InvalidNumber if not schema_toml_separators_valid(source, 10)
+            value_view: sview = bytes_view(source)
+            raise SchemaTomlMaterializeError.InvalidNumber if value_view == "inf" or value_view == "+inf" or value_view == "-inf" or value_view == "nan" or value_view == "+nan" or value_view == "-nan"
+            decimal: mutable darray[u8] = []
+            for byte in source |source, decimal|:
+                if byte != 95:
+                    decimal.push(byte)
+            return decimal
+
+
+        def schema_toml_numeric_bytes(source: darray[u8]) -> darray[u8] error[SchemaTomlMaterializeError, SchemaIntegerError] can[Memory.Allocate, Abort.Panic]:
+            if source.count >= 2 and source[0] == 48 and (source[1] == 120 or source[1] == 88 or source[1] == 111 or source[1] == 79 or source[1] == 98 or source[1] == 66):
+                return try schema_toml_integer_decimal_bytes(source)
+            return try schema_toml_decimal_bytes(source)
+
+
+        def schema_toml_text_looks_integer(source: darray[u8]) -> bool:
+            return false if source.count == 0
+            return true if source.count >= 2 and source[0] == 48 and (source[1] == 120 or source[1] == 88 or source[1] == 111 or source[1] == 79 or source[1] == 98 or source[1] == 66)
+            for byte in source:
+                return false if byte == 46 or byte == 101 or byte == 69
+            return true
+
+
+        def schema_toml_materialize_value(schema: SchemaDescriptor&, field_index: usize, source_index: usize, resolution: ConfigTomlResolution&) -> SchemaTomlValue error[SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaTomlMaterializeError.FieldIndexInvalid if field_index >= schema.fields.count
+            raise SchemaTomlMaterializeError.SourceIndexInvalid if source_index >= resolution.values.count
+            field: SchemaField = schema.fields[field_index]
+            input: ConfigTomlResolvedValue = resolution.values[source_index]
+            raise SchemaTomlMaterializeError.ValueKindMismatch if not schema_toml_input_kind_matches(field.kind, input.kind, input.source)
+            raise SchemaTomlMaterializeError.UnsupportedValueKind if field.kind == SchemaValueKind.Any or field.kind == SchemaValueKind.Null
+            value: mutable SchemaTomlValue = SchemaTomlValue{field_index: field_index, source_value_index: source_index, kind: SchemaTomlValueKind.Text}
+            if input.kind == ConfigTomlValueKind.Text:
+                if field.kind == SchemaValueKind.Bool:
+                    if bytes_view(input.text) == "true":
+                        value.bool_value <- true
+                    elif bytes_view(input.text) == "false":
+                        value.bool_value <- false
+                    else:
+                        raise SchemaTomlMaterializeError.ValueKindMismatch
+                    value.kind <- SchemaTomlValueKind.Bool
+                elif field.kind == SchemaValueKind.Number:
+                    if field.integer_target != SchemaIntegerTarget.None:
+                        raise SchemaTomlMaterializeError.ValueKindMismatch if not schema_toml_text_looks_integer(input.text)
+                        normalized_integer: darray[u8] = try schema_toml_integer_decimal_bytes(input.text)
+                        value.integer_value <- try parse_schema_integer(normalized_integer, 0, normalized_integer.count, field.integer_target)
+                        value.kind <- SchemaTomlValueKind.Integer
+                    elif field.decimal_target == SchemaDecimalTarget.Exact:
+                        normalized_decimal: darray[u8] = try schema_toml_numeric_bytes(input.text)
+                        value.decimal_value <- try parse_schema_decimal(normalized_decimal, 0, normalized_decimal.count)
+                        value.kind <- SchemaTomlValueKind.Decimal
+                    else:
+                        normalized_decimal: darray[u8] = try schema_toml_numeric_bytes(input.text)
+                        _ = try parse_schema_decimal(normalized_decimal, 0, normalized_decimal.count)
+                        value.kind <- SchemaTomlValueKind.Number
+                else:
+                    value.kind <- SchemaTomlValueKind.Text
+            elif input.kind == ConfigTomlValueKind.Boolean:
+                value.kind <- SchemaTomlValueKind.Bool
+                value.bool_value <- bytes_view(input.text) == "true"
+            elif input.kind == ConfigTomlValueKind.Integer or input.kind == ConfigTomlValueKind.Float:
+                if field.integer_target != SchemaIntegerTarget.None:
+                    raise SchemaTomlMaterializeError.ValueKindMismatch if input.kind != ConfigTomlValueKind.Integer
+                    normalized_integer: darray[u8] = try schema_toml_integer_decimal_bytes(input.text)
+                    value.integer_value <- try parse_schema_integer(normalized_integer, 0, normalized_integer.count, field.integer_target)
+                    value.kind <- SchemaTomlValueKind.Integer
+                elif field.decimal_target == SchemaDecimalTarget.Exact:
+                    normalized_decimal: darray[u8] = try schema_toml_numeric_bytes(input.text)
+                    value.decimal_value <- try parse_schema_decimal(normalized_decimal, 0, normalized_decimal.count)
+                    value.kind <- SchemaTomlValueKind.Decimal
+                else:
+                    normalized_number: darray[u8] = try schema_toml_numeric_bytes(input.text)
+                    _ = try parse_schema_decimal(normalized_number, 0, normalized_number.count)
+                    value.kind <- SchemaTomlValueKind.Number
+            elif input.kind == ConfigTomlValueKind.Array:
+                value.kind <- SchemaTomlValueKind.Array
+            else:
+                value.kind <- SchemaTomlValueKind.Object
+            return value
+
+
+    public:
+        def materialize_toml_schema_record(schema: SchemaDescriptor&, resolution: ConfigTomlResolution&) -> SchemaTomlRecord error[SchemaContractError, SchemaTomlMaterializeError, SchemaIntegerError, SchemaDecimalError] can[Memory.Allocate, Abort.Panic]:
+            try validate_schema_descriptor(schema)
+            raise SchemaTomlMaterializeError.InvalidSource if schema.source != SchemaSource.Toml
+            raise SchemaContractError.InvalidSource if schema.types.count != 0 or schema.nested_fields.count != 0
+            raise SchemaTomlMaterializeError.InputLimitExceeded if resolution.values.count > SCHEMA_TOML_MAX_VALUES
+
+            for source_index in 0..<resolution.values.count |resolution|:
+                raise SchemaTomlMaterializeError.InvalidSource if resolution.values[source_index].source not in {ConfigSource.Defaults, ConfigSource.File, ConfigSource.Environment, ConfigSource.CommandLine}
+                for earlier in 0..<source_index |resolution, source_index|:
+                    raise SchemaTomlMaterializeError.DuplicateField if resolution.values[earlier].key == resolution.values[source_index].key
+
+            source_indices: mutable darray[usize] = []
+            matched_inputs: mutable darray[bool] = []
+            for _ in 0..<schema.fields.count |source_indices|:
+                source_indices.push(SCHEMA_TOML_INDEX_NONE)
+            for _ in 0..<resolution.values.count |matched_inputs|:
+                matched_inputs.push(false)
+
+            for field_index in 0..<schema.fields.count |schema, resolution, source_indices, matched_inputs|:
+                source_name: sview = schema_toml_source_name(schema.fields[field_index])
+                for source_index in 0..<resolution.values.count |resolution, source_indices, field_index, source_name|:
+                    if resolution.values[source_index].key == source_name:
+                        source_indices[field_index] <- source_index
+                        matched_inputs[source_index] <- true
+                        break
+                raise SchemaContractError.RequiredFieldMissing if source_indices[field_index] == SCHEMA_TOML_INDEX_NONE and schema.fields[field_index].required
+
+            for source_index in 0..<resolution.values.count |resolution, matched_inputs, schema|:
+                raise SchemaTomlMaterializeError.UnknownField if not matched_inputs[source_index] and not schema.allow_unknown
+
+            record: mutable SchemaTomlRecord = SchemaTomlRecord{schema_name: schema.name}
+            for field_index in 0..<schema.fields.count |schema, source_indices, resolution, record|:
+                source_index: usize = source_indices[field_index]
+                if source_index == SCHEMA_TOML_INDEX_NONE:
+                    record.values.push(SchemaTomlValue{field_index: field_index, kind: SchemaTomlValueKind.Missing})
+                else:
+                    record.values.push(try schema_toml_materialize_value(schema, field_index, source_index, resolution))
+            return record

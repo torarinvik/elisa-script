@@ -9,13 +9,49 @@ model="$repo_root/src/runtime/schema_model.elisa"
 json_model="$repo_root/src/runtime/json_model.elisa"
 json_materializer="$repo_root/src/runtime/schema_json_materializer.elisa"
 csv_materializer="$repo_root/src/runtime/schema_csv_materializer.elisa"
+toml_materializer="$repo_root/src/runtime/schema_toml_materializer.elisa"
 integer_conversion="$repo_root/src/runtime/schema_integer_conversion.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+toml_fixture="$repo_root/test/runtime/schema_toml_materializer_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$integer_conversion" "$ir" "$fixture" "$docs"; do
+for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$toml_materializer" "$integer_conversion" "$ir" "$fixture" "$toml_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'schema model audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for declaration in \
+    'module EsSchemaToml:' \
+    'using EsConfigToml' \
+    'using EsSchema' \
+    'using EsSchemaNumeric' \
+    'const enum SchemaTomlValueKind of u8:' \
+    'struct SchemaTomlValue:' \
+    'struct SchemaTomlRecord:' \
+    'error SchemaTomlMaterializeError:' \
+    'def materialize_toml_schema_record(' \
+    'schema_toml_integer_decimal_bytes(' \
+    'schema_toml_separators_valid(' \
+    'SchemaTomlValueKind.Missing' \
+    'SchemaTomlValueKind.Array' \
+    'SchemaTomlValueKind.Object' \
+    'SchemaTomlMaterializeError.DuplicateField' \
+    'SchemaTomlMaterializeError.UnknownField'; do
+    rg -Fq "$declaration" "$toml_materializer"
+done
+
+for fixture_pattern in \
+    'toml_schema_binds_typed_config_and_text_overrides' \
+    'toml_schema_rejects_unknown_and_missing_required_fields' \
+    'toml_schema_rejects_malformed_numeric_override_separators' \
+    'SchemaTomlValueKind.Integer' \
+    'SchemaTomlValueKind.Decimal' \
+    'SchemaTomlValueKind.Array' \
+    'SchemaTomlValueKind.Object' \
+    'SchemaTomlMaterializeError.UnknownField' \
+    'SchemaTomlMaterializeError.InvalidNumber' \
+    'SchemaContractError.RequiredFieldMissing'; do
+    rg -Fq "$fixture_pattern" "$toml_fixture"
 done
 
 for declaration in \
@@ -147,10 +183,11 @@ for boundary in \
 done
 
 for boundary in \
-    'field.integer_target != SchemaIntegerTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number' \
-    'field.integer_target != SchemaIntegerTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text' \
-    'field.decimal_target != SchemaDecimalTarget.None and schema.source == SchemaSource.Json and field.kind != SchemaValueKind.Number' \
-    'field.decimal_target != SchemaDecimalTarget.None and schema.source != SchemaSource.Json and field.kind != SchemaValueKind.Text' \
+    'numeric_source: bool = schema.source == SchemaSource.Json or schema.source == SchemaSource.Toml' \
+    'field.integer_target != SchemaIntegerTarget.None and numeric_source and field.kind != SchemaValueKind.Number' \
+    'field.integer_target != SchemaIntegerTarget.None and not numeric_source and field.kind != SchemaValueKind.Text' \
+    'field.decimal_target != SchemaDecimalTarget.None and numeric_source and field.kind != SchemaValueKind.Number' \
+    'field.decimal_target != SchemaDecimalTarget.None and not numeric_source and field.kind != SchemaValueKind.Text' \
     'field.integer_target != SchemaIntegerTarget.None and field.decimal_target != SchemaDecimalTarget.None'; do
     rg -Fq "$boundary" "$model"
 done
@@ -177,6 +214,7 @@ rg -Fq 'include "../runtime/schema_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_integer_conversion.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_json_materializer.elisa"' "$ir"
 rg -Fq 'include "../runtime/schema_csv_materializer.elisa"' "$ir"
+rg -Fq 'include "../runtime/schema_toml_materializer.elisa"' "$ir"
 for fixture_pattern in \
     'typed_schema_binding_contract_checks_json_kinds_and_required_fields' \
     'typed_json_schema_materializer_owns_scalars_and_preserves_schema_order' \
@@ -212,6 +250,7 @@ done
 
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
+rg -Fq '`EsSchemaToml` binds resolved TOML configuration' "$docs"
 rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"
 
