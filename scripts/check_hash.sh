@@ -13,6 +13,10 @@ ledger="$repo_root/docs/capabilities/ledger.md"
 max_source_bytes=16777216
 max_total_source_bytes=33554432
 
+rg_bounded() {
+    command rg --max-filesize "$max_source_bytes" "$@"
+}
+
 for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'hash audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
@@ -39,8 +43,8 @@ for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
     total_source_bytes=$((total_source_bytes + source_size))
 done
 
-rg -q '^module EsHash:' "$model"
-rg -q 'include "\.\./runtime/hash_model\.elisa"' "$ir"
+rg_bounded -q '^module EsHash:' "$model"
+rg_bounded -q 'include "\.\./runtime/hash_model\.elisa"' "$ir"
 for declaration in \
     'const enum HashAlgorithm of u8' \
     'const enum HashState of u8' \
@@ -51,7 +55,7 @@ for declaration in \
     'error HashError:' \
     'def validate_hash_context\(' \
     'def advance_hash\('; do
-    rg -q "$declaration" "$model"
+    rg_bounded -q "$declaration" "$model"
 done
 
 for boundary in \
@@ -69,7 +73,7 @@ for boundary in \
     'context.chunks_seen == 0 and context.bytes_seen != 0' \
     'context.chunks_seen != 0 and context.bytes_seen == 0' \
     'digest.word1 == 0'; do
-    rg -q "$boundary" "$model"
+    rg_bounded -q "$boundary" "$model"
 done
 
 for fixture_pattern in \
@@ -79,10 +83,10 @@ for fixture_pattern in \
     'HashError.DigestAlgorithmMismatch' \
     'HashState.Finalized' \
     'HashError.AccountingInvalid'; do
-    rg -q "$fixture_pattern" "$fixture_file"
+    rg_bounded -q "$fixture_pattern" "$fixture_file"
 done
 
-rg -q 'EsHash::HashContext' "$docs"
-rg -q 'ES-SCRIPT-051' "$ledger"
+rg_bounded -q 'EsHash::HashContext' "$docs"
+rg_bounded -q 'ES-SCRIPT-051' "$ledger"
 
 printf 'hash audit: bounded incremental algorithms, chunks, and one-shot digest publication are present\n'
