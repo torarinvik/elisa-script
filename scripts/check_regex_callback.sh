@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/regex_callback_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/regex_callback_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'regex callback audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -46,6 +47,8 @@ for boundary in \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
     'session.state == RegexCallbackState.Matching and session.matches == 0' \
+    'session.matches != 0 and not session.pending and session.cursor == 0' \
+    'at_consumed_eof: bool = session.cursor == session.input_bytes and session.last_zero_start == session.input_bytes' \
     'session.cursor <- session.input_bytes' \
     'policy.max_captures != 0' \
     'session.pending and session.state != RegexCallbackState.Matching' \
@@ -55,6 +58,9 @@ for boundary in \
     'RegexCallbackState.Complete'; do
     rg -q "$boundary" "$model"
 done
+rg -Fq 'regex_callback_rejects_match_count_without_span_progress' "$runtime_fixture"
+rg -Fq 'regex_callback_rejects_zero_width_marker_ahead_of_cursor' "$runtime_fixture"
+rg -Fq 'regex_callback_accepts_empty_input_zero_width_match_at_eof' "$runtime_fixture"
 rg -Fq 'preserved: usize = 1 if session.pending_end == session.pending_start' "$model"
 rg -Fq 'assert zero.output_bytes == 2' "$fixture_file"
 
