@@ -9,6 +9,7 @@ model="$repo_root/src/runtime/config_model.elisa"
 json_model="$repo_root/src/runtime/config_json_model.elisa"
 environment_model="$repo_root/src/runtime/config_environment_model.elisa"
 cli_model="$repo_root/src/runtime/config_cli_model.elisa"
+json_file_model="$repo_root/src/runtime/config_json_file_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runtime_fixture="$repo_root/test/runtime/config_model_test.elisa"
@@ -19,8 +20,20 @@ integration_fixture="$repo_root/test/runtime/config_precedence_integration_test.
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+for json_file_boundary in \
+    'module EsConfigJsonFilePosix:' \
+    'struct ConfigJsonFileLayer:' \
+    'def read_config_json_file(' \
+    'JSON_CONFIG_FILE_MAX_BYTES' \
+    'DataDecodeLimits{input_bytes: JSON_CONFIG_FILE_MAX_BYTES}' \
+    'config_json_file_limits_valid(limits)' \
+    'ConfigJsonFileError.JsonPolicyInvalid' \
+    'EsBoundedText::read_utf8(input_path, limits.input_bytes)' \
+    'flat_json_config_layer(document)'; do
+    rg -Fq "$json_file_boundary" "$json_file_model"
 done
 for environment_boundary in \
     'module EsConfigEnvironment:' \
@@ -92,6 +105,7 @@ rg -Fq 'include "../runtime/config_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_json_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_environment_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/config_cli_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/config_json_file_posix.elisa"' "$ir"
 rg -Fq 'using EsConfig' "$fixture"
 for fixture_check in \
     'typed_config_precedence_is_explicit_and_deterministic' \

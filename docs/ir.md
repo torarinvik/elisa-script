@@ -2889,6 +2889,14 @@ must retain that document while using the layer or resolved values. Nested
 arrays/objects are rejected and require the typed schema materializer instead.
 This is a bounded flat-JSON slice of A06, not complete JSON/TOML support.
 
+`EsConfigJsonFilePosix::read_config_json_file` now reads a path through the
+shared bounded, stable-file UTF-8 reader (16 MiB maximum), parses with the
+requested JSON limits/policy, and returns a wrapper retaining the document
+that owns the layer's borrowed views. It rejects a zero or over-ceiling input
+budget and invalid decoder/JSON policies before opening the path. File
+replacement/content-change protection is inherited from the shared reader;
+runtime qualification remains pending.
+
 `EsConfigEnvironment::environment_config_layer` converts a validated sealed
 environment snapshot to the `Environment` layer without consulting or
 mutating process-global state. It omits unset tombstones so lower-priority file

@@ -933,6 +933,10 @@ EsConfigJson adapts one strict flat JSON object to the File layer, enforcing its
 entry ceiling before materialization and retaining exact number spellings and
 document-borrowed decoded scalar text; structures require the typed schema
 adapter. TOML and process-global environment capture are open.
+EsConfigJsonFilePosix reads bounded stable UTF-8 files and returns a
+document/layer wrapper preserving backing storage. It preflights decoder and
+JSON policy limits before I/O and caps file input at 16 MiB. Runtime
+qualification remains open.
 EsConfigEnvironment converts a sealed explicit snapshot to the Environment
 layer, omitting unset tombstones and preserving present-empty overrides without
 global environment access; callers retain the borrowed snapshot storage. The
