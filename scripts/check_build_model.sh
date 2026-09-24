@@ -315,6 +315,7 @@ rg -Fq 'BuildExecutionNodeOutputs{target_name: "generate-config-header", paths: 
 rg -Fq 'BuildExecutionNodeOutputs{target_name: "archive-answer", paths: [static_library_text]}' "$minimal_native_candidate"
 rg -Fq 'execution.nodes.count != 6' "$minimal_native_candidate"
 rg -Fq 'def generated_header_artifacts_match(' "$minimal_native_parity"
+rg -Fq '"-DCMAKE_AR=/usr/bin/ar"' "$minimal_native_parity"
 rg -Fq 'MAX_GENERATED_HEADER_BYTES: usize = 4096' "$minimal_native_parity"
 rg -Fq 'is_symlink(template) or is_symlink(cmake_header) or is_symlink(elisa_header)' "$minimal_native_parity"
 rg -Fq 'cmake_text == template_text and elisa_text == template_text' "$minimal_native_parity"

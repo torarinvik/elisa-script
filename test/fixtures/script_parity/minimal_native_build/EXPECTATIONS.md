@@ -44,6 +44,7 @@ The CMake route registers `minimal-native-output` with CTest and checks the
 `answer=42` output. The ElisaScript route declares the generated header and
 executable as outputs of their respective nodes, then has a dependent run node
 that checks the same exit status and captured stdout. The parity harness also
+pins the reference compiler and archiver to `/usr/bin/cc` and `/usr/bin/ar`,
 requires both build routes to produce the static archive, requires both
 generated headers to match the template byte-for-byte, compares both
 executable process results (status, stdout, stderr), and verifies that both
