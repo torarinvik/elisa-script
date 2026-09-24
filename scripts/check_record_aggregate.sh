@@ -153,5 +153,6 @@ rg -q 'EsRecordAggregate::RecordAggregateSession' "$docs"
 rg -q 'ES-SCRIPT-027' "$ledger"
 rg -q 'record_aggregate_hash_index_preserves_order_and_rejects_damage' "$runtime_fixture"
 rg -q 'damaged.index_slots\[index\] <- 0' "$runtime_fixture"
+rg -q 'RecordAggregateError.AccountingInvalid' "$runtime_fixture"
 
 printf 'record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n'
