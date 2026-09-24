@@ -56,7 +56,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
             rg -Fq '"$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
             ;;
         "$test_wrapper")
-            rg -Fq '"$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
             ;;
     esac
     rg -q 'compiler_pgid' "$wrapper"
@@ -107,10 +107,18 @@ for wrapper in "$lowering" "$test_wrapper"; do
     fi
 done
 
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; do
+    if rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED' "$parity_test"; then
+        rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
+        rg -q 'assert rss_guard == "active"' "$parity_test"
+    fi
+done
+
 rg -q 'emergency-stop latch' "$stopper"
 rg -q 'owner\.start' "$stopper"
 rg -q 'process_tree_snapshot' "$stopper"
 rg -q 'process_group_for_pid' "$stopper"
 rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
 rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
-printf 'validation wrapper audit: disabled gate, StructPy pin, bounded source snapshots, sampled guards, evidence retention, lease, and owned stop path present\n'
+printf 'validation wrapper audit: disabled gate, StructPy pin, bounded snapshots, sampled guards, evidence retention, lease, parity-fixture attestation, and owned stop path present\n'
