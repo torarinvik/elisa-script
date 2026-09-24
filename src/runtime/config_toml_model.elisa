@@ -1,6 +1,6 @@
 # Bounded TOML configuration subset with explicit rejection of unsupported
-# constructs. Parsed keys, scalar values, and scalar array items are owned by
-# the result wrapper, so neither representation borrows the source buffer.
+# constructs. Parsed keys, scalar values, inline-table fields, and scalar array
+# items are owned by the result wrapper; none borrows the source buffer.
 
 module EsConfigToml:
     using EsConfig
@@ -10,6 +10,7 @@ module EsConfigToml:
         const CONFIG_TOML_MAX_BYTES: usize = 16777216
         const CONFIG_TOML_MAX_ARRAY_ITEMS: usize = 4096
         const CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS: usize = 65536
+        const CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS: usize = 65536
 
 
         const enum ConfigTomlValueKind of u8:
@@ -18,6 +19,7 @@ module EsConfigToml:
             Integer
             Float
             Array
+            InlineTable
 
 
         struct ConfigTomlArrayItem:
@@ -25,11 +27,19 @@ module EsConfigToml:
             text: darray[u8] = []
 
 
+        struct ConfigTomlTableField:
+            key: darray[u8] = []
+            kind: ConfigTomlValueKind
+            text: darray[u8] = []
+            items: darray[ConfigTomlArrayItem] = []
+
+
         struct ConfigTomlValue:
             key: sview
             kind: ConfigTomlValueKind
             text: darray[u8] = []
             items: darray[ConfigTomlArrayItem] = []
+            fields: darray[ConfigTomlTableField] = []
 
 
         struct ConfigTomlLayer:
@@ -49,6 +59,7 @@ module EsConfigToml:
             DuplicateTable
             ArrayTableUnsupported
             InvalidKey
+            DuplicateKey
             ExpectedEquals
             InvalidString
             UnsupportedEscape
@@ -327,6 +338,87 @@ module EsConfigToml:
                     break
 
 
+        def config_toml_inline_value_end(source: sview, start: usize, end: usize) -> usize error[ConfigTomlError]:
+            cursor: mutable usize = start
+            array_depth: mutable usize = 0
+            quote: mutable u8 = 0
+            escaped: mutable bool = false
+            while cursor < end:
+                byte: u8 = sview_at(source, cursor)
+                raise ConfigTomlError.UnsupportedValue if byte == 10 or byte == 13
+                if quote != 0:
+                    if quote == 34 and escaped:
+                        escaped <- false
+                    elif quote == 34 and byte == 92:
+                        escaped <- true
+                    elif byte == quote:
+                        quote <- 0
+                elif byte == 34 or byte == 39:
+                    quote <- byte
+                elif byte == 91:
+                    array_depth <- array_depth + 1
+                elif byte == 93:
+                    raise ConfigTomlError.UnsupportedValue if array_depth == 0
+                    array_depth <- array_depth - 1
+                elif array_depth == 0 and (byte == 44 or byte == 125):
+                    return cursor
+                cursor <- cursor + 1
+            raise ConfigTomlError.UnsupportedValue
+
+
+        def config_toml_inline_fields_unique(fields: darray[ConfigTomlTableField]) -> bool can[Memory.Allocate, Abort.Panic]:
+            keys: mutable darray[sview] = []
+            for field in fields |fields, keys|:
+                keys.push(bytes_view(field.key))
+            ordered: darray[sview] = sorted(keys)
+            for index in 1..<ordered.count |ordered|:
+                return false if ordered[index - 1] == ordered[index]
+            return true
+
+
+        def config_toml_parse_inline_table(source: sview, start: usize, end: usize, remaining_item_limit: usize, remaining_field_limit: usize) -> darray[ConfigTomlTableField] error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
+            raise ConfigTomlError.UnsupportedValue if start >= end or sview_at(source, start) != 123 or sview_at(source, end - 1) != 125
+            fields: mutable darray[ConfigTomlTableField] = []
+            cursor: mutable usize = start + 1
+            array_item_count: mutable usize = 0
+            while cursor < end - 1:
+                cursor <- config_toml_trim_start(source, cursor, end - 1)
+                if cursor == end - 1:
+                    break
+                raise ConfigTomlError.OutputLimitExceeded if fields.count >= EsConfig::Limits::ENTRIES_PER_LAYER or fields.count >= remaining_field_limit
+                field_start: usize = cursor
+                while cursor < end - 1 and sview_at(source, cursor) != 61:
+                    cursor <- cursor + 1
+                raise ConfigTomlError.ExpectedEquals if cursor >= end - 1
+                field_key: darray[u8] = try config_toml_parse_key_path(source, field_start, cursor)
+                cursor <- config_toml_trim_start(source, cursor + 1, end - 1)
+                field_value_start: usize = cursor
+                field_value_end: usize = try config_toml_inline_value_end(source, field_value_start, end - 1)
+                field_value_start <- config_toml_trim_start(source, field_value_start, field_value_end)
+                field_value_end <- config_toml_trim_end(source, field_value_start, field_value_end)
+                raise ConfigTomlError.UnsupportedValue if field_value_start >= field_value_end
+                field_kind: ConfigTomlValueKind = ConfigTomlValueKind.Array if sview_at(source, field_value_start) == 91 else config_toml_scalar_kind(source, field_value_start, field_value_end)
+                field_text: darray[u8] = []
+                field_items: darray[ConfigTomlArrayItem] = []
+                if field_kind == ConfigTomlValueKind.Array:
+                    remaining_items: usize = remaining_item_limit - array_item_count
+                    field_items <- try config_toml_parse_array(source, field_value_start, field_value_end, remaining_items)
+                    array_item_count <- array_item_count + field_items.count
+                else:
+                    field_text <- try config_toml_parse_scalar(source, field_value_start, field_value_end)
+                raise ConfigTomlError.OutputLimitExceeded if field_key.count >= EsConfig::Limits::KEY_BYTES or field_text.count >= EsConfig::Limits::VALUE_BYTES
+                fields.push(ConfigTomlTableField{key: field_key, kind: field_kind, text: field_text, items: field_items})
+                cursor <- field_value_end
+                cursor <- config_toml_trim_start(source, cursor, end - 1)
+                if cursor < end - 1:
+                    raise ConfigTomlError.UnsupportedValue if sview_at(source, cursor) != 44
+                    cursor <- cursor + 1
+                    cursor <- config_toml_trim_start(source, cursor, end - 1)
+                    raise ConfigTomlError.UnsupportedValue if cursor == end - 1
+            raise ConfigTomlError.DuplicateKey if not config_toml_inline_fields_unique(fields)
+            return fields
+
+
         def config_toml_parse_array(source: sview, start: usize, end: usize, remaining_item_limit: usize) -> darray[ConfigTomlArrayItem] error[ConfigTomlError] can[Memory.Allocate, Abort.Panic]:
             raise ConfigTomlError.UnsupportedValue if start >= end or sview_at(source, start) != 91 or sview_at(source, end - 1) != 93
             items: mutable darray[ConfigTomlArrayItem] = []
@@ -361,6 +453,7 @@ module EsConfigToml:
                 raise ConfigTomlError.UnsupportedValue if item_start == item_end
                 item_kind: ConfigTomlValueKind = config_toml_scalar_kind(source, item_start, item_end)
                 atom: darray[u8] = try config_toml_parse_scalar(source, item_start, item_end)
+                raise ConfigTomlError.OutputLimitExceeded if atom.count >= EsConfig::Limits::VALUE_BYTES
                 items.push(ConfigTomlArrayItem{kind: item_kind, text: atom})
                 config_toml_skip_array_trivia(source, cursor, end - 1)
                 if cursor < end - 1:
@@ -397,6 +490,7 @@ module EsConfigToml:
             table_bytes: mutable usize = 0
             layer_bytes: mutable usize = 0
             array_item_count: mutable usize = 0
+            table_field_count: mutable usize = 0
             line_start: mutable usize = 0
             while line_start <= sview_len(source):
                 line_end: mutable usize = line_start
@@ -439,14 +533,23 @@ module EsConfigToml:
                             end <- logical_value_end
                         value_end: usize = config_toml_trim_end(source, value_start, end)
                         raise ConfigTomlError.UnsupportedValue if value_start >= value_end
-                        value_kind: ConfigTomlValueKind = ConfigTomlValueKind.Array if sview_at(source, value_start) == 91 else config_toml_scalar_kind(source, value_start, value_end)
+                        value_kind: ConfigTomlValueKind = ConfigTomlValueKind.Array if sview_at(source, value_start) == 91 else ConfigTomlValueKind.InlineTable if sview_at(source, value_start) == 123 else config_toml_scalar_kind(source, value_start, value_end)
                         typed_text: mutable darray[u8] = []
                         array_items: mutable darray[ConfigTomlArrayItem] = []
+                        table_fields: mutable darray[ConfigTomlTableField] = []
                         value: darray[u8] = []
                         if value_kind == ConfigTomlValueKind.Array:
                             remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
                             array_items <- try config_toml_parse_array(source, value_start, value_end, remaining_array_items)
                             array_item_count <- array_item_count + array_items.count
+                            value <- config_toml_copy_span(source, value_start, value_end)
+                        elif value_kind == ConfigTomlValueKind.InlineTable:
+                            remaining_array_items: usize = CONFIG_TOML_MAX_TOTAL_ARRAY_ITEMS - array_item_count
+                            remaining_table_fields: usize = CONFIG_TOML_MAX_TOTAL_TABLE_FIELDS - table_field_count
+                            table_fields <- try config_toml_parse_inline_table(source, value_start, value_end, remaining_array_items, remaining_table_fields)
+                            table_field_count <- table_field_count + table_fields.count
+                            for field in table_fields |table_fields, array_item_count|:
+                                array_item_count <- array_item_count + field.items.count
                             value <- config_toml_copy_span(source, value_start, value_end)
                         else:
                             typed_text <- try config_toml_parse_scalar(source, value_start, value_end)
@@ -465,7 +568,7 @@ module EsConfigToml:
                         key_view: sview = bytes_view(result.key_storage[result.key_storage.count - 1])
                         value_view: sview = bytes_view(result.value_storage[result.value_storage.count - 1])
                         result.layer.entries.push(ConfigEntry{key: key_view, value: value_view})
-                        result.values.push(ConfigTomlValue{key: key_view, kind: value_kind, text: typed_text, items: array_items})
+                        result.values.push(ConfigTomlValue{key: key_view, kind: value_kind, text: typed_text, items: array_items, fields: table_fields})
                 if line_end == sview_len(source):
                     break
                 line_start <- line_end + 1

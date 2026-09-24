@@ -2896,12 +2896,15 @@ floating-point/special numbers (with legal digit separators), and arrays of
 scalar values across physical lines, including comments and trailing commas.
 Numeric lexemes remain exact; array items additionally retain
 text/boolean/integer/float kinds through `ConfigTomlValue`, while the
-format-neutral precedence view keeps the original array spelling. This is not
-yet a general structured merge: nested arrays, inline tables,
-array-of-table headers, dates/times, multiline strings, Unicode escapes, and
-quoted keys remain unsupported and are rejected. Array item counts are
-bounded per array and in aggregate. The text precedence layer does not do typed
-numeric conversion. `EsConfigTomlFilePosix` reads files through the shared
+format-neutral precedence view keeps the original array spelling. One-level
+inline tables retain field names, scalar kinds, and scalar array contents in
+`ConfigTomlTableField`, while the precedence view keeps the original table
+spelling. Nested inline tables, nested arrays, array-of-table headers,
+dates/times, multiline strings, Unicode escapes, and quoted keys remain
+unsupported and are rejected. Array item counts are
+bounded per array and in aggregate; inline table fields have per-table and
+aggregate limits. The text precedence layer does not do typed numeric
+conversion. `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
 array parsing plus rejection boundaries, but remain unexecuted pending
 compiler-validation reauthorization. This is a deliberately small TOML slice of
