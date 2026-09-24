@@ -58,6 +58,8 @@ for fixture_case in \
     'build_batch_failure_cancels_unstarted_nodes_and_drains_siblings' \
     'build_batch_cancellation_waits_for_host_reap_acknowledgement' \
     'build_batch_rejects_omitted_ready_queue_entries' \
+    'build_batch_rejects_duplicate_terminal_receipts' \
+    'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
     'ProcessBatchState.Draining' \
     'acknowledge_build_batch_stop(session)'; do

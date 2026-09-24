@@ -744,8 +744,9 @@ the graph-wide output budget before admission, and applies token-validated
 terminal receipts to both state machines. Its fixtures cover refill after a
 dependency completes, fail-fast sibling drain, and acknowledged cancellation;
 it also rejects integrated sessions whose ready queue omits a currently ready
-node. This remains a host-neutral contract, not child launch or runtime
-evidence.
+node, duplicate terminal receipts, and over-budget output without consuming
+the live reservation. This remains a host-neutral contract, not child launch or
+runtime evidence.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
