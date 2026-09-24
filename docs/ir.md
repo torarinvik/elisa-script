@@ -2871,7 +2871,7 @@ defaults, files, environment overlays, and command-line overrides. Its four
 `ConfigSource` layers have explicit `Defaults < File < Environment <
 CommandLine` priority; a source may occur at most once, and each layer may
 contain a key at most once. Keys reject empty/control/separator bytes, values
-reject NUL and line terminators, and per-layer/result counts plus aggregate
+reject NUL while preserving valid line breaks, and per-layer/result counts plus aggregate
 payload bytes are bounded before mutation. The resolver keeps the
 highest-priority value, preserves an empty value as present, and returns
 borrowed `sview` values in deterministic bytewise key order. `lookup_config_value`

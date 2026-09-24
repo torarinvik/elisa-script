@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/config_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/config_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -49,6 +50,7 @@ for boundary in \
     'config_values_valid'; do
     rg -Fq "$boundary" "$model"
 done
+rg -Fq 'return not sview_contains_byte(value, 0)' "$model"
 
 rg -Fq 'include "../runtime/config_model.elisa"' "$ir"
 rg -Fq 'using EsConfig' "$fixture"
@@ -61,6 +63,7 @@ for fixture_check in \
     'ConfigError.InvalidValue'; do
     rg -Fq "$fixture_check" "$fixture"
 done
+rg -Fq 'config_values_preserve_line_breaks_and_reject_only_nul' "$runtime_fixture"
 
 rg -Fq '`EsConfig` is the pure configuration precedence boundary' "$docs"
 

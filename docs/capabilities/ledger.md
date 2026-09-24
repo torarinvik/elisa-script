@@ -924,7 +924,7 @@ static evidence; host environment snapshot/apply adapters remain open.
 ES-SCRIPT-053 | EsConfig supplies a pure, bounded configuration precedence
 boundary for defaults, file values, environment values, and command-line
 overrides. Each source and key is unique, keys reject empty/control/separator
-bytes, values reject NUL and line terminators, and layer/result counts and
+bytes, values reject NUL while preserving line breaks, and layer/result counts and
 aggregate payload ceilings plus per-entry lengths are checked before mutation.
 Resolution keeps the highest
 priority value, preserves present-but-empty values, and returns borrowed values
