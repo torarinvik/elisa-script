@@ -94,6 +94,8 @@ fi
 
 for fixture_case in \
     'build_batch_dispatches_ready_nodes_and_refills_capacity' \
+    'execution.nodes[0].started and not execution.nodes[0].cache_hit' \
+    'execution.nodes[2].stderr == "linked"' \
     'build_batch_failure_cancels_unstarted_nodes_and_drains_siblings' \
     'build_batch_timeout_preserves_partial_diagnostics_and_drains_siblings' \
     'build_batch_accounts_for_multiple_failures_during_drain' \
