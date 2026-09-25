@@ -639,6 +639,11 @@ dependency flags, so staleness propagates through the DAG before dispatch.
 Observation paths are validated once into a bounded sorted index; duplicate
 paths are rejected and target input/output fingerprints use binary search
 rather than rescanning the full observation list.
+Manifest paths use a portable canonical-relative form: `/` is the only path
+separator, empty and `.`/`..` segments are rejected, and absolute, drive-prefixed,
+backslash-containing, NUL, tab, and line-break paths are refused before any host
+adapter resolves them beneath its build-root capability. This keeps a manifest
+from changing meaning when it is consumed by a different platform adapter.
 `plan_build_incremental_cleanup` reconciles a previously successful manifest
 with the current graph in deterministic target/output order. It returns a
 bounded list of outputs removed by a target deletion or rename, retains an
