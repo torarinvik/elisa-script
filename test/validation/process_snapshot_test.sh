@@ -32,6 +32,12 @@ assert_parser_failure() {
         else
             parser_status=$?
         fi
+    elif [ "$parser_kind" = identities ]; then
+        if parser_output="$(printf '%s\n' "$failure_input" | validation_process_tree_identities_from_snapshot 100 2)"; then
+            fail "$description unexpectedly succeeded: $parser_output"
+        else
+            parser_status=$?
+        fi
     else
         if parser_output="$(printf '%s\n' "$failure_input" | validation_process_group_rss_from_snapshot 10 10 2)"; then
             fail "$description unexpectedly succeeded: $parser_output"
@@ -109,6 +115,23 @@ assert_process_state '10 S
 10 R
 __ELISASCRIPT_PS_STATUS__ 0' 10 unknown 'duplicate process-state row'
 
+identity_snapshot='100 1 100 Mon Sep 25 10:00:00 2026
+101 100 101 Mon Sep 25 10:01:00 2026
+__ELISASCRIPT_PS_STATUS__ 0'
+tree_identities="$(printf '%s\n' "$identity_snapshot" | validation_process_tree_identities_from_snapshot 100 4)"
+assert_equal '100@100@Mon-Sep-25-10:00:00-2026
+101@101@Mon-Sep-25-10:01:00-2026' "$tree_identities" 'tree identities preserve PGID and process start time'
+assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
+101 100 101 bad Sep 25 10:01:00 2026
+__ELISASCRIPT_PS_STATUS__ 0' identities 'malformed process identity row'
+assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
+101 100 101 Mon Sep 25 10:01:00 2026
+102 100 102 Mon Sep 25 10:02:00 2026
+__ELISASCRIPT_PS_STATUS__ 0' identities 'process identity row-limit overflow'
+assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026' identities 'missing process-identity sentinel'
+assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
+__ELISASCRIPT_PS_STATUS__ 1' identities 'failed process-identity snapshot'
+
 tree_snapshot='10 1
 11 10
 12 11
@@ -160,4 +183,4 @@ assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 1' rss 'failed RSS process-table command'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process states, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'

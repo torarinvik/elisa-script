@@ -115,6 +115,51 @@ validation_process_tree_pids_from_snapshot() {
     '
 }
 
+validation_process_tree_identities_from_snapshot() {
+    awk -v root="$1" -v row_limit="$2" '
+        NR > row_limit + 1 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" {
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
+            status_seen = 1
+            if ($2 != 0) ps_failed = 1
+            next
+        }
+        ++process_rows > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || NF != 8 ||
+            $4 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ || $5 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ ||
+            $6 !~ /^[0-9][0-9]?$/ || $7 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ || $8 !~ /^[0-9][0-9][0-9][0-9]$/ { malformed = 1; exit }
+        {
+            pid = $1
+            if (pid in present) { malformed = 1; exit }
+            present[pid] = 1
+            parent[pid] = $2
+            process_group[pid] = $3
+            start_token[pid] = $4 "-" $5 "-" $6 "-" $7 "-" $8
+            children[$2] = children[$2] " " pid
+        }
+        END {
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1) exit 2
+            if (!(root in present)) exit 0
+            head = 1
+            tail = 1
+            queue[tail] = root
+            seen[root] = 1
+            while (head <= tail) {
+                pid = queue[head++]
+                print pid "@" process_group[pid] "@" start_token[pid]
+                child_count = split(children[pid], child_ids, " ")
+                for (child_index = 1; child_index <= child_count; child_index++) {
+                    child_pid = child_ids[child_index]
+                    if (child_pid ~ /^[0-9]+$/ && !seen[child_pid]) {
+                        seen[child_pid] = 1
+                        queue[++tail] = child_pid
+                    }
+                }
+            }
+        }
+    '
+}
+
 validation_process_group_rss_from_snapshot() {
     awk -v group="$1" -v root="$2" -v row_limit="$3" '
         NR > row_limit + 1 { overflow = 1; exit }
