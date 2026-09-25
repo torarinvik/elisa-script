@@ -3046,10 +3046,12 @@ Option keys also borrow the declared schema; both inputs must remain alive
 and unchanged while the result layer is used.
 
 Declared one-character alphanumeric aliases support `-x`, `-x=value`,
-`-xVALUE`, and `-x VALUE` when the option takes a value; short-option bundles
-such as `-abc` are not yet supported. `parse_config_cli_command` dispatches a
-first argv token to a declared subcommand schema and distinguishes missing,
-unknown, and root-help requests. The command parser exposes `help_requested`
+`-xVALUE`, and `-x VALUE` when the option takes a value. Bundles such as
+`-vj8` process boolean flags left to right; a value-taking option consumes the
+rest of the bundle (with an optional leading `=`) or the next argv element.
+`parse_config_cli_command` dispatches a first argv token to a declared
+subcommand schema and distinguishes missing, unknown, and root-help requests.
+The command parser exposes `help_requested`
 for `-h`/`--help`; `config_cli_root_help` and `config_cli_command_help` render
 deterministic owned bytes capped at 1 MiB. The focused model fixtures and
 compiler-free source guard describe these rules, but remain unexecuted under

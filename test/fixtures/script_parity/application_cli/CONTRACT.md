@@ -3,17 +3,20 @@
 This is a deliberately small independent reference, not a claim of full
 `argparse` compatibility. Both implementations accept a declared `build` and
 `test` subcommand schema, one-character short aliases, separate/equals/attached
-short values, positive/negative booleans, positionals, `--` passthrough, empty
-values overriding defaults, command-specific defaults, and built-in root/command
-help. Resolved options use the shared configuration precedence model: command-
-line values override defaults, including explicit empty strings. Errors are
-observable as status 2 and a single stable stderr line. Short-option bundles
-and automatic help styling are outside this fixture.
+short values, bundled short flags/value options, positive/negative booleans,
+positionals, `--` passthrough, empty values overriding defaults,
+command-specific defaults, and built-in root/command help. In a bundle,
+boolean flags are processed left to right and a value-taking option consumes
+the remaining suffix (optionally after `=`) or next argv element. Resolved
+options use the shared configuration precedence model: command-line values
+override defaults, including explicit empty strings. Errors are observable as
+status 2 and a single stable stderr line. Automatic help styling is outside
+this fixture.
 
 `reference.py` implements the contract independently in Python. The ElisaScript
 candidate calls `EsConfigCli` and `EsConfig::resolve_config_layers`, then
 serializes observations with the same small framing protocol. `expected.txt` is
-an independent golden covering 15 cases:
+an independent golden covering 17 cases:
 successful parsing forms, both help levels, empty values, missing/unknown
 commands, unknown options, missing values, duplicate options, unexpected
 boolean values, empty/pass-through positionals, build/test defaults, and

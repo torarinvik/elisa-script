@@ -188,12 +188,15 @@ rg -Fq 'environment_snapshot_uses_the_environment_entry_limit' "$environment_fix
 rg -Fq 'declared_config_cli_options_preserve_empty_and_passthrough_values' "$cli_fixture"
 rg -Fq 'declared_config_cli_options_reject_unknown_missing_and_duplicate_values' "$cli_fixture"
 rg -Fq 'declared_config_cli_short_options_and_help_are_deterministic' "$cli_fixture"
+rg -Fq 'parse_config_cli(["-vj8"], options)' "$cli_fixture"
+rg -Fq 'duplicate_bundle_rejected' "$cli_fixture"
 rg -Fq 'declared_config_cli_subcommands_select_schema_and_render_root_help' "$cli_fixture"
 rg -Fq 'def parse_config_cli_command(' "$cli_model"
 rg -Fq 'def config_cli_root_help(' "$cli_model"
 rg -Fq 'def config_cli_command_help(' "$cli_model"
-rg -Fq 'option_end <- 2' "$cli_model"
-rg -Fq 'value_start: usize = option_end + 1 if inline_separator else option_end' "$cli_model"
+rg -Fq 'def config_cli_match_short(' "$cli_model"
+rg -Fq 'value_start: mutable usize = short_offset + 1' "$cli_model"
+rg -Fq 'short_offset <- short_offset + 1' "$cli_model"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
 rg -Fq 'application_cli_public_launcher_matches_independent_python_and_goldens' "$application_cli_parity"
 rg -Fq 'arguments: [f"{candidate_path}", "--parity-batch"]' "$application_cli_parity"
@@ -201,24 +204,33 @@ rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$application_cli_parity"
 rg -Fq 'return false if candidate_run.exit_status != 0 or candidate_run.stdout != golden' "$application_cli_parity"
 rg -Fq '"--parity-batch"' "$application_cli_reference"
 rg -Fq '"--parity-batch"' "$application_cli_candidate"
+reference_case_order="$(sed -n '/^CASES = \[$/,/^]/s/^[[:space:]]*("\([^"]*\)".*/\1/p' "$application_cli_reference")"
+candidate_case_order="$(sed -n '/def fixture_cases()/,/^[[:space:]]*]/s/.*CliFixtureCase{name: "\([^"]*\)".*/\1/p' "$application_cli_candidate")"
+golden_case_order="$(sed -n 's/^case=//p' "$application_cli_golden")"
+if [[ "$reference_case_order" != "$candidate_case_order" || "$reference_case_order" != "$golden_case_order" ]]; then
+    printf 'config model audit: application CLI case ordering differs across reference, candidate, and golden\n' >&2
+    exit 1
+fi
 rg -Fq 'resolve_config_layers([defaults, parsed.parsed.layer])' "$application_cli_candidate"
 rg -Fq 'A05' "$application_cli_contract"
 for application_cli_case in \
     'attached-and-passthrough' \
     'separated-short-value' \
     'equals-short-value' \
+    'short-option-bundle' \
     'negative-boolean' \
     'root-help' \
     'command-help' \
     'empty-value-over-default' \
+    'build-defaults' \
+    'test-defaults' \
     'missing-command' \
     'unknown-command' \
     'unknown-option' \
     'missing-value' \
     'duplicate-option' \
-    'unexpected-boolean-value' \
-    'build-defaults' \
-    'test-defaults'; do
+    'duplicate-short-bundle' \
+    'unexpected-boolean-value'; do
     rg -Fq "case=$application_cli_case" "$application_cli_golden"
 done
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"

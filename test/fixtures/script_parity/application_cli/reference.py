@@ -24,18 +24,20 @@ CASES = [
     ("attached-and-passthrough", ["build", "-j8", "-v", "src", "--", "--literal", ""]),
     ("separated-short-value", ["build", "-j", "9"]),
     ("equals-short-value", ["build", "-j=4"]),
+    ("short-option-bundle", ["build", "-vj8", "target"]),
     ("negative-boolean", ["test", "--no-verbose", "suite"]),
     ("root-help", ["--help"]),
     ("command-help", ["build", "--help"]),
     ("empty-value-over-default", ["build", "--jobs="]),
+    ("build-defaults", ["build"]),
+    ("test-defaults", ["test"]),
     ("missing-command", []),
     ("unknown-command", ["clean"]),
     ("unknown-option", ["build", "--wat"]),
     ("missing-value", ["build", "--jobs", "--"]),
     ("duplicate-option", ["build", "--jobs=4", "-j8"]),
+    ("duplicate-short-bundle", ["build", "-vv"]),
     ("unexpected-boolean-value", ["test", "--verbose=true"]),
-    ("build-defaults", ["build"]),
-    ("test-defaults", ["test"]),
 ]
 
 
@@ -76,6 +78,38 @@ def parse_command(name, arguments):
             return ("help", values, positionals)
         if enabled and argument == "--":
             enabled = False
+            index += 1
+            continue
+        if enabled and len(argument) > 2 and argument.startswith("-") and not argument.startswith("--"):
+            short_offset = 1
+            while short_offset < len(argument):
+                short_name = "-" + argument[short_offset]
+                match = next((item for item in options if item[1] == short_name), None)
+                if match is None:
+                    return ("unknown-option", [], [])
+                _long_name, _short_name, key, takes_value, _negative_name, _description = match
+                if takes_value:
+                    value_start = short_offset + 1
+                    if value_start < len(argument) and argument[value_start] == "=":
+                        value_start += 1
+                    if value_start < len(argument):
+                        value = argument[value_start:]
+                    else:
+                        if index + 1 >= len(arguments) or arguments[index + 1] == "--":
+                            return ("missing-value", [], [])
+                        index += 1
+                        value = arguments[index]
+                    if any(existing_key == key for existing_key, _ in values):
+                        return ("duplicate-option", [], [])
+                    values.append((key, value))
+                    short_offset = len(argument)
+                else:
+                    if short_offset + 1 < len(argument) and argument[short_offset + 1] == "=":
+                        return ("unexpected-value", [], [])
+                    if any(existing_key == key for existing_key, _ in values):
+                        return ("duplicate-option", [], [])
+                    values.append((key, "true"))
+                    short_offset += 1
             index += 1
             continue
         if enabled and len(argument) > 1 and argument.startswith("-"):
