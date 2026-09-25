@@ -48,17 +48,20 @@ optimization from `43f7ebed` is recorded below. Since
 lookup-index optimizations and compiler correctness/diagnostic fixes. The
 differences are too broad for an unreviewed wholesale replacement.
 
-The separate Go Elisa-core source checkout is clean at
-`90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its `main` branch. Its refreshed
-`origin/main` is `414ddef7cbd2d9d2418b7811e6bad560cd63fccf`, an ancestor of the
-local source; the checkout is five commits ahead and includes nested-expression
-effect inference and generic private-field validation fixes. The explicitly
-pinned `structpy-tree/compiler/bin/elisac` path is absent in this workspace,
-and the old Elisa-core executable is a different main-worktree artifact; no
-executable is claimed or launched from either path. These immutable source
-commits are references for a future explicitly authorized validation build;
-create a clean isolated checkout, review it, and atomically update the
-validation pin before building.
+The separate Go Elisa-core source checkout was observed clean on `main` at
+`c447c2ce0c68d1aacd64fa8c4a1d6deece01f344` on 2026-09-25. Its cached
+`origin/main` is `d4ce4c81980f2f25d4756b24a82a36ea0ad0eaf9` (last commit dated
+2026-09-23), making the local source 27 commits ahead of that cached ref. This
+is a local comparison, not a claim about current remote `main`; no fetch was
+performed. The checkout includes later closure/effect and captured-view
+correctness work. Its compiler binary is at
+`Go projects/Elisa-core/compiler/bin/elisac`, while the validation wrappers'
+explicitly pinned `Go projects/structpy-tree/compiler/bin/elisac` path is absent
+in this workspace. The Elisa-core binary was not executed or substituted for
+that safety pin. These source revisions are reference points for a future
+explicitly authorized refresh/build review, not an authorization to launch a
+compiler; a clean isolated checkout and an approved validation-pin update are
+still required.
 
 That source is substantially different from this vendored `e56d6f2d` snapshot.
 The vendored tree contains Elisascript-specific adaptations (including
