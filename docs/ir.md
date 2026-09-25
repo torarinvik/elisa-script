@@ -1909,7 +1909,13 @@ required, and acknowledges only after observing the staged inode at the
 destination with private mode and a single link. Rename failures and all post-rename proof/sync failures transition
 to `PublishedUncertain`; callers must observe/recover and must not blindly
 retry the rename. The caller's exclusive directory lease must cover the final
-revalidation through the rename.
+revalidation through the rename. `cleanup_atomic_file_stage` removes a closed,
+sealed staging entry only after matching its no-follow identity to the session
+receipt and requiring private single-link file metadata. Under the caller's
+exclusive directory-mutation lease, an already-absent stage is reconciled as
+completed cleanup; unlink or post-unlink verification failures leave cleanup
+pending. This path does not yet cover partial or unsealed stages that have no
+sealed identity receipt, nor does it implement lease ownership itself.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a
