@@ -1619,6 +1619,11 @@ decimal points, with explicit empty/trailing-separator, overflow,
 digit, exponent, cancellation, and invalid-character errors. Validation also
 reconciles digit/byte counters, decimal flags, phase/flag coherence, and
 integer magnitude bounds.
+Decimal lexemes accept both leading-point forms such as `.5` and trailing-point
+forms such as `1.`; an exponent may follow a trailing point (`1.e2`) when the
+coefficient already contains a digit. The session stores and validates an
+explicit trailing-point candidate, so it cannot be confused with a malformed
+trailing separator. A bare point and a trailing underscore remain invalid.
 Rejected bytes and overflow attempts are failure-atomic: character, digit,
 and magnitude accounting is published only after the byte passes its phase
 checks.

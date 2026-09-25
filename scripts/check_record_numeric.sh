@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/record_numeric_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/record_numeric_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'record numeric audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -43,6 +44,8 @@ for boundary in \
     'RecordNumericError.ExponentLimitExceeded' \
     'RecordNumericError.AccountingInvalid' \
     'wide_exponent' \
+    'record_numeric_trailing_point_valid' \
+    'trailing_point_candidate' \
     'session.digits > session.chars' \
     'session.saw_exponent and session.phase' \
     'RecordNumericState.Planned' \
@@ -51,6 +54,10 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 rg -Fq 'underscore_decimal_rejected' "$fixture_file"
+rg -Fq 'record_numeric_accepts_trailing_decimal_point_forms' "$runtime_fixture"
+rg -Fq 'point_result.coefficient_digits == 1 and point_result.fraction_digits == 0' "$runtime_fixture"
+rg -Fq 'exponent_result.coefficient_digits == 1 and exponent_result.fraction_digits == 0' "$runtime_fixture"
+rg -Fq 'forged_trailing_point_rejected <- failure == RecordNumericError.AccountingInvalid' "$runtime_fixture"
 
 for fixture_pattern in \
     'using EsRecordNumeric' \

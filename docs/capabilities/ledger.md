@@ -1318,13 +1318,15 @@ remain open.
 ES-SCRIPT-038 | EsRecordNumeric supplies a bounded lexical numeric-field
 contract for Perl/AWK-style extraction. Signed/unsigned integer magnitudes use
 subtraction-safe overflow checks, decimal fields retain bounded coefficient/
-fraction/exponent descriptors (up to 20 exponent digits) without an implicit float conversion, reject an
-underscore immediately before a decimal point, and sign,
+fraction/exponent descriptors (up to 20 exponent digits) without an implicit
+float conversion, accept a trailing decimal point only after at least one
+coefficient digit (including before an exponent) using a validated explicit
+candidate bit, reject an underscore immediately before a decimal point, and sign,
 underscore, decimal, exponent, finish, failure, and cancellation edges are
 explicit under `error[RecordNumericError]`. The focused IR fixture, namespace
-inclusion, documentation, and check_record_numeric.sh audit are static
-evidence; exact-decimal/floating conversion, locale policy, and host scanner
-integration remain open.
+inclusion, focused runtime fixture, documentation, and check_record_numeric.sh
+audit are static evidence; exact-decimal/floating conversion, locale policy,
+and host scanner integration remain open.
 
 ES-SCRIPT-039 | EsRecordPattern supplies bounded pattern/action filtering and
 inclusive-range selection for Perl/AWK-style record streams. Typed predicates,
