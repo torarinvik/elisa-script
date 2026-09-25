@@ -12,6 +12,8 @@ usage_model="$repo_root/src/runtime/build_usage_model.elisa"
 usage_fixture="$repo_root/test/runtime/build_usage_model_test.elisa"
 usage_argv_model="$repo_root/src/runtime/build_usage_argv_model.elisa"
 usage_argv_fixture="$repo_root/test/runtime/build_usage_argv_model_test.elisa"
+usage_graph_model="$repo_root/src/runtime/build_usage_graph_model.elisa"
+usage_graph_fixture="$repo_root/test/runtime/build_usage_graph_model_test.elisa"
 target_usage_candidate="$repo_root/test/fixtures/script_parity/target_usage/build.elisascript"
 executor_model="$repo_root/src/runtime/build_executor_model.elisa"
 executor_fixture="$repo_root/test/runtime/build_executor_test.elisa"
@@ -33,7 +35,7 @@ minimal_native_main_variant="$minimal_native_root/src/main_variant.c"
 minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$usage_argv_model" "$usage_argv_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$usage_argv_model" "$usage_argv_fixture" "$usage_graph_model" "$usage_graph_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -102,6 +104,8 @@ rg -Fq 'include "../runtime/build_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_usage_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_usage_argv_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/build_executor_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/build_usage_graph_model.elisa"' "$ir"
+rg -Fq 'def validate_build_execution_output_sets(' "$executor_model"
 for fixture_pattern in \
     'typed_build_dependency_resolution_maps_names_to_canonical_indices' \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
@@ -241,7 +245,7 @@ for boundary in \
     'BuildUsageArgvError.InheritedEnvironmentUnsupported' \
     'BuildUsageArgvError.InvalidOwnedArgv' \
     'build_usage_argv_append_joined' \
-    'entry.target_artifact and entry.kind != BuildUsageKind.LinkLibrary' \
+    'entry.target_artifact and (entry.kind != BuildUsageKind.LinkLibrary or entry.library_form != BuildUsageLibraryForm.SearchName)' \
     'path_is_absolute(path(current.path))'; do
     rg -Fq "$boundary" "$usage_argv_model"
 done
@@ -250,6 +254,26 @@ rg -Fq 'build_usage_link_entries_resolve_artifacts_without_shell_parsing' "$usag
 rg -Fq 'build_usage_link_entries_reject_unmapped_target_artifacts' "$usage_argv_fixture"
 rg -Fq 'build_usage_argv_builds_owned_executor_compatible_process_command' "$usage_argv_fixture"
 rg -Fq 'build_usage_process_command_rejects_ambient_environment' "$usage_argv_fixture"
+for declaration in \
+    'module EsBuildUsageGraph:' \
+    'struct BuildUsageActionSpec:' \
+    'struct BuildUsageGraphPlan:' \
+    'def build_usage_graph_plan(' \
+    'def validate_build_usage_graph_plan(' \
+    'def execute_build_usage_graph('; do
+    rg -Fq "$declaration" "$usage_graph_model"
+done
+for boundary in \
+    'BuildUsageGraphError.UnsupportedCommand' \
+    'BuildUsageGraphError.PlanOwnershipInvalid' \
+    'validate_build_usage_process_command(action.command)' \
+    'validate_build_execution_output_sets(plan.graph, plan.output_sets)' \
+    'execute_build_graph_serial_with_outputs(plan.graph, plan.output_sets)'; do
+    rg -Fq "$boundary" "$usage_graph_model"
+done
+rg -Fq 'build_usage_actions_become_owned_ordered_output_checked_graph' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_rejects_relative_declared_outputs' "$usage_graph_fixture"
 rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
 rg -Fq 'entry.library_form == BuildUsageLibraryForm.Path' "$target_usage_candidate"
 rg -Fq 'arguments.push("./" + entry.value)' "$target_usage_candidate"
@@ -610,4 +634,4 @@ rg -Fq '`EsBuildIncrementalPosixExecutor::execute_build_graph_incremental_cached
 rg -Fq 'A host kill or machine crash bypasses in-process cleanup' "$docs"
 rg -Fq 'OutputAlreadyPresent' "$docs"
 
-printf 'build model audit: bounded graph, generated-output ordering, usage propagation/argv materialization, serial Process.Run execution, and fail-draining/cancellation are present\n'
+printf 'build model audit: bounded graph, generated-output ordering, usage propagation/argv/graph planning, serial Process.Run execution, and fail-draining/cancellation are present\n'

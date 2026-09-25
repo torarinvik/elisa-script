@@ -788,6 +788,14 @@ explicit environment, and a bounded nonzero timeout/output ceiling. It rejects
 ambient inherited environments and validates the finished command; it does
 not enter a BuildGraph or launch a child. Compiler execution and CMake parity
 remain unverified.
+`EsBuildUsageGraph` now turns ordered action specifications into an executor-
+ready graph plus aligned declared-output sets, retaining command, node-name,
+and output-path storage. It validates dependency order, fingerprints, executor
+command support, owner/view consistency, and output shape before returning a
+plan. `execute_build_usage_graph` is the explicit Process.Run boundary and
+repeats plan validation before serial execution with output checks. Source
+fixtures specify planning and invalid-edge rejection; none ran. Real compiler
+outputs, artifact cleanup/recovery, and CMake parity remain unverified.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild
