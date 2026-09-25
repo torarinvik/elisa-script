@@ -1195,7 +1195,11 @@ accounting. Its session admits ordered entries through explicit begin/record/
 seal, failure, and cancellation transitions, and its pure comparator is shared
 by in-memory and disk-merge adapters. The focused IR fixture, namespace
 inclusion, documentation, and check_record_sort.sh audit are static evidence;
-spill files, atomic publication, and merge I/O remain host work.
+`EsRecordSortFields` now validates source field spans and materializes text or
+checked signed-integer keys, preserving missing fields explicitly and rejecting
+malformed numeric keys before entry publication. Focused adapter fixtures cover
+text, negative integer, absent, and malformed keys; execution remains disabled.
+Spill files, atomic publication, and merge I/O remain host work.
 
 ES-SCRIPT-025 | EsRecordRewrite supplies a transactional in-place rewrite
 contract for record/regex adapters. Source and destination may be equal for an

@@ -6,17 +6,21 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/record_sort_model.elisa"
+field_adapter="$repo_root/src/runtime/record_sort_field_adapter_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+field_fixture="$repo_root/test/runtime/record_sort_field_adapter_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$field_adapter" "$ir" "$fixture_file" "$field_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'record sort audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 rg -q '^module EsRecordSort:' "$model"
+rg -q '^module EsRecordSortFields:' "$field_adapter"
 rg -q 'include "\.\./runtime/record_sort_model\.elisa"' "$ir"
+rg -q 'include "\.\./runtime/record_sort_field_adapter_model\.elisa"' "$ir"
 for declaration in \
     'const enum RecordSortKeyKind of u8' \
     'const enum RecordSortDirection of u8' \
@@ -29,6 +33,18 @@ for declaration in \
     'def compare_record_sort_entries\(' \
     'def advance_record_sort\('; do
     rg -q "$declaration" "$model"
+done
+
+for adapter_boundary in \
+    'def record_sort_key_from_field\(' \
+    'validate_record_sort_session' \
+    'field.index != spec.field_index' \
+    'validate_record_field' \
+    'numeric_policy.kind != RecordNumericKind.Integer' \
+    'not field.present' \
+    'parse_record_numeric' \
+    'record_numeric_result_i64'; do
+    rg -q "$adapter_boundary" "$field_adapter"
 done
 
 for boundary in \
@@ -60,7 +76,17 @@ for fixture_pattern in \
     rg -q "$fixture_pattern" "$fixture_file"
 done
 
+for adapter_fixture_pattern in \
+    'text_integer_and_absent_record_fields_form_declared_sort_keys' \
+    'malformed_numeric_sort_field_is_rejected_before_key_publication' \
+    'RecordNumericError.InvalidCharacter' \
+    'integer_key.integer == -12' \
+    'not absent_key.present'; do
+    rg -Fq "$adapter_fixture_pattern" "$field_fixture"
+done
+
 rg -q 'EsRecordSort::RecordSortSession' "$docs"
+rg -q 'EsRecordSortFields::record_sort_key_from_field' "$docs"
 rg -q 'ES-SCRIPT-024' "$ledger"
 
 printf 'record sort audit: bounded typed keys, stable order, and lifecycle checks are present\n'

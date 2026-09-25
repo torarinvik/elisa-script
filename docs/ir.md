@@ -1672,6 +1672,11 @@ the same lexicographic order for in-memory sorting and disk-run merging, while
 ordinal gaps, duplicate keys under `unique`, over-budget text, and post-terminal
 transitions. Disk runs,
 atomic spill files, and merge I/O remain host responsibilities.
+`EsRecordSortFields::record_sort_key_from_field` validates each selected field
+against its owning record/policy, retains text views as text keys, and routes
+integer keys through bounded lexical parsing plus checked `i64` conversion;
+absent fields become explicit missing keys, while malformed integers fail
+before a key is published.
 
 `EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation
 boundary for Perl `-pi`, sed-like, and record/regex rewrite adapters. A plan
