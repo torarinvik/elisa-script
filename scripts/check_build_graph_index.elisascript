@@ -1,0 +1,128 @@
+# Bounded Elisascript audit for canonical build-graph target-name indexing.
+# This focused source check complements the broader shell reference audit.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsBuildGraphIndexAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 2097152
+
+
+        struct SourceRead:
+            text: sview = ""
+            failed: bool = false
+
+
+        def write_diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def read_source(root: sview, relative_path: sview) -> SourceRead can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Blocking.IO, Unsafe.PointerCast]:
+            display_path: sview = root + "/" + relative_path
+            if not is_file(path(display_path)):
+                write_diagnostic(f"build graph index audit: missing source: {relative_path}")
+                return SourceRead{failed: true}
+            source_size: usize = try file_size(path(display_path)) else err:
+                write_diagnostic(f"build graph index audit: unable to inspect source: {relative_path}")
+                return SourceRead{failed: true}
+            if source_size > Limits::SOURCE_BYTES:
+                write_diagnostic(f"build graph index audit: source exceeds byte limit: {relative_path}")
+                return SourceRead{failed: true}
+            contents: mutable sview = ""
+            catch EsBoundedText::read_utf8(path(display_path), Limits::SOURCE_BYTES):
+                ok value:
+                    contents <- value
+                error failure:
+                    _ = failure
+                    write_diagnostic(f"build graph index audit: unable to read stable UTF-8 source: {relative_path}")
+                    return SourceRead{failed: true}
+            return SourceRead{text: contents}
+
+
+        def require_text(source: sview, expected: sview, source_name: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            return true if source.index(expected) >= 0
+            write_diagnostic(f"build graph index audit: missing invariant in {source_name}: {expected}")
+            return false
+
+
+        def require_in_order(source: sview, first: sview, second: sview, source_name: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            first_position: i64 = source.index(first)
+            second_position: i64 = source.index(second)
+            return true if first_position >= 0 and second_position > first_position
+            write_diagnostic(f"build graph index audit: invariant order is wrong in {source_name}")
+            return false
+
+
+    public:
+        def run(repository_root: sview) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Blocking.IO, Unsafe.PointerCast]:
+            root_text: mutable sview = repository_root
+            while root_text.endswith("/") and len(root_text) > 1:
+                root_text <- root_text[0:len(root_text) - 1]
+            if root_text == "" or len(root_text) >= 3072 or sview_contains_byte(root_text, 0) or not path_is_absolute(path(root_text)):
+                write_diagnostic("build graph index audit: repository root must be a bounded absolute path")
+                return 2i64
+
+            model: SourceRead = read_source(root_text, "src/runtime/build_model.elisa")
+            return 2i64 if model.failed
+            usage_graph: SourceRead = read_source(root_text, "src/runtime/build_usage_graph_model.elisa")
+            return 2i64 if usage_graph.failed
+            fixture: SourceRead = read_source(root_text, "test/runtime/build_usage_graph_model_test.elisa")
+            return 2i64 if fixture.failed
+            shell_audit: SourceRead = read_source(root_text, "scripts/check_build_model.sh")
+            return 2i64 if shell_audit.failed
+
+            model_source: sview = model.text
+            usage_graph_source: sview = usage_graph.text
+            fixture_source: sview = fixture.text
+            shell_source: sview = shell_audit.text
+
+            model_ok: bool = require_text(model_source, "UNINDEXED_NAME_SCAN_NODES: usize = 128", "build_model.elisa")
+            model_ok <- require_text(model_source, "NodeNameIndexRequired", "build_model.elisa") and model_ok
+            model_ok <- require_text(model_source, "graph.node_name_order.count == 0 and graph.nodes.count > Limits::UNINDEXED_NAME_SCAN_NODES", "build_model.elisa") and model_ok
+            model_ok <- require_text(model_source, "def resolve_build_dependencies(", "build_model.elisa") and model_ok
+            model_ok <- require_text(model_source, "def attach_build_dependency_resolution(", "build_model.elisa") and model_ok
+            model_ok <- require_in_order(model_source, "graph.nodes.count > Limits::UNINDEXED_NAME_SCAN_NODES", "if graph.node_name_order.count == 0:", "build_model.elisa") and model_ok
+
+            usage_ok: bool = require_text(usage_graph_source, "def build_usage_graph_dependency_resolution(", "build_usage_graph_model.elisa")
+            usage_ok <- require_text(usage_graph_source, "node_names.push(graph.nodes[action_index].name)", "build_usage_graph_model.elisa") and usage_ok
+            usage_ok <- require_text(usage_graph_source, "names.push(graph.nodes[dependency_index].name)", "build_usage_graph_model.elisa") and usage_ok
+            usage_ok <- require_text(usage_graph_source, "attach_build_dependency_resolution(plan.graph, resolution)", "build_usage_graph_model.elisa") and usage_ok
+            usage_ok <- require_in_order(usage_graph_source, "build_usage_graph_dependency_resolution(plan.graph, actions)", "attach_build_dependency_resolution(plan.graph, resolution)", "build_usage_graph_model.elisa") and usage_ok
+            usage_ok <- require_in_order(usage_graph_source, "attach_build_dependency_resolution(plan.graph, resolution)", "validate_build_graph(plan.graph)", "build_usage_graph_model.elisa") and usage_ok
+
+            fixture_ok: bool = require_text(fixture_source, "def build_usage_graph_plans_large_graph_with_canonical_name_index()", "build_usage_graph_model_test.elisa")
+            fixture_ok <- require_text(fixture_source, "0..<129", "build_usage_graph_model_test.elisa") and fixture_ok
+            fixture_ok <- require_text(fixture_source, "plan.graph.node_name_order.count == 129", "build_usage_graph_model_test.elisa") and fixture_ok
+
+            audit_ok: bool = require_text(shell_source, "build_usage_graph_plans_large_graph_with_canonical_name_index", "check_build_model.sh")
+            audit_ok <- require_text(shell_source, "attach_build_dependency_resolution(plan.graph, resolution)", "check_build_model.sh") and audit_ok
+
+            return 1i64 if not model_ok or not usage_ok or not fixture_ok or not audit_ok
+            print("build graph index audit: bounded legacy validation and indexed production planning are present")
+            return 0i64
+
+
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Blocking.IO, Unsafe.PointerCast]:
+            script_path: Path = Script::source_path()
+            absolute_script_path: Path = try path_absolute(script_path) else err:
+                write_diagnostic("build graph index audit: unable to resolve script path")
+                return 2i64
+            script_directory: Path = absolute_script_path.parent()
+            repository_root: Path = script_directory.parent()
+            return run(f"{repository_root}")
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, Blocking.IO, Unsafe.PointerCast]:
+    if arguments.count > 1:
+        _ = write_stderr("usage: check_build_graph_index [repository-root]\n")
+        return 2i64
+    if arguments.count == 1:
+        if arguments[0] == "":
+            _ = write_stderr("usage: check_build_graph_index [repository-root]\n")
+            return 2i64
+        return EsBuildGraphIndexAudit::run(arguments[0])
+    return EsBuildGraphIndexAudit::run_default()
