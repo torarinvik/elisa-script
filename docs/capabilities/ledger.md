@@ -1244,9 +1244,10 @@ allocation, and host-integration behavior are qualified. The separate
 `EsRecordNumericAggregate` adapter now converts a completed signed integer
 field with the checked numeric accessor before submitting `AddValue`; its
 field-view entry point first runs the bounded numeric scanner using caller
-policy. An integration fixture covers negative/positive accumulation and
-fail-atomic malformed-field/sum-ceiling rejection. Decimal/floating coercion
-and execution evidence remain open.
+policy, including opt-in ASCII edge-whitespace trimming charged against the
+raw input limit. An integration fixture covers padded negative/positive
+accumulation and fail-atomic malformed-field, input-limit, and sum-ceiling
+rejection. Decimal/floating coercion and execution evidence remain open.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces

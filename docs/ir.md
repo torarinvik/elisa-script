@@ -1630,8 +1630,10 @@ checks. Exponent lead/sign/digit phases are cross-checked against exponent
 digit accounting, rejecting snapshots that claim exponent digits without any.
 No implicit float conversion occurs at the record boundary.
 `parse_record_numeric` applies that state machine to a complete borrowed field
-view under the caller's explicit byte/digit/underscore policy; it does not trim
-whitespace or apply locale coercion.
+view under the caller's explicit byte/digit/underscore policy. Optional
+`trim_ascii_whitespace` removes only ASCII space, tab, LF, VT, FF, and CR from
+the field ends; the input byte ceiling is charged before trimming. It does not
+apply locale coercion.
 Integer `RecordNumericResult` values can be materialized through checked
 `record_numeric_result_i64` and `record_numeric_result_u64` accessors. Signed
 conversion handles the minimum value without negating an unrepresentable
