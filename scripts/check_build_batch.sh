@@ -55,7 +55,9 @@ for invariant in \
     'ProcessBatchEvent.CancelAck' \
     'BuildSchedulerEvent.CancelAck' \
     'command_snapshot_bound != result.dispatched' \
+    'outputs_snapshot_bound != result.dispatched' \
     'build_batch_process_commands_equal(result.dispatched_command_snapshot, node.command)' \
+    'build_batch_execution_outputs_equal(result.dispatched_outputs_snapshot, expected_outputs)' \
     'dispatched_command_snapshot <- node.command' \
     'build_batch_process_succeeded(process_result) and process_result.error_text != ""'; do
     rg -Fq "$invariant" "$model"
@@ -116,6 +118,8 @@ for fixture_case in \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'build_batch_rejects_command_mutation_after_dispatch' \
     'mutation_rejected <- failure == BuildBatchError.JobMappingInvalid' \
+    'build_batch_rejects_declared_output_mutation_after_dispatch' \
+    'session.output_sets[0].paths <- ["/tmp/elisascript-forged.o"]' \
     'build_batch_rejects_success_receipt_with_host_error_text_atomically' \
     'rejected <- failure == BuildBatchError.ResultInvalid' \
     'parallel_build_launches_receive_only_their_reserved_output_budget' \

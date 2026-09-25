@@ -764,8 +764,10 @@ contract, not child launch or runtime evidence.
 Each active launch is additionally bound to the exact `ProcessCommand` snapshot
 admitted for that node; validation rejects command mutation while a result is
 outstanding, preventing a stale child result from being attributed to a changed
-build recipe. A focused regression fixture and the static audit cover this
-binding, but execution remains unverified. A nominally successful process result
+build recipe. Its declared output paths are snapshotted at dispatch as well, so
+the output verifier cannot be redirected to different paths while the child is
+running. Focused regression fixtures and the static audit cover these bindings,
+but execution remains unverified. A nominally successful process result
 with nonempty host `error_text` is rejected before graph state or output
 reservations change, so receipt admission and incremental-result export agree
 on which results are successful.
