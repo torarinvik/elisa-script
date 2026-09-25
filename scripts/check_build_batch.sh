@@ -56,7 +56,8 @@ for invariant in \
     'BuildSchedulerEvent.CancelAck' \
     'command_snapshot_bound != result.dispatched' \
     'build_batch_process_commands_equal(result.dispatched_command_snapshot, node.command)' \
-    'dispatched_command_snapshot <- node.command'; do
+    'dispatched_command_snapshot <- node.command' \
+    'build_batch_process_succeeded(process_result) and process_result.error_text != ""'; do
     rg -Fq "$invariant" "$model"
 done
 
@@ -115,6 +116,8 @@ for fixture_case in \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'build_batch_rejects_command_mutation_after_dispatch' \
     'mutation_rejected <- failure == BuildBatchError.JobMappingInvalid' \
+    'build_batch_rejects_success_receipt_with_host_error_text_atomically' \
+    'rejected <- failure == BuildBatchError.ResultInvalid' \
     'parallel_build_launches_receive_only_their_reserved_output_budget' \
     'launches[1].command.capture_output_limit_bytes == 0' \
     'session.results[1].reserved_output_bytes == 0' \

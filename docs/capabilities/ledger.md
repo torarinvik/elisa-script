@@ -765,7 +765,10 @@ Each active launch is additionally bound to the exact `ProcessCommand` snapshot
 admitted for that node; validation rejects command mutation while a result is
 outstanding, preventing a stale child result from being attributed to a changed
 build recipe. A focused regression fixture and the static audit cover this
-binding, but execution remains unverified.
+binding, but execution remains unverified. A nominally successful process result
+with nonempty host `error_text` is rejected before graph state or output
+reservations change, so receipt admission and incremental-result export agree
+on which results are successful.
 Successful integrated batches can now be converted to the canonical
 `BuildExecutionResult` used by the existing incremental commit path: cached
 nodes remain unstarted cache hits, while dispatched nodes preserve successful
