@@ -54,6 +54,8 @@ for boundary in \
     'first_field > materializer.fields.count' \
     'record.first_field > materializer.fields.count' \
     'record.field_count > materializer.fields.count - record.first_field' \
+    'if record.field_count == 0:' \
+    'materializer_record_terminator_at(materializer, source_cursor)' \
     'materializer.state == CsvMaterializerState.Ready and' \
     'CsvMaterializerState.Building and materializer.state != CsvMaterializerState.Complete' \
     'SourceAccountingInvalid' \
@@ -76,9 +78,11 @@ for fixture_pattern in \
 done
 
 for fixture_pattern in \
-    'csv_empty_input_has_zero_records_but_empty_line_has_one' \
+    'csv_empty_input_and_blank_records_match_python_shape' \
     'empty_materializer.records.count == 0' \
-    'empty_line_materializer.records.count == 1'; do
+    'blank_record_materializer.records.count == 1' \
+    'blank_record_materializer.records[0].field_count == 0' \
+    'quoted_empty_materializer.records.count == 1'; do
     rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 

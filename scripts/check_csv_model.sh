@@ -40,11 +40,17 @@ for boundary in \
     'InvalidRecordTerminator' \
     'UnexpectedEnd' \
     'AccountingInvalid' \
-    'stream.fields_total < stream.records' \
     'Cancelled' \
+    'field_started' \
+    'stream.fields_in_record == 0 and stream.field_bytes == 0 and not stream.field_started' \
     'raise CsvContractError.RecordLimitExceeded if stream.records >= stream.limits.records'; do
     rg -Fq "$boundary" "$model"
 done
+
+if rg -Fq 'stream.fields_total < stream.records' "$model"; then
+    printf '%s\n' 'csv model audit: zero-field blank records were incorrectly rejected' >&2
+    exit 1
+fi
 
 rg -Fq 'include "../runtime/csv_model.elisa"' "$ir"
 for fixture_pattern in \
@@ -60,9 +66,10 @@ for fixture_pattern in \
 done
 
 for fixture_pattern in \
-    'csv_empty_input_has_zero_records_but_empty_line_has_one' \
+    'csv_empty_input_and_blank_records_match_python_shape' \
     'empty_stream.records == 0' \
-    'empty_line_stream.records == 1'; do
+    'blank_record_stream.records == 1 and blank_record_stream.fields_total == 0' \
+    'quoted_empty_stream.records == 1 and quoted_empty_stream.fields_total == 1'; do
     rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 

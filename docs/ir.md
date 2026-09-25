@@ -452,10 +452,10 @@ only in `ConfiguredByte` mode. CRLF is recognized across byte events with a
 pending-CR state; an invalid or incomplete suffix is rejected without
 consuming the offending byte. CR and LF remain payload inside quoted fields,
 while an unmatched CR or LF outside quotes is invalid in CRLF mode. Empty input
-completes with zero records, while a line terminator by itself is one record
-containing one empty field, matching the common Python CSV-reader distinction.
-Field materialization, including the invariant that every completed record owns
-a field, and external-spill aggregation remain adapter work.
+completes with zero records, while a physical blank record contains zero
+fields, matching Python's `csv.reader`; a quoted empty cell such as `""`
+remains one field. The span materializer preserves zero-field records without
+inventing field spans. External-spill aggregation remains adapter work.
 
 `EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span
 boundary. Each field span is range-checked against the source and checked as a

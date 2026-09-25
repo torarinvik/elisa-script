@@ -1116,8 +1116,10 @@ policy-checked record layout, quote markers, shared field/record ceilings,
 subtraction-safe record starts, exact-limit admission, clean ready-state
 accounting, and validated slice lookup for CSV/TSV adapters. It validates
 configured-byte, LF, CRLF, and CR record boundaries, including CRLF spans and
-quoted multiline fields. The focused IR fixture and check_csv_materializer.sh
-audit are static evidence; large batch construction remains open.
+quoted multiline fields. It distinguishes empty input (zero records), blank
+records (zero fields), and explicitly quoted empty cells (one field). The
+focused IR/runtime fixtures and check_csv_materializer.sh audit are static
+evidence only; large batch construction and runtime qualification remain open.
 
 ES-SCRIPT-050 | EsSchemaCsv materializes complete CSV/TSV rows into owned,
 schema-ordered decoded UTF-8 text or explicitly targeted exact integers, with
