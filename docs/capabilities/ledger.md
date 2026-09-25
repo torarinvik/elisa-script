@@ -25,6 +25,15 @@ does not spuriously apply cross-thread container-argument rules. The focused
 semantic fixture covers a process call receiving a container parameter through
 such a block; execution remains suspended, so this is static evidence.
 
+Elisascript now has source-level coverage for scoped block values at both the
+function tail and process-capture call sites. The driver fixture
+`test/driver/block_scoped_tail.elisascript` checks an implicit function-tail
+return and a value block that keeps its temporary input local; the lowering and
+semantic fixtures cover the IR return and the non-`submit` classification.
+`scripts/check_block_scoped_tail.sh` is a compiler-free presence audit, not a
+behavioral test. None of these checks have been run under the explicit
+validation hold, so acceptance, emitted IR, and runtime behavior remain open.
+
 The in-process test runner now checks its case-count ceiling before adding the
 completed case's resource usage to the suite ledger. An over-limit publication
 therefore cannot charge steps, elapsed time, output, or regex work for a case
