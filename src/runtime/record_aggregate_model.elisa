@@ -13,6 +13,7 @@ module EsRecordAggregate:
             SUM: u64 = 67108864
             INDEX_SLOTS: usize = 2097152
             INDEX_MINIMUM: usize = 8
+            INDEX_PROBES: usize = 64
 
 
         const enum RecordAggregateState of u8:
@@ -68,6 +69,7 @@ module EsRecordAggregate:
             KeyBytesLimitExceeded
             OrdinalInvalid
             GroupIndexInvalid
+            IndexProbeLimitExceeded
             AccountingInvalid
             LookupNotReady
             SumLimitExceeded
@@ -122,28 +124,40 @@ module EsRecordAggregate:
             return (session.index_slots.count & (session.index_slots.count - 1)) == 0
 
 
+        def record_aggregate_index_probe_count(slots: darray[usize]) -> usize:
+            return Limits::INDEX_PROBES if slots.count > Limits::INDEX_PROBES else slots.count
+
+
         def record_aggregate_index_find(groups: darray[RecordAggregateGroup], slots: darray[usize], key: sview) -> usize error[RecordAggregateError]:
             return groups.count if slots.count == 0
             slot: mutable usize = (record_aggregate_key_hash(key) % slots.count.u64()).usize()
-            for probe in 0..<slots.count |groups, slots, key, slot|:
+            probe_count: usize = record_aggregate_index_probe_count(slots)
+            for probe in 0..<probe_count |groups, slots, key, slot|:
                 stored: usize = slots[slot]
                 return groups.count if stored == 0
                 group_index: usize = stored - 1
                 raise RecordAggregateError.AccountingInvalid if group_index >= groups.count
                 return group_index if groups[group_index].key == key
                 slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise RecordAggregateError.IndexProbeLimitExceeded if slots.count > probe_count
             return groups.count
+
+
+        def record_aggregate_index_empty_slot(slots: darray[usize], key: sview) -> usize error[RecordAggregateError]:
+            raise RecordAggregateError.AccountingInvalid if slots.count == 0
+            slot: mutable usize = (record_aggregate_key_hash(key) % slots.count.u64()).usize()
+            probe_count: usize = record_aggregate_index_probe_count(slots)
+            for probe in 0..<probe_count |slots, key, slot|:
+                return slot if slots[slot] == 0
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise RecordAggregateError.IndexProbeLimitExceeded if slots.count > probe_count
+            raise RecordAggregateError.AccountingInvalid
 
 
         def record_aggregate_index_place(groups: darray[RecordAggregateGroup], slots: mutable darray[usize]&, group_index: usize) -> void error[RecordAggregateError]:
             raise RecordAggregateError.AccountingInvalid if slots.count == 0 or group_index >= groups.count
-            slot: mutable usize = (record_aggregate_key_hash(groups[group_index].key) % slots.count.u64()).usize()
-            for probe in 0..<slots.count |groups, slots, group_index, slot|:
-                if slots[slot] == 0:
-                    slots[slot] <- group_index + 1
-                    return
-                slot <- 0 if slot + 1 == slots.count else slot + 1
-            raise RecordAggregateError.AccountingInvalid
+            slot: usize = try record_aggregate_index_empty_slot(slots, groups[group_index].key)
+            slots[slot] <- group_index + 1
 
 
         def record_aggregate_ensure_index_capacity(session: mutable RecordAggregateSession&) -> void error[RecordAggregateError]:
@@ -245,9 +259,10 @@ module EsRecordAggregate:
                     raise RecordAggregateError.GroupLimitExceeded if session.groups.count >= session.policy.max_groups
                     raise RecordAggregateError.KeyBytesLimitExceeded if sview_len(key) > session.policy.max_key_bytes - session.key_bytes
                     try record_aggregate_ensure_index_capacity(session)
+                    slot: usize = try record_aggregate_index_empty_slot(session.index_slots, key)
                     index <- session.groups.count
                     session.groups.push(RecordAggregateGroup{key: key, count: 1, first_ordinal: session.event_count, sum: value if event == RecordAggregateEvent.AddValue else 0})
-                    try record_aggregate_index_place(session.groups, session.index_slots, index)
+                    session.index_slots[slot] <- index + 1
                     session.key_bytes <- session.key_bytes + sview_len(key)
                 else:
                     raise RecordAggregateError.EventLimitExceeded if session.groups[index].count >= session.policy.max_events

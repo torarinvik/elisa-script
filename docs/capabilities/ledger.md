@@ -1372,9 +1372,12 @@ decimal/floating aggregation, joins, spill-to-disk aggregation, and host
 execution remain open. The collector now keeps insertion-ordered groups
 alongside a bounded open-addressed FNV index; Add/AddValue use constant-size header checks and
 indexed lookup rather than rescanning all groups, while seal/query validation
-audits index completeness and group accounting. Rehashing is occasional and
-bounded by the configured group/index ceilings. The hash is non-cryptographic,
-so collision-heavy worst-case throughput is not established. The focused
+audits index completeness and group accounting. Lookup and placement cap each
+probe chain at 64 slots and return a typed error when that cap is reached,
+bounding collision-heavy work at the cost of rejecting such a key set.
+Rehashing is occasional and bounded by the configured group/index ceilings.
+The hash is non-cryptographic, so collision-heavy throughput and false-limit
+frequency remain unmeasured. The focused
 runtime fixture and compiler-free source audit are static evidence only; no
 runtime or performance validation was run. C03 acceptance remains open until
 high-cardinality throughput is measured within declared bounds and collision,

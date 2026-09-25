@@ -144,6 +144,7 @@ for boundary in \
     'KEY_BYTES: usize = 268435456' \
     'SUM: u64 = 67108864' \
     'INDEX_SLOTS: usize = 2097152' \
+    'INDEX_PROBES: usize = 64' \
     'sum: i64 = 0' \
     '-> i64 error\[RecordAggregateError\]' \
     '0 - session.policy.max_sum.i64()' \
@@ -151,12 +152,15 @@ for boundary in \
     'value < 0 and session.groups\[index\].sum < 0 - sum_limit - value' \
     'record_aggregate_key_hash' \
     'record_aggregate_index_find' \
+    'record_aggregate_index_empty_slot' \
     'record_aggregate_index_place' \
+    'record_aggregate_index_probe_count' \
     'record_aggregate_ensure_index_capacity' \
     'validate_record_aggregate_header' \
     'record_aggregate_key_valid' \
     'sview_len\(key\) <= policy.max_key_bytes' \
     'RecordAggregateError.GroupLimitExceeded' \
+    'RecordAggregateError.IndexProbeLimitExceeded' \
     'RecordAggregateError.EventLimitExceeded' \
     'RecordAggregateError.KeyBytesLimitExceeded' \
     'RecordAggregateError.AccountingInvalid' \
@@ -177,6 +181,10 @@ rg -q 'record_aggregate_index_find\(session.groups, session.index_slots, group.k
 rg -q 'try validate_record_aggregate_header\(session\)' "$model"
 rg -q 'try record_aggregate_ensure_index_capacity\(session\)' "$model"
 ! rg -q 'record_aggregate_index\(session, key\)' "$model"
+free_slot_preflight_line="$(rg -n -m1 -F 'slot: usize = try record_aggregate_index_empty_slot(session.index_slots, key)' "$model" | cut -d: -f1)"
+group_append_line="$(rg -n -m1 -F 'session.groups.push(RecordAggregateGroup{' "$model" | cut -d: -f1)"
+[[ -n "$free_slot_preflight_line" && -n "$group_append_line" ]]
+(( free_slot_preflight_line < group_append_line ))
 
 for fixture_pattern in \
     'using EsRecordAggregate' \
@@ -199,6 +207,12 @@ rg -q 'negative_sum_rejected' "$runtime_fixture"
 rg -q 'index_growth' "$runtime_fixture"
 rg -q 'index_growth.index_slots.count == 16' "$runtime_fixture"
 rg -q 'record_aggregate_group_count\(index_growth, "i"\) == 1' "$runtime_fixture"
+rg -q 'probe_limited' "$runtime_fixture"
+rg -q 'IndexProbeLimitExceeded' "$runtime_fixture"
+rg -q 'probe_limited.groups.count == 1 and probe_limited.event_count == 1' "$runtime_fixture"
+rg -q 'full_small_index' "$runtime_fixture"
+rg -q 'full_index_rejected' "$runtime_fixture"
+rg -q 'full_small_index.groups.count == 1 and full_small_index.event_count == 1' "$runtime_fixture"
 rg -q 'damaged.index_slots\[index\] <- 0' "$runtime_fixture"
 rg -q 'RecordAggregateError.AccountingInvalid' "$runtime_fixture"
 rg -q 'RecordAggregateError.SumLimitExceeded' "$runtime_fixture"

@@ -1764,6 +1764,12 @@ return `error[RecordAggregateError]`. Signed sums, averages, joins, and
 spill-to-disk aggregation remain separate policies rather than implicit numeric
 conversions. Validation derives the event total and rejects duplicate first
 ordinals, so externally assembled groups cannot forge aggregate cardinality.
+Open-addressed lookup and rehash placement stop after 64 probes and fail with
+`IndexProbeLimitExceeded`; this bounds collision-heavy work but may reject an
+otherwise valid input whose keys form a longer probe chain. The FNV index is
+not collision-resistant, and throughput remains unmeasured. New-group insertion
+preflights an empty slot before appending the group, so a malformed full index
+cannot leave group, event, and key-byte accounting partially updated.
 `EsRecordNumericAggregate::record_aggregate_add_numeric_field` parses a field
 view under an explicit numeric policy, then bridges its checked integer result
 into `AddValue`. `record_aggregate_add_numeric_record_field` first validates a
