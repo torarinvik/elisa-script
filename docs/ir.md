@@ -1724,8 +1724,11 @@ conversions. Validation derives the event total and rejects duplicate first
 ordinals, so externally assembled groups cannot forge aggregate cardinality.
 `EsRecordNumericAggregate::record_aggregate_add_numeric_field` parses a field
 view under an explicit numeric policy, then bridges its checked integer result
-into `AddValue`. Malformed fields or sum-limit failures do not change the
-aggregate; decimal/floating coercion remains explicit and unavailable here.
+into `AddValue`. `record_aggregate_add_numeric_record_field` first validates a
+materialized field against its owning record and stream policy, rejects absent
+fields explicitly, then uses the same numeric bridge. Invalid spans, absent
+fields, malformed numbers, or sum-limit failures do not change the aggregate;
+decimal/floating coercion remains explicit and unavailable here.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum

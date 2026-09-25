@@ -1247,7 +1247,11 @@ field-view entry point first runs the bounded numeric scanner using caller
 policy, including opt-in ASCII edge-whitespace trimming charged against the
 raw input limit. An integration fixture covers padded negative/positive
 accumulation and fail-atomic malformed-field, input-limit, and sum-ceiling
-rejection. Decimal/floating coercion and execution evidence remain open.
+rejection. A materialized-field entry point now validates the `RecordField`
+against its owning record and stream policy before numeric parsing, explicitly
+rejects absent fields, and preserves the aggregate on invalid spans; its
+focused fixture is static and unexecuted. Decimal/floating coercion and
+execution evidence remain open.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces
