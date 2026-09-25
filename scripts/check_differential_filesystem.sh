@@ -90,6 +90,8 @@ for fixture_pattern in \
     'differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed' \
     'differential_filesystem_rejects_non_directory_ancestors' \
     'differential_filesystem_requires_canonical_permission_metadata' \
+    'forged_path_copy_rejected' \
+    'forged_content_copy_rejected' \
     'DifferentialFilesystemError.InvalidMode' \
     'DifferentialFilesystemError.AncestorNotDirectory' \
     'DifferentialFilesystemError.PathStorageLimitExceeded' \
