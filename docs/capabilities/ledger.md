@@ -776,6 +776,11 @@ static audit cover these bindings, but execution remains unverified. A
 nominally successful process result with nonempty host `error_text` is rejected
 before graph state or output reservations change, so receipt admission and
 incremental-result export agree on which results are successful.
+Before capturing those baselines, the batch constructor also caps the total
+argument, environment, and declared-output path vector entries at 65,536 across
+the graph. This prevents per-command legal vectors from multiplying into
+unbounded snapshot allocation; the aggregate-limit fixture and source audit are
+present but unexecuted.
 Successful integrated batches can now be converted to the canonical
 `BuildExecutionResult` used by the existing incremental commit path: cached
 nodes remain unstarted cache hits, while dispatched nodes preserve successful

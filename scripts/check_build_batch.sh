@@ -25,6 +25,7 @@ for declaration in \
     'error BuildBatchError:' \
     'def build_batch_session_for_graph(' \
     'def build_batch_session_for_graph_with_outputs(' \
+    'def build_batch_plan_vector_entries_fit(' \
     'def build_batch_output_sets_from_recipes(' \
     'def build_batch_session_for_recipes(' \
     'def build_incremental_batch_session_for_recipes(' \
@@ -60,6 +61,8 @@ for invariant in \
     'build_batch_process_commands_equal(result.dispatched_command_snapshot, node.command)' \
     'build_batch_execution_outputs_equal(result.dispatched_outputs_snapshot, expected_outputs)' \
     'session.plan_nodes.count != graph.nodes.count' \
+    'build_batch_plan_vector_entries_fit(graph, output_sets)' \
+    'PLAN_VECTOR_ENTRIES: usize = 65536' \
     'build_batch_index_vectors_equal(node.dependencies, plan.dependencies)' \
     'build_batch_node_name_orders_equal(session.plan_name_order, graph.node_name_order)' \
     'build_batch_recipe_signatures_equal(node.recipe_signature, plan.recipe_signature)' \
@@ -106,6 +109,8 @@ fi
 
 for fixture_case in \
     'build_batch_dispatches_ready_nodes_and_refills_capacity' \
+    'build_batch_rejects_aggregate_plan_vector_over_limit_before_snapshotting' \
+    'BuildBatchError.PlanLimitExceeded' \
     'execution.nodes[0].started and not execution.nodes[0].cache_hit' \
     'execution.nodes[2].stderr == "linked"' \
     'build_batch_failure_cancels_unstarted_nodes_and_drains_siblings' \
