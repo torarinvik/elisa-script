@@ -777,6 +777,9 @@ cancellation cannot relabel an already succeeded graph, and a pre-start cancella
 marks every planned node terminal while keeping the scheduler and embedded graph
 ledgers synchronized. Cache snapshots are strictly target-name ordered, checked
 for duplicates and order in one pass, and searched by binary search on cache
+hits. Incremental admission derives cache rows from graph-validated `UpToDate`
+decisions and sorts them canonically, so callers need not seed a duplicate cache
+list. BuildBatch uses the same binary lookup when applying and validating cache
 hits.
 This remains a scheduler-state contract only: the current build host executor
 is serial, and `EsProcessSession`/`EsProcessBatch` do not yet launch or reap

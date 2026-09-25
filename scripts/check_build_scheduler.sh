@@ -10,11 +10,13 @@ build_model="$repo_root/src/runtime/build_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 incremental_fixture="$repo_root/test/runtime/build_incremental_scheduler_test.elisa"
+batch_model="$repo_root/src/runtime/build_batch_model.elisa"
+batch_fixture="$repo_root/test/runtime/build_batch_model_test.elisa"
 incremental_graph_model="$repo_root/src/runtime/build_incremental_graph_model.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$build_model" "$incremental_graph_model" "$ir" "$fixture" "$incremental_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$build_model" "$incremental_graph_model" "$batch_model" "$ir" "$fixture" "$incremental_fixture" "$batch_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'build scheduler audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -31,6 +33,8 @@ for declaration in \
     'error BuildSchedulerError:' \
     'def validate_build_scheduler(' \
     'def admit_build_incremental_graph(' \
+    'def scheduler_sort_cache_entries(' \
+    'def build_scheduler_cache_entry_matches(' \
     'IncrementalPlanInvalid' \
     'IncrementalPlanMismatch' \
     'def advance_build_scheduler(' \
@@ -48,17 +52,32 @@ for integration_check in \
     'plan.decisions.count != scheduler.graph.nodes.count' \
     'plan.target_names[index] != scheduler.graph.nodes[index].name' \
     'plan.recipe_fingerprints[index] != scheduler.graph.nodes[index].fingerprint' \
-    'plan.decisions[target_index] == BuildIncrementalDecision.UpToDate' \
-    'scheduler.cache <- admitted_cache'; do
+    'scheduler.cache <- try scheduler_sort_cache_entries(admitted_cache)' \
+    'admitted_cache.push(BuildCacheEntry{node_name: scheduler.graph.nodes[index].name, fingerprint: plan.recipe_fingerprints[index]})' \
+    'plan.decisions[index] == BuildIncrementalDecision.UpToDate'; do
     rg -Fq "$integration_check" "$model"
 done
 rg -Fq 'plan_build_incremental_graph_transition(previous_targets, scheduler.graph, current_recipes, observations)' "$model"
+rg -Fq 'admit_build_incremental_graph(session.scheduler, previous_targets, recipes, observations)' "$batch_model"
+batch_validation_body="$(sed -n '/^        def validate_build_batch_session(/,/^        def begin_build_batch(/p' "$batch_model")"
+rg -Fq 'build_scheduler_cache_entry_matches(session.scheduler, index)' <<< "$batch_validation_body"
+if rg -Fq 'for entry in session.scheduler.cache' <<< "$batch_validation_body"; then
+    printf 'build scheduler audit: batch cache receipt validation regressed to a linear scan\n' >&2
+    exit 1
+fi
+batch_begin_body="$(sed -n '/^        def begin_build_batch(/,/^        def build_batch_execution_result(/p' "$batch_model")"
+rg -Fq 'build_scheduler_cache_entry_matches(session.scheduler, node_index)' <<< "$batch_begin_body"
+if rg -Fq 'for entry in session.scheduler.cache' <<< "$batch_begin_body"; then
+    printf 'build scheduler audit: cache-hit application regressed to a nested scan\n' >&2
+    exit 1
+fi
 
 queue_lookup_body="$(sed -n '/^        def scheduler_queue_contains(/,/^        def scheduler_dependency_ready(/p' "$model")"
 cache_lookup_body="$(sed -n '/^        def scheduler_cache_matches(/,/^        def scheduler_refresh_ready(/p' "$model")"
+cache_sort_body="$(sed -n '/^        def scheduler_sort_cache_entries(/,/^        def scheduler_admit_verified_incremental_plan(/p' "$model")"
 readiness_rebuild_body="$(sed -n '/^        def scheduler_refresh_ready(/,/^        def scheduler_rebuild_ready(/p' "$model")"
 queue_validation_body="$(sed -n '/^        def validate_build_scheduler(/,/^    private:/p' "$model")"
-[[ -n "$queue_lookup_body" && -n "$cache_lookup_body" && -n "$readiness_rebuild_body" && -n "$queue_validation_body" ]]
+[[ -n "$queue_lookup_body" && -n "$cache_lookup_body" && -n "$cache_sort_body" && -n "$readiness_rebuild_body" && -n "$queue_validation_body" ]]
 printf '%s\n' "$queue_lookup_body" | rg -Fq 'while low < high'
 printf '%s\n' "$queue_lookup_body" | rg -Fq 'middle: usize = low + (high - low) / 2'
 if printf '%s\n' "$queue_lookup_body" | rg -Fq 'for queued in scheduler.ready_queue'; then
@@ -67,6 +86,8 @@ if printf '%s\n' "$queue_lookup_body" | rg -Fq 'for queued in scheduler.ready_qu
 fi
 printf '%s\n' "$cache_lookup_body" | rg -Fq 'while low < high'
 printf '%s\n' "$cache_lookup_body" | rg -Fq 'middle: usize = low + (high - low) / 2'
+printf '%s\n' "$cache_sort_body" | rg -Fq 'while width < order.count'
+printf '%s\n' "$cache_sort_body" | rg -Fq 'width <- order.count if width > order.count / 2 else width * 2'
 printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.DuplicateCacheEntry if name_order == SchedulerNameOrder.Equal'
 printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.CacheOrderInvalid if name_order == SchedulerNameOrder.After'
 if printf '%s\n' "$queue_validation_body" | rg -Fq 'for earlier in 0..<index |scheduler, entry|'; then
@@ -129,6 +150,13 @@ done
 
 rg -Fq 'include "../runtime/build_scheduler_model.elisa"' "$ir"
 rg -Fq 'using EsBuildScheduler' "$fixture"
+for batch_fixture_check in \
+    'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
+    'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
+    'session.scheduler.cache.count == 1' \
+    'session.scheduler.cache.count == 2'; do
+    rg -Fq "$batch_fixture_check" "$batch_fixture"
+done
 for fixture_pattern in \
     'typed_build_scheduler_contract_is_deterministic_cache_aware_and_cancelable' \
     'two_cache_scheduler' \
@@ -154,6 +182,9 @@ for fixture_pattern in \
 done
 
 for queue_fixture_pattern in \
+    'graph_ordered_plan_produces_name_ordered_cache' \
+    'scheduler.cache[0].node_name == "a-leaf"' \
+    'scheduler.cache[1].node_name == "z-root"' \
     'build_scheduler_uses_ordered_queue_membership_and_rejects_duplicates' \
     'advance_build_scheduler(scheduler, BuildSchedulerEvent.Dispatch, 2)' \
     'duplicate_scheduler.ready_queue <- [0, 0]' \
