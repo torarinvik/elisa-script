@@ -234,9 +234,17 @@ reap_compiler_if_exited() {
         compiler_state="$(compiler_process_state "$compiler_pid" 2>/dev/null || printf 'unknown\n')"
         case "$compiler_state" in
             absent|zombie)
+                if [ -n "$compiler_pgid" ] && process_group_has_processes "$compiler_pgid"; then
+                    # Keep the session leader as an unreaped child while live
+                    # group members remain. This preserves the PGID's identity
+                    # through TERM/grace/KILL escalation instead of allowing
+                    # the numeric identifier to be recycled.
+                    return 0
+                fi
+                # Never retain a PGID after releasing the unreaped leader:
+                # a later cleanup trap must not mistake a recycled ID for us.
+                compiler_pgid=""
                 wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
-                # Reap the direct child before waiting on longer-lived helpers
-                # left in its process group.
                 compiler_pid=""
                 ;;
         esac
@@ -246,9 +254,10 @@ reap_compiler_if_exited() {
 kill_process_tree() {
     process_root_pid="$1"
     process_group_id="$2"
-    # Delayed numeric-PGID escalation cannot atomically verify process-group
-    # identity with portable ps/kill. The default-disabled latch is a policy
-    # gate, not an OS-enforced containment boundary.
+    # In normal operation the direct setsid child remains unreaped until its
+    # live process group is empty, which reserves the PGID through escalation.
+    # This still relies on portable numeric signals, not an OS-enforced memory
+    # or descendant-containment boundary.
     process_tree_snapshot=""
     if [ -n "$process_root_pid" ]; then
         process_tree_snapshot="$(process_tree_pids "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
@@ -259,7 +268,7 @@ kill_process_tree() {
     case "$process_group_id" in
         ''|0|*[!0-9]*) ;;
         *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
                 kill -TERM -- "-$process_group_id" 2>/dev/null || true
             fi
             ;;
@@ -274,7 +283,7 @@ kill_process_tree() {
     case "$process_group_id" in
         ''|0|*[!0-9]*) ;;
         *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
                 kill -KILL -- "-$process_group_id" 2>/dev/null || true
             fi
             ;;
@@ -294,7 +303,7 @@ kill_process_tree_immediately() {
     case "$process_group_id" in
         ''|0|*[!0-9]*) ;;
         *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ]; then
+            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
                 kill -KILL -- "-$process_group_id" 2>/dev/null || true
             fi
             ;;
@@ -598,6 +607,11 @@ for source_file in "$@"; do
             exit 125
             ;;
     esac
+    if [ "$compiler_pgid" != "$compiler_pid" ]; then
+        echo "run_bounded_lowering: session leader PID does not own its process-group ID" >&2
+        kill_process_tree "$compiler_pid" "$compiler_pgid"
+        exit 125
+    fi
     rss_guard=0
     timeout_guard=0
     output_guard=0
@@ -682,6 +696,8 @@ for source_file in "$@"; do
 
     if [ -n "$compiler_pid" ]; then
         wait "$compiler_pid" 2>/dev/null || compiler_exit=$?
+        compiler_pid=""
+        compiler_pgid=""
     fi
     final_log_bytes="$(wc -c <"$log_file" | tr -d '[:space:]')"
     case "$final_log_bytes" in
