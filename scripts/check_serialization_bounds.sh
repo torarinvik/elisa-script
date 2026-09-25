@@ -211,6 +211,48 @@ if ! awk '
     printf 'serialization bounds audit: unchanged cache payload is not returned before staging\n' >&2
     exit 1
 fi
+if ! awk '
+    /def artifact_cache_payload_matches_at\(/ { in_payload_match = 1 }
+    /def artifact_cache_write_staging_at\(/ { in_payload_match = 0 }
+    in_payload_match && /DarwinAtFlag::SYMLINK_NOFOLLOW/ { nofollow_line = NR }
+    in_payload_match && /named_info\.mode & DarwinStatMode::MASK/ { regular_file_line = NR }
+    in_payload_match && /named_info\.size\.usize\(\) > byte_limit/ { size_limit_line = NR }
+    in_payload_match && /named_info\.size\.usize\(\) != bytes\.count/ { named_length_line = NR }
+    in_payload_match && /existing\.count != bytes\.count/ { read_length_line = NR }
+    in_payload_match && /existing\[index\] != bytes\[index\]/ { byte_compare_line = NR }
+    in_payload_match && /return true/ { equal_line = NR }
+    END { exit !(nofollow_line > 0 && regular_file_line > nofollow_line && size_limit_line > regular_file_line && named_length_line > size_limit_line && read_length_line > named_length_line && byte_compare_line > read_length_line && equal_line > byte_compare_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: no-op cache comparison is not bounded, no-follow, and byte-exact\n' >&2
+    exit 1
+fi
+if ! awk '
+    /def artifact_cache_read_file_at\(/ { in_cache_read = 1 }
+    /def artifact_cache_payload_matches_at\(/ { in_cache_read = 0 }
+    in_cache_read && /fstatat\(directory_fd, cache_name, named_before, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { named_before_line = NR }
+    in_cache_read && /openat\(directory_fd, cache_name, flags, 0u32\)/ { open_line = NR }
+    in_cache_read && /info\.device != named_before\.device/ { descriptor_identity_line = NR }
+    in_cache_read && /fstatat\(directory_fd, cache_name, named_after, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { named_after_line = NR }
+    in_cache_read && /named_after\.inode == info\.inode/ { final_identity_line = NR }
+    in_cache_read && /not name_still_matches/ { identity_reject_line = NR }
+    END { exit !(named_before_line > 0 && open_line > named_before_line && descriptor_identity_line > open_line && named_after_line > descriptor_identity_line && final_identity_line >= named_after_line && identity_reject_line > final_identity_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: no-op cache read does not bind bytes to a stable named inode\n' >&2
+    exit 1
+fi
+if ! awk '
+    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
+    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
+    in_payload_publish && /fstatat\(directory_fd, staging_name, stage_info, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { stage_check_line = NR }
+    in_payload_publish && /stage_errno\[0\] != DarwinErrno::ENOENT/ { stale_stage_reject_line = NR }
+    in_payload_publish && /catch artifact_cache_payload_matches_at/ { compare_line = NR }
+    in_payload_publish && /unchanged: true/ { unchanged_line = NR }
+    in_payload_publish && /artifact_cache_write_staging_at\(/ { staging_write_line = NR }
+    END { exit !(stage_check_line > 0 && stale_stage_reject_line > stage_check_line && compare_line > stale_stage_reject_line && unchanged_line > compare_line && staging_write_line > unchanged_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: cache no-op bypasses stale-stage admission or occurs after staging\n' >&2
+    exit 1
+fi
 rg -q 'def artifact_cache_write_staging_at' "$artifact_cache"
 rg -q 'def artifact_cache_directory_descriptor_valid' "$artifact_cache"
 rg -q 'elisascript_posix_fstat\(directory_fd, info\)' "$artifact_cache"
