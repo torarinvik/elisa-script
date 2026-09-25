@@ -330,6 +330,9 @@ U+070F, U+180E, U+0890, U+08E2, U+200B, U+200E, U+202A, U+2060, U+2065,
 U+FEFF, U+110BD, U+E0001, a private-use scalar, and U+FDD0 is compared with
 the pinned Python adapter to check C1, soft-hyphen, format, zero-width,
 embedding, supplementary format, private-use, and noncharacter `repr` escaping.
+The tag-block diagnostic also includes U+E0000, U+E0002, and U+E001F, covering
+the reserved/unassigned gap before the assigned tag characters at U+E0020;
+these must be escaped just like U+E0001 and the tag characters themselves.
 A malformed parameter-name diagnostic separately checks U+1680 and U+3000 in
 preserved text, because type normalization would remove those whitespace code
 points before rendering. The checked-in
