@@ -37,6 +37,8 @@ done
 
 for adapter_boundary in \
     'def record_field_edit_session_from_fields\(' \
+    'def record_field_edit_session_from_regex_spans\(' \
+    'split_record_fields_from_regex_spans' \
     'def record_field_reconstruct_record\(' \
     'record_field_edit_adapter_mode_supported' \
     'validate_record_field' \
@@ -74,6 +76,7 @@ for adapter_fixture_pattern in \
     'record_field_reconstruct_record' \
     'RecordFieldEditError.OutputLimitExceeded' \
     'record_edit_adapter_rejects_incomplete_scanner_output_and_unwired_modes' \
+    'record_edit_adapter_reconstructs_regex_scanned_fields' \
     'RecordFieldScanError.FieldSetMismatch' \
     'RecordFieldMode.FixedWidth'; do
     rg -Fq "$adapter_fixture_pattern" "$adapter_fixture"

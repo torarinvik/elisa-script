@@ -1779,8 +1779,11 @@ literal-separator modes. It compares the caller's fields with a fresh bounded
 scan before opening an edit session, rejecting omitted, reordered, or altered
 fields as `RecordFieldScanError.FieldSetMismatch` rather than reconstructing a
 partial record. Regex spans need an explicit matcher-to-adapter contract;
-fixed-width padding and schema serializers are not inferred, so those modes
-currently return `UnsupportedMode`. `record_field_reconstruct_record` joins
+`record_field_edit_session_from_regex_spans` accepts ordered spans from a
+bounded regex matcher and lets the scanner validate progress and produce the
+canonical field list. Fixed-width padding and schema serializers are not
+inferred, so those modes currently return `UnsupportedMode`.
+`record_field_reconstruct_record` joins
 the edited fields with the edit policy's field separator and then appends either
 the consumed record separator (`preserve_separator`) or the record policy's
 output separator. It checks content and separator together against

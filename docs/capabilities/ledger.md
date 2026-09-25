@@ -1291,9 +1291,12 @@ rejecting incomplete or forged scanner output with
 `RecordFieldScanError.FieldSetMismatch`. Reconstructed records use the edit
 policy's field separator and preserve the consumed record separator only when
 requested; otherwise they use the stream output separator, with the complete
-record checked against `max_record_bytes`. Regex-span integration,
-fixed-width/schema serialization, typed numeric conversion, and host execution
-remain open. The focused fixtures, namespace inclusion, documentation, and
+record checked against `max_record_bytes`. Regex records can enter through
+`record_field_edit_session_from_regex_spans`, which derives fields only from
+ordered matcher spans validated by the scanner; matcher implementation and
+execution evidence remain separate. Fixed-width/schema serialization, typed
+numeric conversion, and host execution remain open. The focused fixtures,
+namespace inclusion, documentation, and
 check_record_fields.sh audit are static evidence; runtime validation is
 withheld under the active compiler-process safety hold.
 
