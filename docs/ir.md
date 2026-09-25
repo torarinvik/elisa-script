@@ -1886,6 +1886,11 @@ mutation policy; this observation seam does not yet write or publish staging
 files. `atomic_file_bytes_equal_at` separately compares a bounded destination
 read to caller-owned bytes byte-for-byte for a future unchanged-content fast
 path; the SHA-256 identity is not treated as proof of exact content equality.
+`capture_atomic_file_stage_proof` verifies that an open staging descriptor
+matches its no-follow sibling entry, is a private single-link regular file,
+and shares the parent directory's filesystem; `revalidate_atomic_file_stage_proof`
+repeats those checks before a later mutation. These receipts still require the
+caller's exclusive directory-mutation policy and do not themselves publish.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

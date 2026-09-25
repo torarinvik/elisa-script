@@ -17,6 +17,17 @@ module EsFileAtomicPosix:
             destination: AtomicFileIdentity
 
 
+        struct AtomicFilePosixStageProof:
+            parent_device: u64
+            parent_inode: u64
+            parent_descriptor_token: u64
+            stage_device: u64
+            stage_inode: u64
+            stage_descriptor_token: u64
+            owner_token: u64
+            link_count: usize
+
+
         error AtomicFilePosixError:
             InvalidDirectoryDescriptor
             InvalidLeafName
@@ -25,6 +36,15 @@ module EsFileAtomicPosix:
             DestinationTooLarge(path: cstr)
             DestinationReadFailed(path: cstr)
             DigestUnavailable(path: cstr)
+            InvalidStageDescriptor
+            InvalidOwnerToken
+            ParentNotDirectory
+            StageStatFailed
+            StageNotRegular
+            StageNotPrivate
+            StageNotSingleLink
+            StageNameMismatch
+            StageIdentityChanged
 
 
     private:
@@ -63,6 +83,18 @@ module EsFileAtomicPosix:
             return (right.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and left.device == right.device and left.inode == right.inode and left.size == right.size and left.modify_time.seconds == right.modify_time.seconds and left.modify_time.nanoseconds == right.modify_time.nanoseconds and left.change_time.seconds == right.change_time.seconds and left.change_time.nanoseconds == right.change_time.nanoseconds
 
 
+        def atomic_file_posix_private(stat: ElisascriptStat) -> bool:
+            return (stat.mode & 63u16) == 0u16
+
+
+        def atomic_file_posix_same_inode(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return left.device == right.device and left.inode == right.inode
+
+
+        def atomic_file_posix_stage_proof_equal(left: AtomicFilePosixStageProof, right: AtomicFilePosixStageProof) -> bool:
+            return left.parent_device == right.parent_device and left.parent_inode == right.parent_inode and left.parent_descriptor_token == right.parent_descriptor_token and left.stage_device == right.stage_device and left.stage_inode == right.stage_inode and left.stage_descriptor_token == right.stage_descriptor_token and left.owner_token == right.owner_token and left.link_count == right.link_count
+
+
         def atomic_file_posix_digest(bytes: darray[u8]&) -> HashDigest can[Memory.Allocate, Abort.Panic]:
             raw_digest: darray[u8] = canonical_bytes_sha256(bytes)
             return HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 4, word0: canonical_digest_word(raw_digest, 0), word1: canonical_digest_word(raw_digest, 1), word2: canonical_digest_word(raw_digest, 2), word3: canonical_digest_word(raw_digest, 3)} if raw_digest.count == 32
@@ -79,6 +111,50 @@ module EsFileAtomicPosix:
 
 
     public:
+        # Bind an already-open exclusive staging descriptor to a no-follow
+        # sibling entry and its parent directory. The caller creates the file
+        # with elisascript_posix_openat_private_file and must hold the declared
+        # directory-mutation lease; recapture and compare this proof before
+        # cleanup or rename because a snapshot is not a lock.
+        def capture_atomic_file_stage_proof(parent_fd: int, stage_fd: int, leaf_name: cstr, owner_token: u64) -> AtomicFilePosixStageProof error[AtomicFilePosixError] can[Blocking.IO]:
+            raise AtomicFilePosixError.InvalidStageDescriptor if parent_fd < 0 or stage_fd < 0 or parent_fd == stage_fd
+            raise AtomicFilePosixError.InvalidOwnerToken if owner_token == 0
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
+
+            parent_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_info)
+            raise AtomicFilePosixError.ParentNotDirectory if (parent_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY or parent_info.device == 0 or parent_info.inode == 0
+
+            stage_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_descriptor(stage_fd, stage_info)
+            raise AtomicFilePosixError.StageNotRegular if (stage_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
+            raise AtomicFilePosixError.StageNotPrivate if not atomic_file_posix_private(stage_info)
+            raise AtomicFilePosixError.StageNotSingleLink if stage_info.link_count != 1u16
+
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_name(parent_fd, leaf_name, named_info)
+            raise AtomicFilePosixError.StageNameMismatch if not atomic_file_posix_same_inode(stage_info, named_info) or (named_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not atomic_file_posix_private(named_info) or named_info.link_count != 1u16
+            raise AtomicFilePosixError.StageNameMismatch if parent_info.device != stage_info.device
+
+            stage_after: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_descriptor(stage_fd, stage_after)
+            raise AtomicFilePosixError.StageIdentityChanged if not atomic_file_posix_same_inode(stage_info, stage_after) or (stage_after.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not atomic_file_posix_private(stage_after) or stage_after.link_count != 1u16
+            parent_after: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_info, parent_after)
+
+            stage_proof: AtomicFilePosixStageProof = AtomicFilePosixStageProof{parent_device: parent_after.device.u64(), parent_inode: parent_after.inode, parent_descriptor_token: parent_fd.u64() + 1u64, stage_device: stage_after.device.u64(), stage_inode: stage_after.inode, stage_descriptor_token: stage_fd.u64() + 1u64, owner_token: owner_token, link_count: stage_after.link_count.usize()}
+            return stage_proof
+
+
+        # A captured proof can go stale immediately after return. Mutating
+        # callers must compare a fresh proof while holding their exclusive
+        # parent-directory lease and refuse cleanup/rename on mismatch.
+        def revalidate_atomic_file_stage_proof(parent_fd: int, stage_fd: int, leaf_name: cstr, owner_token: u64, expected: AtomicFilePosixStageProof) -> AtomicFilePosixStageProof error[AtomicFilePosixError] can[Blocking.IO]:
+            observed: AtomicFilePosixStageProof = try capture_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, owner_token)
+            raise AtomicFilePosixError.StageIdentityChanged if not atomic_file_posix_stage_proof_equal(expected, observed)
+            return observed
+
+
         # Capture either an observed absence or the identity and SHA-256 of a
         # stable regular-file snapshot. The byte limit applies before owned
         # allocation. The caller must recapture under its mutation lock before

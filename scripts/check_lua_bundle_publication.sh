@@ -109,6 +109,11 @@ rg -q '^module EsLuaBundlePublicationPosix:' "$posix_adapter"
 rg -q 'STAT_EINTR_RETRIES: usize = 8' "$posix_adapter"
 rg -q 'DarwinErrno::EINTR' "$posix_adapter"
 rg -q 'def capture_publication_host_proof\(' "$posix_adapter"
+rg -q 'parent_info.device != staging_info.device' "$posix_adapter"
+if rg -q 'publication_posix_same_inode\(parent_info, staging_info\)' "$posix_adapter"; then
+    printf 'lua bundle publication audit: parent directory and staging file must share a device, not an inode\n' >&2
+    exit 1
+fi
 rg -q 'def revalidate_publication_host_proof\(' "$posix_adapter"
 rg -q 'def close_publication_descriptors\(' "$posix_adapter"
 rg -q 'def remove_publication_stage\(' "$posix_adapter"
