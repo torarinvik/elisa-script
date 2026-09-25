@@ -52,6 +52,7 @@ for boundary in \
     'stage_close_acknowledged: bool' \
     'atomic_file_trim_trailing_separators' \
     'atomic_file_paths_share_parent' \
+    'atomic_file_path_leaf_valid' \
     'ParentPathMismatch' \
     'atomic_file_identity_equal' \
     'AtomicFileState.Unchanged' \
