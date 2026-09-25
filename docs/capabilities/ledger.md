@@ -782,8 +782,12 @@ argument boundaries, and target-artifact identities require an exact mapping
 to an absolute artifact path rather than falling back to a library name.
 Fixtures and the compiler-free audit cover ordering, ownership, unmapped
 artifacts, and arguments containing spaces. The caller still supplies the
-working directory, source/object/output arguments, and actual `ProcessCommand`;
-compiler execution and CMake parity remain unverified.
+working directory and source/object/output arguments. `build_usage_process_command`
+then constructs an owned ProcessCommand with null stdin, captured streams, an
+explicit environment, and a bounded nonzero timeout/output ceiling. It rejects
+ambient inherited environments and validates the finished command; it does
+not enter a BuildGraph or launch a child. Compiler execution and CMake parity
+remain unverified.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild

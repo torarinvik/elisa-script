@@ -37,6 +37,15 @@ module EsBuildUsageArgv:
             total_argument_bytes: mutable usize = 0
 
 
+        struct BuildUsageProcessCommand:
+            command: ProcessCommand
+            # Preserve every allocation referenced by ProcessCommand.
+            argv_storage: BuildUsageArgv
+            owned_executable: darray[u8]
+            owned_working_directory: darray[u8]
+            owned_environment: darray[darray[u8]] = []
+
+
         error BuildUsageArgvError:
             InvalidSyntax
             InvalidArgument
@@ -46,6 +55,12 @@ module EsBuildUsageArgv:
             InvalidLinkEntry
             InvalidArtifactMap
             MissingTargetArtifact
+            InvalidToolPath
+            InvalidWorkingDirectory
+            InheritedEnvironmentUnsupported
+            InvalidTimeout
+            InvalidCaptureLimit
+            InvalidOwnedArgv
 
 
     private:
@@ -105,11 +120,30 @@ module EsBuildUsageArgv:
             raise BuildUsageArgvError.MissingTargetArtifact
 
 
+        def build_usage_argv_valid(argv: BuildUsageArgv) -> bool:
+            return false if argv.arguments.count > Limits::ARGUMENTS or argv.arguments.count != argv.owned_arguments.count
+            total: mutable usize = 0
+            for index in 0..<argv.arguments.count |argv, total|:
+                owned: darray[u8] = argv.owned_arguments[index]
+                value: sview = argv.arguments[index]
+                return false if owned.count > Limits::ARGUMENT_BYTES or sview_contains_byte(value, 0) or bytes_view(owned) != value
+                return false if owned.count > Limits::TOTAL_ARGUMENT_BYTES - total
+                total <- total + owned.count
+            return total == argv.total_argument_bytes
+
+
+        def build_usage_argv_copy_text(value: sview) -> darray[u8] error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[u8] = []
+            try build_usage_argv_append_bytes(copied, value)
+            return copied
+
+
     public:
-        # Prefix arguments are copied first, followed by resolved target-local
-        # compile entries in order. Include and definition values each become
-        # one argv word; compiler-specific prefix syntax is caller-selected.
-        def build_usage_compile_argv(target: BuildUsageTargetResult, prefix_arguments: darray[sview], syntax: BuildUsageArgSyntax) -> BuildUsageArgv error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+        # Prefix arguments come first, followed by resolved target-local
+        # compile entries and then per-input suffix arguments. This gives the
+        # caller a clear place for mode flags versus source/output operands.
+        # Include and definition values each become one argv word.
+        def build_usage_compile_argv(target: BuildUsageTargetResult, prefix_arguments: darray[sview], suffix_arguments: darray[sview], syntax: BuildUsageArgSyntax) -> BuildUsageArgv error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
             raise BuildUsageArgvError.InvalidSyntax if not build_usage_argv_prefix_valid(syntax.include_prefix) or not build_usage_argv_prefix_valid(syntax.definition_prefix) or not build_usage_argv_prefix_valid(syntax.library_prefix)
             result: mutable BuildUsageArgv = BuildUsageArgv{}
             for argument in prefix_arguments |result|:
@@ -124,6 +158,8 @@ module EsBuildUsageArgv:
                     try build_usage_argv_append(result, entry.value)
                 else:
                     raise BuildUsageArgvError.InvalidCompileEntry
+            for argument in suffix_arguments |result|:
+                try build_usage_argv_append(result, argument)
             return result
 
 
@@ -156,3 +192,45 @@ module EsBuildUsageArgv:
                 else:
                     raise BuildUsageArgvError.InvalidLinkEntry
             return result
+
+
+        # Complete a ProcessCommand from owned argv with explicit cwd and
+        # exact child-environment policy. This only constructs/validates data;
+        # BuildGraph admission and Process.Run remain separate caller actions.
+        def build_usage_process_command(executable: sview, argv: BuildUsageArgv, working_directory: sview, environment: darray[sview], environment_mode: ProcessEnvironmentMode, timeout_micros: u64, capture_output_limit_bytes: usize) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageArgvError.InvalidToolPath if executable == "" or sview_len(executable) > Limits::ARGUMENT_BYTES or sview_contains_byte(executable, 0) or not path_is_absolute(path(executable))
+            raise BuildUsageArgvError.InvalidWorkingDirectory if working_directory == "" or sview_len(working_directory) > Limits::ARGUMENT_BYTES or sview_contains_byte(working_directory, 0) or not path_is_absolute(path(working_directory))
+            raise BuildUsageArgvError.InvalidOwnedArgv if not build_usage_argv_valid(argv)
+            raise BuildUsageArgvError.InheritedEnvironmentUnsupported if environment_mode == ProcessEnvironmentMode.Inherit
+            raise BuildUsageArgvError.InvalidTimeout if timeout_micros == 0 or timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS
+            raise BuildUsageArgvError.InvalidCaptureLimit if capture_output_limit_bytes == 0 or capture_output_limit_bytes > EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES
+
+            owned_executable: darray[u8] = try build_usage_argv_copy_text(executable)
+            owned_working_directory: darray[u8] = try build_usage_argv_copy_text(working_directory)
+            owned_environment: mutable darray[darray[u8]] = []
+            command_environment: mutable darray[sview] = []
+            for entry in environment |owned_environment, command_environment|:
+                owned_environment.push(try build_usage_argv_copy_text(entry))
+                command_environment.push(bytes_view(owned_environment[owned_environment.count - 1]))
+
+            command: mutable ProcessCommand = ProcessCommand{
+                executable: bytes_view(owned_executable),
+                arguments: argv.arguments,
+                working_directory: bytes_view(owned_working_directory),
+                environment: command_environment,
+                environment_mode: environment_mode,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: timeout_micros,
+                capture_output_limit_bytes: capture_output_limit_bytes,
+                failure_mode: ProcessFailureMode.Check
+            }
+            _ = try validate_process_command(command)
+            return BuildUsageProcessCommand{
+                command: command,
+                argv_storage: argv,
+                owned_executable: owned_executable,
+                owned_working_directory: owned_working_directory,
+                owned_environment: owned_environment
+            }

@@ -223,9 +223,11 @@ for declaration in \
     'struct BuildUsageArgSyntax:' \
     'struct BuildUsageTargetArtifact:' \
     'struct BuildUsageArgv:' \
+    'struct BuildUsageProcessCommand:' \
     'error BuildUsageArgvError:' \
     'def build_usage_compile_argv(' \
-    'def build_usage_link_argv('; do
+    'def build_usage_link_argv(' \
+    'def build_usage_process_command('; do
     rg -Fq "$declaration" "$usage_argv_model"
 done
 for boundary in \
@@ -236,6 +238,8 @@ for boundary in \
     'BuildUsageArgvError.InvalidLinkEntry' \
     'BuildUsageArgvError.InvalidArtifactMap' \
     'BuildUsageArgvError.MissingTargetArtifact' \
+    'BuildUsageArgvError.InheritedEnvironmentUnsupported' \
+    'BuildUsageArgvError.InvalidOwnedArgv' \
     'build_usage_argv_append_joined' \
     'entry.target_artifact and entry.kind != BuildUsageKind.LinkLibrary' \
     'path_is_absolute(path(current.path))'; do
@@ -244,6 +248,8 @@ done
 rg -Fq 'build_usage_compile_entries_materialize_as_owned_argv' "$usage_argv_fixture"
 rg -Fq 'build_usage_link_entries_resolve_artifacts_without_shell_parsing' "$usage_argv_fixture"
 rg -Fq 'build_usage_link_entries_reject_unmapped_target_artifacts' "$usage_argv_fixture"
+rg -Fq 'build_usage_argv_builds_owned_executor_compatible_process_command' "$usage_argv_fixture"
+rg -Fq 'build_usage_process_command_rejects_ambient_environment' "$usage_argv_fixture"
 rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
 rg -Fq 'entry.library_form == BuildUsageLibraryForm.Path' "$target_usage_candidate"
 rg -Fq 'arguments.push("./" + entry.value)' "$target_usage_candidate"
