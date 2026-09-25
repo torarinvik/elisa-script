@@ -1,0 +1,228 @@
+# Gated positive public-launcher smoke for the build-graph index audit.
+# The shell checker is broader; this case is only a shared-checkout success
+# comparison and does not claim full failure-matrix parity.
+
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsBuildGraphIndexLauncherParity:
+    private:
+        const module Commands:
+            REFERENCE_SHELL: sview = "/bin/bash"
+            REFERENCE_RELATIVE: sview = "scripts/check_build_model.sh"
+            CANDIDATE_RELATIVE: sview = "scripts/check_build_graph_index.elisascript"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
+            CONTROLLED_PATH: sview = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            MAX_OUTPUT_BYTES: u64 = 1048576u64
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192u64
+            TIMEOUT_STEPS: u64 = 10000u64
+
+
+        struct Repository:
+            root: Path
+            valid: bool = false
+
+
+        def repository_from_test_path() -> Repository can[Memory.Allocate, Abort.Panic, Console.Format, File.Read, Directory.Read, Unsafe.PointerCast]:
+            test_path: Path = Script::source_path()
+            absolute_test_path: Path = try path_absolute(test_path) else err:
+                return Repository{root: path("."), valid: false}
+            script_directory: Path = absolute_test_path.parent()
+            test_directory: Path = script_directory.parent()
+            root: Path = test_directory.parent()
+            return Repository{root: root, valid: path_is_absolute(root)}
+
+
+        def sha256_file(file_path: Path) -> darray[u8] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, File.Read, Unsafe.PointerCast]:
+            return [] if not is_file(file_path)
+            size: usize = try file_size(file_path) else err:
+                return []
+            return [] if size == 0 or size > 67108864
+            path_text: sview = f"{file_path}"
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "build-graph-index-source-sha256",
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", path_text],
+                environment: [
+                    DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                    DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"}
+                ],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            result: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(runner):
+                ok value:
+                    result <- value
+                error failure:
+                    return []
+            if result.outcome != DifferentialRunOutcome.Completed or result.exit_status != 0 or result.stderr != "":
+                return []
+            if len(result.stdout) < 67:
+                return []
+            digest_text: sview = result.stdout[0:64]
+            if result.stdout != digest_text + "  " + path_text + "\n":
+                return []
+            digest: mutable darray[u8] = []
+            for index in 0..<64 |result, digest|:
+                value: u8 = sview_at(digest_text, index)
+                if not (value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8):
+                    return []
+                digest.push(value)
+            return digest
+
+
+        def launcher_has_expected_sha256(launcher: sview, expected_hex: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            for index in 0..<64 |expected_hex|:
+                value: u8 = sview_at(expected_hex, index)
+                return false if not (value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8)
+            launcher_path: Path = path(launcher)
+            digest: darray[u8] = sha256_file(launcher_path)
+            return false if digest.count != 64
+            for index in 0..<64 |digest, expected_hex|:
+                return false if digest[index] != sview_at(expected_hex, index)
+            return true
+
+
+        def audit_sources_unchanged(repository: Repository, before: darray[sview]) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, File.Read, Unsafe.PointerCast]:
+            relative_paths: darray[sview] = [
+                Commands::REFERENCE_RELATIVE,
+                Commands::CANDIDATE_RELATIVE,
+                "src/runtime/bounded_text_posix.elisa",
+                "src/runtime/build_model.elisa",
+                "src/runtime/build_usage_graph_model.elisa",
+                "test/runtime/build_usage_graph_model_test.elisa"
+            ]
+            return false if before.count != relative_paths.count
+            for index in 0..<relative_paths.count |repository, before, relative_paths|:
+                after_hash: darray[u8] = sha256_file(repository.root.joinpath(relative_paths[index]))
+                return false if after_hash.count != 64 or before[index].count != 64
+                for digest_index in 0..<64 |before, after_hash, index|:
+                    return false if before[index][digest_index] != after_hash[digest_index]
+            return true
+
+
+        def positive_audits_match(launcher: sview, expected_launcher_hash: sview, repository: Repository) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            return false if not launcher_has_expected_sha256(launcher, expected_launcher_hash)
+            reference_path: Path = repository.root.joinpath(Commands::REFERENCE_RELATIVE)
+            candidate_path: Path = repository.root.joinpath(Commands::CANDIDATE_RELATIVE)
+            reference_real: Path = try path_real(reference_path) else err:
+                return false
+            candidate_real: Path = try path_real(candidate_path) else err:
+                return false
+            reference_text: sview = f"{reference_real}"
+            candidate_text: sview = f"{candidate_real}"
+            repository_text: sview = f"{repository.root}"
+
+            relative_paths: darray[sview] = [
+                Commands::REFERENCE_RELATIVE,
+                Commands::CANDIDATE_RELATIVE,
+                "src/runtime/bounded_text_posix.elisa",
+                "src/runtime/build_model.elisa",
+                "src/runtime/build_usage_graph_model.elisa",
+                "test/runtime/build_usage_graph_model_test.elisa"
+            ]
+            before: mutable darray[darray[u8]] = []
+            for relative_path in relative_paths |repository, before|:
+                digest: darray[u8] = sha256_file(repository.root.joinpath(relative_path))
+                return false if digest.count != 64
+                before.push(digest)
+
+            controlled_environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "shell-build-model-audit-reference",
+                target: Commands::REFERENCE_SHELL,
+                arguments: [reference_text],
+                working_directory: repository_text,
+                environment: controlled_environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            reference_result: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_result <- value
+                error failure:
+                    print("build graph index shell reference process failed")
+                    return false
+
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-build-graph-index-audit",
+                target: launcher,
+                arguments: [candidate_text],
+                working_directory: repository_text,
+                environment: controlled_environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_OUTPUT_BYTES
+            }
+            candidate_result: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_result <- value
+                error failure:
+                    print("build graph index Elisascript process failed")
+                    return false
+
+            if reference_result.outcome != DifferentialRunOutcome.Completed or candidate_result.outcome != DifferentialRunOutcome.Completed:
+                print("build graph index audit process did not complete")
+                return false
+            if reference_result.exit_status != 0 or reference_result.stdout != "build model audit: bounded graph, generated-output ordering, usage propagation/argv, W07 shared graph integration, serial Process.Run execution, and fail-draining/cancellation are present\n" or reference_result.stderr != "":
+                print("build graph index shell reference did not match its success golden")
+                return false
+            if candidate_result.exit_status != 0 or candidate_result.stdout != "build graph index audit: bounded legacy validation and indexed production planning are present\n" or candidate_result.stderr != "":
+                print("build graph index Elisascript candidate did not match its success golden")
+                return false
+            if not audit_sources_unchanged(repository, before):
+                print("build graph index audit inputs changed during comparison")
+                return false
+            return launcher_has_expected_sha256(launcher, expected_launcher_hash)
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def public_launcher_positive_matches(launcher: sview, expected_launcher_hash: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, Directory.Read, Unsafe.PointerCast]:
+            repository: Repository = repository_from_test_path()
+            return false if not repository.valid
+            return positive_audits_match(launcher, expected_launcher_hash, repository)
+
+
+@test
+def build_graph_index_public_launcher_positive_smoke_matches_shell_audit() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, Directory.Read, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        rss_guard: sview = try getenv("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
+
+        assert reauthorized == "1"
+        assert rss_guard == "active"
+        assert compiler == EsBuildGraphIndexLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsBuildGraphIndexLauncherParity::pinned_compiler_path()
+        assert launcher.startswith("/")
+        assert EsBuildGraphIndexLauncherParity::public_launcher_positive_matches(launcher, launcher_hash)
