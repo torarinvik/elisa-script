@@ -1,0 +1,531 @@
+# Bounded Elisascript port of ChordBrain's generate_chordseqai.py.
+# Reads the versioned little-endian float32 weights and vocabulary JSON,
+# validates both before rendering the allocation-free Elisa tables.
+
+include "../src/runtime/bounded_bytes_posix.elisa"
+include "../src/runtime/bounded_text_posix.elisa"
+include "../src/runtime/binary_model.elisa"
+include "../src/runtime/data_model.elisa"
+include "../src/runtime/json_model.elisa"
+include "../src/runtime/json_lexer_model.elisa"
+include "../src/runtime/json_parse_model.elisa"
+
+using EsBoundedBytes
+using EsBinary
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+
+
+module EsChordBrainAiGenerator:
+    private:
+        const module Limits:
+            WEIGHTS_BYTES: usize = 2097152
+            VOCAB_BYTES: usize = 1048576
+            OUTPUT_BYTES: usize = 16777216
+            JSON_TOKENS: usize = 2000000
+            JSON_DEPTH: usize = 64
+            JSON_RECORDS: usize = 16
+            JSON_FIELDS: usize = 100000
+            JSON_FIELD_BYTES: usize = 1048576
+            WEIGHT_COUNT: usize = 377260
+            MAX_ALIASES: usize = 8192
+            MAX_TOKEN_NOTES: usize = 65536
+            MAX_BINARY_READS: usize = 1048576
+            HIDDEN_SIZE: usize = 96
+            VOCAB_SIZE: usize = 1035
+            CHORD_TOKEN_COUNT: usize = 1033
+            LAYER_COUNT: usize = 3
+            HEADER_BYTES: usize = 28
+
+
+        const module Messages:
+            USAGE: sview = "usage: generate_chordbrain_ai --weights FILE --vocab FILE --output FILE"
+            INPUT_FAILED: sview = "ChordSeqAI generator: unable to read input"
+            INPUT_LIMIT: sview = "ChordSeqAI generator: input exceeds size limit"
+            INVALID_WEIGHTS: sview = "ChordSeqAI generator: unsupported or malformed weights"
+            INVALID_VOCAB: sview = "ChordSeqAI generator: invalid vocabulary data"
+            OUTPUT_LIMIT: sview = "ChordSeqAI generator: generated output exceeds size limit"
+            OUTPUT_FAILED: sview = "ChordSeqAI generator: unable to write output"
+
+
+        struct TensorOffset:
+            name: sview
+            value: usize
+
+
+        struct AiTables:
+            weights: darray[f64] = []
+            vocabulary_size: usize = 0
+            chord_token_count: usize = 0
+            start_token: usize = 0
+            end_token: usize = 0
+            hidden_size: usize = 0
+            linear_before_reset: u32 = 0
+            layer_norm_epsilon: f64 = 0.0
+            primary_names: darray[sview] = []
+            alias_names: darray[sview] = []
+            alias_tokens: darray[usize] = []
+            token_note_starts: darray[usize] = []
+            token_note_counts: darray[usize] = []
+            token_notes: darray[i64] = []
+
+
+        struct GeneratedOutput:
+            contents: sview
+
+
+        error GeneratorError:
+            InvalidWeights
+            InvalidVocabulary
+            InputReadFailed
+            InputLimitExceeded
+            OutputLimitExceeded
+            OutputWriteFailed
+
+
+        def member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != len(key)
+            key_bytes: sview = bytes_view(document.key_bytes)
+            for offset in 0..<member.key_bytes |document, member, key, key_bytes|:
+                return false if key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        def object_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return EsJson::JSON_INDEX_NONE if object_index >= document.nodes.count
+            object: JsonNode = document.nodes[object_index]
+            return EsJson::JSON_INDEX_NONE if object.kind != JsonNodeKind.Object
+            for ordinal in 0..<object.member_count |document, object, key|:
+                member_index: usize = object.member_start + ordinal
+                return member_index if member_key_equals(document, document.members[member_index], key)
+            return EsJson::JSON_INDEX_NONE
+
+
+        def required_member_value(document: JsonDocument&, object_index: usize, key: sview) -> usize error[GeneratorError]:
+            member_index: usize = object_member_index(document, object_index, key)
+            raise GeneratorError.InvalidVocabulary if member_index == EsJson::JSON_INDEX_NONE
+            return document.members[member_index].value_index
+
+
+        def node_text(document: JsonDocument&, node_index: usize) -> sview error[GeneratorError]:
+            raise GeneratorError.InvalidVocabulary if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise GeneratorError.InvalidVocabulary if node.kind != JsonNodeKind.Text
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return sview(scalar_bytes, node.scalar_start.i64(), node.scalar_bytes.i64())
+
+
+        def node_number(document: JsonDocument&, node_index: usize) -> sview error[GeneratorError]:
+            raise GeneratorError.InvalidVocabulary if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise GeneratorError.InvalidVocabulary if node.kind != JsonNodeKind.Number
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return sview(scalar_bytes, node.scalar_start.i64(), node.scalar_bytes.i64())
+
+
+        def required_integer(document: JsonDocument&, object_index: usize, key: sview) -> i64 error[GeneratorError, ParseError]:
+            return try parse_int(try node_number(document, try required_member_value(document, object_index, key)))
+
+
+        def array_count(document: JsonDocument&, array_index: usize) -> usize error[GeneratorError]:
+            raise GeneratorError.InvalidVocabulary if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise GeneratorError.InvalidVocabulary if array.kind != JsonNodeKind.Array
+            return array.child_count
+
+
+        def array_item_index(document: JsonDocument&, array_index: usize, ordinal: usize) -> usize error[GeneratorError]:
+            raise GeneratorError.InvalidVocabulary if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise GeneratorError.InvalidVocabulary if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            return document.children[array.child_start + ordinal].value_index
+
+
+        def required_array_member(document: JsonDocument&, object_index: usize, key: sview) -> usize error[GeneratorError]:
+            array_index: usize = try required_member_value(document, object_index, key)
+            raise GeneratorError.InvalidVocabulary if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            return array_index
+
+
+        def required_object_member(document: JsonDocument&, object_index: usize, key: sview) -> usize error[GeneratorError]:
+            child_index: usize = try required_member_value(document, object_index, key)
+            raise GeneratorError.InvalidVocabulary if child_index >= document.nodes.count or document.nodes[child_index].kind != JsonNodeKind.Object
+            return child_index
+
+
+        def source_string(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            escaped: sview = value.replace("\\", "\\\\")
+            escaped <- escaped.replace("\"", "\\\"")
+            return "\"" + escaped + "\""
+
+
+        def source_string_valid(value: sview) -> bool:
+            for offset in 0..<len(value) |value|:
+                byte: u8 = sview_at(value, offset)
+                return false if byte < 32u8 or byte == 127u8
+            return true
+
+
+        def float_literal(value: f64) -> sview can[Memory.Allocate, Console.Format, Abort.Panic]:
+            # Core `str(float)` uses the shared shortest-roundtrip float formatter
+            # and preserves Python's `.0` spelling for integral values.
+            return "" + str(value)
+
+
+        def f32_from_bits(bits: u32) -> f32 can[Unsafe.PointerCast]:
+            value: mutable f32 = 0.0
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
+
+
+        def f32_bits_finite(bits: u32) -> bool:
+            return (bits & 2139095040u32) != 2139095040u32
+
+
+        def read_weights(weights_path: Path) -> AiTables error[GeneratorError, EsBoundedBytes::ReadError, BinaryError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            input_size: usize = try file_size(weights_path) else err:
+                raise GeneratorError.InputReadFailed
+            raise GeneratorError.InputLimitExceeded if input_size > Limits::WEIGHTS_BYTES
+            expected_size: usize = Limits::HEADER_BYTES + Limits::WEIGHT_COUNT * 4
+            raise GeneratorError.InvalidWeights if input_size != expected_size
+            raw: darray[u8] = try EsBoundedBytes::read_bounded_bytes(weights_path, Limits::WEIGHTS_BYTES) else failure:
+                if failure == EsBoundedBytes::ReadError.LimitExceeded:
+                    raise GeneratorError.InputLimitExceeded
+                raise GeneratorError.InputReadFailed
+            raw_text: sview = bytes_view(raw)
+            cursor: mutable BinaryCursor = BinaryCursor{source: raw_text, policy: BinaryPolicy{max_input_bytes: Limits::WEIGHTS_BYTES, max_reads: Limits::MAX_BINARY_READS}}
+            magic0: u8 = try binary_read_u8(cursor)
+            magic1: u8 = try binary_read_u8(cursor)
+            magic2: u8 = try binary_read_u8(cursor)
+            magic3: u8 = try binary_read_u8(cursor)
+            raise GeneratorError.InvalidWeights if magic0 != 67u8 or magic1 != 83u8 or magic2 != 65u8 or magic3 != 73u8
+            version: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            vocabulary_size: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            hidden_size: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            layer_count: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            linear_before_reset: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            epsilon_bits: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+            raise GeneratorError.InvalidWeights if version != 1u32 or vocabulary_size != Limits::VOCAB_SIZE.u32() or hidden_size != Limits::HIDDEN_SIZE.u32() or layer_count != Limits::LAYER_COUNT.u32()
+            raise GeneratorError.InvalidWeights if not f32_bits_finite(epsilon_bits)
+
+            tables: mutable AiTables = AiTables{weights: []}
+            tables.vocabulary_size <- vocabulary_size.usize()
+            tables.hidden_size <- hidden_size.usize()
+            tables.linear_before_reset <- linear_before_reset
+            tables.layer_norm_epsilon <- f32_from_bits(epsilon_bits).f64()
+            tables.weights.reserve(Limits::WEIGHT_COUNT)
+            for _ in 0..<Limits::WEIGHT_COUNT |cursor, tables|:
+                bits: u32 = try binary_read_u32(cursor, BinaryByteOrder.Little)
+                raise GeneratorError.InvalidWeights if not f32_bits_finite(bits)
+                tables.weights.push(f32_from_bits(bits).f64())
+            _ = try advance_binary(cursor, BinaryEvent.Finish)
+            raise GeneratorError.InvalidWeights if tables.weights.count != Limits::WEIGHT_COUNT
+            return tables
+
+
+        def parse_vocabulary(contents: sview, tables: mutable AiTables&) -> void error[GeneratorError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Memory.Allocate, Console.Format, Abort.Panic]:
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::VOCAB_BYTES, tokens: Limits::JSON_TOKENS, depth: Limits::JSON_DEPTH, records: Limits::JSON_RECORDS, fields: Limits::JSON_FIELDS, field_bytes: Limits::JSON_FIELD_BYTES}
+            lexed: JsonLexedSource = try lex_json(contents, decode_limits, JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast})
+            document: JsonDocument = try parse_json_document(lexed)
+            raise GeneratorError.InvalidVocabulary if document.roots.count != 1
+            root: usize = document.roots[0]
+            raise GeneratorError.InvalidVocabulary if root >= document.nodes.count or document.nodes[root].kind != JsonNodeKind.Object
+            metadata_vocab: i64 = try required_integer(document, root, "vocabSize")
+            metadata_chords: i64 = try required_integer(document, root, "chordTokenCount")
+            metadata_hidden: i64 = try required_integer(document, root, "hiddenSize")
+            start_token: i64 = try required_integer(document, root, "startToken")
+            end_token: i64 = try required_integer(document, root, "endToken")
+            raise GeneratorError.InvalidVocabulary if metadata_vocab != Limits::VOCAB_SIZE.i64() or metadata_chords != Limits::CHORD_TOKEN_COUNT.i64() or metadata_hidden != Limits::HIDDEN_SIZE.i64()
+            raise GeneratorError.InvalidVocabulary if start_token < 0 or start_token >= metadata_vocab or end_token < 0 or end_token >= metadata_vocab or start_token == end_token
+            tables.start_token <- start_token.usize()
+            tables.end_token <- end_token.usize()
+            tables.chord_token_count <- metadata_chords.usize()
+
+            token_names: usize = try required_object_member(document, root, "tokenToNames")
+            chord_notes: usize = try required_object_member(document, root, "chordToNotes")
+            tables.primary_names.reserve(Limits::CHORD_TOKEN_COUNT)
+            tables.token_note_starts.reserve(Limits::CHORD_TOKEN_COUNT)
+            tables.token_note_counts.reserve(Limits::CHORD_TOKEN_COUNT)
+            tables.alias_names.reserve(Limits::MAX_ALIASES)
+            tables.alias_tokens.reserve(Limits::MAX_ALIASES)
+            tables.token_notes.reserve(Limits::MAX_TOKEN_NOTES)
+
+            for token in 0..<Limits::CHORD_TOKEN_COUNT |document, token_names, tables|:
+                token_key: sview = str(token)
+                names_array: usize = try required_array_member(document, token_names, token_key)
+                names_count: usize = try array_count(document, names_array)
+                raise GeneratorError.InvalidVocabulary if names_count == 0 or names_count > Limits::MAX_ALIASES - tables.alias_names.count
+                first_name: sview = try node_text(document, try array_item_index(document, names_array, 0))
+                raise GeneratorError.InvalidVocabulary if first_name == "" or not source_string_valid(first_name)
+                tables.primary_names.push(first_name)
+                for name_index in 0..<names_count |document, tables, names_array, token|:
+                    name: sview = try node_text(document, try array_item_index(document, names_array, name_index))
+                    raise GeneratorError.InvalidVocabulary if name == "" or not source_string_valid(name)
+                    tables.alias_names.push(name)
+                    tables.alias_tokens.push(token)
+
+                notes_array: usize = try required_array_member(document, chord_notes, first_name)
+                notes_count: usize = try array_count(document, notes_array)
+                raise GeneratorError.InvalidVocabulary if notes_count > 255 or notes_count > Limits::MAX_TOKEN_NOTES - tables.token_notes.count
+                raise GeneratorError.InvalidVocabulary if tables.token_notes.count > 4294967295
+                tables.token_note_starts.push(tables.token_notes.count)
+                tables.token_note_counts.push(notes_count)
+                for note_index in 0..<notes_count |document, tables, notes_array|:
+                    note: i64 = try parse_int(try node_number(document, try array_item_index(document, notes_array, note_index)))
+                    raise GeneratorError.InvalidVocabulary if note < -32768 or note > 32767
+                    tables.token_notes.push(note)
+
+            raise GeneratorError.InvalidVocabulary if tables.primary_names.count != Limits::CHORD_TOKEN_COUNT or tables.alias_names.count != tables.alias_tokens.count
+
+
+        def load_vocabulary(vocab_path: Path, tables: mutable AiTables&) -> void error[GeneratorError, EsBoundedText::ReadError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Blocking.IO, Memory.Allocate, Console.Format, Abort.Panic, Unsafe.PointerCast]:
+            input_size: usize = try file_size(vocab_path) else err:
+                raise GeneratorError.InputReadFailed
+            raise GeneratorError.InputLimitExceeded if input_size > Limits::VOCAB_BYTES
+            contents: sview = try EsBoundedText::read_utf8(vocab_path, Limits::VOCAB_BYTES) else failure:
+                if failure == EsBoundedText::ReadError.LimitExceeded:
+                    raise GeneratorError.InputLimitExceeded
+                raise GeneratorError.InputReadFailed
+            try parse_vocabulary(contents, tables)
+
+
+        def tensor_offsets() -> darray[TensorOffset] error[GeneratorError] can[Memory.Allocate, Abort.Panic]:
+            offsets: mutable darray[TensorOffset] = [TensorOffset{name: "EMBEDDING", value: 0}]
+            cursor: mutable usize = Limits::VOCAB_SIZE * Limits::HIDDEN_SIZE
+            for layer in 0..<Limits::LAYER_COUNT |offsets, cursor|:
+                if layer == 0:
+                    offsets.push(TensorOffset{name: "LNW0", value: cursor})
+                elif layer == 1:
+                    offsets.push(TensorOffset{name: "LNW1", value: cursor})
+                else:
+                    offsets.push(TensorOffset{name: "LNW2", value: cursor})
+                cursor <- cursor + Limits::HIDDEN_SIZE
+                if layer == 0:
+                    offsets.push(TensorOffset{name: "LNB0", value: cursor})
+                elif layer == 1:
+                    offsets.push(TensorOffset{name: "LNB1", value: cursor})
+                else:
+                    offsets.push(TensorOffset{name: "LNB2", value: cursor})
+                cursor <- cursor + Limits::HIDDEN_SIZE
+                if layer == 0:
+                    offsets.push(TensorOffset{name: "GW0", value: cursor})
+                elif layer == 1:
+                    offsets.push(TensorOffset{name: "GW1", value: cursor})
+                else:
+                    offsets.push(TensorOffset{name: "GW2", value: cursor})
+                cursor <- cursor + 3 * Limits::HIDDEN_SIZE * Limits::HIDDEN_SIZE
+                if layer == 0:
+                    offsets.push(TensorOffset{name: "GR0", value: cursor})
+                elif layer == 1:
+                    offsets.push(TensorOffset{name: "GR1", value: cursor})
+                else:
+                    offsets.push(TensorOffset{name: "GR2", value: cursor})
+                cursor <- cursor + 3 * Limits::HIDDEN_SIZE * Limits::HIDDEN_SIZE
+                if layer == 0:
+                    offsets.push(TensorOffset{name: "GB0", value: cursor})
+                elif layer == 1:
+                    offsets.push(TensorOffset{name: "GB1", value: cursor})
+                else:
+                    offsets.push(TensorOffset{name: "GB2", value: cursor})
+                cursor <- cursor + 6 * Limits::HIDDEN_SIZE
+            offsets.push(TensorOffset{name: "MLPW1", value: cursor})
+            cursor <- cursor + Limits::HIDDEN_SIZE * Limits::HIDDEN_SIZE
+            offsets.push(TensorOffset{name: "MLPB1", value: cursor})
+            cursor <- cursor + Limits::HIDDEN_SIZE
+            offsets.push(TensorOffset{name: "PRELU", value: cursor})
+            cursor <- cursor + 1
+            offsets.push(TensorOffset{name: "MLPW2", value: cursor})
+            cursor <- cursor + Limits::HIDDEN_SIZE * Limits::VOCAB_SIZE
+            offsets.push(TensorOffset{name: "MLPB2", value: cursor})
+            cursor <- cursor + Limits::VOCAB_SIZE
+            raise GeneratorError.InvalidWeights if cursor != Limits::WEIGHT_COUNT
+            return offsets
+
+
+        def append_line(lines: mutable darray[sview]&, output_bytes: mutable usize&, line: sview) -> void error[GeneratorError] can[Memory.Allocate, Abort.Panic]:
+            addition: usize = len(line) + (1 if lines.count > 0 else 0)
+            raise GeneratorError.OutputLimitExceeded if output_bytes > Limits::OUTPUT_BYTES or addition > Limits::OUTPUT_BYTES - output_bytes
+            lines.push(line)
+            output_bytes <- output_bytes + addition
+
+
+        def append_wrapped(lines: mutable darray[sview]&, output_bytes: mutable usize&, header: sview, items: darray[sview], width: usize) -> void error[GeneratorError] can[Memory.Allocate, Abort.Panic]:
+            try append_line(lines, output_bytes, header)
+            index: mutable usize = 0
+            machine over index while index < items.count:
+                state Rows
+                start Rows
+
+                Rows, Rows:
+                    row: mutable darray[sview] = []
+                    for offset in 0..<width |index, items, row|:
+                        if index + offset < items.count:
+                            row.push(items[index + offset])
+                    suffix: sview = "," if index + width < items.count else ""
+                    try append_line(lines, output_bytes, "    " + join(row, ", ") + suffix)
+                    index <- index + width
+                    -> Rows
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+
+
+        def append_weights(lines: mutable darray[sview]&, output_bytes: mutable usize&, weights: darray[f64]) -> void error[GeneratorError] can[Memory.Allocate, Console.Format, Abort.Panic]:
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_WEIGHTS: f64[{weights.count}] = [")
+            index: mutable usize = 0
+            machine over index while index < weights.count:
+                state Rows
+                start Rows
+
+                Rows, Rows:
+                    row: mutable darray[sview] = []
+                    for offset in 0..<6 |index, weights, row|:
+                        if index + offset < weights.count:
+                            literal: sview = "" + float_literal(weights[index + offset])
+                            row.push(literal)
+                    suffix: sview = "," if index + 6 < weights.count else ""
+                    try append_line(lines, output_bytes, "    " + join(row, ", ") + suffix)
+                    index <- index + 6
+                    -> Rows
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+
+
+        def render_tables(tables: AiTables) -> GeneratedOutput error[GeneratorError] can[Memory.Allocate, Console.Format, Abort.Panic]:
+            lines: mutable darray[sview] = []
+            output_bytes: mutable usize = 0
+            try append_line(lines, output_bytes, "# Generated from resources/data/chordseqai_weights.bin and chordseqai_vocab.json.")
+            try append_line(lines, output_bytes, "# Regenerate with tools/generate_chordseqai.py; do not edit manually.")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_VOCAB_SIZE: u32 = {tables.vocabulary_size}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_CHORD_TOKEN_COUNT: u32 = {tables.chord_token_count}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_START_TOKEN: u32 = {tables.start_token}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_END_TOKEN: u32 = {tables.end_token}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_HIDDEN_SIZE: u32 = {tables.hidden_size}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_LINEAR_BEFORE_RESET: u32 = {tables.linear_before_reset}.u32()")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_LN_EPS: f64 = {float_literal(tables.layer_norm_epsilon)}")
+            try append_line(lines, output_bytes, "")
+
+            offsets: darray[TensorOffset] = tensor_offsets()
+            for offset in offsets |lines, output_bytes, offsets|:
+                try append_line(lines, output_bytes, f"const CHORDBRAIN_AI_{offset.name}_OFFSET: usize = {offset.value}.usize()")
+            try append_line(lines, output_bytes, "")
+
+            try append_weights(lines, output_bytes, tables.weights)
+
+            primary_literals: mutable darray[sview] = []
+            for name in tables.primary_names |primary_literals|:
+                primary_literals.push(source_string(name))
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_PRIMARY_NAMES: u8&?[{primary_literals.count}] = [", primary_literals, 6)
+
+            alias_literals: mutable darray[sview] = []
+            for name in tables.alias_names |alias_literals|:
+                alias_literals.push(source_string(name))
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_ALIAS_NAMES: u8&?[{alias_literals.count}] = [", alias_literals, 6)
+
+            alias_token_literals: mutable darray[sview] = []
+            for token in tables.alias_tokens |alias_token_literals|:
+                alias_token_literals.push("" + f"{token}.u16()")
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_ALIAS_TOKENS: u16[{alias_token_literals.count}] = [", alias_token_literals, 12)
+
+            note_start_literals: mutable darray[sview] = []
+            for note_start in tables.token_note_starts |note_start_literals|:
+                note_start_literals.push("" + f"{note_start}.u32()")
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_TOKEN_NOTE_STARTS: u32[{note_start_literals.count}] = [", note_start_literals, 12)
+
+            note_count_literals: mutable darray[sview] = []
+            for note_count in tables.token_note_counts |note_count_literals|:
+                note_count_literals.push("" + f"{note_count}.u8()")
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_TOKEN_NOTE_COUNTS: u8[{note_count_literals.count}] = [", note_count_literals, 12)
+
+            note_literals: mutable darray[sview] = []
+            for note in tables.token_notes |note_literals|:
+                note_literals.push("" + f"{note}")
+            try append_wrapped(lines, output_bytes, f"const CHORDBRAIN_AI_TOKEN_NOTES: i16[{note_literals.count}] = [", note_literals, 16)
+
+            try append_line(lines, output_bytes, "")
+            return GeneratedOutput{contents: join(lines, "\n")}
+
+
+        def generate_output(weights_path: Path, vocab_path: Path) -> GeneratedOutput error[GeneratorError, EsBoundedBytes::ReadError, EsBoundedText::ReadError, BinaryError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Blocking.IO, Memory.Allocate, Console.Format, Abort.Panic, Unsafe.PointerCast]:
+            tables: mutable AiTables = try read_weights(weights_path)
+            try load_vocabulary(vocab_path, tables)
+            return try render_tables(tables)
+
+
+    public:
+        def generate(weights_path: Path, vocab_path: Path) -> sview error[GeneratorError, EsBoundedBytes::ReadError, EsBoundedText::ReadError, BinaryError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Blocking.IO, Memory.Allocate, Console.Format, Abort.Panic, Unsafe.PointerCast]:
+            generated: GeneratedOutput = try generate_output(weights_path, vocab_path)
+            return generated.contents
+
+
+        def run(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Unsafe.PointerCast]:
+            weights_path: Path = path(".")
+            vocab_path: Path = path(".")
+            output_path: Path = path(".")
+            has_weights: mutable bool = false
+            has_vocab: mutable bool = false
+            has_output: mutable bool = false
+            cursor: mutable usize = 0
+            while cursor < arguments.count |arguments, weights_path, vocab_path, output_path, has_weights, has_vocab, has_output, cursor|:
+                argument: sview = arguments[cursor]
+                if argument == "-h" or argument == "--help":
+                    print(Messages::USAGE)
+                    return 0i64
+                elif argument == "--weights":
+                    if cursor + 1 >= arguments.count:
+                        write_stderr(Messages::USAGE + "\n")
+                        return 2i64
+                    weights_path <- path(arguments[cursor + 1])
+                    has_weights <- true
+                    cursor <- cursor + 2
+                elif argument == "--vocab":
+                    if cursor + 1 >= arguments.count:
+                        write_stderr(Messages::USAGE + "\n")
+                        return 2i64
+                    vocab_path <- path(arguments[cursor + 1])
+                    has_vocab <- true
+                    cursor <- cursor + 2
+                elif argument == "--output":
+                    if cursor + 1 >= arguments.count:
+                        write_stderr(Messages::USAGE + "\n")
+                        return 2i64
+                    output_path <- path(arguments[cursor + 1])
+                    has_output <- true
+                    cursor <- cursor + 2
+                else:
+                    write_stderr(Messages::USAGE + "\n")
+                    return 2i64
+            if not has_weights or not has_vocab or not has_output:
+                write_stderr(Messages::USAGE + "\n")
+                return 2i64
+
+            generated: mutable GeneratedOutput = GeneratedOutput{contents: ""}
+            catch generate_output(weights_path, vocab_path):
+                ok value:
+                    generated <- value
+                error failure:
+                    if failure == GeneratorError.InputLimitExceeded:
+                        write_stderr(Messages::INPUT_LIMIT + "\n")
+                    elif failure == GeneratorError.InvalidWeights:
+                        write_stderr(Messages::INVALID_WEIGHTS + "\n")
+                    elif failure == GeneratorError.InvalidVocabulary:
+                        write_stderr(Messages::INVALID_VOCAB + "\n")
+                    elif failure == GeneratorError.OutputLimitExceeded:
+                        write_stderr(Messages::OUTPUT_LIMIT + "\n")
+                    elif failure == GeneratorError.InputReadFailed:
+                        write_stderr(Messages::INPUT_FAILED + "\n")
+                    else:
+                        write_stderr(Messages::INVALID_VOCAB + "\n")
+                    return 1i64
+
+            written: usize = try write_text(output_path, generated.contents) else err:
+                write_stderr(Messages::OUTPUT_FAILED + "\n")
+                return 1i64
+            _ = written
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Unsafe.PointerCast]:
+    return EsChordBrainAiGenerator::run(arguments)
