@@ -69,7 +69,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'validation_wrapper_pgid=' "$wrapper"
     rg -Fq '0|*[!0-9]*|"$validation_wrapper_pgid"' "$wrapper"
     rg -q 'process_group_rss_kb "\$compiler_pgid" "\$compiler_pid"' "$wrapper"
-    rg -Fq 'process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null)" || return 1' "$wrapper"
+    rg -Fq 'process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null | head -n "$((process_snapshot_row_limit + 1))")" || return 1' "$wrapper"
     rg -Fq '$1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }' "$wrapper"
     rg -Fq 'if (!scope_seen) exit 1' "$wrapper"
     rg -Fq 'process_table="$(ps -axo pgid=,stat= 2>/dev/null)" || return 0' "$wrapper"

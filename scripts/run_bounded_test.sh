@@ -162,7 +162,7 @@ process_group_rss_kb() {
     # predicate prevents counting ordinary same-group children twice. This is
     # still best-effort observation, not containment: a double-forked process
     # reparented after leaving this group can evade both snapshots.
-    process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null)" || return 1
+    process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null | head -n "$((process_snapshot_row_limit + 1))")" || return 1
     printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v row_limit="$process_snapshot_row_limit" '
         NR > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }
