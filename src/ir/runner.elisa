@@ -478,15 +478,15 @@ extend EsIr:
         # Its identity and diagnostic live in `session.failure`, while the
         # typed enum remains here so hosts do not parse a human string.
         struct ElisascriptTestRun:
-            session: ScriptTestSession = ScriptTestSession{}
-            executions: darray[ElisascriptTestExecution] = []
+            session: mutable ScriptTestSession = ScriptTestSession{}
+            executions: mutable darray[ElisascriptTestExecution] = []
             # Consumptive fields (steps, elapsed time, output, regex work) are
             # suite totals; active/retained dimensions are the maximum values
             # reported by completed executions. Live limits are enforced by
             # each invocation, while historical in-case peaks are unavailable.
-            usage: RuntimeResourceUsage = RuntimeResourceUsage{}
-            runtime_error_known: bool = false
-            runtime_error: InterpretError = InterpretError.Process
+            usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
+            runtime_error_known: mutable bool = false
+            runtime_error: mutable InterpretError = InterpretError.Process
 
 
     private:
@@ -506,12 +506,12 @@ extend EsIr:
             candidate: mutable ScriptTestSession = ScriptTestSession{}
             for index in 0..<metadata.count |metadata, candidate|:
                 spec: ScriptTestSpec = ScriptTestSpec{ordinal: index, name: metadata[index].name, line: metadata[index].line}
-                try advance_script_test(candidate, ScriptTestEvent.Discover, spec: spec)
+                try advance_script_test(candidate, ScriptTestEvent.Discover, EsScriptTest::Limits::NO_ACTIVE, spec, "")
             try validate_script_test_session(candidate)
             session <- candidate
 
 
-        def elisascript_test_function_index(module: BytecodeModule&, spec: ScriptTestSpec) -> usize error[ScriptTestError]:
+        def elisascript_test_function_index(module: BytecodeModule&, spec: ScriptTestSpec&) -> usize error[ScriptTestError]:
             try validate_script_test_spec(spec)
             function_index: mutable usize = module.functions.count
             for index in 0..<module.functions.count |module, spec, function_index|:
@@ -529,7 +529,17 @@ extend EsIr:
         # treating an active count as consumptive would incorrectly deny a
         # later case after the earlier case has cleaned up.
         def elisascript_test_usage_add(total: mutable RuntimeResourceUsage&, addition: RuntimeResourceUsage&, policy: RuntimeResourcePolicy&) -> bool:
-            candidate: mutable RuntimeResourceUsage = total
+            candidate: mutable RuntimeResourceUsage = RuntimeResourceUsage{
+                steps: total.steps,
+                elapsed_micros: total.elapsed_micros,
+                memory_bytes: total.memory_bytes,
+                open_handles: total.open_handles,
+                processes: total.processes,
+                output_bytes: total.output_bytes,
+                regex_work: total.regex_work,
+                retained_traces: total.retained_traces,
+                concurrent_tasks: total.concurrent_tasks,
+            }
             return false if not runtime_resource_add_steps(candidate, policy, addition.steps)
             return false if not runtime_resource_add_elapsed(candidate, policy, addition.elapsed_micros)
             return false if not runtime_resource_add_output(candidate, policy, addition.output_bytes)
@@ -548,7 +558,17 @@ extend EsIr:
         # consumptive dimensions are subtracted; peak live dimensions are
         # checked independently when their next execution reports usage.
         def elisascript_test_remaining_policy(usage: RuntimeResourceUsage&, policy: RuntimeResourcePolicy&) -> RuntimeResourcePolicy:
-            result: mutable RuntimeResourcePolicy = policy
+            result: mutable RuntimeResourcePolicy = RuntimeResourcePolicy{
+                steps: policy.steps,
+                elapsed_micros: policy.elapsed_micros,
+                memory_bytes: policy.memory_bytes,
+                open_handles: policy.open_handles,
+                processes: policy.processes,
+                output_bytes: policy.output_bytes,
+                regex_work: policy.regex_work,
+                retained_traces: policy.retained_traces,
+                concurrent_tasks: policy.concurrent_tasks,
+            }
             result.steps <- 0 if usage.steps >= policy.steps else policy.steps - usage.steps
             result.elapsed_micros <- 0 if policy.elapsed_micros == 0 or usage.elapsed_micros >= policy.elapsed_micros else policy.elapsed_micros - usage.elapsed_micros
             result.output_bytes <- 0 if usage.output_bytes >= policy.output_bytes else policy.output_bytes - usage.output_bytes
@@ -563,7 +583,7 @@ extend EsIr:
             return "test execution failed"
 
 
-        def elisascript_execute_test_runtime(module: BytecodeModule&, spec: ScriptTestSpec, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def elisascript_execute_test_runtime(module: BytecodeModule&, spec: ScriptTestSpec&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             observations.truncate(0)
             storage.truncate(0)
             arguments: darray[RuntimeValue] = []
@@ -647,7 +667,31 @@ extend EsIr:
             observations: mutable darray[Observation] = []
             storage: mutable darray[RuntimeValue] = []
             execution: mutable Execution = Execution{value: runtime_void(), steps: 0}
+            runtime_error_known: mutable bool = false
+            runtime_error: mutable InterpretError = InterpretError.Process
             invocation_context: mutable ScriptInvocationContext = ScriptInvocationContext{}
+
+
+        # docs/123 §5: a machine arm body is STRAIGHT-LINE — no `if`/`match`/loops, and a
+        # postfix guard counts because it desugars to an `if`. A CALL is straight-line, so
+        # the guards and the validation loop the `Lower`, `Validate`, and `RecordPass` arms
+        # used to inline live here instead. Behaviour is unchanged; only the arms get
+        # shorter. All discrimination stays in the arm headers.
+        def elisascript_require_lowered_clean(lowered: BytecodeLowerResult&) -> void error[InterpretError]:
+            raise InterpretError.VerificationFailed if lowered.issues.count != 0
+
+
+        def elisascript_validate_test_functions(module: BytecodeModule&, cases: darray[ScriptTestSpec]&) -> void error[ScriptTestError]:
+            for spec in cases |module|:
+                try elisascript_test_function_index(module, spec)
+
+
+        # Check the execution ceiling before charging the suite ledger. The usage
+        # addition is transactional with respect to its own limits, but it must not
+        # commit at all when this completed case cannot be published.
+        def elisascript_record_pass_limits(usage: mutable RuntimeResourceUsage&, addition: RuntimeResourceUsage&, policy: RuntimeResourcePolicy&, executions: usize) -> void error[ScriptTestError, InterpretError]:
+            raise ScriptTestError.TestLimitExceeded if executions >= EsScriptTest::Limits::TESTS
+            raise InterpretError.OutputLimit if not elisascript_test_usage_add(usage, addition, policy)
 
 
         # Run a previously loaded module through the common state machine. File,
@@ -663,19 +707,18 @@ extend EsIr:
 
                 Run, ElisascriptTestRunState.Lower:
                     lowered_result: BytecodeLowerResult = lower_bytecode(cursor.module)
-                    raise InterpretError.VerificationFailed if lowered_result.issues.count != 0
+                    try elisascript_require_lowered_clean(lowered_result)
                     cursor.lowered <- lowered_result.module
                     cursor.state <- ElisascriptTestRunState.Validate
                     -> Run
 
                 Run, ElisascriptTestRunState.Validate:
-                    for spec in result.session.cases |result, cursor|:
-                        _ = try elisascript_test_function_index(cursor.lowered, spec)
+                    try elisascript_validate_test_functions(cursor.lowered, result.session.cases)
                     cursor.state <- ElisascriptTestRunState.Begin
                     -> Run
 
                 Run, ElisascriptTestRunState.Begin:
-                    _ = try advance_script_test(result.session, ScriptTestEvent.Begin)
+                    try advance_script_test(result.session, ScriptTestEvent.Begin, EsScriptTest::Limits::NO_ACTIVE, ScriptTestSpec{ordinal: 0, name: "", line: 0}, "")
                     cursor.state <- ElisascriptTestRunState.Select
                     -> Run
 
@@ -693,7 +736,7 @@ extend EsIr:
                     -> Run
 
                 Run, ElisascriptTestRunState.CaseBegin:
-                    _ = try advance_script_test(result.session, ScriptTestEvent.CaseBegin, cursor.index)
+                    try advance_script_test(result.session, ScriptTestEvent.CaseBegin, cursor.index, ScriptTestSpec{ordinal: 0, name: "", line: 0}, "")
                     cursor.state <- ElisascriptTestRunState.Execute
                     -> Run
 
@@ -701,42 +744,44 @@ extend EsIr:
                     spec: ScriptTestSpec = result.session.cases[cursor.index]
                     remaining: RuntimeResourcePolicy = elisascript_test_remaining_policy(result.usage, policy)
                     catch elisascript_execute_test_runtime(cursor.lowered, spec, cursor.observations, cursor.storage, remaining, cursor.invocation_context):
-                        ok value:
+                        value:
                             cursor.execution <- value
                             cursor.state <- ElisascriptTestRunState.RecordPass
-                            -> Run
+                            true
                         error failure:
-                            result.runtime_error_known <- true
-                            result.runtime_error <- failure
+                            cursor.runtime_error_known <- true
+                            cursor.runtime_error <- failure
                             cursor.state <- ElisascriptTestRunState.RecordFail
-                            -> Run
+                            true
+                    -> Run
 
                 Run, ElisascriptTestRunState.RecordPass:
-                    raise InterpretError.OutputLimit if not elisascript_test_usage_add(result.usage, cursor.execution.usage, policy)
-                    raise ScriptTestError.TestLimitExceeded if result.executions.count >= EsScriptTest::Limits::TESTS
+                    try elisascript_record_pass_limits(result.usage, cursor.execution.usage, policy, result.executions.count)
                     result.executions.push(ElisascriptTestExecution{ordinal: cursor.index, steps: cursor.execution.steps, observation_count: cursor.observations.count, storage_values: cursor.storage.count, output_bytes: cursor.execution.usage.output_bytes, engine: cursor.execution.engine})
-                    _ = try advance_script_test(result.session, ScriptTestEvent.CasePass, cursor.index)
+                    try advance_script_test(result.session, ScriptTestEvent.CasePass, cursor.index, ScriptTestSpec{ordinal: 0, name: "", line: 0}, "")
                     cursor.state <- ElisascriptTestRunState.Select
                     -> Run
 
                 Run, ElisascriptTestRunState.RecordFail:
-                    _ = try advance_script_test(result.session, ScriptTestEvent.CaseFail, cursor.index, message: elisascript_test_runtime_message(result.runtime_error))
+                    try advance_script_test(result.session, ScriptTestEvent.CaseFail, cursor.index, ScriptTestSpec{ordinal: 0, name: "", line: 0}, elisascript_test_runtime_message(cursor.runtime_error))
                     cursor.state <- ElisascriptTestRunState.Done
                     -> Run
 
                 Run, ElisascriptTestRunState.Cancel:
-                    _ = try advance_script_test(result.session, ScriptTestEvent.Cancel)
+                    try advance_script_test(result.session, ScriptTestEvent.Cancel, EsScriptTest::Limits::NO_ACTIVE, ScriptTestSpec{ordinal: 0, name: "", line: 0}, "")
                     cursor.state <- ElisascriptTestRunState.CancelAck
                     -> Run
 
                 Run, ElisascriptTestRunState.CancelAck:
-                    _ = try advance_script_test(result.session, ScriptTestEvent.CancelAck)
+                    try advance_script_test(result.session, ScriptTestEvent.CancelAck, EsScriptTest::Limits::NO_ACTIVE, ScriptTestSpec{ordinal: 0, name: "", line: 0}, "")
                     cursor.state <- ElisascriptTestRunState.Done
                     -> Run
 
                 Run, ElisascriptTestRunState.Done:
                     break
 
+            result.runtime_error_known <- cursor.runtime_error_known
+            result.runtime_error <- cursor.runtime_error
             try elisascript_validate_test_run(result)
 
 
@@ -747,7 +792,7 @@ extend EsIr:
         # from an earlier test. Runtime failures remain typed `InterpretError`s
         # so the multi-case adapter can map them to `CaseFail` diagnostics.
         def execute_elisascript_test(module: BytecodeModule&, spec: ScriptTestSpec&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError, ScriptTestError] can[Memory.Allocate, Abort.Panic]:
-            _ = try elisascript_test_function_index(module, spec)
+            try elisascript_test_function_index(module, spec)
             return try elisascript_execute_test_runtime(module, spec, observations, storage, policy, invocation_context)
 
 
@@ -764,7 +809,7 @@ extend EsIr:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_file_tests_with_handlers(filename, module_name, handlers, result.session)
-            invocation_context: ScriptInvocationContext = try elisascript_optional_script_invocation_context(filename)
+            invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
@@ -774,7 +819,7 @@ extend EsIr:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_source_tests_with_handlers(filename, source, module_name, handlers, result.session)
-            invocation_context: ScriptInvocationContext = try elisascript_optional_script_invocation_context(filename)
+            invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
@@ -789,7 +834,7 @@ extend EsIr:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_source_bytes_tests_with_handlers(filename, source, source_length, module_name, handlers, result.session)
-            invocation_context: ScriptInvocationContext = try elisascript_optional_script_invocation_context(filename)
+            invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
@@ -814,11 +859,11 @@ extend EsIr:
             raise ScriptTestError.CaseNotReady if result.session.state == ScriptTestState.Planned or result.session.state == ScriptTestState.Running or result.session.state == ScriptTestState.Cancelling
             try validate_output_options(options)
             candidate: mutable OutputDocument = OutputDocument{options: options}
-            _ = try advance_output_document(candidate, OutputDocumentEvent.Begin)
+            try advance_output_document(candidate, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass})
             for index in 0..<result.session.cases.count |result, candidate|:
                 record: OutputRecord = try elisascript_test_report_record(result.session, index)
-                _ = try advance_output_document(candidate, OutputDocumentEvent.Append, record)
-            _ = try advance_output_document(candidate, OutputDocumentEvent.Seal)
+                try advance_output_document(candidate, OutputDocumentEvent.Append, record)
+            try advance_output_document(candidate, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass})
             try validate_output_document(candidate)
             report <- candidate
 
@@ -1138,7 +1183,7 @@ extend EsIr:
                 for argument in arguments |storage|:
                     storage.push(runtime_text(argument))
                 runtime_arguments: darray[RuntimeValue] = [runtime_array(argument_start, arguments.count.u32())]
-                policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
+                policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(runtime_resource_policy_default(), step_limit)
                 policy.output_bytes <- output_limit
                 return execute_bytecode_with_resource_policy(lowered.module, "main", runtime_arguments, observations, storage, policy, invocation_context)
 
@@ -1189,7 +1234,7 @@ extend EsIr:
                 lowered: BytecodeLowerResult = lower_bytecode(module)
                 raise InterpretError.VerificationFailed if lowered.issues.count != 0
                 invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
-                policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(RuntimeResourcePolicy{}, step_limit)
+                policy: mutable RuntimeResourcePolicy = runtime_resource_policy_with_step_limit(runtime_resource_policy_default(), step_limit)
                 policy.output_bytes <- output_limit
                 return execute_bytecode_with_resource_policy(lowered.module, entry, arguments, observations, storage, policy, invocation_context)
 

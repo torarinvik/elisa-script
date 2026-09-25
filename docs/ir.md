@@ -2277,7 +2277,10 @@ cannot reset at a suite boundary. The returned `ElisascriptTestRun` retains
 only bounded scalar summaries for successful completed cases; suite usage sums
 consumptive dimensions and takes the maximum of reported active/retained
 dimensions. Live resources are still enforced during each invocation, but the
-current `Execution` contract does not expose historical in-case peaks.
+current `Execution` contract does not expose historical in-case peaks. The
+suite case-count ceiling is checked before charging usage from the next
+completed case, so a rejected over-limit case cannot partially advance the
+aggregate ledger.
 Borrowed runtime values are never retained. A runtime `InterpretError` becomes
 the first typed case failure while the error enum is preserved beside the
 session diagnostic. The boolean cancellation request is a synchronous

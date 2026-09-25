@@ -108,6 +108,7 @@ for multi_case_boundary in \
     'cancelled before launch'; do
     rg -Fq "$multi_case_boundary" "$runner"
 done
+rg -Uq 'def elisascript_record_pass_limits\([^\n]*\):\n[[:space:]]+raise ScriptTestError\.TestLimitExceeded if executions >= EsScriptTest::Limits::TESTS\n[[:space:]]+raise InterpretError\.OutputLimit if not elisascript_test_usage_add\(usage, addition, policy\)' "$runner"
 
 rg -Fq 'include "../runtime/script_test_model.elisa"' "$ir"
 rg -Fq 'using EsScriptTest' "$fixture"

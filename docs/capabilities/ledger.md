@@ -18,6 +18,12 @@ that lacks an execution revision remains unqualified for release.
 
 ## Current entries
 
+The in-process test runner now checks its case-count ceiling before adding the
+completed case's resource usage to the suite ledger. An over-limit publication
+therefore cannot charge steps, elapsed time, output, or regex work for a case
+that is rejected. The source audit asserts this ordering; execution remains
+suspended, so this is static evidence.
+
 The output document, renderer, and transport state machines now reject payloads
 that do not belong to the selected event: only `Append` accepts a record, only
 renderer `Emit` accepts a record index, and only transport `Emit` accepts a
