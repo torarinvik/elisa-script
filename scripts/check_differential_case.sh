@@ -183,9 +183,9 @@ for boundary in 'malformed_outcome[22] <- 255' 'malformed_side[21] <- 255' 'malf
     fi
 done
 
-for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin' 'differential_world_binary_stdin_is_bounded_and_fingerprinted' 'differential_process_capture_text_bytes_fit' 'differential_process_capture_adapter_rejects_oversized_channels' 'differential_process_capture_adapter_enforces_aggregate_stream_budget' 'differential_process_capture_adapter_enforces_aggregate_nested_stream_budget' 'differential_comparison_enforces_aggregate_run_stream_budget' 'DifferentialRunOutcome.OutputLimit'; do
+for boundary in 'stdin_bytes: mutable darray[u8]' 'stdin_binary: bool' 'InvalidProcessInputPayload' 'differential_process_preparation_preserves_binary_stdin' 'differential_world_binary_stdin_is_bounded_and_fingerprinted' 'differential_process_capture_text_bytes_fit' 'differential_process_capture_adapter_rejects_oversized_channels' 'differential_process_capture_adapter_enforces_aggregate_stream_budget' 'differential_process_capture_adapter_enforces_aggregate_nested_stream_budget' 'differential_comparison_enforces_aggregate_run_stream_budget' 'differential_process_stream_artifact_rejects_aggregate_stream_overflow' 'DifferentialRunOutcome.OutputLimit'; do
     if ! rg -Fq "$boundary" "$source_file" "$fixture_file"; then
-        printf 'differential case audit: missing binary process-input coverage %s\n' "$boundary" >&2
+        printf 'differential case audit: missing process-boundary coverage %s\n' "$boundary" >&2
         exit 1
     fi
 done
