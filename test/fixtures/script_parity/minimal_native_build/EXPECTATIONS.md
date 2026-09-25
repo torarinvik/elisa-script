@@ -90,6 +90,10 @@ It then recreates the removed target, replaces its output with a symlink to a
 sentinel, and requires refusal without following or unlinking the link,
 changing sentinel bytes, or replacing the cache. Restoring the regular cached
 bytes must allow cleanup and recovery. This case is also source-only.
+Finally, it replaces the removed target's output with an empty directory and
+requires refusal without removing the directory or changing the cache. After
+the cached regular-file bytes are restored, cleanup and recovery must succeed.
+This case is source-only.
 
 The harness also replaces the main compiler with `/usr/bin/true`, which exits
 successfully but does not create its declared object output. The executor must
