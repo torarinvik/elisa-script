@@ -1629,6 +1629,9 @@ and magnitude accounting is published only after the byte passes its phase
 checks. Exponent lead/sign/digit phases are cross-checked against exponent
 digit accounting, rejecting snapshots that claim exponent digits without any.
 No implicit float conversion occurs at the record boundary.
+`parse_record_numeric` applies that state machine to a complete borrowed field
+view under the caller's explicit byte/digit/underscore policy; it does not trim
+whitespace or apply locale coercion.
 Integer `RecordNumericResult` values can be materialized through checked
 `record_numeric_result_i64` and `record_numeric_result_u64` accessors. Signed
 conversion handles the minimum value without negating an unrepresentable
@@ -1717,9 +1720,10 @@ return `error[RecordAggregateError]`. Signed sums, averages, joins, and
 spill-to-disk aggregation remain separate policies rather than implicit numeric
 conversions. Validation derives the event total and rejects duplicate first
 ordinals, so externally assembled groups cannot forge aggregate cardinality.
-`EsRecordNumericAggregate::record_aggregate_add_numeric` bridges a completed
-integer `RecordNumericSession` through its checked `i64` conversion into
-`AddValue`; decimal/floating coercion remains explicit and unavailable here.
+`EsRecordNumericAggregate::record_aggregate_add_numeric_field` parses a field
+view under an explicit numeric policy, then bridges its checked integer result
+into `AddValue`. Malformed fields or sum-limit failures do not change the
+aggregate; decimal/floating coercion remains explicit and unavailable here.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum

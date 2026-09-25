@@ -1242,10 +1242,11 @@ runtime or performance validation was run. C03 acceptance remains open until
 high-cardinality throughput is measured within declared bounds and collision,
 allocation, and host-integration behavior are qualified. The separate
 `EsRecordNumericAggregate` adapter now converts a completed signed integer
-field with the checked numeric accessor before submitting `AddValue`; an
-integration fixture covers negative/positive accumulation and fail-atomic sum
-ceiling rejection. Decimal/floating coercion and execution evidence remain
-open.
+field with the checked numeric accessor before submitting `AddValue`; its
+field-view entry point first runs the bounded numeric scanner using caller
+policy. An integration fixture covers negative/positive accumulation and
+fail-atomic malformed-field/sum-ceiling rejection. Decimal/floating coercion
+and execution evidence remain open.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces
