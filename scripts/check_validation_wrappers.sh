@@ -49,6 +49,11 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'source_snapshot="$(mktemp "$source_parent/.elisascript-validation.XXXXXXXX")"' "$wrapper"
     rg -Fq 'rm -f "$source_snapshot"' "$wrapper"
     rg -q 'process_tree_pids "\$process_root_pid"' "$wrapper"
+    rg -Fq 'process_snapshot_row_limit=16384' "$wrapper"
+    rg -Fq 'ps -axo pid=,ppid= 2>/dev/null | awk -v root="$process_tree_root" -v row_limit="$process_snapshot_row_limit"' "$wrapper"
+    rg -Fq 'NR > row_limit { overflow = 1; exit }' "$wrapper"
+    rg -Fq 'if (overflow || malformed || NR > row_limit) exit 2' "$wrapper"
+    rg -Fq 'queue[++tail] = child_pid' "$wrapper"
     rg -q 'tree_pid\[\$1\]' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
@@ -64,7 +69,8 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'validation_wrapper_pgid=' "$wrapper"
     rg -Fq '0|*[!0-9]*|"$validation_wrapper_pgid"' "$wrapper"
     rg -q 'process_group_rss_kb "\$compiler_pgid" "\$compiler_pid"' "$wrapper"
-    rg -Fq 'process_table="$(ps -axo pid=,pgid=,rss= 2>/dev/null)" || return 1' "$wrapper"
+    rg -Fq 'process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null)" || return 1' "$wrapper"
+    rg -Fq '$1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }' "$wrapper"
     rg -Fq 'if (!scope_seen) exit 1' "$wrapper"
     rg -Fq 'process_table="$(ps -axo pgid=,stat= 2>/dev/null)" || return 0' "$wrapper"
     rg -Fq '$1 == group && $2 !~ /^Z/' "$wrapper"
@@ -80,8 +86,13 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Uq 'rss_guard[^\n]*\n[[:space:]]+kill_process_tree_immediately "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
     rg -q 'kill -TERM -- "-\$process_group_id"' "$wrapper"
     rg -q 'kill_process_tree' "$wrapper"
+    rg -q 'cannot atomically verify process-group' "$wrapper"
     rg -q '^kill_process_tree_immediately\(\)' "$wrapper"
     rg -q 'kill_process_tree_immediately "\$compiler_pid" "\$compiler_pgid"' "$wrapper"
+    if rg -Fq 'pgrep -P' "$wrapper"; then
+        printf 'validation wrapper audit: process-tree snapshots must not recursively spawn pgrep in %s\n' "$wrapper" >&2
+        exit 1
+    fi
     rg -q 'validation_lease' "$wrapper"
     rg -Uq 'acquire_validation_lease\n\nif \[ -e "\$validation_disabled_file" \] \|\| \[ -L "\$validation_disabled_file" \]; then' "$wrapper"
     rg -Fq 'sh "$script_dir/validation_identity.sh"' "$wrapper"

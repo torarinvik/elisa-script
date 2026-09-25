@@ -114,6 +114,7 @@ retained_log_budget_bytes=1073741824
 metadata_reserve_bytes=16384
 source_limit_bytes=65536
 rss_poll_interval_seconds=0.05
+process_snapshot_row_limit=16384
 if [ "$log_limit_bytes" -gt "$retained_log_budget_bytes" ]; then
     echo "run_bounded_lowering: ELISASCRIPT_LOG_LIMIT_BYTES must not exceed the 1 GiB evidence budget" >&2
     exit 2
@@ -121,39 +122,81 @@ fi
 
 process_tree_pids() {
     process_tree_root="$1"
-    echo "$process_tree_root"
-    for process_tree_child in $(pgrep -P "$process_tree_root" 2>/dev/null); do
-        (process_tree_pids "$process_tree_child")
-    done
+    ps -axo pid=,ppid= 2>/dev/null | awk -v root="$process_tree_root" -v row_limit="$process_snapshot_row_limit" '
+        NR > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { malformed = 1; exit }
+        {
+            present[$1] = 1
+            children[$2] = children[$2] " " $1
+        }
+        END {
+            if (overflow || malformed || NR > row_limit) exit 2
+            if (!(root in present)) exit 0
+            head = 1
+            tail = 1
+            queue[tail] = root
+            seen[root] = 1
+            print root
+            while (head <= tail) {
+                parent_pid = queue[head++]
+                child_count = split(children[parent_pid], child_ids, " ")
+                for (child_index = 1; child_index <= child_count; child_index++) {
+                    child_pid = child_ids[child_index]
+                    if (child_pid ~ /^[0-9]+$/ && !seen[child_pid]) {
+                        seen[child_pid] = 1
+                        queue[++tail] = child_pid
+                        print child_pid
+                    }
+                }
+            }
+        }
+    '
 }
 
 process_group_rss_kb() {
     process_group_id="$1"
     process_root_pid="$2"
-    process_tree_snapshot=""
-    if [ -n "$process_root_pid" ]; then
-        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
-    fi
     # Count the union of the isolated process group and descendants of the
     # compiler root. The group catches reparented children that retain their
     # group; the tree catches descendants that start a private session. The OR
     # predicate prevents counting ordinary same-group children twice. This is
     # still best-effort observation, not containment: a double-forked process
     # reparented after leaving this group can evade both snapshots.
-    process_table="$(ps -axo pid=,pgid=,rss= 2>/dev/null)" || return 1
-    printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v tree="$process_tree_snapshot" '
-        BEGIN {
-            count = split(tree, pids, "\n")
-            for (i = 1; i <= count; i++) {
-                if (pids[i] ~ /^[0-9]+$/) {
-                    tree_pid[pids[i]] = 1
+    process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null)" || return 1
+    printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v row_limit="$process_snapshot_row_limit" '
+        NR > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }
+        {
+            pid = $1
+            process_group[$1] = $3
+            rss[$1] = $4
+            present[$1] = 1
+            children[$2] = children[$2] " " $1
+            if (pid == root || $3 == group) scope_seen = 1
+        }
+        END {
+            if (overflow || malformed || NR > row_limit) exit 2
+            if (!scope_seen) exit 1
+            if (root in present) {
+                head = 1
+                tail = 1
+                queue[tail] = root
+                tree_pid[root] = 1
+                while (head <= tail) {
+                    parent_pid = queue[head++]
+                    child_count = split(children[parent_pid], child_ids, " ")
+                    for (child_index = 1; child_index <= child_count; child_index++) {
+                        child_pid = child_ids[child_index]
+                        if (child_pid ~ /^[0-9]+$/ && !tree_pid[child_pid]) {
+                            tree_pid[child_pid] = 1
+                            queue[++tail] = child_pid
+                        }
+                    }
                 }
             }
-        }
-        $1 == root || $2 == group { scope_seen = 1 }
-        $2 == group || tree_pid[$1] { total += $3 }
-        END {
-            if (!scope_seen) exit 1
+            for (pid in present) {
+                if (process_group[pid] == group || tree_pid[pid]) total += rss[pid]
+            }
             print total + 0
         }
     '
@@ -201,9 +244,12 @@ reap_compiler_if_exited() {
 kill_process_tree() {
     process_root_pid="$1"
     process_group_id="$2"
+    # Delayed numeric-PGID escalation cannot atomically verify process-group
+    # identity with portable ps/kill. The default-disabled latch is a policy
+    # gate, not an OS-enforced containment boundary.
     process_tree_snapshot=""
     if [ -n "$process_root_pid" ]; then
-        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+        process_tree_snapshot="$(process_tree_pids "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
     fi
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
@@ -238,7 +284,7 @@ kill_process_tree_immediately() {
     process_group_id="$2"
     process_tree_snapshot=""
     if [ -n "$process_root_pid" ]; then
-        process_tree_snapshot="$(process_tree_pids "$process_root_pid")"
+        process_tree_snapshot="$(process_tree_pids "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
     fi
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
