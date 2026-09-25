@@ -1914,8 +1914,15 @@ sealed staging entry only after matching its no-follow identity to the session
 receipt and requiring private single-link file metadata. Under the caller's
 exclusive directory-mutation lease, an already-absent stage is reconciled as
 completed cleanup; unlink or post-unlink verification failures leave cleanup
-pending. This path does not yet cover partial or unsealed stages that have no
+pending. This sealed-stage path does not cover partial or unsealed stages that have no
 sealed identity receipt, nor does it implement lease ownership itself.
+`cleanup_unsealed_atomic_file_stage` covers the partial-write failure path: it
+uses the captured device/inode proof plus private, single-link metadata to
+remove the stage entry without treating incomplete bytes as a sealed receipt.
+It also confirms that the caller's still-open descriptor and the no-follow
+stage entry identify the same inode; descriptor closure remains the caller's
+responsibility. Both cleanup paths require the caller to hold the exclusive
+directory lease. Stage creation and lease-capability integration remain open.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

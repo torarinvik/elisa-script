@@ -603,6 +603,72 @@ module EsFileAtomicPosix:
                     raise AtomicFilePosixError.RenameOutcomeUnknown
 
 
+        # Remove an unsealed partial stage after a failed or cancelled write.
+        # The caller retains ownership of any open stage descriptor and must
+        # hold the exclusive directory lease; this never hashes partial data.
+        def cleanup_unsealed_atomic_file_stage(session: mutable AtomicFileSession&, parent_fd: int, stage_fd: int, stage_leaf: cstr, expected: AtomicFilePosixStageProof) -> AtomicFileState error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            cleanup_state: bool = session.state == AtomicFileState.FailedPendingCleanup or session.state == AtomicFileState.CancelledPendingCleanup
+            raise AtomicFilePosixError.StageNotReady if not cleanup_state or session.staged_identity.observed or parent_fd < 0 or stage_fd < 0 or stage_fd == parent_fd
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf)
+            raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf)
+            raise AtomicFilePosixError.StageNotReady if expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.parent_descriptor_token != parent_fd.u64() + 1u64 or expected.stage_descriptor_token != stage_fd.u64() + 1u64 or expected.link_count != 1
+
+            parent_before: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_before) or (parent_before.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY or parent_before.device.u64() != expected.parent_device or parent_before.inode != expected.parent_inode
+
+            stage_descriptor_before: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_descriptor(stage_fd, stage_descriptor_before)
+            raise AtomicFilePosixError.StageContentMismatch if stage_descriptor_before.device.u64() != expected.stage_device or stage_descriptor_before.inode != expected.stage_inode or stage_descriptor_before.device != parent_before.device or (stage_descriptor_before.mode & DarwinStatMode::MASK) != DarwinStatMode.REGULAR or not atomic_file_posix_private(stage_descriptor_before) or stage_descriptor_before.link_count > 1u16
+
+            stage_before: mutable ElisascriptStat = ElisascriptStat{}
+            if not atomic_file_posix_stat_name(parent_fd, stage_leaf, stage_before):
+                errno: mutable i32& = elisascript_posix_errno()
+                raise AtomicFilePosixError.StageCleanupFailed if errno[0] != AtomicFilePosixErrno::ENOENT
+                stage_descriptor_after_absent: mutable ElisascriptStat = ElisascriptStat{}
+                raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_descriptor(stage_fd, stage_descriptor_after_absent)
+                raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_same_inode(stage_descriptor_before, stage_descriptor_after_absent) or stage_descriptor_after_absent.link_count != 0u16
+                parent_after_absent: mutable ElisascriptStat = ElisascriptStat{}
+                raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after_absent) or not atomic_file_posix_parent_matches(parent_before, parent_after_absent)
+                catch advance_atomic_file(session, AtomicFileEvent.CleanupAck):
+                    ok state:
+                        return state
+                    error failure:
+                        raise AtomicFilePosixError.StageNotReady
+
+            raise AtomicFilePosixError.StageContentMismatch if stage_before.device.u64() != expected.stage_device or stage_before.inode != expected.stage_inode or stage_before.device != parent_before.device or (stage_before.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not atomic_file_posix_private(stage_before) or stage_before.link_count != 1u16
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_same_inode(stage_descriptor_before, stage_before)
+            raise AtomicFilePosixError.StageContentMismatch if stage_descriptor_before.link_count != 1u16
+            stage_again: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.StageStatFailed if not atomic_file_posix_stat_name(parent_fd, stage_leaf, stage_again)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_same_inode(stage_before, stage_again) or (stage_again.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not atomic_file_posix_private(stage_again) or stage_again.link_count != 1u16
+
+            remove_status: mutable int = -1
+            catch elisascript_posix_unlinkat_leaf(parent_fd, stage_leaf):
+                ok status:
+                    remove_status <- status
+                error failure:
+                    raise AtomicFilePosixError.StageCleanupFailed
+            raise AtomicFilePosixError.StageCleanupFailed if remove_status != 0
+
+            stage_after: mutable ElisascriptStat = ElisascriptStat{}
+            if atomic_file_posix_stat_name(parent_fd, stage_leaf, stage_after):
+                raise AtomicFilePosixError.StageCleanupFailed
+            errno: mutable i32& = elisascript_posix_errno()
+            raise AtomicFilePosixError.StageCleanupFailed if errno[0] != AtomicFilePosixErrno::ENOENT
+            parent_after: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after)
+            catch advance_atomic_file(session, AtomicFileEvent.CleanupAck):
+                ok state:
+                    return state
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+
+
         # Remove a closed staging entry only when its current no-follow
         # identity still matches the sealed session receipt. Under the caller's
         # exclusive directory lease, an already-absent stage is reconciled as
