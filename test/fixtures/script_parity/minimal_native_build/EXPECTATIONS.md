@@ -199,6 +199,9 @@ Before creating its build directory, the harness also passes a symlink to a
 valid generated-header input through the candidate's external-input override.
 It requires the exact status-2 diagnostic and proves the link, referent bytes,
 and absent build path are preserved. This source-only preflight is unverified.
+The same override also rejects a directory input, preserving a sentinel in the
+directory and leaving the requested build path absent; this case is likewise
+source-only and unverified.
 
 ## Evidence status
 
