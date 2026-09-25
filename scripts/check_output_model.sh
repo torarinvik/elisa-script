@@ -43,6 +43,7 @@ for boundary in \
     'OutputLimitInvalid' \
     'AppendNotReady' \
     'SealNotReady' \
+    'output_record_is_empty_payload' \
     'failed_records'; do
     rg -Fq "$boundary" "$model"
 done
@@ -55,6 +56,7 @@ for fixture_pattern in \
     'OutputDocumentEvent.Seal' \
     'OutputContractError.OutputLimitInvalid' \
     'OutputContractError.TextAccountingInvalid' \
+    'extraneous_begin_payload_rejected' \
     'text_accounting_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done

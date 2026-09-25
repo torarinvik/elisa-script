@@ -53,10 +53,10 @@ module EsOutputRender:
 
         struct OutputRender:
             document: OutputDocument
-            state: OutputRenderState = OutputRenderState.Ready
-            next_record: usize = 0
-            emitted_bytes: usize = 0
-            chunks: usize = 0
+            state: mutable OutputRenderState = OutputRenderState.Ready
+            next_record: mutable usize = 0
+            emitted_bytes: mutable usize = 0
+            chunks: mutable usize = 0
 
 
         error OutputRenderError:
@@ -115,7 +115,9 @@ module EsOutputRender:
 
 
         def output_render_status_bytes(status: OutputStatus) -> usize error[OutputRenderError]:
-            return 4 if status == OutputStatus.Pass else 4 if status == OutputStatus.Fail else 5 if status == OutputStatus.Error else 4 if status == OutputStatus.Skip else raise OutputRenderError.InvalidState
+            return 4 if status == OutputStatus.Pass or status == OutputStatus.Fail or status == OutputStatus.Skip
+            return 5 if status == OutputStatus.Error
+            raise OutputRenderError.InvalidState
 
 
         def output_render_record_bytes(document: OutputDocument&, record: OutputRecord, first: bool) -> usize error[OutputRenderError]:
@@ -128,9 +130,12 @@ module EsOutputRender:
                 try output_render_accumulate(total, sview_len(record.message), limit)
                 try output_render_accumulate(total, sview_len(record.stdout), limit)
                 try output_render_accumulate(total, sview_len(record.stderr), limit)
-                try output_render_accumulate(total, 3, limit) if sview_len(record.message) != 0
-                try output_render_accumulate(total, 8, limit) if sview_len(record.stdout) != 0
-                try output_render_accumulate(total, 8, limit) if sview_len(record.stderr) != 0
+                if sview_len(record.message) != 0:
+                    try output_render_accumulate(total, 3, limit)
+                if sview_len(record.stdout) != 0:
+                    try output_render_accumulate(total, 8, limit)
+                if sview_len(record.stderr) != 0:
+                    try output_render_accumulate(total, 8, limit)
                 return total
             elif document.options.format == OutputFormat.Json:
                 total: mutable usize = 14 + separator
@@ -184,7 +189,11 @@ module EsOutputRender:
     public:
         def validate_output_render(render: OutputRender&) -> bool error[OutputRenderError]:
             raise OutputRenderError.InvalidState if not output_render_state_valid(render.state)
-            try validate_output_document(render.document)
+            catch validate_output_document(render.document):
+                valid:
+                    raise OutputRenderError.AccountingInvalid if not valid
+                error failure:
+                    raise OutputRenderError.AccountingInvalid
             raise OutputRenderError.DocumentNotSealed if render.document.state != OutputDocumentState.Sealed
             raise OutputRenderError.RecordIndexInvalid if render.next_record > render.document.records.count
             raise OutputRenderError.ChunkLimitExceeded if render.chunks > Limits::CHUNKS
@@ -209,21 +218,24 @@ module EsOutputRender:
             # consume a renderer frame by accident.
             try validate_output_render(render)
             if render.state == OutputRenderState.Ready:
-                return OutputRenderFrame{kind: OutputRenderFrameKind.Header, sequence: render.chunks, bytes: try output_render_header_bytes(render.document)}
+                header_bytes: usize = try output_render_header_bytes(render.document)
+                return OutputRenderFrame{kind: OutputRenderFrameKind.Header, sequence: render.chunks, bytes: header_bytes}
             raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
             if render.next_record < render.document.records.count:
-                return OutputRenderFrame{kind: OutputRenderFrameKind.Record, record_index: render.next_record, sequence: render.chunks, bytes: try output_render_record_bytes(render.document, render.document.records[render.next_record], render.next_record == 0)}
-            return OutputRenderFrame{kind: OutputRenderFrameKind.Footer, sequence: render.chunks, bytes: try output_render_footer_bytes(render.document), final_frame: true}
+                record_bytes: usize = try output_render_record_bytes(render.document, render.document.records[render.next_record], render.next_record == 0)
+                return OutputRenderFrame{kind: OutputRenderFrameKind.Record, record_index: render.next_record, sequence: render.chunks, bytes: record_bytes}
+            footer_bytes: usize = try output_render_footer_bytes(render.document)
+            return OutputRenderFrame{kind: OutputRenderFrameKind.Footer, sequence: render.chunks, bytes: footer_bytes, final_frame: true}
 
 
         def next_output_render_frame(render: mutable OutputRender&, frame: mutable OutputRenderFrame&) -> OutputRenderState error[OutputRenderError]:
             candidate: OutputRenderFrame = try peek_output_render_frame(render)
             if candidate.kind == OutputRenderFrameKind.Header:
-                _ = try advance_output_render(render, OutputRenderEvent.Begin)
+                try advance_output_render(render, OutputRenderEvent.Begin, 0)
             elif candidate.kind == OutputRenderFrameKind.Record:
-                _ = try advance_output_render(render, OutputRenderEvent.Emit, candidate.record_index)
+                try advance_output_render(render, OutputRenderEvent.Emit, candidate.record_index)
             elif candidate.kind == OutputRenderFrameKind.Footer:
-                _ = try advance_output_render(render, OutputRenderEvent.Finish)
+                try advance_output_render(render, OutputRenderEvent.Finish, 0)
             else:
                 raise OutputRenderError.InvalidState
             raise OutputRenderError.AccountingInvalid if not output_render_frame_kind_valid(candidate.kind)
@@ -234,6 +246,7 @@ module EsOutputRender:
         def advance_output_render(render: mutable OutputRender&, event: OutputRenderEvent, record_index: usize = 0) -> OutputRenderState error[OutputRenderError]:
             try validate_output_render(render)
             raise OutputRenderError.InvalidEvent if not output_render_event_valid(event)
+            raise OutputRenderError.InvalidEvent if event != OutputRenderEvent.Emit and record_index != 0
             if event == OutputRenderEvent.Begin:
                 raise OutputRenderError.InvalidState if render.state != OutputRenderState.Ready
                 raise OutputRenderError.DocumentNotSealed if render.document.state != OutputDocumentState.Sealed

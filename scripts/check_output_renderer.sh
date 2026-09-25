@@ -43,6 +43,7 @@ for boundary in \
     'DocumentNotSealed' \
     'render.document.state != OutputDocumentState.Sealed' \
     'RecordOrderInvalid' \
+    'record_index != 0' \
     'AccountingInvalid' \
     'RenderLimitExceeded' \
     'Incomplete' \
@@ -70,8 +71,10 @@ for boundary in \
     'FrameOrderInvalid' \
     'FrameTooLarge' \
     'ShortWrite' \
+    'UnexpectedPayload' \
     'max_frame_bytes' \
     'output_transport_frame_matches' \
+    'output_transport_frame_is_empty_payload' \
     'OutputTransportState.Cancelling' \
     'OutputTransportState.Cancelled'; do
     rg -Fq "$boundary" "$transport"
@@ -89,11 +92,14 @@ for fixture_pattern in \
     'OutputRenderState.Complete' \
     'render_budget_rejected' \
     'forged_emitted_rejected' \
+    'extraneous_render_payload_rejected' \
     'typed_output_transport_binds_frames_to_exact_host_acknowledgements' \
     'OutputTransportEvent.Emit' \
     'OutputTransportError.FrameMismatch'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+rg -Fq 'OutputTransportError.UnexpectedPayload' "$fixture"
+rg -Fq 'extraneous_transport_payload_rejected' "$fixture"
 
 rg -Fq 'EsOutputRender adds the renderer-side state machine' "$docs"
 rg -Fq '`EsOutputTransport` wraps that renderer' "$docs"

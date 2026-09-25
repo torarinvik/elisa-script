@@ -547,7 +547,8 @@ quiet/fail-fast behavior, and a total text budget; `OutputRecord` carries a
 typed pass/fail/error/skip status with bounded name and channel text.
 `advance_output_document` appends records through `Empty → Building → Sealed`
 while reconciling aggregate channel text and failed records against stored
-accounting and rejecting budget overflow before mutation.
+accounting and rejecting budget overflow before mutation. Events reject
+irrelevant payloads: only `Append` accepts a non-empty record payload.
 Renderers can therefore remain format-specific without changing result
 semantics or truncating machine output silently.
 
@@ -561,12 +562,14 @@ state/chunk/record accounting, and refuses completion until every record has
 been emitted. Cancellation and failure are explicit transitions, leaving actual
 host writes to a bounded adapter. `OutputRenderFrame` exposes only the next
 frame kind, record index, sequence, and checked byte count; it does not retain
-borrowed text. `EsOutputTransport` wraps that renderer with a bounded
+borrowed text; only `Emit` accepts a nonzero record index. `EsOutputTransport`
+wraps that renderer with a bounded
 `Planned → Streaming → Complete/Failed/Cancelling/Cancelled` hand-off. A host
 adapter must acknowledge the exact frame descriptor and full byte count before
 the renderer advances; reordered, forged, oversized, or short writes are
-rejected. The transport still does not perform OS writes or prove the contents
-of bytes produced by an external formatter.
+rejected. Non-`Emit` events reject frame/write payloads. The transport still
+does not perform OS writes or prove the contents of bytes produced by an
+external formatter.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

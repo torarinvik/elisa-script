@@ -18,6 +18,12 @@ that lacks an execution revision remains unqualified for release.
 
 ## Current entries
 
+The output document, renderer, and transport state machines now reject payloads
+that do not belong to the selected event: only `Append` accepts a record, only
+renderer `Emit` accepts a record index, and only transport `Emit` accepts a
+frame acknowledgement/write count. Focused fixtures and compiler-free audit
+assertions are present; execution remains suspended, so this is static evidence.
+
 Validation-wrapper descendant cleanup now snapshots PID, parent PID, process
 group, and start time. Before per-PID TERM/KILL fallback signals, it obtains a
 fresh complete bounded process snapshot and requires the PID, group, and start
