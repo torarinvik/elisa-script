@@ -761,6 +761,11 @@ the live reservation. Receipt admission also reuses `validate_process_result`
 to reject malformed status/signal combinations and invalid captured text before
 changing scheduler state or consuming reservations. This remains a host-neutral
 contract, not child launch or runtime evidence.
+Each active launch is additionally bound to the exact `ProcessCommand` snapshot
+admitted for that node; validation rejects command mutation while a result is
+outstanding, preventing a stale child result from being attributed to a changed
+build recipe. A focused regression fixture and the static audit cover this
+binding, but execution remains unverified.
 Successful integrated batches can now be converted to the canonical
 `BuildExecutionResult` used by the existing incremental commit path: cached
 nodes remain unstarted cache hits, while dispatched nodes preserve successful
