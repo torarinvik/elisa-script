@@ -114,6 +114,95 @@ module EsChordBrainLocalizationGenerator:
             return source.entry_indices.get(key, source.entries.count)
 
 
+        def localization_hex_digit(byte: u8) -> i32:
+            return (byte - 48u8).i32() if byte >= 48u8 and byte <= 57u8
+            return (byte - 65u8 + 10u8).i32() if byte >= 65u8 and byte <= 70u8
+            return (byte - 97u8 + 10u8).i32() if byte >= 97u8 and byte <= 102u8
+            return -1i32
+
+
+        def localization_append_codepoint(output: mutable darray[u8]&, codepoint: u32) -> void error[LocalizationError] can[Memory.Allocate, Abort.Panic]:
+            raise LocalizationError.UnsupportedLiteral if codepoint > 1114111u32 or codepoint >= 55296u32 and codepoint <= 57343u32
+            if codepoint <= 127u32:
+                output.push(codepoint.u8())
+            elif codepoint <= 2047u32:
+                output.push((192u32 | (codepoint >> 6)).u8())
+                output.push((128u32 | (codepoint & 63u32)).u8())
+            elif codepoint <= 65535u32:
+                output.push((224u32 | (codepoint >> 12)).u8())
+                output.push((128u32 | ((codepoint >> 6) & 63u32)).u8())
+                output.push((128u32 | (codepoint & 63u32)).u8())
+            else:
+                output.push((240u32 | (codepoint >> 18)).u8())
+                output.push((128u32 | ((codepoint >> 12) & 63u32)).u8())
+                output.push((128u32 | ((codepoint >> 6) & 63u32)).u8())
+                output.push((128u32 | (codepoint & 63u32)).u8())
+
+
+        def localization_decode_string_literal(literal: sview) -> sview error[LocalizationError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = len(literal)
+            raise LocalizationError.UnsupportedLiteral if length < 2 or sview_at(literal, 0) != 34u8 or sview_at(literal, length - 1) != 34u8
+            decoded: mutable darray[u8] = []
+            cursor: mutable usize = 1
+            while cursor < length - 1 |literal, decoded, cursor|:
+                byte: u8 = sview_at(literal, cursor)
+                if byte == 34u8:
+                    raise LocalizationError.UnsupportedLiteral
+                if byte != 92u8:
+                    decoded.push(byte)
+                    cursor <- cursor + 1
+                    continue
+
+                cursor <- cursor + 1
+                raise LocalizationError.UnsupportedLiteral if cursor >= length - 1
+                escaped: u8 = sview_at(literal, cursor)
+                if escaped == 34u8 or escaped == 39u8 or escaped == 92u8:
+                    decoded.push(escaped)
+                elif escaped == 97u8:
+                    decoded.push(7u8)
+                elif escaped == 98u8:
+                    decoded.push(8u8)
+                elif escaped == 102u8:
+                    decoded.push(12u8)
+                elif escaped == 110u8:
+                    decoded.push(10u8)
+                elif escaped == 114u8:
+                    decoded.push(13u8)
+                elif escaped == 116u8:
+                    decoded.push(9u8)
+                elif escaped == 118u8:
+                    decoded.push(11u8)
+                elif escaped == 78u8:
+                    # Python's \N{name} requires the Unicode database. Do not
+                    # guess at names or silently produce different text.
+                    raise LocalizationError.UnsupportedLiteral
+                elif escaped == 120u8 or escaped == 117u8 or escaped == 85u8:
+                    digit_count: usize = 2 if escaped == 120u8 else 4 if escaped == 117u8 else 8
+                    raise LocalizationError.UnsupportedLiteral if cursor + digit_count >= length - 1
+                    codepoint: mutable u32 = 0
+                    for digit_offset in 1..<(digit_count + 1) |literal, cursor, codepoint|:
+                        digit: i32 = localization_hex_digit(sview_at(literal, cursor + digit_offset))
+                        raise LocalizationError.UnsupportedLiteral if digit < 0
+                        codepoint <- (codepoint << 4) | digit.u32()
+                    try localization_append_codepoint(decoded, codepoint)
+                    cursor <- cursor + digit_count
+                elif escaped >= 48u8 and escaped <= 55u8:
+                    octal_codepoint: mutable u32 = 0
+                    octal_end: mutable usize = cursor
+                    while octal_end < length - 1 and octal_end < cursor + 3 and sview_at(literal, octal_end) >= 48u8 and sview_at(literal, octal_end) <= 55u8 |literal, octal_codepoint, octal_end|:
+                        octal_codepoint <- (octal_codepoint << 3) | (sview_at(literal, octal_end) - 48u8).u32()
+                        octal_end <- octal_end + 1
+                    try localization_append_codepoint(decoded, octal_codepoint)
+                    cursor <- octal_end - 1
+                else:
+                    # Python preserves unrecognized escapes (for example,
+                    # \\q) in the string value rather than deleting '\\'.
+                    decoded.push(92u8)
+                    decoded.push(escaped)
+                cursor <- cursor + 1
+            return bytes_view(decoded)
+
+
         def localization_parse_language(code: sview, contents: sview) -> LocalizationSource error[LocalizationError] can[Memory.Allocate, Abort.Panic]:
             normalized: sview = contents.replace("\r\n", "\n").replace("\r", "\n")
             lines: darray[sview] = split_lines(normalized)
@@ -124,28 +213,27 @@ module EsChordBrainLocalizationGenerator:
                 if not trimmed.startswith("\""):
                     continue
 
-                # Current ChordBrain .lang values do not use Python string
-                # escapes or embedded quotes. Reject these explicitly instead
-                # of silently changing Python ast.literal_eval semantics.
-                pieces: darray[sview] = split(trimmed, "\"")
-                if pieces.count != 5 or pieces[0] != "" or pieces[4] != "" or pieces[2].strip() != "=":
-                    # Python's ENTRY_RE silently ignores rows that do not
-                    # match the quoted-key / quoted-value shape. A row with
-                    # additional quotes after a valid key and separator does
-                    # match that shape, but its value literal is unsupported.
-                    raise LocalizationError.UnsupportedLiteral if pieces.count > 5 and pieces[0] == "" and pieces[1] != "" and pieces[2].strip() == "="
-                    continue
-                key: sview = pieces[1]
-                raw_value: sview = pieces[3]
-                # ENTRY_RE requires at least one key character, so Python
-                # ignores an empty-key row before evaluating its value.
+                # ENTRY_RE excludes quotes in keys but allows escapes and
+                # embedded escaped quotes in the value literal.
+                key_end: mutable usize = 1
+                while key_end < len(trimmed) and sview_at(trimmed, key_end) != 34u8 |trimmed, key_end|:
+                    key_end <- key_end + 1
+                continue if key_end == len(trimmed)
+                key: sview = sview(trimmed, 1, (key_end - 1).i64())
                 continue if key == ""
-                raise LocalizationError.UnsupportedLiteral if raw_value.index("\\") >= 0
+                separator: sview = sview(trimmed, key_end + 1, (len(trimmed) - key_end - 1).i64())
+                equals: i64 = separator.index("=")
+                continue if equals < 0 or sview(separator, 0, equals).strip() != ""
+                value_tail_start: usize = equals.usize() + 1
+                raw_value: sview = sview(separator, value_tail_start, (len(separator) - value_tail_start).i64()).strip()
+                if len(raw_value) < 2 or sview_at(raw_value, 0) != 34u8 or sview_at(raw_value, len(raw_value) - 1) != 34u8:
+                    continue
+                owned_value: sview = try localization_decode_string_literal(raw_value)
 
                 # Own each key/value independently; no returned entry borrows
                 # the temporary read_text buffer or split-line views.
                 owned_key: sview = "" + key
-                owned_value: sview = "" + raw_value
+                owned_value <- "" + owned_value
                 existing: usize = entry_indices.get(owned_key, entries.count)
                 if existing == entries.count:
                     entry_indices[owned_key] <- existing
