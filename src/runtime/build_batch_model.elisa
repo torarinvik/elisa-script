@@ -6,6 +6,7 @@ module EsBuildBatch:
     using EsBuild
     using EsBuildExecutor
     using EsBuildIncremental
+    using EsBuildRecipeSignature
     using EsBuildScheduler
     using EsProcess
     using EsProcessBatch
@@ -25,6 +26,7 @@ module EsBuildBatch:
 
         struct BuildBatchNodeResult:
             target_name: sview
+            cache_hit: bool = false
             dispatched: bool = false
             published: bool = false
             reserved_output_bytes: usize = 0
@@ -88,7 +90,8 @@ module EsBuildBatch:
         def build_batch_job_matches_node_state(node_state: BuildNodeState, job_state: ProcessBatchJobState) -> bool:
             return job_state == ProcessBatchJobState.Pending if node_state == BuildNodeState.Planned
             return job_state == ProcessBatchJobState.Running if node_state == BuildNodeState.Running
-            return job_state == ProcessBatchJobState.Succeeded if node_state == BuildNodeState.Succeeded
+            if node_state == BuildNodeState.Succeeded:
+                return job_state == ProcessBatchJobState.Succeeded or job_state == ProcessBatchJobState.Skipped
             return job_state == ProcessBatchJobState.Failed if node_state == BuildNodeState.Failed
             return job_state == ProcessBatchJobState.Cancelled if node_state == BuildNodeState.Cancelled
             return false
@@ -145,6 +148,16 @@ module EsBuildBatch:
             return try build_batch_session_for_graph_with_outputs(graph, output_sets)
 
 
+        # Construct the bounded batch coordinator and admit only cache entries
+        # justified by the current recipes, previous committed targets, and a
+        # complete host observation set. `begin_build_batch` turns those
+        # admitted entries into explicit skipped jobs before dispatching work.
+        def build_incremental_batch_session_for_recipes(root: Path, graph: BuildGraph, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation]) -> BuildBatchSession error[BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            session: mutable BuildBatchSession = try build_batch_session_for_recipes(root, graph, recipes)
+            _ = try admit_build_incremental_graph(session.scheduler, previous_targets, recipes, observations)
+            return session
+
+
         def build_batch_session_for_graph(graph: BuildGraph) -> BuildBatchSession error[BuildContractError, BuildExecutionError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
             return try build_batch_session_for_graph_with_outputs(graph, [])
 
@@ -193,7 +206,6 @@ module EsBuildBatch:
                     raise BuildBatchError.OutputListMismatch if session.output_sets[index].target_name != graph.nodes[index].name
                 raise BuildBatchError.OutputPathInvalid if not build_executor_output_sets_valid(graph, session.output_sets)
             raise BuildBatchError.InvalidSession if session.processes.policy.max_jobs != graph.nodes.count
-            raise BuildBatchError.InvalidSession if session.scheduler.cache.count != 0
             raise BuildBatchError.ParallelLimitExceeded if session.processes.policy.max_parallel != build_batch_parallel_limit(graph.max_parallel)
             raise BuildBatchError.InvalidSession if session.processes.policy.max_attempts != 1 or session.processes.policy.failure_mode != ProcessBatchFailureMode.FailFast
             raise BuildBatchError.InvalidSession if session.reserved_output_bytes > EsBuild::Limits::LOG_BYTES
@@ -207,11 +219,17 @@ module EsBuildBatch:
                 result: BuildBatchNodeResult = session.results[index]
                 raise BuildBatchError.JobMappingInvalid if job.id != (index + 1).u64() or result.target_name != node.name
                 raise BuildBatchError.JobMappingInvalid if not build_batch_job_matches_node_state(node.state, job.state)
+                raise BuildBatchError.JobMappingInvalid if result.cache_hit != (job.state == ProcessBatchJobState.Skipped)
                 raise BuildBatchError.JobMappingInvalid if result.dispatched != (job.attempts != 0)
                 raise BuildBatchError.JobMappingInvalid if job.attempts > 1
                 raise BuildBatchError.JobMappingInvalid if result.published and not result.dispatched
-                raise BuildBatchError.JobMappingInvalid if (node.state == BuildNodeState.Succeeded or node.state == BuildNodeState.Failed) and not result.published
+                raise BuildBatchError.JobMappingInvalid if (node.state == BuildNodeState.Succeeded or node.state == BuildNodeState.Failed) and not result.published and not result.cache_hit
                 raise BuildBatchError.JobMappingInvalid if result.published and node.state != BuildNodeState.Succeeded and node.state != BuildNodeState.Failed
+                if result.cache_hit:
+                    cached: mutable bool = false
+                    for entry in session.scheduler.cache:
+                        cached <- true if entry.node_name == node.name and entry.fingerprint == node.fingerprint
+                    raise BuildBatchError.JobMappingInvalid if not cached or node.state != BuildNodeState.Succeeded or result.dispatched or result.published or result.reserved_output_bytes != 0 or result.missing_output != "" or node.log_bytes != 0
                 if job.state == ProcessBatchJobState.Running:
                     raise BuildBatchError.JobMappingInvalid if result.published
                     raise BuildBatchError.JobMappingInvalid if result.reserved_output_bytes > node.command.capture_output_limit_bytes
@@ -272,6 +290,16 @@ module EsBuildBatch:
             raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Ready
             _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Begin)
             _ = try advance_process_batch(session.processes, ProcessBatchEvent.Begin)
+            for node_index in 0..<session.scheduler.graph.nodes.count |session|:
+                node: BuildNode = session.scheduler.graph.nodes[node_index]
+                for entry in session.scheduler.cache |session|:
+                    if entry.node_name == node.name:
+                        raise BuildBatchError.InvalidSession if entry.fingerprint != node.fingerprint
+                        _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.CacheHit, node_index)
+                        _ = try advance_process_batch(session.processes, ProcessBatchEvent.SkipAt, node_index)
+                        session.results[node_index].cache_hit <- true
+            if session.scheduler.state == BuildSchedulerState.Running and session.scheduler.active_nodes == 0 and session.scheduler.completed_nodes == session.scheduler.graph.nodes.count:
+                _ = try advance_build_scheduler(session.scheduler, BuildSchedulerEvent.Complete)
             _ = try validate_build_batch_session(session)
             return session.scheduler.state
 

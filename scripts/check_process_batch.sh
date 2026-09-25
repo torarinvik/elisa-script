@@ -24,9 +24,11 @@ for declaration in \
     'const enum ProcessBatchState of u8' \
     'const enum ProcessBatchJobState of u8' \
     'AwaitingReap' \
+    'Skipped' \
     'const enum ProcessBatchEvent of u8' \
     'ReapAck' \
     'LaunchAt' \
+    'SkipAt' \
     'struct ProcessBatchPolicy:' \
     'struct ProcessBatchJob:' \
     'struct ProcessBatchDispatch:' \
@@ -61,6 +63,7 @@ for boundary in \
     'reap_acknowledged' \
     'queued' \
     'session.jobs\[pending\].attempts >= session.policy.max_attempts' \
+    'job.state == ProcessBatchJobState.Skipped and (job.attempts != 0 or job.attempt_token != 0)' \
     'ProcessBatchState.Planned and' \
     'ProcessBatchState.Succeeded and' \
     'ProcessBatchState.Failed and' \
@@ -105,6 +108,11 @@ for fixture_pattern in \
 done
 
 for dispatch_fixture_pattern in \
+    'process_batch_skips_verified_work_without_fabricating_an_attempt' \
+    'advance_process_batch(session, ProcessBatchEvent.SkipAt, 0)' \
+    'ProcessBatchJobState.Skipped' \
+    'repeated_skip_rejected' \
+    'forged_attempt_rejected' \
     'process_batch_admission_returns_exact_retry_token' \
     'process_batch_admits_a_scheduler_selected_job' \
     'fail_fast_waits_for_every_unreaped_child_before_becoming_failed' \

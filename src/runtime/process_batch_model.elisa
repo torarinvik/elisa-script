@@ -35,6 +35,7 @@ module EsProcessBatch:
             Succeeded
             Failed
             Cancelled
+            Skipped
 
 
         const enum ProcessBatchEvent of u8:
@@ -49,6 +50,9 @@ module EsProcessBatch:
             # Appended so dependency-aware hosts can admit a specific ready
             # item without changing the identity of the original Launch tag.
             LaunchAt
+            # A dependency-aware coordinator may mark a cache-verified job as
+            # complete without claiming that a host process ran for it.
+            SkipAt
 
 
         struct ProcessBatchPolicy:
@@ -119,11 +123,11 @@ module EsProcessBatch:
 
 
         def process_batch_job_state_valid(state: ProcessBatchJobState) -> bool:
-            return state in {ProcessBatchJobState.Pending, ProcessBatchJobState.Running, ProcessBatchJobState.AwaitingReap, ProcessBatchJobState.Retryable, ProcessBatchJobState.Succeeded, ProcessBatchJobState.Failed, ProcessBatchJobState.Cancelled}
+            return state in {ProcessBatchJobState.Pending, ProcessBatchJobState.Running, ProcessBatchJobState.AwaitingReap, ProcessBatchJobState.Retryable, ProcessBatchJobState.Succeeded, ProcessBatchJobState.Failed, ProcessBatchJobState.Cancelled, ProcessBatchJobState.Skipped}
 
 
         def process_batch_event_valid(event: ProcessBatchEvent) -> bool:
-            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.ReapAck, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck, ProcessBatchEvent.LaunchAt}
+            return event in {ProcessBatchEvent.Begin, ProcessBatchEvent.Launch, ProcessBatchEvent.Complete, ProcessBatchEvent.Fail, ProcessBatchEvent.ReapAck, ProcessBatchEvent.Retry, ProcessBatchEvent.Cancel, ProcessBatchEvent.CancelAck, ProcessBatchEvent.LaunchAt, ProcessBatchEvent.SkipAt}
 
 
         def process_batch_failure_mode_valid(mode: ProcessBatchFailureMode) -> bool:
@@ -139,7 +143,7 @@ module EsProcessBatch:
 
 
         def process_batch_job_terminal(state: ProcessBatchJobState) -> bool:
-            return state == ProcessBatchJobState.Succeeded or state == ProcessBatchJobState.Failed or state == ProcessBatchJobState.Cancelled
+            return state == ProcessBatchJobState.Succeeded or state == ProcessBatchJobState.Failed or state == ProcessBatchJobState.Cancelled or state == ProcessBatchJobState.Skipped
 
 
         def process_batch_job_requires_attempt(state: ProcessBatchJobState) -> bool:
@@ -191,16 +195,17 @@ module EsProcessBatch:
                 raise ProcessBatchError.AccountingInvalid if process_batch_job_requires_attempt(job.state) and job.attempts == 0
                 raise ProcessBatchError.AccountingInvalid if session.state == ProcessBatchState.Planned and (job.state != ProcessBatchJobState.Pending or job.attempts != 0)
                 active <- active + 1 if process_batch_job_active(job.state)
-                completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded
+                completed <- completed + 1 if job.state == ProcessBatchJobState.Succeeded or job.state == ProcessBatchJobState.Skipped
                 failed <- failed + 1 if job.state == ProcessBatchJobState.Failed
                 cancelled <- cancelled + 1 if job.state == ProcessBatchJobState.Cancelled
                 queued <- queued + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Retryable
                 raise ProcessBatchError.AccountingInvalid if job.attempts == 0 and job.attempt_token != 0
                 raise ProcessBatchError.AccountingInvalid if job.attempts != 0 and job.attempt_token == 0
                 raise ProcessBatchError.AccountingInvalid if job.attempts != 0 and job.attempt_token != job.attempts.u64()
+                raise ProcessBatchError.AccountingInvalid if job.state == ProcessBatchJobState.Skipped and (job.attempts != 0 or job.attempt_token != 0)
                 raise ProcessBatchError.AccountingInvalid if job.state == ProcessBatchJobState.Running and job.reap_acknowledged
                 raise ProcessBatchError.AccountingInvalid if job.state == ProcessBatchJobState.AwaitingReap and job.reap_acknowledged
-                raise ProcessBatchError.AccountingInvalid if (job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Retryable or job.state == ProcessBatchJobState.Succeeded or job.state == ProcessBatchJobState.Failed or job.state == ProcessBatchJobState.Cancelled) and not job.reap_acknowledged
+                raise ProcessBatchError.AccountingInvalid if (job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Retryable or job.state == ProcessBatchJobState.Succeeded or job.state == ProcessBatchJobState.Failed or job.state == ProcessBatchJobState.Cancelled or job.state == ProcessBatchJobState.Skipped) and not job.reap_acknowledged
                 unfinished <- unfinished + 1 if job.state == ProcessBatchJobState.Pending or job.state == ProcessBatchJobState.Running or job.state == ProcessBatchJobState.AwaitingReap or job.state == ProcessBatchJobState.Retryable
                 for earlier in 0..<index |session, job|:
                     raise ProcessBatchError.DuplicateJobId if session.jobs[earlier].id == job.id
@@ -250,6 +255,14 @@ module EsProcessBatch:
                 session.jobs[pending].attempt_token <- session.jobs[pending].attempts.u64()
                 session.jobs[pending].reap_acknowledged <- false
                 session.active <- session.active + 1
+            elif event == ProcessBatchEvent.SkipAt:
+                raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running
+                raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
+                raise ProcessBatchError.InvalidJobState if session.jobs[job_index].state != ProcessBatchJobState.Pending
+                raise ProcessBatchError.AccountingInvalid if session.jobs[job_index].attempts != 0 or session.jobs[job_index].attempt_token != 0 or not session.jobs[job_index].reap_acknowledged
+                session.jobs[job_index].state <- ProcessBatchJobState.Skipped
+                session.completed <- session.completed + 1
+                session.state <- ProcessBatchState.Failed if process_batch_all_terminal(session) and session.failed != 0 else ProcessBatchState.Succeeded if process_batch_all_terminal(session) else session.state
             elif event == ProcessBatchEvent.Complete:
                 raise ProcessBatchError.InvalidState if session.state != ProcessBatchState.Running and session.state != ProcessBatchState.Draining
                 raise ProcessBatchError.InvalidJobIndex if job_index >= session.jobs.count
