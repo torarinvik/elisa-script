@@ -24,6 +24,10 @@ module EsPkgConfigResult:
             QueryFailed
 
 
+        const module DiagnosticLimits:
+            MESSAGE_BYTES: usize = EsPkgConfig::Limits::CAPTURE_OUTPUT_BYTES * 4 + 4096
+
+
         struct PkgConfigDiscovery:
             requirement: PkgConfigRequirement
             # These owned buffers back the corresponding borrowed text views
@@ -49,6 +53,8 @@ module EsPkgConfigResult:
             InvalidLogAccounting
             OutputLimitExceeded
             InvalidVersionOutput
+            NotFailure
+            InvalidFailureState
 
 
     private:
@@ -57,6 +63,10 @@ module EsPkgConfigResult:
             VERSION: sview = "version"
             COMPILE_FLAGS: sview = "compile_flags"
             LINK_FLAGS: sview = "link_flags"
+
+
+        const module DiagnosticHex:
+            DIGITS: sview = "0123456789abcdef"
 
 
         def pkg_config_result_target_name(requirement: PkgConfigRequirement, stage: sview) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -77,6 +87,93 @@ module EsPkgConfigResult:
             for offset in 0..<sview_len(value) |value, bytes|:
                 bytes.push(sview_at(value, offset))
             return bytes
+
+
+        def pkg_config_result_diagnostic_push(output: mutable darray[u8]&, byte: u8) -> void error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigResultError.OutputLimitExceeded if output.count >= DiagnosticLimits::MESSAGE_BYTES
+            output.push(byte)
+
+
+        def pkg_config_result_diagnostic_append(output: mutable darray[u8]&, value: sview) -> void error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigResultError.OutputLimitExceeded if output.count > DiagnosticLimits::MESSAGE_BYTES
+            raise PkgConfigResultError.OutputLimitExceeded if sview_len(value) > DiagnosticLimits::MESSAGE_BYTES - output.count
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def pkg_config_result_diagnostic_append_escaped(output: mutable darray[u8]&, value: darray[u8]) -> void error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            for byte in value |output|:
+                if byte == 10:
+                    try pkg_config_result_diagnostic_append(output, "\\n")
+                elif byte == 13:
+                    try pkg_config_result_diagnostic_append(output, "\\r")
+                elif byte == 9:
+                    try pkg_config_result_diagnostic_append(output, "\\t")
+                elif byte < 32 or byte == 127 or (byte >= 128 and byte <= 159):
+                    try pkg_config_result_diagnostic_append(output, "\\x")
+                    try pkg_config_result_diagnostic_push(output, sview_at(DiagnosticHex::DIGITS, (byte / 16).usize()))
+                    try pkg_config_result_diagnostic_push(output, sview_at(DiagnosticHex::DIGITS, (byte % 16).usize()))
+                else:
+                    try pkg_config_result_diagnostic_push(output, byte)
+
+
+        def pkg_config_result_diagnostic_stage_name(stage: PkgConfigQueryStage) -> sview error[PkgConfigResultError]:
+            return StageNames::EXISTS if stage == PkgConfigQueryStage.Exists
+            return StageNames::VERSION if stage == PkgConfigQueryStage.Version
+            return StageNames::COMPILE_FLAGS if stage == PkgConfigQueryStage.CompileFlags
+            return StageNames::LINK_FLAGS if stage == PkgConfigQueryStage.LinkFlags
+            raise PkgConfigResultError.InvalidFailureState
+
+
+        def pkg_config_result_diagnostic_failure_name(kind: BuildExecutionFailureKind) -> sview error[PkgConfigResultError]:
+            return "invocation" if kind == BuildExecutionFailureKind.Invocation
+            return "nonzero exit" if kind == BuildExecutionFailureKind.NonzeroExit
+            raise PkgConfigResultError.InvalidFailureState
+
+
+        def pkg_config_result_diagnostic_ascii_alphanumeric(byte: u8) -> bool:
+            return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+
+
+        def pkg_config_result_diagnostic_requirement(requirement: PkgConfigRequirement) -> sview error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigResultError.InvalidFailureState if requirement.name == "" or sview_len(requirement.name) > EsPkgConfig::Limits::PACKAGE_NAME_BYTES or sview_contains_byte(requirement.name, 0)
+            raise PkgConfigResultError.InvalidFailureState if not pkg_config_result_diagnostic_ascii_alphanumeric(sview_at(requirement.name, 0))
+            for index in 1..<sview_len(requirement.name) |requirement|:
+                byte: u8 = sview_at(requirement.name, index)
+                raise PkgConfigResultError.InvalidFailureState if not pkg_config_result_diagnostic_ascii_alphanumeric(byte) and byte != 45 and byte != 46 and byte != 43 and byte != 95
+            return requirement.name if requirement.version_operator == PkgConfigVersionOperator.Any and requirement.version == ""
+            operator: sview = "=" if requirement.version_operator == PkgConfigVersionOperator.Equal else ">=" if requirement.version_operator == PkgConfigVersionOperator.AtLeast else ">" if requirement.version_operator == PkgConfigVersionOperator.GreaterThan else "<=" if requirement.version_operator == PkgConfigVersionOperator.AtMost else "<" if requirement.version_operator == PkgConfigVersionOperator.LessThan else ""
+            raise PkgConfigResultError.InvalidFailureState if operator == "" or not EsPkgConfig::pkg_config_version_is_valid(requirement.version)
+            return requirement.name + " " + operator + " " + requirement.version
+
+
+        def pkg_config_result_failure_diagnostic(discovery: PkgConfigDiscovery) -> darray[u8] error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigResultError.NotFailure if discovery.outcome == PkgConfigDiscoveryOutcome.Resolved
+            raise PkgConfigResultError.InvalidFailureState if discovery.outcome != PkgConfigDiscoveryOutcome.DependencyUnavailable and discovery.outcome != PkgConfigDiscoveryOutcome.QueryFailed
+            raise PkgConfigResultError.InvalidFailureState if discovery.failed_stage == PkgConfigQueryStage.None
+            raise PkgConfigResultError.InvalidFailureState if discovery.failure_kind != BuildExecutionFailureKind.Invocation and discovery.failure_kind != BuildExecutionFailureKind.NonzeroExit
+            raise PkgConfigResultError.InvalidFailureState if discovery.outcome == PkgConfigDiscoveryOutcome.DependencyUnavailable and (discovery.failed_stage != PkgConfigQueryStage.Exists or discovery.failure_kind != BuildExecutionFailureKind.NonzeroExit)
+            raise PkgConfigResultError.InvalidFailureState if discovery.diagnostic.count > EsPkgConfig::Limits::CAPTURE_OUTPUT_BYTES
+            requirement_text: sview = try pkg_config_result_diagnostic_requirement(discovery.requirement)
+            stage_text: sview = try pkg_config_result_diagnostic_stage_name(discovery.failed_stage)
+            failure_text: sview = try pkg_config_result_diagnostic_failure_name(discovery.failure_kind)
+            message: mutable darray[u8] = []
+            if discovery.outcome == PkgConfigDiscoveryOutcome.DependencyUnavailable:
+                try pkg_config_result_diagnostic_append(message, "pkg-config: required dependency was not found: ")
+            else:
+                try pkg_config_result_diagnostic_append(message, "pkg-config: query failed for ")
+            try pkg_config_result_diagnostic_append(message, requirement_text)
+            try pkg_config_result_diagnostic_append(message, " (stage=")
+            try pkg_config_result_diagnostic_append(message, stage_text)
+            try pkg_config_result_diagnostic_append(message, ", failure=")
+            try pkg_config_result_diagnostic_append(message, failure_text)
+            try pkg_config_result_diagnostic_append(message, ", exit=")
+            try pkg_config_result_diagnostic_append(message, f"{discovery.exit_status}")
+            try pkg_config_result_diagnostic_append(message, ")")
+            if discovery.diagnostic.count != 0:
+                try pkg_config_result_diagnostic_append(message, ": ")
+                try pkg_config_result_diagnostic_append_escaped(message, discovery.diagnostic)
+            return message
 
 
         def pkg_config_result_version(value: sview) -> darray[u8] error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
@@ -243,3 +340,9 @@ module EsPkgConfigResult:
             outcome: PkgConfigDiscoveryOutcome = PkgConfigDiscoveryOutcome.QueryFailed
             outcome <- PkgConfigDiscoveryOutcome.DependencyUnavailable if failed_index == 0 and failed_node.failure == BuildExecutionFailureKind.NonzeroExit
             return try pkg_config_result_failure(plan.requirement, plan.exists.working_directory, outcome, stage, failed_node)
+
+
+        # Turn retained query-failure data into a bounded, terminal-safe
+        # message suitable for the build host's dependency diagnostics.
+        def pkg_config_failure_diagnostic(discovery: PkgConfigDiscovery) -> darray[u8] error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            return try pkg_config_result_failure_diagnostic(discovery)
