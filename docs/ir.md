@@ -1787,10 +1787,11 @@ serializers are not inferred, so those modes currently return `UnsupportedMode`.
 `record_field_reconstruct_record` joins
 the edited fields with the edit policy's field separator and then appends either
 the consumed record separator (`preserve_separator`) or the record policy's
-output separator. It checks content and separator together against
-`max_record_bytes` before returning the rebuilt record. Focused adapter fixtures
-and the compiler-free audit are source-level evidence only; runtime validation
-remains withheld under the active compiler-process safety hold.
+output separator. It calculates the exact content length and checks the
+separator against `max_record_bytes` before allocating reconstructed content.
+Focused adapter fixtures and the compiler-free audit are source-level evidence
+only; runtime validation remains withheld under the active compiler-process
+safety hold.
 
 `EsRecordWindow::RecordWindowSession` supplies a bounded rolling numeric
 window for streaming actions. It retains an event history capped by

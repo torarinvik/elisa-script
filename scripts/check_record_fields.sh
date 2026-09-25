@@ -43,9 +43,18 @@ for adapter_boundary in \
     'record_field_edit_adapter_mode_supported' \
     'validate_record_field' \
     'record.separator if record_policy.preserve_separator' \
+    'record_field_edit_reconstruct_length(session)' \
     'RecordFieldEditError.OutputLimitExceeded'; do
     rg -q "$adapter_boundary" "$adapter"
 done
+
+reconstruct_record_body="$(sed -n '/def record_field_reconstruct_record(/,/^        def /p' "$adapter")"
+planned_bytes_line="$(printf '%s\n' "$reconstruct_record_body" | awk '/record_field_edit_reconstruct_length\(session\)/ { print NR; exit }')"
+content_materialize_line="$(printf '%s\n' "$reconstruct_record_body" | awk '/record_field_reconstruct\(session\)/ { print NR; exit }')"
+if [[ -z "$planned_bytes_line" || -z "$content_materialize_line" || "$planned_bytes_line" -ge "$content_materialize_line" ]]; then
+    printf 'record fields audit: record size must be checked before allocating reconstructed content\n' >&2
+    exit 1
+fi
 
 for boundary in \
     'Limits::EDITS' \

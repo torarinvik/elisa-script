@@ -1291,7 +1291,8 @@ rejecting incomplete or forged scanner output with
 `RecordFieldScanError.FieldSetMismatch`. Reconstructed records use the edit
 policy's field separator and preserve the consumed record separator only when
 requested; otherwise they use the stream output separator, with the complete
-record checked against `max_record_bytes`. Regex records can enter through
+record length checked against `max_record_bytes` before reconstruction
+allocation. Regex records can enter through
 `record_field_edit_session_from_regex_spans`, which derives fields only from
 ordered matcher spans validated by the scanner and rejects malformed span
 ordering or field-ceiling overflow before session creation; matcher execution
