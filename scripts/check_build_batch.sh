@@ -101,7 +101,10 @@ for fixture_case in \
     'build_batch_missing_output_fails_before_dispatching_dependents' \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
+    'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
     'session.processes.jobs[0].state == ProcessBatchJobState.Skipped' \
+    'ProcessBatchState.Succeeded' \
+    'session.processes.jobs[0].attempts == 0 and session.scheduler.ready_queue.count == 0' \
     'dependencies: ["cached-object"]' \
     'session.scheduler.ready_queue.count == 1 and session.scheduler.ready_queue[0] == 1' \
     'launches.count == 1 and launches[0].node_index == 1' \
