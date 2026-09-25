@@ -63,8 +63,13 @@ bounded_read_line="$(rg -n -m1 -F 'catch EsBoundedText::read_utf8(input_path, so
 rg -Fq 'def run(repository_root: sview)' "$candidate"
 rg -Fq 'def run_default()' "$candidate"
 rg -Fq 'Script::source_path()' "$candidate"
-rg -Fq 'candidate_path: Path = try path_absolute(Script::source_path())' "$candidate"
-rg -Fq 'if not is_file(candidate_path) or not is_readable(candidate_path)' "$candidate"
+rg -Fq 'CANDIDATE: sview = "scripts/check_record_aggregate.elisascript"' "$candidate"
+rg -Fq 'BOUNDED_READER: sview = "src/runtime/bounded_text_posix.elisa"' "$candidate"
+rg -Fq 'required_paths: darray[sview]' "$candidate"
+rg -Fq 'for relative in required_paths |required_paths, root_absolute, root_text|' "$candidate"
+rg -Fq 'input_path: Path = path_join(root_absolute, relative)' "$candidate"
+rg -Fq 'if not is_file(input_path) or not is_readable(input_path)' "$candidate"
+rg -Fq 'Inputs::CANDIDATE' "$candidate"
 rg -Fq 'script_directory.parent()' "$candidate"
 rg -Fq 'if not is_directory(root_absolute)' "$candidate"
 rg -Fq "Match the shell reference's path/readability preflight" "$candidate"
@@ -89,11 +94,13 @@ rg -Fq 'candidate_script_in_root: Path = path_join(path(test_case.repository_roo
 rg -Fq 'padded_docs.push(195u8)' "$launcher_parity"
 rg -Fq 'padded_docs.push(169u8)' "$launcher_parity"
 rg -Fq 'file_root_case' "$launcher_parity"
+rg -Fq 'candidate_missing_case' "$launcher_parity"
+rg -Fq 'Inputs::CANDIDATE' "$launcher_parity"
 size_admission_line="$(rg -n -m1 -F 'source_sizes.push(source_size)' "$candidate" | cut -d: -f1)"
 source_read_line="$(rg -n -m1 -F 'catch read_source(input_path, source_sizes[source_index])' "$candidate" | cut -d: -f1)"
 [[ -n "$size_admission_line" && -n "$source_read_line" ]]
 (( size_admission_line < source_read_line ))
-candidate_preflight_line="$(rg -n -m1 -F 'if not is_file(candidate_path) or not is_readable(candidate_path)' "$candidate" | cut -d: -f1)"
+candidate_preflight_line="$(rg -n -m1 -F 'for relative in required_paths |required_paths, root_absolute, root_text|' "$candidate" | cut -d: -f1)"
 source_admission_line="$(rg -n -m1 -F 'for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, total_bytes|' "$candidate" | cut -d: -f1)"
 [[ -n "$candidate_preflight_line" && -n "$source_admission_line" ]]
 (( candidate_preflight_line < source_admission_line ))
