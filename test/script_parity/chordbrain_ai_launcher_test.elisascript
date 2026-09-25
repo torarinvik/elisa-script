@@ -3,9 +3,11 @@
 # reauthorization; this source is intentionally not run during the validation
 # suspension.
 include "../../src/testing/differential.elisa"
+include "../../src/runtime/bounded_bytes_posix.elisa"
 include "../../src/runtime/bounded_text_posix.elisa"
 
 using EsDifferential
+using EsBoundedBytes
 using EsBoundedText
 
 
@@ -31,6 +33,7 @@ module EsChordBrainAiLauncherParity:
             MAX_WEIGHTS_BYTES: usize = 2097152
             MAX_VOCAB_BYTES: usize = 1048576
             MAX_GENERATED_BYTES: usize = 16777216
+            WEIGHTS_HEADER_BYTES: usize = 28
             TIMEOUT_STEPS: u64 = 120000
 
 
@@ -245,6 +248,66 @@ module EsChordBrainAiLauncherParity:
             return outcomes_match and preserved and reference_removed and candidate_removed and directory_removed
 
 
+        def nonfinite_weights_preserve_output(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            weights_path: Path = try path_real(path(Commands::WEIGHTS_FILE)) else err:
+                return false
+            vocab_path: Path = try path_real(path(Commands::VOCAB_FILE)) else err:
+                return false
+            weights: mutable darray[u8] = try EsBoundedBytes::read_bounded_bytes(weights_path, Commands::MAX_WEIGHTS_BYTES) else failure:
+                return false
+            return false if weights.count <= Commands::WEIGHTS_HEADER_BYTES + 3
+            weights[Commands::WEIGHTS_HEADER_BYTES] <- 0u8
+            weights[Commands::WEIGHTS_HEADER_BYTES + 1] <- 0u8
+            weights[Commands::WEIGHTS_HEADER_BYTES + 2] <- 128u8
+            weights[Commands::WEIGHTS_HEADER_BYTES + 3] <- 127u8
+
+            temporary: Path = try temp_directory("chordbrain-ai-nonfinite-parity") else err:
+                return false
+            invalid_weights: Path = temporary.joinpath("nonfinite-weights.bin")
+            output_path: Path = temporary.joinpath("preserved-output.elisa")
+            sentinel: sview = "preserve before malformed weights\n"
+            weights_written: usize = try write_bytes(invalid_weights, weights) else 0u64
+            output_written: usize = try write_text(output_path, sentinel) else 0u64
+            if weights_written != weights.count or output_written != len(sentinel):
+                _ = output_file_cleanup(invalid_weights)
+                _ = output_file_cleanup(output_path)
+                _ = try remove_directory(temporary) else false
+                return false
+
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-chordbrain-ai-nonfinite-weights",
+                target: launcher,
+                arguments: [f"{candidate_script}", "--weights", f"{invalid_weights}", "--vocab", f"{vocab_path}", "--output", f"{output_path}"],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    print("ChordBrain Elisascript AI non-finite-weight candidate failed to run")
+            preserved_output: sview = try EsBoundedText::read_utf8(output_path, 128) else err:
+                ""
+            rejected: bool = candidate_run.outcome == DifferentialRunOutcome.Completed and candidate_run.exit_status == 1 and candidate_run.stdout == "" and candidate_run.stderr == "ChordSeqAI generator: unsupported or malformed weights\n"
+            preserved: bool = preserved_output == sentinel
+            weights_removed: bool = output_file_cleanup(invalid_weights)
+            output_removed: bool = output_file_cleanup(output_path)
+            directory_removed: bool = try remove_directory(temporary) else false
+            return rejected and preserved and weights_removed and output_removed and directory_removed
+
+
     public:
         def pinned_compiler_path() -> sview:
             return Commands::PINNED_COMPILER
@@ -255,7 +318,7 @@ module EsChordBrainAiLauncherParity:
 
 
         def process_parity_matches(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
-            return source_pins_match() and generated_files_match(launcher) and missing_weights_preserve_outputs(launcher)
+            return source_pins_match() and generated_files_match(launcher) and missing_weights_preserve_outputs(launcher) and nonfinite_weights_preserve_output(launcher)
 
 
 @test
