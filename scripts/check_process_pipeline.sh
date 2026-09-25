@@ -6,13 +6,24 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/process_model.elisa"
+interpreter="$repo_root/src/ir/interpret.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$interpreter" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'process pipeline audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+# The current facade is deliberately recorded as sequential buffered staging,
+# not as a live POSIX pipeline. Keep that distinction visible in the audit so
+# the pure receipt model cannot be mistaken for host pipe/backpressure parity.
+rg -q 'def evaluate_capture_process_pipeline\(' "$interpreter"
+rg -Fq 'for offset in 0..<executables.array_count.usize()' "$interpreter"
+rg -Fq 'evaluate_capture_process_result(machine, storage, executable, stage_arguments, current_input' "$interpreter"
+rg -Fq 'current_input <- runtime_text(final_capture.process_stdout)' "$interpreter"
+rg -Fq "each stage's captured stdout is staged as the next stage's" "$docs"
+rg -Fq 'The transport remains sequential and buffered' "$ledger"
 
 for declaration in \
     'PROCESS_PIPELINE_MAX_STAGES' \
@@ -95,4 +106,4 @@ done
 rg -Fq '`ProcessPipeline`' "$docs"
 rg -Fq '`ProcessPipeline`' "$ledger"
 
-printf 'process pipeline audit: typed stages, drained receipts, bounded stream bytes, failure policy, and cancellation edges are present\n'
+printf 'process pipeline audit: typed stage model and sequential buffered adapter are present; live POSIX pipes, backpressure, SIGPIPE, and host reaping remain open\n'
