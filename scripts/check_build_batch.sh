@@ -100,6 +100,9 @@ for fixture_case in \
     'build_batch_rejects_duplicate_terminal_receipts' \
     'build_batch_rejects_malformed_process_result_without_consuming_reservation' \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
+    'parallel_build_launches_receive_only_their_reserved_output_budget' \
+    'launches[1].command.capture_output_limit_bytes == 0' \
+    'session.results[1].reserved_output_bytes == 0' \
     'build_batch_missing_output_fails_before_dispatching_dependents' \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
