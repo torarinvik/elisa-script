@@ -102,9 +102,13 @@ for fixture_case in \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
     'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
+    'incremental_build_batch_invalidates_cached_dependents_of_dirty_inputs' \
     'session.processes.jobs[0].state == ProcessBatchJobState.Skipped' \
     'ProcessBatchState.Succeeded' \
     'session.processes.jobs[0].attempts == 0 and session.scheduler.ready_queue.count == 0' \
+    'session.scheduler.cache.count == 0' \
+    'launches.count == 1 and launches[0].node_index == 0' \
+    'session.processes.jobs[1].state == ProcessBatchJobState.Pending' \
     'dependencies: ["cached-object"]' \
     'session.scheduler.ready_queue.count == 1 and session.scheduler.ready_queue[0] == 1' \
     'launches.count == 1 and launches[0].node_index == 1' \
