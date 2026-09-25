@@ -140,6 +140,10 @@ for declaration in \
     'const module Limits:' \
     'TOTAL_INPUTS' \
     'TOTAL_RESOLVED_ENTRIES' \
+    'TOTAL_VALUE_BYTES' \
+    'INDEX_WORK_BYTES' \
+    'INDEX_SLOTS' \
+    'INDEX_PROBES' \
     'const enum BuildUsageTargetKind of u8:' \
     'SharedLibrary' \
     'const enum BuildUsageKind of u8:' \
@@ -163,6 +167,10 @@ for boundary in \
     'InvalidDependencyTargetKind' \
     'InvalidLibraryForm' \
     'DuplicateDependency' \
+    'TotalValueLimitExceeded' \
+    'IndexWorkLimitExceeded' \
+    'IndexProbeLimitExceeded' \
+    'IndexCapacityExceeded' \
     'BuildUsageTargetKind.StaticLibrary' \
     'BuildUsageVisibility.Public' \
     'BuildUsageVisibility.Interface' \
@@ -179,16 +187,25 @@ for boundary in \
     'library_form_matches_requirement' \
     'if requirement.library_form == BuildUsageLibraryForm.Path:' \
     'not sview_contains_byte(requirement.value, 32)' \
-    'left.library_form == right.library_form' \
-    'left.target_artifact == right.target_artifact' \
+    'candidate.library_form.u8().usize() * 2' \
+    'candidate.target_artifact else 0' \
+    'struct BuildUsageIndexSlot:' \
+    'def usage_index_hash(signature: u8, value: sview)' \
+    'usage_index_probe(indices.slots, signature, candidate.value, hash, work_bytes)' \
+    'try usage_index_ensure_capacity(indices, indices.count + 1)' \
     'target_artifact: entry.target_artifact' \
-    'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count' \
+    'Limits::INDEX_PROBES' \
+    'Limits::INDEX_WORK_BYTES - work_bytes' \
+    'current.value == value' \
+    'entries[existing.entry_index].link_only <- false if not candidate.link_only' \
+    'raise BuildUsageError.TotalResolvedLimitExceeded if entries.count >= Limits::TOTAL_RESOLVED_ENTRIES' \
+    'raise BuildUsageError.TotalValueLimitExceeded if value_bytes > Limits::TOTAL_VALUE_BYTES - total_value_bytes' \
     'TOTAL_INPUTS - total_inputs'; do
     rg -Fq "$boundary" "$usage_model"
 done
 rg -Fq 'ordered_dependencies: darray[usize] = sorted(dependency_indices)' "$usage_model"
 rg -Fq 'ordered_target_names: darray[sview] = sorted(target_names)' "$usage_model"
-rg -Fq 'for index in 0..<targets.count |targets, total_inputs, target_names|' "$usage_model"
+rg -Fq 'for index in 0..<targets.count |targets, total_inputs, total_value_bytes, target_names|' "$usage_model"
 rg -Fq 'for dependency_index in 0..<target.dependencies.count |target, dependency_indices|' "$usage_model"
 rg -Fq 'ordered_dependencies[ordered_index - 1] == ordered_dependencies[ordered_index]' "$usage_model"
 rg -Fq 'ordered_target_names[name_index - 1] == ordered_target_names[name_index]' "$usage_model"
@@ -197,6 +214,8 @@ rg -Fq 'build_usage_public_private_interface_and_static_link_only_propagation' "
 rg -Fq 'build_usage_shared_dependency_contributes_its_artifact' "$usage_fixture"
 rg -Fq 'build_usage_distinguishes_target_artifacts_from_linker_names' "$usage_fixture"
 rg -Fq 'build_usage_rejects_mismatched_library_forms' "$usage_fixture"
+rg -Fq 'build_usage_index_preserves_order_and_deduplicates_high_cardinality_entries' "$usage_fixture"
+rg -Fq 'build_usage_index_rejects_collision_chains_over_probe_budget' "$usage_fixture"
 rg -Fq 'option_as_search_name' "$usage_fixture"
 rg -Fq 'whitespace_as_search_name' "$usage_fixture"
 rg -Fq 'bare_path_resolution' "$usage_fixture"

@@ -12,6 +12,11 @@ module EsBuildUsage:
             DEPENDENCIES_PER_TARGET: usize = 4096
             TOTAL_INPUTS: usize = 1048576
             TOTAL_RESOLVED_ENTRIES: usize = 1048576
+            TOTAL_VALUE_BYTES: usize = 268435456
+            INDEX_WORK_BYTES: usize = 1073741824
+            INDEX_SLOTS: usize = 2097152
+            INDEX_MINIMUM: usize = 8
+            INDEX_PROBES: usize = 64
             NAME_BYTES: usize = 4096
             VALUE_BYTES: usize = 65536
 
@@ -113,6 +118,10 @@ module EsBuildUsage:
             DependencyOrderInvalid
             InvalidDependencyTargetKind
             DuplicateDependency
+            TotalValueLimitExceeded
+            IndexWorkLimitExceeded
+            IndexProbeLimitExceeded
+            IndexCapacityExceeded
 
 
     private:
@@ -123,13 +132,23 @@ module EsBuildUsage:
             ExportedLink
 
 
-        struct BuildUsageEntryIndex:
-            positions: mutable dict[sview, usize] = {}
+        struct BuildUsageIndexSlot:
+            signature: u8 = 0
+            value: sview = ""
+            entry_index: usize = 0
+            hash: u64 = 0
+            occupied: bool = false
 
 
         struct BuildUsageEntryIndices:
-            maps: mutable darray[BuildUsageEntryIndex] = []
-            map_lookup: mutable dict[u8, usize] = {}
+            slots: mutable darray[BuildUsageIndexSlot] = []
+            count: usize = 0
+
+
+        struct BuildUsageIndexProbe:
+            slot: usize
+            entry_index: usize = 0
+            found: bool = false
 
 
         def target_kind_valid(kind: BuildUsageTargetKind) -> bool:
@@ -166,26 +185,88 @@ module EsBuildUsage:
             return kind == BuildUsageKind.LinkLibrary or kind == BuildUsageKind.LinkOption
 
 
-        def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, indices: mutable BuildUsageEntryIndices&, collection: BuildUsageCollection, candidate: BuildUsageEntry, resolved_count: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+        const module UsageIndexHash:
+            OFFSET: u64 = 14695981039346656037u64
+            PRIME: u64 = 1099511628211u64
+
+
+        def usage_index_hash(signature: u8, value: sview) -> u64:
+            hash: mutable u64 = UsageIndexHash::OFFSET ^ signature.u64()
+            for byte in value |hash|:
+                hash <- (hash ^ byte.u64()) * UsageIndexHash::PRIME
+            return hash
+
+
+        def usage_index_probe(slots: darray[BuildUsageIndexSlot], signature: u8, value: sview, hash: u64, work_bytes: mutable usize&) -> BuildUsageIndexProbe error[BuildUsageError]:
+            return BuildUsageIndexProbe{slot: 0} if slots.count == 0
+            slot: mutable usize = (hash % slots.count.u64()).usize()
+            probe_count: usize = Limits::INDEX_PROBES if slots.count > Limits::INDEX_PROBES else slots.count
+            for _ in 0..<probe_count |slots, signature, value, hash, work_bytes, slot|:
+                current: BuildUsageIndexSlot = slots[slot]
+                return BuildUsageIndexProbe{slot: slot} if not current.occupied
+                if current.signature == signature and current.hash == hash:
+                    comparison_bytes: usize = sview_len(current.value) if sview_len(current.value) < sview_len(value) else sview_len(value)
+                    raise BuildUsageError.IndexWorkLimitExceeded if comparison_bytes > Limits::INDEX_WORK_BYTES - work_bytes
+                    work_bytes <- work_bytes + comparison_bytes
+                    if current.value == value:
+                        return BuildUsageIndexProbe{slot: slot, entry_index: current.entry_index, found: true}
+                slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise BuildUsageError.IndexProbeLimitExceeded if slots.count > probe_count
+            raise BuildUsageError.IndexCapacityExceeded
+
+
+        def usage_index_ensure_capacity(indices: mutable BuildUsageEntryIndices&, required_entries: usize) void error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+            required_slots: usize = required_entries * 2
+            capacity: mutable usize = Limits::INDEX_MINIMUM if indices.slots.count == 0 else indices.slots.count
+            while capacity < required_slots |capacity, required_slots|:
+                raise BuildUsageError.IndexCapacityExceeded if capacity > Limits::INDEX_SLOTS / 2
+                capacity <- capacity * 2
+            raise BuildUsageError.IndexCapacityExceeded if capacity > Limits::INDEX_SLOTS
+            return if capacity == indices.slots.count
+
+            slots: mutable darray[BuildUsageIndexSlot] = []
+            for _ in 0..<capacity |slots|:
+                slots.push(BuildUsageIndexSlot{})
+            for old in indices.slots |indices, slots|:
+                continue if not old.occupied
+                slot: mutable usize = (old.hash % capacity.u64()).usize()
+                placed: mutable bool = false
+                probe_count: usize = Limits::INDEX_PROBES if capacity > Limits::INDEX_PROBES else capacity
+                for _ in 0..<probe_count |slots, old, slot, placed|:
+                    if not slots[slot].occupied:
+                        slots[slot] <- old
+                        placed <- true
+                        break
+                    slot <- 0 if slot + 1 == capacity else slot + 1
+                raise BuildUsageError.IndexProbeLimitExceeded if not placed and capacity > probe_count
+                raise BuildUsageError.IndexCapacityExceeded if not placed
+            indices.slots <- slots
+
+
+        def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, indices: mutable BuildUsageEntryIndices&, collection: BuildUsageCollection, candidate: BuildUsageEntry, resolved_count: mutable usize&, work_bytes: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
             # The four output collections have independent deduplication
-            # domains. Within each, the finite signature partitions keys by
-            # the fields other than value; the dictionary then hashes and
-            # compares the original borrowed value without constructing a
-            # potentially large composite string key.
-            entry_signature: usize = collection.u8().usize() * 30 + candidate.kind.u8().usize() * 6 + candidate.library_form.u8().usize() * 2 + (1 if candidate.target_artifact else 0)
-            signature: u8 = entry_signature.u8()
-            map_index: usize = indices.map_lookup.get(signature, indices.maps.count)
-            if map_index == indices.maps.count:
-                indices.maps.push(BuildUsageEntryIndex{})
-                indices.map_lookup[signature] <- map_index
-            existing_index: usize = indices.maps[map_index].positions.get(candidate.value, entries.count)
-            if existing_index != entries.count:
+            # domains. The signature captures their finite structural fields;
+            # open addressing bounds collisions while retaining borrowed value
+            # views instead of allocating composite string keys.
+            signature: u8 = (collection.u8().usize() * 30 + candidate.kind.u8().usize() * 6 + candidate.library_form.u8().usize() * 2 + (1 if candidate.target_artifact else 0)).u8()
+            value_bytes: usize = sview_len(candidate.value)
+            raise BuildUsageError.IndexWorkLimitExceeded if value_bytes > Limits::INDEX_WORK_BYTES - work_bytes
+            work_bytes <- work_bytes + value_bytes
+            hash: u64 = usage_index_hash(signature, candidate.value)
+            if indices.slots.count == 0:
+                try usage_index_ensure_capacity(indices, 1)
+            existing: BuildUsageIndexProbe = try usage_index_probe(indices.slots, signature, candidate.value, hash, work_bytes)
+            if existing.found:
                 # A normal link requirement subsumes link-only propagation.
-                entries[existing_index].link_only <- false if not candidate.link_only
+                entries[existing.entry_index].link_only <- false if not candidate.link_only
                 return false
             raise BuildUsageError.TotalResolvedLimitExceeded if entries.count >= Limits::TOTAL_RESOLVED_ENTRIES
             raise BuildUsageError.TotalResolvedLimitExceeded if resolved_count >= Limits::TOTAL_RESOLVED_ENTRIES
-            indices.maps[map_index].positions[candidate.value] <- entries.count
+            try usage_index_ensure_capacity(indices, indices.count + 1)
+            insertion: BuildUsageIndexProbe = try usage_index_probe(indices.slots, signature, candidate.value, hash, work_bytes)
+            raise BuildUsageError.IndexCapacityExceeded if insertion.found
+            indices.slots[insertion.slot] <- BuildUsageIndexSlot{signature: signature, value: candidate.value, entry_index: entries.count, hash: hash, occupied: true}
+            indices.count <- indices.count + 1
             entries.push(candidate)
             resolved_count <- resolved_count + 1
             return true
@@ -195,8 +276,9 @@ module EsBuildUsage:
             raise BuildUsageError.EmptyGraph if targets.count == 0
             raise BuildUsageError.TargetLimitExceeded if targets.count > Limits::TARGETS
             total_inputs: mutable usize = 0
+            total_value_bytes: mutable usize = 0
             target_names: mutable darray[sview] = []
-            for index in 0..<targets.count |targets, total_inputs, target_names|:
+            for index in 0..<targets.count |targets, total_inputs, total_value_bytes, target_names|:
                 target: BuildUsageTarget = targets[index]
                 raise BuildUsageError.InvalidTargetKind if not target_kind_valid(target.kind)
                 raise BuildUsageError.InvalidTargetName if sview_len(target.name) == 0 or sview_len(target.name) > Limits::NAME_BYTES or sview_contains_byte(target.name, 0)
@@ -210,7 +292,11 @@ module EsBuildUsage:
                 for requirement in target.requirements:
                     raise BuildUsageError.InvalidRequirementKind if not usage_kind_valid(requirement.kind)
                     raise BuildUsageError.InvalidVisibility if not visibility_valid(requirement.visibility)
-                    raise BuildUsageError.InvalidRequirementValue if sview_len(requirement.value) == 0 or sview_len(requirement.value) > Limits::VALUE_BYTES or sview_contains_byte(requirement.value, 0)
+                    value_bytes: usize = sview_len(requirement.value)
+                    raise BuildUsageError.InvalidRequirementValue if value_bytes == 0 or value_bytes > Limits::VALUE_BYTES
+                    raise BuildUsageError.TotalValueLimitExceeded if value_bytes > Limits::TOTAL_VALUE_BYTES - total_value_bytes
+                    raise BuildUsageError.InvalidRequirementValue if sview_contains_byte(requirement.value, 0)
+                    total_value_bytes <- total_value_bytes + value_bytes
                     raise BuildUsageError.InvalidLibraryForm if not library_form_valid(requirement.library_form) or not library_form_matches_requirement(requirement)
                     raise BuildUsageError.InterfaceVisibilityRequired if target.kind == BuildUsageTargetKind.InterfaceLibrary and requirement.visibility != BuildUsageVisibility.Interface
                 dependency_indices: mutable darray[usize] = []
@@ -244,57 +330,58 @@ module EsBuildUsage:
             try validate_target_inputs(targets)
             results: mutable darray[BuildUsageTargetResult] = []
             resolved_count: mutable usize = 0
-            for target_index in 0..<targets.count |targets, results, resolved_count|:
+            index_work_bytes: mutable usize = 0
+            for target_index in 0..<targets.count |targets, results, resolved_count, index_work_bytes|:
                 target: BuildUsageTarget = targets[target_index]
                 result: mutable BuildUsageTargetResult = BuildUsageTargetResult{name: target.name}
                 indices: mutable BuildUsageEntryIndices = BuildUsageEntryIndices{}
 
-                for requirement in target.requirements |target, result, indices, resolved_count|:
+                for requirement in target.requirements |target, result, indices, resolved_count, index_work_bytes|:
                     is_compile: bool = usage_kind_is_compile(requirement.kind)
                     is_link: bool = usage_kind_is_link(requirement.kind)
                     local: bool = requirement.visibility != BuildUsageVisibility.Interface and target.kind != BuildUsageTargetKind.InterfaceLibrary
                     exported: bool = requirement.visibility == BuildUsageVisibility.Public or requirement.visibility == BuildUsageVisibility.Interface
                     entry: BuildUsageEntry = BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form}
                     if is_compile and local:
-                        _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count)
+                        _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count, index_work_bytes)
                     if is_link and local:
-                        _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, entry, resolved_count)
+                        _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, entry, resolved_count, index_work_bytes)
                     if is_compile and exported:
-                        _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count, index_work_bytes)
                     if is_link and exported:
-                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count, index_work_bytes)
                     # CMake static libraries retain a PRIVATE link dependency
                     # in their link interface, marked here as link-only.
                     if is_link and requirement.kind == BuildUsageKind.LinkLibrary and requirement.visibility == BuildUsageVisibility.Private and target.kind == BuildUsageTargetKind.StaticLibrary:
-                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form, link_only: true}, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form, link_only: true}, resolved_count, index_work_bytes)
 
-                for dependency in target.dependencies |target, results, result, indices, resolved_count|:
+                for dependency in target.dependencies |target, results, result, indices, resolved_count, index_work_bytes|:
                     dependency_result: BuildUsageTargetResult = results[dependency.target_index]
                     dependency_target: BuildUsageTarget = targets[dependency.target_index]
                     local: bool = dependency.visibility != BuildUsageVisibility.Interface
                     exported: bool = dependency.visibility != BuildUsageVisibility.Private
-                    for entry in dependency_result.exported_compile |indices, result, resolved_count|:
+                    for entry in dependency_result.exported_compile |indices, result, resolved_count, index_work_bytes|:
                         if local:
-                            _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count)
+                            _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count, index_work_bytes)
                         if exported:
-                            _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count)
+                            _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count, index_work_bytes)
                     if dependency_target.kind == BuildUsageTargetKind.StaticLibrary or dependency_target.kind == BuildUsageTargetKind.SharedLibrary:
                         direct_library: BuildUsageEntry = BuildUsageEntry{kind: BuildUsageKind.LinkLibrary, value: dependency_result.name, target_artifact: true}
                         if local:
-                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, direct_library, resolved_count)
+                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, direct_library, resolved_count, index_work_bytes)
                         if exported:
-                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, direct_library, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, direct_library, resolved_count, index_work_bytes)
                         elif target.kind == BuildUsageTargetKind.StaticLibrary:
-                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: direct_library.kind, value: direct_library.value, target_artifact: true, link_only: true}, resolved_count)
-                    for entry in dependency_result.exported_link |indices, result, resolved_count|:
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: direct_library.kind, value: direct_library.value, target_artifact: true, link_only: true}, resolved_count, index_work_bytes)
+                    for entry in dependency_result.exported_link |indices, result, resolved_count, index_work_bytes|:
                         if local:
                             # Link-only is an export modifier, not a limitation
                             # on the current target's own final link closure.
-                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form}, resolved_count)
+                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form}, resolved_count, index_work_bytes)
                         if exported:
-                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count, index_work_bytes)
                         if not exported and target.kind == BuildUsageTargetKind.StaticLibrary:
-                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form, link_only: true}, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form, link_only: true}, resolved_count, index_work_bytes)
 
                 results.push(result)
             return BuildUsageResolution{targets: results, resolved_entries: resolved_count}
