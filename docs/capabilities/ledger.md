@@ -1576,7 +1576,9 @@ attempts. Completion records a host-declared search
 exhaustion, not proof that every possible budget was tried. The focused
 differential fixture, documentation, and check_differential_timeout_shrink.sh
 audit are static evidence; host process control and fresh-world reruns remain
-open.
+open. Validation also requires the inactive pending slot to be canonical-empty,
+rejecting stale candidate evidence hidden behind `has_pending == false`; its
+forged-session fixture and source-audit assertion are unexecuted.
 
 The A01 builtin-surface audit now also has a bounded Elisascript candidate in
 `scripts/check_builtin_surface.elisascript`, plus positive, missing-registry-row,

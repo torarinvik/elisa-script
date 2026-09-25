@@ -42,6 +42,7 @@ for boundary in \
     'MismatchCategory' \
     'MinimalityUnproven' \
     'session.exhausted and session.state != DifferentialTimeoutState.Complete' \
+    'not session.has_pending and not differential_timeout_candidate_is_default(session.pending)' \
     'expected_timeout_steps: mutable u64 = session.initial_timeout_steps' \
     'candidate.timeout_steps >= expected_timeout_steps' \
     'differential_timeout_decision_valid(candidate.decision)' \
@@ -66,6 +67,7 @@ for fixture_pattern in \
     'DifferentialTimeoutError.CandidateDecisionInvalid' \
     'mismatch_kind: DifferentialDifferenceKind.Equal' \
     'DifferentialTimeoutError.PolicyInvalid' \
+    'hidden_pending_rejected' \
     'initial_timeout_steps: 16' \
     'assert session.candidates.count == 1 and session.candidates\[0\].decision == DifferentialTimeoutDecision.Rejected' \
     'DifferentialTimeoutDecision.Accepted' \

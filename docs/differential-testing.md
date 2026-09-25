@@ -1228,9 +1228,11 @@ original mismatch kind survives; `Reject` is allowed only when it does not, and
 both decisions are retained. Cancelling with a candidate awaiting its decision
 retains its fingerprint and observed kind as `Abandoned`; that terminal record
 does not change the active timeout and cannot be confused with acceptance or
-rejection. Validation checks attempt ordinals, each attempt against the active
-accepted budget, decision/outcome consistency, and the final budget against the
-last accepted attempt. Completion still relies on
+rejection. Validation also requires the pending slot to be its canonical empty
+value whenever the state has no pending attempt, so stale candidate data cannot
+hide behind a false `has_pending` flag. It checks attempt ordinals, each attempt
+against the active accepted budget, decision/outcome consistency, and the final
+budget against the last accepted attempt. Completion still relies on
 the host's explicit search-exhausted declaration; this model cannot prove that
 the adapter explored every possible timeout or reran either side itself. No
 event in this contract launches, signals, or kills a process.
