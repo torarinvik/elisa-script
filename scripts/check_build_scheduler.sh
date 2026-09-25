@@ -53,10 +53,28 @@ for integration_check in \
     rg -Fq "$integration_check" "$model"
 done
 rg -Fq 'plan_build_incremental_graph_transition(previous_targets, scheduler.graph, current_recipes, observations)' "$model"
-rg -Fq 'middle: usize = low + (high - low) / 2' "$model"
-rg -Fq 'if node.state == BuildNodeState.Planned:' "$model"
-rg -Fq 'raise BuildSchedulerError.DuplicateQueueEntry if previous == queued' "$model"
-rg -Fq 'raise BuildSchedulerError.QueueOrderInvalid if previous > queued' "$model"
+
+queue_lookup_body="$(sed -n '/^        def scheduler_queue_contains(/,/^        def scheduler_dependency_ready(/p' "$model")"
+readiness_rebuild_body="$(sed -n '/^        def scheduler_refresh_ready(/,/^        def scheduler_rebuild_ready(/p' "$model")"
+queue_validation_body="$(sed -n '/^        def validate_build_scheduler(/,/^    private:/p' "$model")"
+[[ -n "$queue_lookup_body" && -n "$readiness_rebuild_body" && -n "$queue_validation_body" ]]
+printf '%s\n' "$queue_lookup_body" | rg -Fq 'while low < high'
+printf '%s\n' "$queue_lookup_body" | rg -Fq 'middle: usize = low + (high - low) / 2'
+if printf '%s\n' "$queue_lookup_body" | rg -Fq 'for queued in scheduler.ready_queue'; then
+    printf 'build scheduler audit: ready-queue membership regressed to a linear scan\n' >&2
+    exit 1
+fi
+printf '%s\n' "$readiness_rebuild_body" | rg -Fq 'if node.state == BuildNodeState.Planned:'
+if printf '%s\n' "$readiness_rebuild_body" | rg -Fq 'scheduler_queue_contains'; then
+    printf 'build scheduler audit: readiness rebuild scans its growing queue\n' >&2
+    exit 1
+fi
+printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.DuplicateQueueEntry if previous == queued'
+printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.QueueOrderInvalid if previous > queued'
+if printf '%s\n' "$queue_validation_body" | rg -Fq 'for earlier in 0..<index |scheduler, queued|'; then
+    printf 'build scheduler audit: duplicate ready-queue validation regressed to a nested scan\n' >&2
+    exit 1
+fi
 
 for boundary in \
     'scheduler_dependency_ready' \
