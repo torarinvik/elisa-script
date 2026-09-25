@@ -1207,7 +1207,9 @@ actual world reset and repeated host execution remain open.
 ES-SCRIPT-016 | EsDifferentialTraceWindow supplies bounded pre/anchor/post
  lockstep records around a first divergence, strict step ordering, required
  anchor admission with a non-equal anchor pair, position classification, and deterministic sealed-window
- fingerprints. The focused differential fixture, namespace inclusion,
+ fingerprints. Fingerprinting now revalidates the complete sealed record set
+ and returns zero for forged invalid windows; a malformed-sealed fixture and
+ audit assertion are static, unexecuted coverage. The focused differential fixture, namespace inclusion,
  documentation, and check_differential_trace_window.sh audit are static
  evidence; adapter trace collection and execution evidence remain open.
 
@@ -1222,7 +1224,9 @@ ES-SCRIPT-018 | EsDifferentialEffectTrace supplies bounded ordered algebraic-
 effect events with explicit family/operation identity, payload/result
 fingerprints, resumption counts, multishot admission, sealed fingerprints,
 contiguous sequence indices, first-difference comparison, and malformed-record
-rejection. The focused
+rejection. Fingerprinting also revalidates sealed records and returns zero for
+malformed state; a forged-sealed fixture and audit assertion are static,
+unexecuted coverage. The focused
 differential fixture, namespace inclusion, documentation, and
 check_differential_effect_trace.sh audit are static evidence; handler
 instrumentation and execution evidence remain open.

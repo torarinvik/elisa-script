@@ -41,7 +41,8 @@ for boundary in \
     'StepOrderInvalid' \
     'DifferentialTraceWindowPosition.Before' \
     'DifferentialTraceWindowPosition.Divergence' \
-    'DifferentialTraceWindowPosition.After'; do
+    'DifferentialTraceWindowPosition.After' \
+    'catch validate_differential_trace_window(window)'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -52,7 +53,9 @@ for fixture_pattern in \
     'DifferentialTraceWindowEvent.Record' \
     'DifferentialTraceWindowEvent.Seal' \
     'DifferentialTraceWindowError.OutsideWindow' \
-    'equal_anchor_rejected'; do
+    'equal_anchor_rejected' \
+    'invalid_sealed_window' \
+    'differential_trace_window_fingerprint(invalid_sealed_window) == 0'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

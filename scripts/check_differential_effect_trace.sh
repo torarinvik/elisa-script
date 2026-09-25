@@ -42,7 +42,8 @@ for boundary in \
     'DifferentialEffectDifferenceKind.Payload' \
     'DifferentialEffectDifferenceKind.Resumption' \
     'DifferentialEffectDifferenceKind.Invalid' \
-    'sequence_index != index'; do
+    'sequence_index != index' \
+    'catch validate_differential_effect_trace(trace)'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -54,7 +55,9 @@ for fixture_pattern in \
     'DifferentialEffectDifferenceKind.Equal' \
     'DifferentialEffectDifferenceKind.Operation' \
     'DifferentialEffectDifferenceKind.Invalid' \
-    'malformed_sequence'; do
+    'malformed_sequence' \
+    'invalid_sealed_trace' \
+    'differential_effect_trace_fingerprint(invalid_sealed_trace) == 0'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

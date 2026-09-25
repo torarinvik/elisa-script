@@ -1103,7 +1103,9 @@ inside that range, and carry nonzero reference/candidate fingerprints. The
 anchor record is required before sealing and must contain a non-equal pair, and
 each record is classified as `Before`, `Divergence`, or `After`. A sealed
 window has a deterministic compact fingerprint suitable for an artifact
-sidecar, while full trace collection stays with the adapter.
+sidecar, while full trace collection stays with the adapter. Fingerprinting
+revalidates the entire sealed record set and returns the zero sentinel for a
+forged or mutated invalid window rather than producing an artifact identity.
 
 `EsDifferentialEffectTrace::DifferentialEffectTrace` preserves the observable
 part of algebraic-effect behavior for parity cases. Each ordered event carries
@@ -1113,7 +1115,9 @@ fingerprints, resumption count, and contiguous sequence indices are bounded
 before sealing. The comparator reports the first family, operation, payload,
 result, or resumption difference; malformed records produce an explicit
 `Invalid` comparison, including forged sequence indices, and an effect trace is
-never treated as equal merely because the final return value matches.
+never treated as equal merely because the final return value matches. Its
+fingerprint helper likewise reruns full trace validation and returns zero for
+malformed sealed state.
 
 `EsDifferentialReplay::DifferentialReplaySession` is the lifecycle seam between
 validated artifacts and a future host replay adapter. Admission binds the
