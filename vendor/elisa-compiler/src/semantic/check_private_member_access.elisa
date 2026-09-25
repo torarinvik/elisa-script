@@ -53,7 +53,42 @@ extend Semantic:
                     index <- index + 1
                 return false
 
-        def pma_report_type(expression: Ast::Expr, current_module: sview, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+        def pma_is_generic_parameter(table: SymbolTable&, declaration_line: u32, name: sview) -> bool:
+            can Abort.Panic:
+                index: mutable usize = 0
+                while index < table.generic_param_lines.count and index < table.generic_param_names.count |index, table, declaration_line, name|:
+                    true return if table.generic_param_lines[index] == declaration_line and table.generic_param_names[index] == name
+                    index <- index + 1
+                return false
+
+        def pma_has_public_imported_type(name: sview, excluded_owner: sview, annotations: darray[Ast::EnumAnnotation]&, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                for owner in table.imported_modules |owner, name, excluded_owner, annotations, table|:
+                    true return if owner != excluded_owner and pma_module_owns_type(table, owner, name) and not pma_is_private(annotations, owner, name)
+                index: mutable usize = 0
+                while index < table.imported_members.count and index < table.imported_member_owner.count |index, table, name, excluded_owner, annotations|:
+                    owner: sview = table.imported_member_owner[index]
+                    true return if table.imported_members[index] == name and owner != excluded_owner and pma_module_owns_type(table, owner, name) and not pma_is_private(annotations, owner, name)
+                    index <- index + 1
+                return false
+
+        def pma_is_imported_private_type(name: sview, current_module: sview, annotations: darray[Ast::EnumAnnotation]&, table: SymbolTable&) -> bool:
+            can Abort.Panic:
+                for owner in table.imported_modules |owner, name, current_module, annotations, table|:
+                    continue if owner == current_module or not pma_module_owns_type(table, owner, name)
+                    continue if not pma_is_private(annotations, owner, name)
+                    false return if pma_has_public_imported_type(name, owner, annotations, table)
+                    return true
+                index: mutable usize = 0
+                while index < table.imported_members.count and index < table.imported_member_owner.count |index, table, name, current_module, annotations|:
+                    owner: sview = table.imported_member_owner[index]
+                    if table.imported_members[index] == name and owner != current_module and pma_module_owns_type(table, owner, name) and pma_is_private(annotations, owner, name):
+                        false return if pma_has_public_imported_type(name, owner, annotations, table)
+                        return true
+                    index <- index + 1
+                return false
+
+        def pma_report_type(expression: Ast::Expr, current_module: sview, declaration_line: u32, allow_bare_type: bool, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 match expression:
                     Expr.Scope(base, member, scope_line):
@@ -63,15 +98,21 @@ extend Semantic:
                                 table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PrivateMemberAccess, name: member, line: scope_line.line, expected: "type", actual: module_name}) if outside
                             _:
                                 pass
-                        table <- pma_report_type(base, current_module, annotations, table)
+                        table <- pma_report_type(base, current_module, declaration_line, false, annotations, table)
+                    Expr.Ident(name, line):
+                        outside: bool = not pma_is_generic_parameter(table, declaration_line, name) and pma_is_imported_private_type(name, current_module, annotations, table)
+                        table.diagnostics <- table.diagnostics.push(Diagnostic{kind: DiagnosticKind.PrivateMemberAccess, name: name, line: line.line, expected: "type", actual: "imported module"}) if allow_bare_type and outside
                     Expr.Unary(operator, operand, line):
-                        table <- pma_report_type(operand, current_module, annotations, table)
+                        table <- pma_report_type(operand, current_module, declaration_line, allow_bare_type, annotations, table)
                     Expr.Index(object, index, line):
-                        table <- pma_report_type(object, current_module, annotations, table)
-                        table <- pma_report_type(index, current_module, annotations, table)
+                        # An index argument may be a const/value generic argument (`Array[N]`),
+                        # not a type. Preserve qualified-type checks inside it, but do not infer
+                        # that a bare identifier in an argument position denotes a type.
+                        table <- pma_report_type(object, current_module, declaration_line, allow_bare_type, annotations, table)
+                        table <- pma_report_type(index, current_module, declaration_line, false, annotations, table)
                     Expr.Tuple(elements, line):
                         for element in elements |table|:
-                            table <- pma_report_type(element, current_module, annotations, table)
+                            table <- pma_report_type(element, current_module, declaration_line, allow_bare_type, annotations, table)
                     _:
                         pass
 
@@ -105,14 +146,14 @@ extend Semantic:
                     _:
                         pass
 
-        def pma_walk_stmts(statements: darray[Ast::Stmt], current_module: sview, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
+        def pma_walk_stmts(statements: darray[Ast::Stmt], current_module: sview, declaration_line: u32, annotations: darray[Ast::EnumAnnotation]&, table: lmut SymbolTable) -> void:
             can Memory.Allocate, Abort.Panic:
                 for statement in statements |table| -> table:
                     match statement:
                         Stmt.Return(value, line):
                             table <- pma_report(returned, current_module, annotations, table) if value is returned
                         Stmt.VarDecl(name, type_expression, value, line):
-                            table <- pma_report_type(type_expression, current_module, annotations, table)
+                            table <- pma_report_type(type_expression, current_module, declaration_line, true, annotations, table)
                             table <- pma_report(value, current_module, annotations, table)
                         Stmt.Assign(target, operator, value, line):
                             table <- pma_report(value, current_module, annotations, table)
@@ -120,20 +161,20 @@ extend Semantic:
                             table <- pma_report(expression, current_module, annotations, table)
                         Stmt.If(condition, then_body, else_body, line):
                             table <- pma_report(condition, current_module, annotations, table)
-                            table <- pma_walk_stmts(then_body, current_module, annotations, table)
-                            table <- pma_walk_stmts(else_body, current_module, annotations, table)
+                            table <- pma_walk_stmts(then_body, current_module, declaration_line, annotations, table)
+                            table <- pma_walk_stmts(else_body, current_module, declaration_line, annotations, table)
                         Stmt.While(condition, while_body, while_line):
                             table <- pma_report(condition, current_module, annotations, table)
-                            table <- pma_walk_stmts(while_body, current_module, annotations, table)
+                            table <- pma_walk_stmts(while_body, current_module, declaration_line, annotations, table)
                         Stmt.For(bind, variables, iterable, for_body, for_line):
                             table <- pma_report(iterable, current_module, annotations, table)
-                            table <- pma_walk_stmts(for_body, current_module, annotations, table)
+                            table <- pma_walk_stmts(for_body, current_module, declaration_line, annotations, table)
                         Stmt.Block(kind, clause, binding, body, block_line):
-                            table <- pma_walk_stmts(body, current_module, annotations, table)
+                            table <- pma_walk_stmts(body, current_module, declaration_line, annotations, table)
                         Stmt.Match(scrutinee, arms, match_line):
                             table <- pma_report(scrutinee, current_module, annotations, table)
                             for arm in arms |table| -> table:
-                                table <- pma_walk_stmts(arm.body, current_module, annotations, table)
+                                table <- pma_walk_stmts(arm.body, current_module, declaration_line, annotations, table)
                         _:
                             pass
 
@@ -143,16 +184,16 @@ extend Semantic:
                     match declaration:
                         Decl.Func(function_name, parameters, return_type, body, effects, decorators, line):
                             for parameter in parameters |table|:
-                                table <- pma_report_type(parameter.type_expression, current_module, annotations, table)
-                            table <- pma_report_type(return_value, current_module, annotations, table) if return_type is return_value
-                            table <- pma_walk_stmts(body, current_module, annotations, table)
+                                table <- pma_report_type(parameter.type_expression, current_module, line.line, true, annotations, table)
+                            table <- pma_report_type(return_value, current_module, line.line, true, annotations, table) if return_type is return_value
+                            table <- pma_walk_stmts(body, current_module, line.line, annotations, table)
                         Decl.Struct(struct_name, members, affinity, has_named_states, has_derive, invariants, line):
                             for member in members |table|:
-                                table <- pma_report_type(member.type_expression, current_module, annotations, table)
+                                table <- pma_report_type(member.type_expression, current_module, line.line, true, annotations, table)
                         Decl.Const(const_name, type_expression, value, is_mutable, line):
-                            table <- pma_report_type(type_expression, current_module, annotations, table)
+                            table <- pma_report_type(type_expression, current_module, line.line, true, annotations, table)
                         Decl.Alias(alias_name, target, line):
-                            table <- pma_report_type(target, current_module, annotations, table)
+                            table <- pma_report_type(target, current_module, line.line, true, annotations, table)
                         Decl.Module(module_name, module_body, module_line):
                             table <- pma_walk_declarations(module_body, module_name, annotations, table)
                         Decl.Scoped(scoped_body, scoped_line):
