@@ -94,6 +94,9 @@ fi
 for fixture_case in \
     'build_batch_dispatches_ready_nodes_and_refills_capacity' \
     'build_batch_failure_cancels_unstarted_nodes_and_drains_siblings' \
+    'build_batch_timeout_preserves_partial_diagnostics_and_drains_siblings' \
+    'ProcessResultKind.TimedOut' \
+    'session.scheduler.graph.log_bytes == len("partial")' \
     'build_batch_cancels_before_begin_without_host_reap' \
     'build_batch_cancellation_waits_for_host_reap_acknowledgement' \
     'build_batch_rejects_omitted_ready_queue_entries' \
