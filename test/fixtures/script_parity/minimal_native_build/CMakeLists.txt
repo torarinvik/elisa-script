@@ -29,6 +29,7 @@ configure_file(
 
 if(MINIMAL_INCLUDE_OBSOLETE_TARGET)
     set(OBSOLETE_CONFIG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/obsolete-config.h")
+    set(OBSOLETE_CONFIG_SECONDARY_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/obsolete-config-secondary.h")
     add_custom_command(
         OUTPUT "${OBSOLETE_CONFIG_OUTPUT}"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -38,6 +39,15 @@ if(MINIMAL_INCLUDE_OBSOLETE_TARGET)
         VERBATIM
     )
     add_custom_target(obsolete-config-copy DEPENDS "${OBSOLETE_CONFIG_OUTPUT}")
+    add_custom_command(
+        OUTPUT "${OBSOLETE_CONFIG_SECONDARY_OUTPUT}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_BINARY_DIR}/generated_build_config.h"
+            "${OBSOLETE_CONFIG_SECONDARY_OUTPUT}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/generated_build_config.h"
+        VERBATIM
+    )
+    add_custom_target(obsolete-config-copy-secondary DEPENDS "${OBSOLETE_CONFIG_SECONDARY_OUTPUT}")
 endif()
 
 add_library(minimal-answer STATIC src/answer.c)

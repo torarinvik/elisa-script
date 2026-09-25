@@ -122,13 +122,16 @@ refusal before launch, preserving the directory contents and cache. Restoring
 the exact cached object must make the ordinary variant build an up-to-date
 cache hit. These are source-only checks.
 
-The harness then adds a declared `obsolete-config-copy` target whose output is
-copied from the generated header. Switching back to the graph without that
-target must treat its former output as stale. If those bytes were changed by a
-user, the candidate must fail without deleting them or replacing the cache. If
-the bytes are restored to the cached fingerprint, the candidate must remove
-the stale output, report the still-current graph as up to date, and publish a
-manifest without the removed target. This source-level case has not been run.
+The harness then adds two declared targets, `obsolete-config-copy` and
+`obsolete-config-copy-secondary`, each copying the generated header to its own
+output. Switching back to the graph without those targets must treat both
+former outputs as stale. The first output remains unchanged while the second is
+modified by a user; the candidate must refuse cleanup without deleting the
+first output or replacing the cache. This makes partial deletion observable if
+the executor fails to preflight the entire stale set before removing any file.
+After restoring the second output to its cached fingerprint, the candidate
+must remove both stale outputs, report the still-current graph as up to date,
+and publish a manifest without either removed target. This source-level case has not been run.
 It then recreates the removed target, replaces its output with a symlink to a
 sentinel, and requires refusal without following or unlinking the link,
 changing sentinel bytes, or replacing the cache. Restoring the regular cached
