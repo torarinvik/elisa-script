@@ -31,6 +31,7 @@ for declaration in \
     'error RecordSortError:' \
     'def validate_record_sort_session\(' \
     'def compare_record_sort_entries\(' \
+    'def record_sort_order_indices\(' \
     'def advance_record_sort\('; do
     rg -q "$declaration" "$model"
 done
@@ -57,6 +58,7 @@ for boundary in \
     'RecordSortError.KeyOrderInvalid' \
     'RecordSortError.OrdinalInvalid' \
     'RecordSortError.UniqueViolation' \
+    'RecordSortError.OrderNotReady' \
     'not key.present and (key.text != "" or key.integer != 0)' \
     'key.kind == RecordSortKeyKind.Integer and key.text != ""' \
     'key.kind == RecordSortKeyKind.Text and key.integer != 0' \
@@ -81,6 +83,7 @@ for adapter_fixture_pattern in \
     'text_integer_and_absent_record_fields_form_declared_sort_keys' \
     'malformed_numeric_sort_field_is_rejected_before_key_publication' \
     'integer_sort_entries_use_numeric_not_lexical_order' \
+    'sealed_record_sort_returns_stable_numeric_order_indices' \
     'record_sort_entry_from_fields' \
     'RecordNumericError.InvalidCharacter' \
     'integer_key.integer == -12' \
@@ -89,6 +92,7 @@ for adapter_fixture_pattern in \
 done
 
 rg -q 'EsRecordSort::RecordSortSession' "$docs"
+rg -q 'record_sort_order_indices' "$docs"
 rg -q 'EsRecordSortFields::record_sort_key_from_field' "$docs"
 rg -q 'record_sort_entry_from_fields' "$docs"
 rg -q 'ES-SCRIPT-024' "$ledger"

@@ -1679,6 +1679,10 @@ absent fields become explicit missing keys, while malformed integers fail
 before a key is published. `record_sort_entry_from_fields` validates the sort
 policy once, requires one field per declared key in spec order, and builds the
 complete key vector in private scratch storage before returning an entry.
+`record_sort_order_indices` is the bounded in-memory path: after `Seal`, it
+returns a stable bottom-up merge ordering of entry indices, using two index
+vectors rather than copying record payloads. Its comparisons reuse the
+validated key comparator; unsealed sessions are rejected.
 
 `EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation
 boundary for Perl `-pi`, sed-like, and record/regex rewrite adapters. A plan

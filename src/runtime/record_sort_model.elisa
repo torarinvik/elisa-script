@@ -94,6 +94,7 @@ module EsRecordSort:
             OrdinalInvalid
             UniqueViolation
             SealNotReady
+            OrderNotReady
             CancelNotReady
 
 
@@ -185,6 +186,57 @@ module EsRecordSort:
             return true
 
 
+        def record_sort_compare_validated(left: RecordSortEntry, right: RecordSortEntry, policy: RecordSortPolicy) -> RecordSortOrder:
+            for index in 0..<policy.keys.count |left, right, policy|:
+                spec: RecordSortKeySpec = policy.keys[index]
+                left_key: RecordSortKey = left.keys[index]
+                right_key: RecordSortKey = right.keys[index]
+                if not left_key.present or not right_key.present:
+                    return RecordSortOrder.After if not left_key.present and right_key.present and spec.missing_last
+                    return RecordSortOrder.Before if not left_key.present and right_key.present
+                    return RecordSortOrder.Before if left_key.present and not right_key.present and spec.missing_last
+                    return RecordSortOrder.After if left_key.present and not right_key.present
+                order: RecordSortOrder = record_sort_text_order(left_key.text, right_key.text) if spec.kind == RecordSortKeyKind.Text else RecordSortOrder.Before if left_key.integer < right_key.integer else RecordSortOrder.After if left_key.integer > right_key.integer else RecordSortOrder.Equal
+                order <- record_sort_reverse(order) if spec.direction == RecordSortDirection.Descending
+                return order if order != RecordSortOrder.Equal
+            if policy.stable:
+                return RecordSortOrder.Before if left.ordinal < right.ordinal
+                return RecordSortOrder.After if left.ordinal > right.ordinal
+            return RecordSortOrder.Equal
+
+
+        def record_sort_merge_indices(session: RecordSortSession&, order: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: mutable usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: mutable usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        elif record_sort_compare_validated(session.entries[order[left]], session.entries[order[right]], session.policy) != RecordSortOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
+
+
     public:
         def validate_record_sort_session(session: RecordSortSession&) -> bool error[RecordSortError]:
             raise RecordSortError.InvalidState if not record_sort_state_valid(session.state)
@@ -217,22 +269,19 @@ module EsRecordSort:
         def compare_record_sort_entries(left: RecordSortEntry, right: RecordSortEntry, policy: RecordSortPolicy) -> RecordSortOrder error[RecordSortError]:
             raise RecordSortError.PolicyInvalid if not record_sort_policy_valid(policy)
             raise RecordSortError.RecordInvalid if not record_sort_entry_valid(left, policy) or not record_sort_entry_valid(right, policy)
-            for index in 0..<policy.keys.count |left, right, policy|:
-                spec: RecordSortKeySpec = policy.keys[index]
-                left_key: RecordSortKey = left.keys[index]
-                right_key: RecordSortKey = right.keys[index]
-                if not left_key.present or not right_key.present:
-                    return RecordSortOrder.After if not left_key.present and right_key.present and spec.missing_last
-                    return RecordSortOrder.Before if not left_key.present and right_key.present
-                    return RecordSortOrder.Before if left_key.present and not right_key.present and spec.missing_last
-                    return RecordSortOrder.After if left_key.present and not right_key.present
-                order: RecordSortOrder = record_sort_text_order(left_key.text, right_key.text) if spec.kind == RecordSortKeyKind.Text else RecordSortOrder.Before if left_key.integer < right_key.integer else RecordSortOrder.After if left_key.integer > right_key.integer else RecordSortOrder.Equal
-                order <- record_sort_reverse(order) if spec.direction == RecordSortDirection.Descending
-                return order if order != RecordSortOrder.Equal
-            if policy.stable:
-                return RecordSortOrder.Before if left.ordinal < right.ordinal
-                return RecordSortOrder.After if left.ordinal > right.ordinal
-            return RecordSortOrder.Equal
+            return record_sort_compare_validated(left, right, policy)
+
+
+        def record_sort_order_indices(session: RecordSortSession&) -> darray[usize] error[RecordSortError] can[Memory.Allocate, Abort.Panic]:
+            try validate_record_sort_session(session)
+            raise RecordSortError.OrderNotReady if session.state != RecordSortState.Sealed
+            order: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for index in 0..<session.entries.count |order, scratch|:
+                order.push(index)
+                scratch.push(index)
+            record_sort_merge_indices(session, order, scratch)
+            return order
 
 
         def advance_record_sort(session: mutable RecordSortSession&, event: RecordSortEvent, entry: RecordSortEntry = RecordSortEntry{record: Record{source: ""}, keys: [], ordinal: 0}) -> RecordSortState error[RecordSortError]:

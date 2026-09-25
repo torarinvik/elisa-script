@@ -1194,7 +1194,11 @@ missing-key placement (with neutral missing payloads), stable ordinals, and subt
 accounting. Its session admits ordered entries through explicit begin/record/
 seal, failure, and cancellation transitions, and its pure comparator is shared
 by in-memory and disk-merge adapters. The focused IR fixture, namespace
-inclusion, documentation, and check_record_sort.sh audit are static evidence;
+inclusion, documentation, and check_record_sort.sh audit are static evidence.
+`record_sort_order_indices` now provides a sealed-session in-memory stable
+bottom-up merge order over indices, keeping record payloads out of scratch
+copies; source fixtures cover numeric order, stable ties, and the unsealed
+gate, but remain unexecuted.
 `EsRecordSortFields` now validates source field spans and materializes text or
 checked signed-integer keys, preserving missing fields explicitly and rejecting
 malformed numeric keys before entry publication. Its entry builder enforces
