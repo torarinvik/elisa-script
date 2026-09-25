@@ -1,0 +1,111 @@
+# Descriptor-relative observations for the generic atomic-file state machine.
+# This module captures current regular-file identities; publication remains a
+# separate operation so callers can compare the receipt under their lock.
+
+module EsFileAtomicPosix:
+    using EsFileAtomic
+    using EsHash
+    using EsFileReadAtPosix
+    using EsIr
+    using EsRuntime
+
+    public:
+        struct AtomicFilePosixObservation:
+            parent_device: u64
+            parent_inode: u64
+            parent_descriptor_token: u64
+            destination: AtomicFileIdentity
+
+
+        error AtomicFilePosixError:
+            InvalidDirectoryDescriptor
+            InvalidLeafName
+            DestinationStatFailed(path: cstr)
+            DestinationNotRegular(path: cstr)
+            DestinationTooLarge(path: cstr)
+            DestinationReadFailed(path: cstr)
+            DigestUnavailable(path: cstr)
+
+
+    private:
+        const module AtomicFilePosixErrno:
+            ENOENT: i32 = 2
+            EINTR: i32 = 4
+
+
+        def atomic_file_posix_stat_descriptor(directory_fd: int, info: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(directory_fd, info) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == AtomicFilePosixErrno::EINTR and retries < EsFileReadAtPosix::Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def atomic_file_posix_stat_name(parent_fd: int, leaf_name: cstr, info: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstatat(parent_fd, leaf_name, info, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == AtomicFilePosixErrno::EINTR and retries < EsFileReadAtPosix::Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def atomic_file_posix_parent_matches(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return (right.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY and left.device == right.device and left.inode == right.inode
+
+
+        def atomic_file_posix_snapshot_matches(left: ElisascriptStat, right: ElisascriptStat) -> bool:
+            return (right.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and left.device == right.device and left.inode == right.inode and left.size == right.size and left.modify_time.seconds == right.modify_time.seconds and left.modify_time.nanoseconds == right.modify_time.nanoseconds and left.change_time.seconds == right.change_time.seconds and left.change_time.nanoseconds == right.change_time.nanoseconds
+
+
+        def atomic_file_posix_digest(bytes: darray[u8]&) -> HashDigest can[Memory.Allocate, Abort.Panic]:
+            raw_digest: darray[u8] = canonical_bytes_sha256(bytes)
+            return HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 4, word0: canonical_digest_word(raw_digest, 0), word1: canonical_digest_word(raw_digest, 1), word2: canonical_digest_word(raw_digest, 2), word3: canonical_digest_word(raw_digest, 3)} if raw_digest.count == 32
+            return HashDigest{algorithm: HashAlgorithm.Sha256, word_count: 0}
+
+
+    public:
+        # Capture either an observed absence or the identity and SHA-256 of a
+        # stable regular-file snapshot. The byte limit applies before owned
+        # allocation. The caller must recapture under its mutation lock before
+        # allowing a later rename or restore.
+        def observe_atomic_file_at(a: mutable Arena&, parent_fd: int, leaf_name: cstr, byte_limit: usize = EsFileReadAtPosix::Limits::MAX_BYTES) -> AtomicFilePosixObservation error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if parent_fd < 0
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
+            raise AtomicFilePosixError.DestinationTooLarge(leaf_name) if byte_limit == 0 or byte_limit > EsFileReadAtPosix::Limits::MAX_BYTES
+
+            parent_before: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_before) or (parent_before.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY or parent_before.device == 0 or parent_before.inode == 0
+
+            before: mutable ElisascriptStat = ElisascriptStat{}
+            destination: mutable AtomicFileIdentity = AtomicFileIdentity{observed: true}
+            if not atomic_file_posix_stat_name(parent_fd, leaf_name, before):
+                errno: mutable i32& = elisascript_posix_errno()
+                raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if errno[0] != AtomicFilePosixErrno::ENOENT
+            else:
+                raise AtomicFilePosixError.DestinationNotRegular(leaf_name) if (before.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
+                raise AtomicFilePosixError.DestinationTooLarge(leaf_name) if before.size < 0 or before.size.usize().i64() != before.size or before.size.usize() > byte_limit
+
+                bytes: mutable darray[u8] = []
+                catch read_regular_file_at(a, parent_fd, leaf_name, byte_limit):
+                    ok snapshot:
+                        bytes <- snapshot
+                    error failure:
+                        raise AtomicFilePosixError.DestinationReadFailed(leaf_name)
+
+                after: mutable ElisascriptStat = ElisascriptStat{}
+                raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if not atomic_file_posix_stat_name(parent_fd, leaf_name, after)
+                raise AtomicFilePosixError.DestinationReadFailed(leaf_name) if not atomic_file_posix_snapshot_matches(before, after) or bytes.count != before.size.usize()
+                digest: HashDigest = atomic_file_posix_digest(bytes)
+                raise AtomicFilePosixError.DigestUnavailable(leaf_name) if digest.word_count != 4
+                raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if before.device == 0 or before.inode == 0
+                destination <- AtomicFileIdentity{observed: true, present: true, size: bytes.count, volume_id: before.device.u64(), object_id: before.inode, digest: digest}
+
+            parent_after: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after)
+            return AtomicFilePosixObservation{parent_device: parent_before.device.u64(), parent_inode: parent_before.inode, parent_descriptor_token: parent_fd.u64() + 1u64, destination: destination}

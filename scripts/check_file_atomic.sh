@@ -6,19 +6,31 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/file_atomic_model.elisa"
+adapter="$repo_root/src/runtime/file_atomic_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 runtime_fixture="$repo_root/test/runtime/file_atomic_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$adapter" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'file atomic audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 rg -q '^module EsFileAtomic:' "$model"
 rg -q 'using EsHash' "$model"
 rg -q 'include "\.\./runtime/file_atomic_model\.elisa"' "$ir"
+rg -q '^module EsFileAtomicPosix:' "$adapter"
+rg -q 'include "\.\./runtime/file_atomic_posix\.elisa"' "$ir"
+rg -q 'def observe_atomic_file_at\(' "$adapter"
+rg -q 'read_regular_file_at\(a, parent_fd, leaf_name, byte_limit\)' "$adapter"
+rg -q 'canonical_bytes_sha256\(bytes\)' "$adapter"
+rg -q 'parent_descriptor_token: u64' "$adapter"
+rg -q 'atomic_file_posix_parent_matches\(parent_before, parent_after\)' "$adapter"
+rg -q 'ENOENT: i32 = 2' "$adapter"
+rg -q 'DarwinAtFlag::SYMLINK_NOFOLLOW' "$adapter"
+rg -q 'before.size.usize\(\) > byte_limit' "$adapter"
+rg -q 'destination <- AtomicFileIdentity' "$adapter"
 for declaration in \
     'const module Limits:' \
     'const enum AtomicFileState of u8' \
@@ -112,8 +124,9 @@ rg -Fq 'atomic_file_paths_must_name_file_entries' "$runtime_fixture"
 rg -Fq 'atomic_file_stage_and_backup_must_be_siblings' "$runtime_fixture"
 rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixture"
 rg -Fq 'atomic_file_restore_requires_a_known_current_destination' "$runtime_fixture"
+rg -Fq 'atomic_file_posix_observation_rejects_invalid_parent' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 rg -Fq 'premature_ack_rejected' "$runtime_fixture"
 
-printf 'file atomic source audit: contract transitions and fixtures are present; filesystem adapter and runtime parity are not covered\n'
+printf 'file atomic source audit: transition model and destination observation seam are present; publication adapter and runtime parity remain open\n'

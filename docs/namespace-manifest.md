@@ -5,6 +5,7 @@ Elisascript-owned implementation is divided into qualified namespaces:
 | Namespace | Responsibility | Public surface | Private surface |
 |---|---|---|---|
 | `EsArtifactCache` | Bounded ESIA/ESBC admission and publication-state contracts | Cache classification, migration admission, and staged/committed/restart transitions | Envelope-size policy and representation details |
+| `EsFileAtomicPosix` | Descriptor-relative observations for atomic file sessions | Parent descriptor and destination identity snapshots | Metadata stability checks and digest construction |
 | `EsFileReadAtPosix` | Bounded descriptor-relative regular-file reads | `read_regular_file_at` with no-follow name/descriptor identity checks | EINTR retry state and read cursor |
 | `EsIr` | Source, typed IR, runtime model, interpreter, verification, serialization, and runner extensions | Contracts, runtime values, loader/runner entry points, verified operations | Cursors, dispatch state, pool predicates, host adapters, representation details |
 | `EsIrArtifact` | Artifact metadata helpers | Artifact construction and fingerprint correlation | Metadata validation internals |

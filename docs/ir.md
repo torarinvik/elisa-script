@@ -1877,6 +1877,13 @@ handling remain host-adapter responsibilities.
 generated files, cache entries, and build outputs. A plan binds a nonzero
 owner token and parent identity to distinct destination, sibling staging, and
 optional backup paths, and requires an observed expected destination identity.
+`EsFileAtomicPosix::observe_atomic_file_at` now supplies a bounded
+descriptor-relative destination snapshot: it returns device/inode metadata for
+the parent descriptor and either an observed absence or a regular-file
+identity backed by SHA-256 of a no-follow, stable read. The caller must retain
+and revalidate that parent capability and destination receipt under its
+mutation policy; this observation seam does not yet write or publish staging
+files.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a
