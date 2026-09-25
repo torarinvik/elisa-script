@@ -270,6 +270,8 @@ for boundary in \
     'BuildUsageGraphError.PlanOwnershipInvalid' \
     'raise BuildContractError.FingerprintMissing if action.fingerprint == 0' \
     'raise BuildContractError.FingerprintMissing if node.fingerprint == 0' \
+    'def build_usage_graph_dependencies_preflight(' \
+    'try build_usage_graph_dependencies_preflight(actions)' \
     'build_usage_graph_account_command_text' \
     'measured_metadata_bytes != plan.metadata_bytes' \
     'validate_build_usage_process_command(action.command)' \
