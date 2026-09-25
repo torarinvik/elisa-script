@@ -630,11 +630,17 @@ Cache recipe signing rejects commands with inherited host environments unless a
 future API supplies and hashes an explicit environment snapshot. Cacheable build
 actions must currently use a fully specified `Replace` or `Clear` environment;
 otherwise an ambient variable change could leave the signature unchanged while
-changing the compiler or generator output. The current build executor still only
-dispatches `Inherit` commands and rejects `Replace`/`Clear`, so no command mode
-can yet be both signed and dispatched for an incremental rebuild. End-to-end
-environment-mode support at the process boundary is required before E07 cache
-execution is usable or can be accepted.
+changing the compiler or generator output. The serial build executor now
+preserves these modes by dispatching `Replace`/`Clear` commands through the
+absolute POSIX `/usr/bin/env -i` shim; the requested tool must itself be an
+absolute path. Incremental callers must associate the canonical relative
+`usr/bin/env` helper path with each such command. Its descriptor-relative file
+digest is mixed into that node's observed toolchain identity both before
+dispatch and before cache publication, so changing the shim invalidates reuse.
+`Inherit` continues to use the captured-process overlay path and cannot be
+signed for cache reuse without a captured ambient snapshot. Source fixtures
+cover mode dispatch and shim identity admission, but E07 runtime behavior and
+cache acceptance remain unverified under the validation hold.
 `resolve_incremental_build_dependencies` validates that same manifest and
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain

@@ -1,9 +1,9 @@
 # Serial host executor for the portable ProcessCommand subset used by builds.
 #
 # The graph remains data and all invocations pass through Process.Run without
-# shell parsing. This first adapter intentionally rejects command modes that
-# the current capture builtins cannot preserve exactly; it never silently
-# changes environment or stdio semantics.
+# shell parsing. Exact child environments use the POSIX `env -i` shim; cached
+# callers bind that shim's file identity into the recipe toolchain identity.
+# Unsupported stdio and failure policies are rejected rather than rewritten.
 
 module EsBuildExecutor:
     using EsBuild
@@ -64,6 +64,10 @@ module EsBuildExecutor:
 
 
     private:
+        const module ProcessAdapter:
+            ENV_EXECUTABLE: sview = "/usr/bin/env"
+
+
         def build_executor_command_supported_impl(command: ProcessCommand) -> bool:
             valid: mutable bool = false
             catch validate_process_command(command):
@@ -72,7 +76,12 @@ module EsBuildExecutor:
                 error failure:
                     return false
             return false if not valid
-            return false if command.environment_mode != ProcessEnvironmentMode.Inherit
+            if command.environment_mode != ProcessEnvironmentMode.Inherit:
+                # The exact-environment shim must run the requested tool by
+                # absolute path; otherwise clearing/replacing PATH would make
+                # command lookup depend on the shim's own startup environment.
+                return false if not path_is_absolute(path(command.executable))
+            return false if command.environment_mode != ProcessEnvironmentMode.Inherit and command.environment_mode != ProcessEnvironmentMode.Replace and command.environment_mode != ProcessEnvironmentMode.Clear
             # CaptureProcessResult sends an empty, closed input stream and
             # captures both output streams. This build subset promises EOF to
             # stdin consumers, not /dev/null descriptor identity; tools that
@@ -87,15 +96,29 @@ module EsBuildExecutor:
 
 
         def execute_build_command(command: ProcessCommand, output_limit: usize) -> ProcessCapture error[ProcessError] can[Memory.Allocate, Abort.Panic, Process.Run]:
-            executable_value: Executable = try executable(command.executable)
+            executable_text: sview = command.executable
+            arguments: mutable darray[sview] = command.arguments
+            if command.environment_mode == ProcessEnvironmentMode.Clear or command.environment_mode == ProcessEnvironmentMode.Replace:
+                executable_text <- ProcessAdapter::ENV_EXECUTABLE
+                arguments <- ["-i"]
+                if command.environment_mode == ProcessEnvironmentMode.Replace:
+                    offset: mutable usize = 0
+                    while offset < command.environment.count |command, arguments, offset|:
+                        arguments.push(command.environment[offset] + "=" + command.environment[offset + 1])
+                        offset <- offset + 2
+                arguments.push(command.executable)
+                for argument in command.arguments |arguments|:
+                    arguments.push(argument)
+            executable_value: Executable = try executable(executable_text)
             environment: mutable dict[sview, sview] = {}
-            offset: mutable usize = 0
-            while offset < command.environment.count |command, environment, offset|:
-                environment[command.environment[offset]] <- command.environment[offset + 1]
-                offset <- offset + 2
+            if command.environment_mode == ProcessEnvironmentMode.Inherit:
+                offset: mutable usize = 0
+                while offset < command.environment.count |command, environment, offset|:
+                    environment[command.environment[offset]] <- command.environment[offset + 1]
+                    offset <- offset + 2
             if command.working_directory == "":
-                return try capture_process_result_with_environment(executable_value, command.arguments, "", environment, command.timeout_micros.i64(), output_limit.i64())
-            return try capture_process_result_in_directory_with_environment(executable_value, command.arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
+                return try capture_process_result_with_environment(executable_value, arguments, "", environment, command.timeout_micros.i64(), output_limit.i64())
+            return try capture_process_result_in_directory_with_environment(executable_value, arguments, "", path(command.working_directory), environment, command.timeout_micros.i64(), output_limit.i64())
 
 
         const module OutputHash:

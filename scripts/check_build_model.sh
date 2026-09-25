@@ -242,6 +242,11 @@ done
 
 for boundary in \
     'ProcessEnvironmentMode.Inherit' \
+    'ProcessEnvironmentMode.Replace' \
+    'ProcessEnvironmentMode.Clear' \
+    'ENV_EXECUTABLE: sview = "/usr/bin/env"' \
+    'arguments <- ["-i"]' \
+    'absolute path' \
     'ProcessStdioMode.Null' \
     'ProcessStdioMode.Capture' \
     'command.timeout_micros == 0' \
@@ -258,14 +263,29 @@ for boundary in \
 done
 rg -Fq 'while offset < command.environment.count |command, environment, offset|' "$executor_model"
 rg -Fq 'offset <- offset + 2' "$executor_model"
+rg -Fq 'ENV_EXECUTABLE: sview = "/usr/bin/env"' "$executor_model"
+rg -Fq 'arguments <- ["-i"]' "$executor_model"
+rg -Fq 'for argument in command.arguments |arguments|' "$executor_model"
 rg -Fq 'build_executor_first_present_output(output_set)' "$executor_model"
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
+rg -Fq 'build_executor_dispatches_exact_child_environment_modes' "$executor_fixture"
+rg -Fq 'replacement-only' "$executor_fixture"
+rg -Fq 'replaced_path_result' "$executor_fixture"
+rg -Fq 'process_stdout(cleared_result) == ""' "$executor_fixture"
 rg -Fq 'using EsBuild' "$executor_fixture"
 rg -Fq 'build_executor_rejects_late_unsupported_command_before_any_launch' "$executor_fixture"
 rg -Fq 'executable: "/usr/bin/touch"' "$executor_fixture"
 rg -Fq 'environment_mode: ProcessEnvironmentMode.Replace' "$executor_fixture"
 rg -Fq 'environment: ["LC_ALL", "C", "TZ", "UTC"]' "$executor_fixture"
+rg -Fq 'exact_environment_shims_require_explicit_toolchain_paths' "$incremental_executor_fixture"
+rg -Fq 'helper_paths: darray[sview] = []' "$model"
+rg -Fq 'resolution.helper_paths[0] != "usr/bin/env"' "$incremental_posix_executor"
+rg -Fq 'MissingEnvironmentShim' "$incremental_posix"
+rg -Fq 'observe_build_recipe_toolchain_set_at' "$incremental_posix_executor"
+rg -Fq 'observe_build_recipe_toolchain_identity_at(scratch, root_fd, helper_path)' "$incremental_posix_executor"
+rg -Fq 'helper_paths: ["usr/bin/env"]' "$minimal_native_candidate"
+rg -Fq 'environment_mode: ProcessEnvironmentMode.Replace' "$minimal_native_candidate"
 rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
 rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
 rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
