@@ -77,6 +77,9 @@ for adapter_fixture_pattern in \
     'RecordFieldEditError.OutputLimitExceeded' \
     'record_edit_adapter_rejects_incomplete_scanner_output_and_unwired_modes' \
     'record_edit_adapter_reconstructs_regex_scanned_fields' \
+    'record_edit_adapter_rejects_invalid_regex_spans_and_field_overflow' \
+    'RecordFieldScanError.InvalidSeparatorSpan' \
+    'RecordFieldScanError.FieldLimitExceeded' \
     'RecordFieldScanError.FieldSetMismatch' \
     'RecordFieldMode.FixedWidth'; do
     rg -Fq "$adapter_fixture_pattern" "$adapter_fixture"
