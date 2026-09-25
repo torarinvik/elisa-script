@@ -909,12 +909,15 @@ State validation rejects contradictory failure, cancellation, or success
 shapes before an event can advance them.
 The focused IR fixture, namespace inclusion, documentation, and
 check_build_scheduler.sh audit are static evidence; process launch, cache
-persistence, and host cancellation adapters remain open. In addition, current
-recipe signing rejects `Inherit` because ambient environment is not signed,
-while the serial executor supports only `Inherit` and rejects `Replace`/`Clear`.
-Thus no command mode is both cacheable and dispatchable for a dirty incremental
-node; end-to-end exact environment semantics are a prerequisite for E07
-acceptance, not a completed capability. The sorted ready queue now uses
+persistence, and host cancellation adapters remain open. Current recipe
+signing rejects `Inherit` because ambient environment is not signed.
+`Replace` and `Clear` are both cache-signable and dispatchable: the serial
+executor routes them through the absolute `/usr/bin/env -i` shim, and the shim
+digest is included in the node's toolchain identity. Thus a dirty incremental
+node can use either exact environment mode; the remaining environment gap is
+cache-safe execution of `Inherit` without a captured ambient-environment
+snapshot. The implementation has source fixtures for these mode boundaries,
+but runtime qualification remains pending. The sorted ready queue now uses
 binary membership lookup, one-pass duplicate/order validation, and a single
 graph-order readiness rebuild, avoiding quadratic work across wide target
 frontiers; focused source fixtures and the compiler-free scheduler audit cover
