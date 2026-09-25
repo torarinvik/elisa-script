@@ -125,6 +125,10 @@ for fixture_case in \
     'build_batch_rejects_command_mutation_after_dispatch' \
     'build_batch_rejects_dependency_plan_mutation_before_dispatch' \
     'mutated_node.dependencies <- []' \
+    'build_batch_rejects_recipe_signature_mutation_before_dispatch' \
+    'mutated_signature.word2 <- 99' \
+    'build_batch_rejects_declared_output_mutation_before_dispatch' \
+    'session.output_sets[0].paths <- ["/tmp/elisascript-forged.o"]' \
     'mutation_rejected <- failure == BuildBatchError.JobMappingInvalid' \
     'build_batch_rejects_declared_output_mutation_after_dispatch' \
     'session.output_sets[0].paths <- ["/tmp/elisascript-forged.o"]' \
