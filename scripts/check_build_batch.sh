@@ -107,9 +107,11 @@ for fixture_case in \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
     'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
-    'cancelled_session.scheduler.cache.count == 1 and cancelled_session.scheduler.cache_hits == 0' \
+    'cancelled_session.scheduler.cache.count == 2 and cancelled_session.scheduler.cache_hits == 0' \
     'cancelled_session.processes.jobs[0].state == ProcessBatchJobState.Cancelled' \
+    'cancelled_session.processes.jobs[1].state == ProcessBatchJobState.Cancelled' \
     'cancelled_session.scheduler.cache_hits == 0 and not cancelled_session.results[0].cache_hit' \
+    'session.results[0].cache_hit and session.results[1].cache_hit' \
     'incremental_build_batch_invalidates_cached_dependents_of_dirty_inputs' \
     'forged_cache_count_rejected' \
     'forged_unused_cache_rejected' \
