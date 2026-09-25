@@ -110,6 +110,12 @@ requires the same recipe to become an up-to-date cache hit. The fixture
 restores the standard compiler recipe and removes only its private seed file.
 This case is source-only and unverified.
 
+The harness also makes the generated-header command write a partial header and
+exit nonzero. It requires cleanup of that started output, preservation of the
+unstarted main object, executable, and prior cache, and successful recovery on
+a variant retry followed by a cache hit. This generator-failure case is
+source-only and unverified.
+
 Finally, the harness asks the candidate to switch to the default generated
 header and uses AWK in place of the main compiler. The header generator
 succeeds, then AWK writes a partial object and exits unsuccessfully. Cleanup
