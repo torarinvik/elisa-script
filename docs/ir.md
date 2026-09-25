@@ -621,6 +621,11 @@ another target must name that producer directly; undeclared output edges are
 rejected before scheduling so a consumer cannot run against a stale generated
 file. The module performs no filesystem or process effects, so it is
 independently testable and can drive clean/no-op/incremental build comparisons.
+Cache recipe signing rejects commands with inherited host environments unless a
+future API supplies and hashes an explicit environment snapshot. Cacheable build
+actions must currently use a fully specified `Replace` or `Clear` environment;
+otherwise an ambient variable change could leave the signature unchanged while
+changing the compiler or generator output.
 `resolve_incremental_build_dependencies` validates that same manifest and
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
