@@ -1442,9 +1442,11 @@ views; row/key/value byte ceilings are checked before mutation; counter bounds
 are checked before reconciliation to prevent overflow; inner, left,
 right, and full outer policies are explicit. Duplicate-key Cartesian pair
 counts use a bounded stable merge sort of row indexes followed by linear key
-group counting, avoiding a quadratic scan for mostly-unmatched inputs; bytewise
-comparison work is bounded by admitted key bytes and pair arithmetic is checked
-against the configured ceiling before multiplication.
+group counting, avoiding a quadratic scan for mostly-unmatched inputs. Each
+Add checks only constant-size session ledgers plus the new row; complete
+row/ordinal/byte validation remains at Seal and pair-count query. Common-prefix
+byte comparisons can repeat and remain workload-sensitive. Pair arithmetic is
+checked against the configured ceiling before multiplication.
 The sealed query and all invalid lifecycle, key, ordinal, accounting, and
 pair-limit paths use `error[RecordJoinError]`, including distinct `EmbeddedNul`
 rejection for keys and values. Focused IR/runtime fixtures, namespace

@@ -1841,8 +1841,11 @@ key Cartesian matches and adds one pair for each unmatched outer row where
 requested, all under a pair ceiling. It sorts a bounded scratch array of row
 indexes by key with a stable merge sort, then counts each key group once, so
 counting performs O(n log n) key comparisons rather than comparing every row
-pair, with bytewise key-comparison cost bounded by the admitted key bytes; the
-row-index scratch is bounded by the session's row limit. Empty keys, NUL
+pair. Common-prefix byte work can repeat across comparisons and remains
+workload-sensitive. Each `Add` performs constant-size header admission and
+checks only the new row; the complete row/ordinal/byte ledger is revalidated at
+`Seal` and before pair counting, avoiding a quadratic ingest scan. The row-index
+scratch is bounded by the session's row limit. Empty keys, NUL
 keys/values, broken ordinals, overflow-safe accounting drift checks, and
 post-terminal mutation return `error[RecordJoinError]`; materializing the
 paired rows and external sort/merge remain host responsibilities.

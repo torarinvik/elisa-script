@@ -27,6 +27,7 @@ for declaration in \
     'struct RecordJoinRow:' \
     'struct RecordJoinSession:' \
     'error RecordJoinError:' \
+    'def validate_record_join_header\(' \
     'def validate_record_join\(' \
     'def record_join_sort_row_indices\(' \
     'def record_join_pair_count\(' \
@@ -52,9 +53,12 @@ for boundary in \
     'RecordJoinError.AccountingInvalid' \
     'session.state == RecordJoinState.Planned and' \
     'RecordJoinEvent.Add' \
+    'try validate_record_join_header(session)' \
     'RecordJoinState.Sealed'; do
     rg -q "$boundary" "$model"
 done
+
+rg -Fq 'if event == RecordJoinEvent.Add:' "$model"
 
 for fixture_pattern in \
     'record_join_pair_count_groups_unsorted_duplicate_keys' \
