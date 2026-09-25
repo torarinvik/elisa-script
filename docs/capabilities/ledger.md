@@ -18,6 +18,14 @@ that lacks an execution revision remains unqualified for release.
 
 ## Current entries
 
+Validation-wrapper descendant cleanup now snapshots PID, parent PID, process
+group, and start time. Before per-PID TERM/KILL fallback signals, it obtains a
+fresh complete bounded process snapshot and requires the PID, group, and start
+time to match, excluding the wrapper's own group. This rejects stale/recycled
+PID snapshots and changed process groups, but remains best-effort on macOS:
+without an atomic PID handle, a check/use race still exists. Compiler/test
+execution remains disabled, and this source-only change is not runtime evidence.
+
 The interpreter POSIX bridge now admits path operands through a private 4 KiB
 length-only check before embedded-NUL scanning, terminator allocation, or host
 filesystem calls. Filesystem source/destination, symlink, directory, and child

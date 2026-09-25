@@ -26,6 +26,49 @@ validation_process_start_token_matches() {
     [ -n "$validation_expected_start_token" ] && [ "$validation_expected_start_token" = "$validation_observed_start_token" ]
 }
 
+# Confirm a saved process identity against one complete fresh `ps` snapshot.
+# The caller still has a small check/use race before `kill(2)` on platforms
+# without pidfd-style handles, but stale/recycled PIDs and changed process
+# groups are rejected before a per-PID signal is attempted.
+validation_process_identity_matches_from_snapshot() {
+    awk -v target_pid="$1" -v target_group="$2" -v target_start="$3" -v wrapper_group="$4" -v row_limit="$5" '
+        BEGIN {
+            if (target_pid !~ /^[0-9]+$/ || target_pid == "0" ||
+                target_group !~ /^[0-9]+$/ || target_group == "0" ||
+                target_start == "" || wrapper_group !~ /^[0-9]+$/ || wrapper_group == "0" ||
+                row_limit !~ /^[0-9]+$/ || row_limit == "0") malformed = 1
+        }
+        NR > row_limit + 1 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" {
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
+            status_seen = 1
+            if ($2 != 0) ps_failed = 1
+            next
+        }
+        status_seen { malformed = 1; exit }
+        ++process_rows > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || NF != 8 ||
+            $4 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ || $5 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ ||
+            $6 !~ /^[0-9][0-9]?$/ || $7 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ ||
+            $8 !~ /^[0-9][0-9][0-9][0-9]$/ { malformed = 1; exit }
+        {
+            pid = $1
+            if (pid in present) { malformed = 1; exit }
+            present[pid] = 1
+            if (pid == target_pid) {
+                target_rows++
+                observed_start = $4 "-" $5 "-" $6 "-" $7 "-" $8
+                matches = ($3 == target_group && $3 != wrapper_group && observed_start == target_start)
+            }
+        }
+        END {
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1 || target_rows > 1) exit 2
+            if (target_rows == 1 && matches) exit 0
+            exit 1
+        }
+    '
+}
+
 validation_process_group_has_live_members_from_snapshot() {
     awk -v group="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }

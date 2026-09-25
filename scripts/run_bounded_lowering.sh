@@ -132,10 +132,35 @@ if [ "$log_limit_bytes" -gt "$retained_log_budget_bytes" ]; then
     exit 2
 fi
 
-process_tree_pids() {
+process_tree_identities() {
     process_tree_root="$1"
-    process_snapshot="$( { ps -axo pid=,ppid= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
-    printf '%s\n' "$process_snapshot" | validation_process_tree_pids_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
+    process_snapshot="$( { LC_ALL=C ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    printf '%s\n' "$process_snapshot" | validation_process_tree_identities_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
+}
+
+process_identity_matches() {
+    process_identity_pid="$1"
+    process_identity_group="$2"
+    process_identity_start="$3"
+    process_identity_table="$( { LC_ALL=C ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_identity_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_identity_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 2
+    printf '%s\n' "$process_identity_table" | validation_process_identity_matches_from_snapshot "$process_identity_pid" "$process_identity_group" "$process_identity_start" "$validation_wrapper_pgid" "$process_snapshot_row_limit"
+}
+
+signal_process_tree_identities() {
+    signal_process_tree_snapshot="$1"
+    signal_process_kind="$2"
+    for signal_process_identity in $signal_process_tree_snapshot; do
+        signal_process_pid="${signal_process_identity%%@*}"
+        signal_process_rest="${signal_process_identity#*@}"
+        signal_process_group="${signal_process_rest%%@*}"
+        signal_process_start="${signal_process_rest#*@}"
+        case "$signal_process_pid:$signal_process_group:$signal_process_start" in
+            *[!A-Za-z0-9_@:-]*|::*|:*|*:) continue ;;
+        esac
+        if process_identity_matches "$signal_process_pid" "$signal_process_group" "$signal_process_start"; then
+            kill "-$signal_process_kind" "$signal_process_pid" 2>/dev/null || true
+        fi
+    done
 }
 
 process_group_rss_kb() {
@@ -198,7 +223,7 @@ kill_process_tree() {
     # or descendant-containment boundary.
     process_tree_snapshot=""
     if [ -n "$process_root_pid" ]; then
-        process_tree_snapshot="$(process_tree_pids "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
+        process_tree_snapshot="$(process_tree_identities "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
     fi
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
@@ -207,13 +232,9 @@ kill_process_tree() {
     if [ -n "$owned_group_id" ]; then
         kill -TERM -- "-$owned_group_id" 2>/dev/null || true
     fi
-    for process_tree_pid in $process_tree_snapshot; do
-        kill -TERM "$process_tree_pid" 2>/dev/null || true
-    done
+    signal_process_tree_identities "$process_tree_snapshot" TERM
     sleep 1
-    for process_tree_pid in $process_tree_snapshot; do
-        kill -KILL "$process_tree_pid" 2>/dev/null || true
-    done
+    signal_process_tree_identities "$process_tree_snapshot" KILL
     owned_group_id="$(validation_owned_process_group_id "$process_root_pid" "$process_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
     if [ -n "$owned_group_id" ]; then
         kill -KILL -- "-$owned_group_id" 2>/dev/null || true
@@ -225,7 +246,7 @@ kill_process_tree_immediately() {
     process_group_id="$2"
     process_tree_snapshot=""
     if [ -n "$process_root_pid" ]; then
-        process_tree_snapshot="$(process_tree_pids "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
+        process_tree_snapshot="$(process_tree_identities "$process_root_pid" 2>/dev/null)" || process_tree_snapshot=""
     fi
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
@@ -234,9 +255,7 @@ kill_process_tree_immediately() {
     if [ -n "$owned_group_id" ]; then
         kill -KILL -- "-$owned_group_id" 2>/dev/null || true
     fi
-    for process_tree_pid in $process_tree_snapshot; do
-        kill -KILL "$process_tree_pid" 2>/dev/null || true
-    done
+    signal_process_tree_identities "$process_tree_snapshot" KILL
 }
 
 compiler_pid=""

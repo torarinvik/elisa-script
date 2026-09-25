@@ -69,6 +69,22 @@ assert_process_state() {
     assert_equal "$expected_state" "$actual_state" "$description"
 }
 
+assert_identity_match() {
+    snapshot="$1"
+    target_pid="$2"
+    target_group="$3"
+    target_start="$4"
+    wrapper_group="$5"
+    expected_status="$6"
+    description="$7"
+    if printf '%s\n' "$snapshot" | validation_process_identity_matches_from_snapshot "$target_pid" "$target_group" "$target_start" "$wrapper_group" 8; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_equal "$expected_status" "$actual_status" "$description"
+}
+
 owned_group="$(validation_owned_process_group_id 301 301 100)"
 assert_equal 301 "$owned_group" 'session-leader PGID is safe to signal'
 validation_process_start_token_matches 'Mon-Sep-25-10:00:00-2026' 'Mon-Sep-25-10:00:00-2026' || fail 'matching process start token was rejected'
@@ -128,6 +144,20 @@ __ELISASCRIPT_PS_STATUS__ 0'
 tree_identities="$(printf '%s\n' "$identity_snapshot" | validation_process_tree_identities_from_snapshot 100 4)"
 assert_equal '100@100@Mon-Sep-25-10:00:00-2026
 101@101@Mon-Sep-25-10:01:00-2026' "$tree_identities" 'tree identities preserve PGID and process start time'
+assert_identity_match "$identity_snapshot" 101 101 'Mon-Sep-25-10:01:00-2026' 1 0 'current PID, PGID, and start token match'
+assert_identity_match "$identity_snapshot" 101 100 'Mon-Sep-25-10:01:00-2026' 1 1 'changed PGID is rejected'
+assert_identity_match "$identity_snapshot" 101 101 'Mon-Sep-25-10:01:01-2026' 1 1 'recycled PID start token is rejected'
+assert_identity_match "$identity_snapshot" 100 100 'Mon-Sep-25-10:00:00-2026' 100 1 'wrapper process group is never eligible for per-PID signaling'
+assert_identity_match "$identity_snapshot" 999 999 'Mon-Sep-25-10:09:00-2026' 1 1 'absent process identity is rejected'
+assert_identity_match '101 100 101 Mon Sep 25 10:01:00 2026
+__ELISASCRIPT_PS_STATUS__ 1' 101 101 'Mon-Sep-25-10:01:00-2026' 1 2 'failed identity snapshot is rejected'
+assert_identity_match '101 100 101 Mon Sep 25 10:01:00 2026' 101 101 'Mon-Sep-25-10:01:00-2026' 1 2 'incomplete identity snapshot is rejected'
+assert_identity_match '101 100 101 Mon Sep 25 10:01:00 2026
+__ELISASCRIPT_PS_STATUS__ 0
+102 100 102 Mon Sep 25 10:02:00 2026' 101 101 'Mon-Sep-25-10:01:00-2026' 1 2 'rows after the snapshot sentinel are rejected'
+assert_identity_match '101 100 101 Mon Sep 25 10:01:00 2026
+101 100 101 Mon Sep 25 10:01:00 2026
+__ELISASCRIPT_PS_STATUS__ 0' 101 101 'Mon-Sep-25-10:01:00-2026' 1 2 'duplicate PIDs are rejected from identity snapshots'
 assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
 101 100 101 bad Sep 25 10:01:00 2026
 __ELISASCRIPT_PS_STATUS__ 0' identities 'malformed process identity row'
