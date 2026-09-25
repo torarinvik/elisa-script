@@ -116,6 +116,22 @@ module EsBuildUsage:
 
 
     private:
+        const enum BuildUsageCollection of u8:
+            Compile
+            Link
+            ExportedCompile
+            ExportedLink
+
+
+        struct BuildUsageEntryIndex:
+            positions: mutable dict[sview, usize] = {}
+
+
+        struct BuildUsageEntryIndices:
+            maps: mutable darray[BuildUsageEntryIndex] = []
+            map_lookup: mutable dict[u8, usize] = {}
+
+
         def target_kind_valid(kind: BuildUsageTargetKind) -> bool:
             return kind in {BuildUsageTargetKind.Executable, BuildUsageTargetKind.StaticLibrary, BuildUsageTargetKind.SharedLibrary, BuildUsageTargetKind.InterfaceLibrary}
 
@@ -150,18 +166,26 @@ module EsBuildUsage:
             return kind == BuildUsageKind.LinkLibrary or kind == BuildUsageKind.LinkOption
 
 
-        def usage_entry_equal(left: BuildUsageEntry, right: BuildUsageEntry) -> bool:
-            return left.kind == right.kind and left.value == right.value and left.target_artifact == right.target_artifact and left.library_form == right.library_form
-
-
-        def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, candidate: BuildUsageEntry, resolved_count: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
-            for index in 0..<entries.count |entries|:
-                if usage_entry_equal(entries[index], candidate):
-                    # A normal link requirement subsumes link-only propagation.
-                    entries[index].link_only <- false if not candidate.link_only
-                    return false
+        def append_usage_entry(entries: mutable darray[BuildUsageEntry]&, indices: mutable BuildUsageEntryIndices&, collection: BuildUsageCollection, candidate: BuildUsageEntry, resolved_count: mutable usize&) -> bool error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
+            # The four output collections have independent deduplication
+            # domains. Within each, the finite signature partitions keys by
+            # the fields other than value; the dictionary then hashes and
+            # compares the original borrowed value without constructing a
+            # potentially large composite string key.
+            entry_signature: usize = collection.u8().usize() * 30 + candidate.kind.u8().usize() * 6 + candidate.library_form.u8().usize() * 2 + (1 if candidate.target_artifact else 0)
+            signature: u8 = entry_signature.u8()
+            map_index: usize = indices.map_lookup.get(signature, indices.maps.count)
+            if map_index == indices.maps.count:
+                indices.maps.push(BuildUsageEntryIndex{})
+                indices.map_lookup[signature] <- map_index
+            existing_index: usize = indices.maps[map_index].positions.get(candidate.value, entries.count)
+            if existing_index != entries.count:
+                # A normal link requirement subsumes link-only propagation.
+                entries[existing_index].link_only <- false if not candidate.link_only
+                return false
             raise BuildUsageError.TotalResolvedLimitExceeded if entries.count >= Limits::TOTAL_RESOLVED_ENTRIES
             raise BuildUsageError.TotalResolvedLimitExceeded if resolved_count >= Limits::TOTAL_RESOLVED_ENTRIES
+            indices.maps[map_index].positions[candidate.value] <- entries.count
             entries.push(candidate)
             resolved_count <- resolved_count + 1
             return true
@@ -223,53 +247,54 @@ module EsBuildUsage:
             for target_index in 0..<targets.count |targets, results, resolved_count|:
                 target: BuildUsageTarget = targets[target_index]
                 result: mutable BuildUsageTargetResult = BuildUsageTargetResult{name: target.name}
+                indices: mutable BuildUsageEntryIndices = BuildUsageEntryIndices{}
 
-                for requirement in target.requirements |target, result, resolved_count|:
+                for requirement in target.requirements |target, result, indices, resolved_count|:
                     is_compile: bool = usage_kind_is_compile(requirement.kind)
                     is_link: bool = usage_kind_is_link(requirement.kind)
                     local: bool = requirement.visibility != BuildUsageVisibility.Interface and target.kind != BuildUsageTargetKind.InterfaceLibrary
                     exported: bool = requirement.visibility == BuildUsageVisibility.Public or requirement.visibility == BuildUsageVisibility.Interface
                     entry: BuildUsageEntry = BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form}
                     if is_compile and local:
-                        _ = try append_usage_entry(result.compile, entry, resolved_count)
+                        _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count)
                     if is_link and local:
-                        _ = try append_usage_entry(result.link, entry, resolved_count)
+                        _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, entry, resolved_count)
                     if is_compile and exported:
-                        _ = try append_usage_entry(result.exported_compile, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count)
                     if is_link and exported:
-                        _ = try append_usage_entry(result.exported_link, entry, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count)
                     # CMake static libraries retain a PRIVATE link dependency
                     # in their link interface, marked here as link-only.
                     if is_link and requirement.kind == BuildUsageKind.LinkLibrary and requirement.visibility == BuildUsageVisibility.Private and target.kind == BuildUsageTargetKind.StaticLibrary:
-                        _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form, link_only: true}, resolved_count)
+                        _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: requirement.kind, value: requirement.value, library_form: requirement.library_form, link_only: true}, resolved_count)
 
-                for dependency in target.dependencies |target, results, result, resolved_count|:
+                for dependency in target.dependencies |target, results, result, indices, resolved_count|:
                     dependency_result: BuildUsageTargetResult = results[dependency.target_index]
                     dependency_target: BuildUsageTarget = targets[dependency.target_index]
                     local: bool = dependency.visibility != BuildUsageVisibility.Interface
                     exported: bool = dependency.visibility != BuildUsageVisibility.Private
-                    for entry in dependency_result.exported_compile:
+                    for entry in dependency_result.exported_compile |indices, result, resolved_count|:
                         if local:
-                            _ = try append_usage_entry(result.compile, entry, resolved_count)
+                            _ = try append_usage_entry(result.compile, indices, BuildUsageCollection.Compile, entry, resolved_count)
                         if exported:
-                            _ = try append_usage_entry(result.exported_compile, entry, resolved_count)
+                            _ = try append_usage_entry(result.exported_compile, indices, BuildUsageCollection.ExportedCompile, entry, resolved_count)
                     if dependency_target.kind == BuildUsageTargetKind.StaticLibrary or dependency_target.kind == BuildUsageTargetKind.SharedLibrary:
                         direct_library: BuildUsageEntry = BuildUsageEntry{kind: BuildUsageKind.LinkLibrary, value: dependency_result.name, target_artifact: true}
                         if local:
-                            _ = try append_usage_entry(result.link, direct_library, resolved_count)
+                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, direct_library, resolved_count)
                         if exported:
-                            _ = try append_usage_entry(result.exported_link, direct_library, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, direct_library, resolved_count)
                         elif target.kind == BuildUsageTargetKind.StaticLibrary:
-                            _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: direct_library.kind, value: direct_library.value, target_artifact: true, link_only: true}, resolved_count)
-                    for entry in dependency_result.exported_link:
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: direct_library.kind, value: direct_library.value, target_artifact: true, link_only: true}, resolved_count)
+                    for entry in dependency_result.exported_link |indices, result, resolved_count|:
                         if local:
                             # Link-only is an export modifier, not a limitation
                             # on the current target's own final link closure.
-                            _ = try append_usage_entry(result.link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form}, resolved_count)
+                            _ = try append_usage_entry(result.link, indices, BuildUsageCollection.Link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form}, resolved_count)
                         if exported:
-                            _ = try append_usage_entry(result.exported_link, entry, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, entry, resolved_count)
                         if not exported and target.kind == BuildUsageTargetKind.StaticLibrary:
-                            _ = try append_usage_entry(result.exported_link, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form, link_only: true}, resolved_count)
+                            _ = try append_usage_entry(result.exported_link, indices, BuildUsageCollection.ExportedLink, BuildUsageEntry{kind: entry.kind, value: entry.value, target_artifact: entry.target_artifact, library_form: entry.library_form, link_only: true}, resolved_count)
 
                 results.push(result)
             return BuildUsageResolution{targets: results, resolved_entries: resolved_count}
