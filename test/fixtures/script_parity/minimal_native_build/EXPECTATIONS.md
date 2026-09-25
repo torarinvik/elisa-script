@@ -81,6 +81,14 @@ untouched. The harness restores the definition to 0 and requires the same
 minimal rebuild frontier again before continuing with missing-output recovery.
 This compile-option sequence is source-only and unverified.
 
+The next E07 transition selects a second checked-in main translation unit whose
+expression differs but still produces the same executable observation. CMake
+must rebuild only that source's object and relink; Elisascript must report only
+`compile-main` and `minimal-native`. Reconfiguring back to `src/main.c` must
+likewise rebuild only the main branch. This exercises source-input identity and
+recovery without modifying the repository during the fixture run; it is
+source-only and unverified.
+
 To prove the dirty-output guard runs before process dispatch, the harness backs
 up the cached main object, overwrites that output with the default header, and
 invokes a compile recipe whose command would create a marker with `/usr/bin/touch`.

@@ -27,10 +27,11 @@ minimal_native_root="$repo_root/test/fixtures/script_parity/minimal_native_build
 minimal_native_candidate="$minimal_native_root/build.elisascript"
 minimal_native_cmake="$minimal_native_root/CMakeLists.txt"
 minimal_native_main="$minimal_native_root/src/main.c"
+minimal_native_main_variant="$minimal_native_root/src/main_variant.c"
 minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -329,14 +330,22 @@ rg -Fq 'generated_build_config.h' "$minimal_native_cmake"
 rg -Fq 'add_library(minimal-answer STATIC src/answer.c)' "$minimal_native_cmake"
 rg -Fq 'target_link_libraries(minimal-native PRIVATE minimal-answer)' "$minimal_native_cmake"
 rg -Fq 'target_compile_definitions(minimal-native PRIVATE MINIMAL_MAIN_VARIANT=${MINIMAL_MAIN_VARIANT})' "$minimal_native_cmake"
+rg -Fq 'MINIMAL_MAIN_SOURCE' "$minimal_native_cmake"
 rg -Fq '#include "generated_build_config.h"' "$minimal_native_main"
 rg -Fq 'MINIMAL_MAIN_ADJUSTMENT' "$minimal_native_main"
+rg -Fq 'main_variant.c' "$minimal_native_candidate"
+rg -Fq 'MINIMAL_MAIN_ADJUSTMENT 21 - 21' "$minimal_native_main_variant"
 rg -Fq 'MINIMAL_MAIN_VARIANT=1' "$minimal_native_candidate"
 rg -Fq 'flag-variant' "$minimal_native_candidate"
+rg -Fq 'source-variant' "$minimal_native_candidate"
 rg -Fq 'reference_flag_variant_frontier_matches' "$minimal_native_parity"
 rg -Fq 'candidate_flag_variant_matches' "$minimal_native_parity"
 rg -Fq 'reference_restored_flag_frontier_matches' "$minimal_native_parity"
 rg -Fq 'candidate_flag_recovery_matches' "$minimal_native_parity"
+rg -Fq 'reference_source_variant_frontier_matches' "$minimal_native_parity"
+rg -Fq 'candidate_source_variant_matches' "$minimal_native_parity"
+rg -Fq 'reference_restored_source_frontier_matches' "$minimal_native_parity"
+rg -Fq 'candidate_source_recovery_matches' "$minimal_native_parity"
 rg -Fq 'COPY: sview = "/usr/bin/cp"' "$minimal_native_candidate"
 rg -Fq 'PARTIAL_FAIL: sview = "/usr/bin/awk"' "$minimal_native_candidate"
 rg -Fq 'partial-header-created' "$minimal_native_candidate"
