@@ -46,6 +46,8 @@ for boundary in \
     'wide_exponent' \
     'record_numeric_trailing_point_valid' \
     'trailing_point_candidate' \
+    'session.phase == RecordNumericPhase.ExponentDigits and session.exponent_digits == 0' \
+    'session.phase == RecordNumericPhase.ExponentLead and (session.exponent_digits != 0' \
     'session.digits > session.chars' \
     'session.saw_exponent and session.phase' \
     'RecordNumericState.Planned' \
@@ -58,6 +60,7 @@ rg -Fq 'record_numeric_accepts_trailing_decimal_point_forms' "$runtime_fixture"
 rg -Fq 'point_result.coefficient_digits == 1 and point_result.fraction_digits == 0' "$runtime_fixture"
 rg -Fq 'exponent_result.coefficient_digits == 1 and exponent_result.fraction_digits == 0' "$runtime_fixture"
 rg -Fq 'forged_trailing_point_rejected <- failure == RecordNumericError.AccountingInvalid' "$runtime_fixture"
+rg -Fq 'forged_exponent_phase_rejected <- failure == RecordNumericError.AccountingInvalid' "$runtime_fixture"
 
 for fixture_pattern in \
     'using EsRecordNumeric' \

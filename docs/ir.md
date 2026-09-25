@@ -1626,7 +1626,8 @@ explicit trailing-point candidate, so it cannot be confused with a malformed
 trailing separator. A bare point and a trailing underscore remain invalid.
 Rejected bytes and overflow attempts are failure-atomic: character, digit,
 and magnitude accounting is published only after the byte passes its phase
-checks.
+checks. Exponent lead/sign/digit phases are cross-checked against exponent
+digit accounting, rejecting snapshots that claim exponent digits without any.
 No implicit float conversion occurs at the record boundary.
 
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter

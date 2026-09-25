@@ -1323,7 +1323,8 @@ float conversion, accept a trailing decimal point only after at least one
 coefficient digit (including before an exponent) using a validated explicit
 candidate bit, reject an underscore immediately before a decimal point, and sign,
 underscore, decimal, exponent, finish, failure, and cancellation edges are
-explicit under `error[RecordNumericError]`. The focused IR fixture, namespace
+explicit under `error[RecordNumericError]`; exponent sub-phases must agree with
+the admitted exponent-digit count. The focused IR fixture, namespace
 inclusion, focused runtime fixture, documentation, and check_record_numeric.sh
 audit are static evidence; exact-decimal/floating conversion, locale policy,
 and host scanner integration remain open.
