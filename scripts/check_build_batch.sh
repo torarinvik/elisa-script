@@ -20,6 +20,7 @@ rg -Fq 'include "../runtime/build_batch_model.elisa"' "$ir"
 for declaration in \
     'struct BuildBatchLaunch:' \
     'struct BuildBatchNodeResult:' \
+    'struct BuildBatchNodePlan:' \
     'struct BuildBatchSession:' \
     'error BuildBatchError:' \
     'def build_batch_session_for_graph(' \
@@ -58,6 +59,11 @@ for invariant in \
     'outputs_snapshot_bound != result.dispatched' \
     'build_batch_process_commands_equal(result.dispatched_command_snapshot, node.command)' \
     'build_batch_execution_outputs_equal(result.dispatched_outputs_snapshot, expected_outputs)' \
+    'session.plan_nodes.count != graph.nodes.count' \
+    'build_batch_index_vectors_equal(node.dependencies, plan.dependencies)' \
+    'build_batch_node_name_orders_equal(session.plan_name_order, graph.node_name_order)' \
+    'build_batch_recipe_signatures_equal(node.recipe_signature, plan.recipe_signature)' \
+    'session.output_sets[index], session.declared_output_sets[index]' \
     'dispatched_command_snapshot <- node.command' \
     'build_batch_process_succeeded(process_result) and process_result.error_text != ""'; do
     rg -Fq "$invariant" "$model"
@@ -117,6 +123,8 @@ for fixture_case in \
     'build_batch_rejects_malformed_process_result_without_consuming_reservation' \
     'build_batch_rejects_output_overrun_without_consuming_reservation' \
     'build_batch_rejects_command_mutation_after_dispatch' \
+    'build_batch_rejects_dependency_plan_mutation_before_dispatch' \
+    'mutated_node.dependencies <- []' \
     'mutation_rejected <- failure == BuildBatchError.JobMappingInvalid' \
     'build_batch_rejects_declared_output_mutation_after_dispatch' \
     'session.output_sets[0].paths <- ["/tmp/elisascript-forged.o"]' \

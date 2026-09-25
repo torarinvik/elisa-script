@@ -38,11 +38,26 @@ module EsBuildBatch:
             missing_output: sview = ""
 
 
+        # Immutable recipe identity captured when the host-neutral batch is
+        # created. Build-node state and log accounting evolve during the run,
+        # but these plan fields must not.
+        struct BuildBatchNodePlan:
+            name: sview
+            command: ProcessCommand
+            dependencies: darray[usize] = []
+            fingerprint: u64
+            recipe_signature: BuildRecipeSignature = BuildRecipeSignature{}
+
+
         struct BuildBatchSession:
             scheduler: BuildScheduler
             processes: ProcessBatchSession
             results: darray[BuildBatchNodeResult] = []
             output_sets: darray[BuildExecutionNodeOutputs] = []
+            plan_nodes: darray[BuildBatchNodePlan] = []
+            plan_name_order: darray[BuildNodeNameIndex] = []
+            plan_max_parallel: usize = 1
+            declared_output_sets: darray[BuildExecutionNodeOutputs] = []
             reserved_output_bytes: usize = 0
 
 
@@ -85,6 +100,24 @@ module EsBuildBatch:
             for index in 0..<left.count |left, right|:
                 return false if left[index] != right[index]
             return true
+
+
+        def build_batch_index_vectors_equal(left: darray[usize], right: darray[usize]) -> bool:
+            return false if left.count != right.count
+            for index in 0..<left.count |left, right|:
+                return false if left[index] != right[index]
+            return true
+
+
+        def build_batch_node_name_orders_equal(left: darray[BuildNodeNameIndex], right: darray[BuildNodeNameIndex]) -> bool:
+            return false if left.count != right.count
+            for index in 0..<left.count |left, right|:
+                return false if left[index].name != right[index].name or left[index].node_index != right[index].node_index
+            return true
+
+
+        def build_batch_recipe_signatures_equal(left: BuildRecipeSignature, right: BuildRecipeSignature) -> bool:
+            return left.word0 == right.word0 and left.word1 == right.word1 and left.word2 == right.word2 and left.word3 == right.word3
 
 
         def build_batch_process_commands_equal(left: ProcessCommand, right: ProcessCommand) -> bool:
@@ -198,10 +231,19 @@ module EsBuildBatch:
                 raise BuildBatchError.OutputPathInvalid if not build_executor_output_sets_valid(graph, output_sets)
             jobs: mutable darray[ProcessBatchJob] = []
             results: mutable darray[BuildBatchNodeResult] = []
+            plan_nodes: mutable darray[BuildBatchNodePlan] = []
             for index in 0..<graph.nodes.count |graph, jobs, results|:
                 raise BuildExecutionError.UnsupportedCommand if not build_executor_command_supported(graph.nodes[index].command)
                 jobs.push(ProcessBatchJob{id: (index + 1).u64()})
                 results.push(BuildBatchNodeResult{target_name: graph.nodes[index].name})
+                node: BuildNode = graph.nodes[index]
+                plan_nodes.push(BuildBatchNodePlan{
+                    name: node.name,
+                    command: node.command,
+                    dependencies: node.dependencies,
+                    fingerprint: node.fingerprint,
+                    recipe_signature: node.recipe_signature
+                })
 
             process_session: ProcessBatchSession = ProcessBatchSession{
                 policy: ProcessBatchPolicy{max_jobs: graph.nodes.count, max_parallel: build_batch_parallel_limit(graph.max_parallel), max_attempts: 1, failure_mode: ProcessBatchFailureMode.FailFast},
@@ -213,7 +255,11 @@ module EsBuildBatch:
                 scheduler: scheduler,
                 processes: process_session,
                 results: results,
-                output_sets: output_sets
+                output_sets: output_sets,
+                plan_nodes: plan_nodes,
+                plan_name_order: graph.node_name_order,
+                plan_max_parallel: graph.max_parallel,
+                declared_output_sets: output_sets
             }
             _ = try validate_build_batch_session(session)
             return session
@@ -225,6 +271,19 @@ module EsBuildBatch:
             graph: BuildGraph = session.scheduler.graph
             raise BuildBatchError.InvalidSession if graph.nodes.count == 0 or graph.nodes.count > Limits::NODES
             raise BuildBatchError.InvalidSession if session.results.count != graph.nodes.count or session.processes.jobs.count != graph.nodes.count
+            raise BuildBatchError.JobMappingInvalid if session.plan_nodes.count != graph.nodes.count
+            raise BuildBatchError.JobMappingInvalid if session.plan_max_parallel != graph.max_parallel
+            raise BuildBatchError.JobMappingInvalid if not build_batch_node_name_orders_equal(session.plan_name_order, graph.node_name_order)
+            for index in 0..<graph.nodes.count |session, graph|:
+                node: BuildNode = graph.nodes[index]
+                plan: BuildBatchNodePlan = session.plan_nodes[index]
+                raise BuildBatchError.JobMappingInvalid if node.name != plan.name or node.fingerprint != plan.fingerprint
+                raise BuildBatchError.JobMappingInvalid if not build_batch_process_commands_equal(node.command, plan.command)
+                raise BuildBatchError.JobMappingInvalid if not build_batch_index_vectors_equal(node.dependencies, plan.dependencies)
+                raise BuildBatchError.JobMappingInvalid if not build_batch_recipe_signatures_equal(node.recipe_signature, plan.recipe_signature)
+            raise BuildBatchError.JobMappingInvalid if session.output_sets.count != session.declared_output_sets.count
+            for index in 0..<session.output_sets.count |session|:
+                raise BuildBatchError.JobMappingInvalid if not build_batch_execution_outputs_equal(session.output_sets[index], session.declared_output_sets[index])
             raise BuildBatchError.OutputListMismatch if session.output_sets.count != 0 and session.output_sets.count != graph.nodes.count
             if session.output_sets.count != 0:
                 for index in 0..<session.output_sets.count |graph, session|:
