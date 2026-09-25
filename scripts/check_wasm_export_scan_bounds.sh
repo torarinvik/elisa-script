@@ -304,12 +304,16 @@ runtime_guard_lines="$(awk '
     /^def main\(arguments:/ { in_main = 1; main_line = NR }
     in_main && /tuple\(sys\.version_info\[:3\]\) != PINNED_PYTHON_VERSION/ { python_line = NR }
     in_main && /unicodedata\.unidata_version != PINNED_UNICODE_DATA_VERSION/ { unicode_line = NR }
+    in_main && /return fail\("reference requires Python 3\.14\.7 with Unicode 16\.0\.0", 2\)/ {
+        if (!python_fail_line) python_fail_line = NR
+        else unicode_fail_line = NR
+    }
     in_main && /build_component_payload = bool\(arguments\)/ { argument_line = NR }
-    END { print main_line, python_line, unicode_line, argument_line }
+    END { print main_line, python_line, python_fail_line, unicode_line, unicode_fail_line, argument_line }
 ' "$reference")"
 set -- $runtime_guard_lines
-if [ "$#" -ne 4 ] || [ "$1" -ge "$2" ] || [ "$2" -ge "$3" ] || [ "$3" -ge "$4" ]; then
-    printf 'W09 bounds audit: Python and Unicode runtime guards must precede CLI mode handling\n' >&2
+if [ "$#" -ne 6 ] || [ "$1" -ge "$2" ] || [ "$2" -ge "$3" ] || [ "$3" -ge "$4" ] || [ "$4" -ge "$5" ] || [ "$5" -ge "$6" ]; then
+    printf 'W09 bounds audit: both runtime guards must fail with status 2 before CLI mode handling\n' >&2
     exit 1
 fi
 
