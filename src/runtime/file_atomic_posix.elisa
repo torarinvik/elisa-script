@@ -10,6 +10,11 @@ module EsFileAtomicPosix:
     using EsRuntime
 
     public:
+        const module Limits:
+            WRITE_CALLS: usize = 1048576
+            EINTR_RETRIES: usize = 8
+
+
         struct AtomicFilePosixObservation:
             parent_device: u64
             parent_inode: u64
@@ -45,12 +50,27 @@ module EsFileAtomicPosix:
             StageNotSingleLink
             StageNameMismatch
             StageIdentityChanged
+            StageNotReady
+            StageWriteFailed
 
 
     private:
         const module AtomicFilePosixErrno:
             ENOENT: i32 = 2
             EINTR: i32 = 4
+
+
+        const enum AtomicFilePosixWriteState of u8:
+            Write
+            Done
+            Failed
+
+
+        struct AtomicFilePosixWriteCursor:
+            state: AtomicFilePosixWriteState = AtomicFilePosixWriteState.Write
+            offset: usize = 0
+            calls: usize = 0
+            interrupted: usize = 0
 
 
         def atomic_file_posix_stat_descriptor(directory_fd: int, info: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
@@ -93,6 +113,56 @@ module EsFileAtomicPosix:
 
         def atomic_file_posix_stage_proof_equal(left: AtomicFilePosixStageProof, right: AtomicFilePosixStageProof) -> bool:
             return left.parent_device == right.parent_device and left.parent_inode == right.parent_inode and left.parent_descriptor_token == right.parent_descriptor_token and left.stage_device == right.stage_device and left.stage_inode == right.stage_inode and left.stage_descriptor_token == right.stage_descriptor_token and left.owner_token == right.owner_token and left.link_count == right.link_count
+
+
+        def atomic_file_posix_write_fully(fd: int, buffer: u8&, length: usize) -> usize error[AtomicFilePosixError] can[Blocking.IO]:
+            raise AtomicFilePosixError.InvalidStageDescriptor if fd < 0 or (length != 0 and buffer == null)
+            cursor: mutable AtomicFilePosixWriteCursor = AtomicFilePosixWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, AtomicFilePosixWriteState.Write if cursor.offset >= length:
+                    cursor.state <- AtomicFilePosixWriteState.Done
+                    -> Write
+                Write, AtomicFilePosixWriteState.Write if cursor.calls >= Limits::WRITE_CALLS:
+                    cursor.state <- AtomicFilePosixWriteState.Failed
+                    -> Write
+                Write, AtomicFilePosixWriteState.Write:
+                    remaining: usize = length - cursor.offset
+                    next_bytes: mutable u8& = buffer + cursor.offset
+                    amount: isize = elisascript_posix_write(fd, next_bytes.cast[void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == AtomicFilePosixErrno::EINTR and cursor.interrupted < Limits::EINTR_RETRIES:
+                            cursor.interrupted <- cursor.interrupted + 1
+                            -> Write
+                        cursor.state <- AtomicFilePosixWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- AtomicFilePosixWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.interrupted <- 0
+                    -> Write
+
+                Write, AtomicFilePosixWriteState.Done:
+                    break
+                Write, AtomicFilePosixWriteState.Failed:
+                    break
+
+            raise AtomicFilePosixError.StageWriteFailed if cursor.state != AtomicFilePosixWriteState.Done
+            return cursor.offset
+
+
+        def atomic_file_posix_fail_session(session: mutable AtomicFileSession&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if session.state != AtomicFileState.Staging
+            catch advance_atomic_file(session, AtomicFileEvent.Fail):
+                ok state:
+                    return state == AtomicFileState.FailedPendingCleanup
+                error failure:
+                    return false
 
 
         def atomic_file_posix_digest(bytes: darray[u8]&) -> HashDigest can[Memory.Allocate, Abort.Panic]:
@@ -153,6 +223,55 @@ module EsFileAtomicPosix:
             observed: AtomicFilePosixStageProof = try capture_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, owner_token)
             raise AtomicFilePosixError.StageIdentityChanged if not atomic_file_posix_stage_proof_equal(expected, observed)
             return observed
+
+
+        # Append only after validating the pure session and the live stage
+        # proof. A short/failed write can leave a partial file, so the session
+        # moves to FailedPendingCleanup and never accounts unconfirmed bytes.
+        def append_atomic_file_stage(session: mutable AtomicFileSession&, parent_fd: int, stage_fd: int, leaf_name: cstr, expected: AtomicFilePosixStageProof, bytes: darray[u8]&) -> usize error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.stage_descriptor_token != stage_fd.u64() + 1u64 or expected.parent_descriptor_token != parent_fd.u64() + 1u64
+            raise AtomicFilePosixError.StageNotReady if bytes.count > session.plan.max_content_bytes - session.staged_bytes or (bytes.count != 0 and session.append_count >= EsFileAtomic::Limits::APPENDS)
+            return 0 if bytes.count == 0
+
+            pre_write_matches: mutable bool = true
+            catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
+                ok observed:
+                    pre_write_matches <- atomic_file_posix_stage_proof_equal(expected, observed)
+                error failure:
+                    pre_write_matches <- false
+            if not pre_write_matches:
+                _ = atomic_file_posix_fail_session(session)
+                raise AtomicFilePosixError.StageIdentityChanged
+
+            written: mutable usize = 0
+            catch atomic_file_posix_write_fully(stage_fd, bytes.items, bytes.count):
+                ok amount:
+                    written <- amount
+                error failure:
+                    _ = atomic_file_posix_fail_session(session)
+                    raise AtomicFilePosixError.StageWriteFailed
+
+            post_write_matches: mutable bool = true
+            catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
+                ok observed:
+                    post_write_matches <- atomic_file_posix_stage_proof_equal(expected, observed)
+                error failure:
+                    post_write_matches <- false
+            if not post_write_matches:
+                _ = atomic_file_posix_fail_session(session)
+                raise AtomicFilePosixError.StageIdentityChanged
+
+            catch advance_atomic_file(session, AtomicFileEvent.Append, appended_bytes: written):
+                ok state:
+                    return written
+                error failure:
+                    _ = atomic_file_posix_fail_session(session)
+                    raise AtomicFilePosixError.StageNotReady
 
 
         # Capture either an observed absence or the identity and SHA-256 of a

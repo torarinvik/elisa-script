@@ -1891,6 +1891,11 @@ matches its no-follow sibling entry, is a private single-link regular file,
 and shares the parent directory's filesystem; `revalidate_atomic_file_stage_proof`
 repeats those checks before a later mutation. These receipts still require the
 caller's exclusive directory-mutation policy and do not themselves publish.
+`append_atomic_file_stage` checks the model owner and parent token, writes with
+bounded short-write/EINTR handling, revalidates the stage, and advances the
+model's append count only after a complete write. Partial/uncertain writes move
+the model to `FailedPendingCleanup`; this still needs an integrated stage
+creation, close, cleanup, and publication lifecycle.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a
