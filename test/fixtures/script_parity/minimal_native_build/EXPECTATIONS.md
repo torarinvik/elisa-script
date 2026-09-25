@@ -195,6 +195,10 @@ Within its private workspace, the harness also places a symlink at the
 Elisascript target output path, points it at a sentinel file, and requires the
 candidate's exact status-2 refusal tuple while proving the sentinel bytes and
 symlink are unchanged before workspace cleanup.
+Before creating its build directory, the harness also passes a symlink to a
+valid generated-header input through the candidate's external-input override.
+It requires the exact status-2 diagnostic and proves the link, referent bytes,
+and absent build path are preserved. This source-only preflight is unverified.
 
 ## Evidence status
 
