@@ -8,9 +8,10 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/csv_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/csv_empty_input_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -56,6 +57,13 @@ for fixture_pattern in \
     'assert limited.fields_total == 1' \
     'assert byte_rejected.input_bytes == 1'; do
     rg -Fq "$fixture_pattern" "$fixture"
+done
+
+for fixture_pattern in \
+    'csv_empty_input_has_zero_records_but_empty_line_has_one' \
+    'empty_stream.records == 0' \
+    'empty_line_stream.records == 1'; do
+    rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 
 rg -Fq '`EsCsv`' "$docs"

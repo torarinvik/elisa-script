@@ -451,9 +451,11 @@ LF, CRLF, or CR modes; the legacy `record_separator` byte is read and validated
 only in `ConfiguredByte` mode. CRLF is recognized across byte events with a
 pending-CR state; an invalid or incomplete suffix is rejected without
 consuming the offending byte. CR and LF remain payload inside quoted fields,
-while an unmatched CR or LF outside quotes is invalid in CRLF mode. Field
-materialization, including the invariant that every completed record owns a
-field, and external-spill aggregation remain adapter work.
+while an unmatched CR or LF outside quotes is invalid in CRLF mode. Empty input
+completes with zero records, while a line terminator by itself is one record
+containing one empty field, matching the common Python CSV-reader distinction.
+Field materialization, including the invariant that every completed record owns
+a field, and external-spill aggregation remain adapter work.
 
 `EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span
 boundary. Each field span is range-checked against the source and checked as a
@@ -463,7 +465,9 @@ record terminator at every boundary. Unquoted cells may not contain bytes that
 form the selected record terminator; quoted cells may contain newline payload.
 Field and record ceilings are shared with `EsData`, including exact-limit
 inputs and cells, and a ready session must have clean source, field, record,
-and cursor accounting. Lookup returns only validated slices while the session
+and cursor accounting. An empty source can complete without spans or records;
+a terminator-only source still requires one zero-width field span and one
+record. Lookup returns only validated slices while the session
 is building or complete. Record starts are range-checked before subtraction.
 The incremental event API revalidates its ledger and is intended for small
 construction; a future large adapter should capture bounded parser batches.

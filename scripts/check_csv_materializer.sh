@@ -9,10 +9,11 @@ model="$repo_root/src/runtime/csv_materializer_model.elisa"
 csv_model="$repo_root/src/runtime/csv_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/csv_empty_input_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$csv_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$csv_model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'csv materializer audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -72,6 +73,13 @@ for fixture_pattern in \
     'csv_materialized_field' \
     'CsvMaterializerError.FieldIndexInvalid'; do
     rg -Fq "$fixture_pattern" "$fixture"
+done
+
+for fixture_pattern in \
+    'csv_empty_input_has_zero_records_but_empty_line_has_one' \
+    'empty_materializer.records.count == 0' \
+    'empty_line_materializer.records.count == 1'; do
+    rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 
 rg -Fq '`EsCsvMaterialize` gives CSV/TSV adapters a policy-bound borrowed-span' "$docs"
