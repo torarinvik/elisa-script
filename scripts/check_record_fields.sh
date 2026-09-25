@@ -19,6 +19,8 @@ done
 
 rg -q '^module EsRecordFields:' "$model"
 rg -q '^module EsRecordFieldEditAdapter:' "$adapter"
+rg -q 'struct RecordFieldEditAdapterSession:' "$adapter"
+rg -q 'def record_field_reconstruct_record\(session: RecordFieldEditAdapterSession&\)' "$adapter"
 rg -q 'include "\.\./runtime/record_fields_model\.elisa"' "$ir"
 rg -q 'include "\.\./runtime/record_field_edit_adapter_model\.elisa"' "$ir"
 for declaration in \
@@ -39,6 +41,8 @@ for adapter_boundary in \
     'def record_field_edit_session_from_fields\(' \
     'def record_field_edit_session_from_regex_spans\(' \
     'split_record_fields_from_regex_spans' \
+    'struct RecordFieldEditAdapterSession:' \
+    'def advance_record_field_edit_adapter\(' \
     'def record_field_reconstruct_record\(' \
     'record_field_edit_adapter_mode_supported' \
     'record_field_edit_adapter_limited_scan_policy' \

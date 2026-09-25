@@ -1790,7 +1790,9 @@ serializers are not inferred, so those modes currently return `UnsupportedMode`.
 `record_field_reconstruct_record` joins
 the edited fields with the edit policy's field separator and then appends either
 the consumed record separator (`preserve_separator`) or the record policy's
-output separator. It calculates the exact content length and checks the
+output separator, both retained in the adapter session created from that
+record. Reconstruction cannot accidentally pair one edit session with a
+different record argument. It calculates the exact content length and checks the
 separator against `max_record_bytes` before allocating reconstructed content.
 Focused adapter fixtures and the compiler-free audit are source-level evidence
 only; runtime validation remains withheld under the active compiler-process

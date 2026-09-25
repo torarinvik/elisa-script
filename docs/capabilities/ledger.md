@@ -1290,7 +1290,9 @@ separator fields only after exact comparison against a fresh bounded scan,
 rejecting incomplete or forged scanner output with
 `RecordFieldScanError.FieldSetMismatch`; field transfer avoids a whole-record
 validation pass per field, while scanning applies the stricter stream/edit
-field ceiling. Reconstructed records use the edit
+field ceiling. The adapter session retains its source record and stream policy,
+and reconstruction accepts only that session to prevent accidental separator
+mismatch. Reconstructed records use the edit
 policy's field separator and preserve the consumed record separator only when
 requested; otherwise they use the stream output separator, with the complete
 record length checked against `max_record_bytes` before reconstruction
