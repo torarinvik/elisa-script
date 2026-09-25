@@ -1326,7 +1326,8 @@ underscore, decimal, exponent, finish, failure, and cancellation edges are
 explicit under `error[RecordNumericError]`; exponent sub-phases must agree with
 the admitted exponent-digit count. The focused IR fixture, namespace
 inclusion, focused runtime fixture, documentation, and check_record_numeric.sh
-audit are static evidence; exact-decimal/floating conversion, locale policy,
+audit are static evidence. Checked `i64`/`u64` result materialization includes
+the signed-minimum boundary; exact-decimal/floating conversion, locale policy,
 and host scanner integration remain open.
 
 ES-SCRIPT-039 | EsRecordPattern supplies bounded pattern/action filtering and

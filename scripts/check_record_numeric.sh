@@ -28,6 +28,8 @@ for declaration in \
     'error RecordNumericError:' \
     'def validate_record_numeric_session\(' \
     'def record_numeric_result\(' \
+    'def record_numeric_result_i64\(' \
+    'def record_numeric_result_u64\(' \
     'def advance_record_numeric\('; do
     rg -q "$declaration" "$model"
 done
@@ -61,6 +63,10 @@ rg -Fq 'point_result.coefficient_digits == 1 and point_result.fraction_digits ==
 rg -Fq 'exponent_result.coefficient_digits == 1 and exponent_result.fraction_digits == 0' "$runtime_fixture"
 rg -Fq 'forged_trailing_point_rejected <- failure == RecordNumericError.AccountingInvalid' "$runtime_fixture"
 rg -Fq 'forged_exponent_phase_rejected <- failure == RecordNumericError.AccountingInvalid' "$runtime_fixture"
+rg -Fq 'record_numeric_materializes_checked_integer_results' "$runtime_fixture"
+rg -Fq 'signed_minimum: RecordNumericResult' "$runtime_fixture"
+rg -Fq 'signed_overflow_rejected' "$runtime_fixture"
+rg -Fq 'unsigned_maximum: RecordNumericResult' "$runtime_fixture"
 
 for fixture_pattern in \
     'using EsRecordNumeric' \

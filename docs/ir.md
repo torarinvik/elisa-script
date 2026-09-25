@@ -1629,6 +1629,10 @@ and magnitude accounting is published only after the byte passes its phase
 checks. Exponent lead/sign/digit phases are cross-checked against exponent
 digit accounting, rejecting snapshots that claim exponent digits without any.
 No implicit float conversion occurs at the record boundary.
+Integer `RecordNumericResult` values can be materialized through checked
+`record_numeric_result_i64` and `record_numeric_result_u64` accessors. Signed
+conversion handles the minimum value without negating an unrepresentable
+positive intermediate and rejects values outside the selected type.
 
 `EsRecordMaterialize::RecordMaterializer` adds the bounded stream-adapter
 boundary without embedding a regex engine or file descriptor. A producer opens
