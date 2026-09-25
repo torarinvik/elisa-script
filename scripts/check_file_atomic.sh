@@ -8,10 +8,11 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/file_atomic_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+runtime_fixture="$repo_root/test/runtime/file_atomic_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'file atomic audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -29,6 +30,14 @@ for declaration in \
     'def validate_atomic_file_session\(' \
     'def advance_atomic_file\('; do
     rg -q "$declaration" "$model"
+done
+
+for payload_rule in \
+    'def atomic_file_identity_is_default(' \
+    'def atomic_file_event_payload_valid(' \
+    'AtomicFileError.InvalidEventPayload' \
+    'not atomic_file_event_payload_valid(event, identity, exact_contents_equal, appended_bytes)'; do
+    rg -Fq "$payload_rule" "$model"
 done
 
 for boundary in \
@@ -91,5 +100,9 @@ done
 
 rg -q 'EsFileAtomic::AtomicFileSession' "$docs"
 rg -q 'ES-FS-007' "$ledger"
+
+rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtime_fixture"
+rg -Fq 'append_identity_rejected' "$runtime_fixture"
+rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 
 printf 'file atomic audit: bounded staging, unchanged no-op, destination identity, and uncertain publication receipts are present\n'
