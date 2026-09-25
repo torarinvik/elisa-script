@@ -287,5 +287,12 @@ rg -Fq '1,048,576' "$contract"
 rg -Fq 'aggregate weighted work ceiling' "$contract"
 rg -Fq 'multiple' "$contract"
 rg -Fq 'case chains 60 relative links whose targets each contain 400 `./` components' "$contract"
+rg -Fq 'python_extra_nonprintable(codepoint: usize)' "$candidate"
+rg -Fq 'codepoint >= 917504 and codepoint <= 917535 or codepoint >= 917536 and codepoint <= 917631' "$candidate"
+rg -Fq 'append_utf8_scalar(source_bytes, 917504u64)' "$fixture"
+rg -Fq 'append_utf8_scalar(source_bytes, 917506u64)' "$fixture"
+rg -Fq 'append_utf8_scalar(source_bytes, 917535u64)' "$fixture"
+rg -Fq 'def unsupported_nonprintable_unicode_type_repr_matches_python()' "$fixture"
+rg -Fq 'U+E0000, U+E0002, and U+E001F' "$contract"
 
 printf 'W09 source audit: bounded scanner work and component ABI paths have source-level coverage; runtime parity remains unverified\n'
