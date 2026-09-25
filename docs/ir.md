@@ -1783,8 +1783,9 @@ field views without rescanning the entire record for every field. Regex spans
 need an explicit matcher-to-adapter contract;
 `record_field_edit_session_from_regex_spans` accepts ordered spans from a
 bounded regex matcher and lets the scanner validate progress and produce the
-canonical field list. Malformed/overlapping spans and field-ceiling overflow
-fail before an edit session is returned. Fixed-width padding and schema
+canonical field list. Scanning uses the stricter of the stream and edit field
+ceilings, so malformed/overlapping spans or field-count overflow fail before
+an oversized field list is accumulated. Fixed-width padding and schema
 serializers are not inferred, so those modes currently return `UnsupportedMode`.
 `record_field_reconstruct_record` joins
 the edited fields with the edit policy's field separator and then appends either

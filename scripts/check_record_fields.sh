@@ -41,6 +41,7 @@ for adapter_boundary in \
     'split_record_fields_from_regex_spans' \
     'def record_field_reconstruct_record\(' \
     'record_field_edit_adapter_mode_supported' \
+    'record_field_edit_adapter_limited_scan_policy' \
     'record_field_edit_adapter_fields_match' \
     'record.separator if record_policy.preserve_separator' \
     'record_field_edit_reconstruct_length(session)' \
@@ -93,6 +94,7 @@ for adapter_fixture_pattern in \
     'record_edit_adapter_rejects_incomplete_scanner_output_and_unwired_modes' \
     'record_edit_adapter_reconstructs_regex_scanned_fields' \
     'record_edit_adapter_rejects_invalid_regex_spans_and_field_overflow' \
+    'narrow_edit_policy' \
     'RecordFieldScanError.InvalidSeparatorSpan' \
     'RecordFieldScanError.FieldLimitExceeded' \
     'RecordFieldScanError.FieldSetMismatch' \
