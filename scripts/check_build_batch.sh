@@ -33,6 +33,7 @@ for declaration in \
     'def begin_build_batch(' \
     'def build_batch_execution_result(' \
     'def dispatch_build_batch_ready(' \
+    'def dispatch_build_batch_ready_with_output_preflight(' \
     'def report_build_batch_result(' \
     'def report_build_batch_result_with_outputs(' \
     'def build_batch_process_result_valid(' \
@@ -85,11 +86,19 @@ done
 
 for output_invariant in \
     'build_executor_output_sets_valid(graph, output_sets)' \
+    'dispatch_build_batch_ready_with_output_preflight' \
+    'BuildBatchError.OutputPreflightRequired' \
+    'BuildBatchError.OutputAlreadyPresent(output_path)' \
+    'build_batch_ready_output_preflight(session)' \
+    'path_exists(output) or is_symlink(output)' \
+    'not is_file(output) or is_symlink(output)' \
     'build_batch_first_missing_output(session.output_sets[dispatch.job_index])' \
     'BuildBatchError.OutputMissing' \
     'session.output_sets.count != 0'; do
     rg -Fq "$output_invariant" "$model"
 done
+
+rg -Fq 'build_batch_rejects_existing_output_before_dispatch_without_mutation' "$fixture"
 
 for executor_output_bound in \
     'Limits::OUTPUT_PATHS' \

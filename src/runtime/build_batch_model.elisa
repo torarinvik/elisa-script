@@ -73,6 +73,8 @@ module EsBuildBatch:
             OutputLimitExceeded
             OutputListMismatch
             OutputPathInvalid
+            OutputPreflightRequired
+            OutputAlreadyPresent(path: sview)
             OutputMissing
             InvalidOutputRoot
             StopAcknowledgementMismatch
@@ -438,11 +440,10 @@ module EsBuildBatch:
             return BuildExecutionResult{graph_state: session.scheduler.graph.state, nodes: nodes, log_bytes: session.scheduler.graph.log_bytes}
 
 
-        # Return a deterministic ready wave, bounded both by the scheduler's
-        # graph limit and by the process adapter's tighter process cap. Output
-        # budget is reserved before any node transition so concurrent children
-        # cannot collectively exceed the graph's retained-log ceiling.
-        def dispatch_build_batch_ready(session: mutable BuildBatchSession&) -> darray[BuildBatchLaunch] error[BuildContractError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+        # Internal state transition after any required host filesystem
+        # preflight. Output-bearing sessions may only reach this from the
+        # preflight entry point below.
+        def dispatch_build_batch_ready_impl(session: mutable BuildBatchSession&) -> darray[BuildBatchLaunch] error[BuildContractError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
             _ = try validate_build_batch_session(session)
             raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Running
             available_parallel: usize = session.processes.policy.max_parallel - session.processes.active
@@ -484,9 +485,52 @@ module EsBuildBatch:
 
 
     private:
+        def build_batch_first_present_output(outputs: BuildExecutionNodeOutputs) -> sview can[Memory.Allocate, Abort.Panic, File.Read]:
+            for output_path in outputs.paths |outputs|:
+                output: Path = path(output_path)
+                return output_path if path_exists(output) or is_symlink(output)
+            return ""
+
+
+        def build_batch_ready_output_preflight(session: BuildBatchSession) -> bool error[BuildBatchError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            return true if session.output_sets.count == 0
+            available_parallel: usize = session.processes.policy.max_parallel - session.processes.active
+            check_count: usize = session.scheduler.ready_queue.count if session.scheduler.ready_queue.count < available_parallel else available_parallel
+            for offset in 0..<check_count |session|:
+                node_index: usize = session.scheduler.ready_queue[offset]
+                output_path: sview = try build_batch_first_present_output(session.output_sets[node_index])
+                raise BuildBatchError.OutputAlreadyPresent(output_path) if output_path != ""
+            return true
+
+
+    public:
+        # Output-free jobs need no filesystem receipt and retain the pure
+        # scheduler API. Output-bearing jobs must use the checked entry point;
+        # otherwise a stale pre-existing artifact could satisfy the later
+        # post-run existence check.
+        def dispatch_build_batch_ready(session: mutable BuildBatchSession&) -> darray[BuildBatchLaunch] error[BuildContractError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.OutputPreflightRequired if session.output_sets.count != 0
+            return try dispatch_build_batch_ready_impl(session)
+
+
+        # Before returning launch requests for nodes with declared outputs,
+        # require every output path in this ready wave to be absent. Callers
+        # must hold the exclusive build-root lease through process creation;
+        # existing outputs must first be removed only through a separately
+        # validated ownership-aware cleanup path.
+        def dispatch_build_batch_ready_with_output_preflight(session: mutable BuildBatchSession&) -> darray[BuildBatchLaunch] error[BuildContractError, BuildExecutionError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic, File.Read]:
+            _ = try validate_build_batch_session(session)
+            raise BuildBatchError.InvalidSession if session.scheduler.state != BuildSchedulerState.Running
+            _ = try build_batch_ready_output_preflight(session)
+            return try dispatch_build_batch_ready_impl(session)
+
+
+    private:
         def build_batch_first_missing_output(outputs: BuildExecutionNodeOutputs) -> sview can[Memory.Allocate, Abort.Panic, File.Read]:
             for output_path in outputs.paths |outputs|:
-                return output_path if not is_file(path(output_path))
+                output: Path = path(output_path)
+                return output_path if not is_file(output) or is_symlink(output)
             return ""
 
 
@@ -537,10 +581,10 @@ module EsBuildBatch:
         # process. Every nonzero, signaled, spawn, timeout, output-limit, or
         # host-I/O result enters fail-fast drain; successful siblings may still
         # complete while that drain is in progress. Sessions with declared
-        # outputs must use the checking variant below. That variant checks
-        # post-run `is_file` only; incremental hosts must separately perform
-        # ownership-aware output invalidation/preflight before dispatch, or a
-        # stale pre-existing output can satisfy the receipt.
+        # outputs must use the checking variant below. Its dispatch companion
+        # requires output paths to be absent before scheduler admission; the
+        # post-run receipt then rejects missing paths and symlinks and requires
+        # `is_file`. Existing artifacts still need ownership-aware cleanup.
         def report_build_batch_result(session: mutable BuildBatchSession&, dispatch: ProcessBatchDispatch, process_result: ProcessResult) -> BuildSchedulerState error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
             raise BuildBatchError.InvalidSession if session.output_sets.count != 0
             return try report_build_batch_result_impl(session, dispatch, process_result, "")
