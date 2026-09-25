@@ -341,8 +341,16 @@ the type span for public-launcher coverage; `unicode_repr.input` adds process-
 level coverage for representative format/private-use/noncharacter scalars.
 Newline-dense inputs check that 131,072 lines reach the ordinary no-export
 diagnostic while 131,073 lines hit the candidate-only line-view cap, without
-entering Python. These are static source contracts, not executed evidence; the
-selected `repr` cases do not prove full Unicode printability parity. A
+entering Python. The candidate's `python_repr` currently uses hand-maintained
+Unicode exclusions, while Elisa's general `Text.isprintable()` predicate is
+deliberately ASCII-only; neither is evidence of complete Python `str!r`
+printability parity. These are static source contracts, not executed evidence;
+the selected `repr` cases do not prove full Unicode printability parity.
+Acceptance requires a complete contract for Python 3.14.7 / UCD 16.0.0
+printability (including unassigned and private-use scalars), plus differential
+coverage that exercises every non-printable range boundary and representative
+interior values. Prefer one generated/shared Unicode-property range source over
+continuing to grow the diagnostic's ad-hoc exception list. A
 candidate-only generated input also
 exercises rejection of 4,097 parameters before creating `Parameter` records,
 without entering Python. A candidate-only generated input also puts five
