@@ -103,6 +103,17 @@ decimal_has_too_many_digits() {
 rss_limit_kb="$(normalize_decimal "${ELISASCRIPT_RSS_LIMIT_KB:-524288}")"
 time_limit_seconds="$(normalize_decimal "${ELISASCRIPT_TIME_LIMIT_SECONDS:-120}")"
 log_limit_bytes="$(normalize_decimal "${ELISASCRIPT_LOG_LIMIT_BYTES:-67108864}")"
+rss_limit_ceiling_kb=524288
+case "$rss_limit_kb" in
+    ???????*)
+        echo "run_bounded_test: RSS limit may not exceed 524288 KB (512 MiB)" >&2
+        exit 2
+        ;;
+esac
+if [ "$rss_limit_kb" -gt "$rss_limit_ceiling_kb" ]; then
+    echo "run_bounded_test: RSS limit may not exceed 524288 KB (512 MiB)" >&2
+    exit 2
+fi
 if [ "$rss_limit_kb" = "0" ] || [ "$time_limit_seconds" = "0" ] || [ "$log_limit_bytes" = "0" ]; then
     echo "run_bounded_test: RSS, time, and log limits must be positive" >&2
     exit 2

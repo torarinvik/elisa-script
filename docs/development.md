@@ -97,11 +97,12 @@ For a reusable guard instead of an inline shell function, run
 `scripts/run_bounded_lowering.sh test/driver/argv_probe.elisascript` from
 this repository after explicit reauthorization. It accepts one or more small
 fixtures, refuses any compiler path outside the pinned StructPy checkout, and
-uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The limits
-can only be changed explicitly with
-`ELISASCRIPT_RSS_LIMIT_KB`, `ELISASCRIPT_TIME_LIMIT_SECONDS`, and
-`ELISASCRIPT_LOG_LIMIT_BYTES`. All three values must be positive decimal
-integers with at most 10 digits; malformed, zero, and overlong values are
+uses a 524,288 KB RSS ceiling with a 120-second timeout by default. The RSS
+limit may be lowered with `ELISASCRIPT_RSS_LIMIT_KB` but cannot be raised above
+524,288 KB (512 MiB); time and log limits can be changed explicitly with
+`ELISASCRIPT_TIME_LIMIT_SECONDS` and `ELISASCRIPT_LOG_LIMIT_BYTES`. All three
+values must be positive decimal integers with at most 10 digits; malformed,
+zero, and overlong values are
 rejected before any compiler process is created. The log ceiling defaults to 64
 MiB and cannot exceed the 1 GiB retained evidence budget per
 compiler/configuration identity. Both are monitored by
