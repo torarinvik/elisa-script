@@ -1,0 +1,81 @@
+include "../../src/runtime/record_model.elisa"
+include "../../src/runtime/record_field_scan_model.elisa"
+include "../../src/runtime/record_fields_model.elisa"
+include "../../src/runtime/record_field_edit_adapter_model.elisa"
+
+using EsRecord
+using EsRecordFieldScan
+using EsRecordFields
+using EsRecordFieldEditAdapter
+
+
+@test
+def scanned_fields_edit_and_reconstruct_with_explicit_separators() -> void:
+    can Memory.Allocate, Abort.Panic:
+        record_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Literal, field_separator: ",", output_separator: "\n"}
+        record: Record = Record{source: "fixture", raw: "a,b,", separator: "\n"}
+        fields: darray[RecordField] = try split_record_fields(record, record_policy)
+        edit_policy: RecordFieldEditPolicy = RecordFieldEditPolicy{max_fields: 8, max_edits: 8, max_output_bytes: 64, output_separator: "|"}
+        session: mutable RecordFieldEditSession = try record_field_edit_session_from_fields(record, record_policy, fields, edit_policy)
+        assert advance_record_field_edit(session, RecordFieldEditEvent.Begin) == RecordFieldEditState.Editing
+        assert advance_record_field_edit(session, RecordFieldEditEvent.Set, RecordFieldEdit{index: 1, value: "changed"}) == RecordFieldEditState.Editing
+        assert advance_record_field_edit(session, RecordFieldEditEvent.Reconstruct) == RecordFieldEditState.Ready
+        reconstructed: sview = try record_field_reconstruct_record(record, record_policy, session)
+        assert reconstructed == "a|changed|\n"
+
+
+@test
+def record_edit_adapter_preserves_consumed_separator_and_enforces_record_limit() -> void:
+    can Memory.Allocate, Abort.Panic:
+        preserve_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Whitespace, preserve_separator: true, output_separator: "\n"}
+        record: Record = Record{source: "fixture", raw: "left right", separator: "\r\n"}
+        fields: darray[RecordField] = try split_record_fields(record, preserve_policy)
+        edit_policy: RecordFieldEditPolicy = RecordFieldEditPolicy{max_fields: 8, max_edits: 8, max_output_bytes: 64, output_separator: ","}
+        session: mutable RecordFieldEditSession = try record_field_edit_session_from_fields(record, preserve_policy, fields, edit_policy)
+        assert advance_record_field_edit(session, RecordFieldEditEvent.Begin) == RecordFieldEditState.Editing
+        assert advance_record_field_edit(session, RecordFieldEditEvent.Reconstruct) == RecordFieldEditState.Ready
+        preserved_output: sview = try record_field_reconstruct_record(record, preserve_policy, session)
+        assert preserved_output == "left,right\r\n"
+
+        tight_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Whole, output_separator: "\n", max_record_bytes: 3}
+        short_record: Record = Record{source: "fixture", raw: "x"}
+        short_fields: darray[RecordField] = try split_record_fields(short_record, tight_policy)
+        oversized_edit_policy: RecordFieldEditPolicy = RecordFieldEditPolicy{max_fields: 2, max_edits: 2, max_output_bytes: 8}
+        oversized: mutable RecordFieldEditSession = try record_field_edit_session_from_fields(short_record, tight_policy, short_fields, oversized_edit_policy)
+        _ = try advance_record_field_edit(oversized, RecordFieldEditEvent.Begin)
+        _ = try advance_record_field_edit(oversized, RecordFieldEditEvent.Set, RecordFieldEdit{index: 0, value: "long"})
+        _ = try advance_record_field_edit(oversized, RecordFieldEditEvent.Reconstruct)
+        limit_rejected: mutable bool = false
+        catch record_field_reconstruct_record(short_record, tight_policy, oversized):
+            ok value:
+                assert false
+            error failure:
+                limit_rejected <- failure == RecordFieldEditError.OutputLimitExceeded
+        assert limit_rejected
+
+
+@test
+def record_edit_adapter_rejects_incomplete_scanner_output_and_unwired_modes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Literal, field_separator: ","}
+        record: Record = Record{source: "fixture", raw: "left,right"}
+        incomplete_fields: darray[RecordField] = [RecordField{index: 0, start_byte: 0, end_byte: 4, value: "left"}]
+        edit_policy: RecordFieldEditPolicy = RecordFieldEditPolicy{max_fields: 8, max_edits: 8, max_output_bytes: 64}
+        mismatch_rejected: mutable bool = false
+        catch record_field_edit_session_from_fields(record, policy, incomplete_fields, edit_policy):
+            ok value:
+                assert false
+            error failure:
+                mismatch_rejected <- failure == RecordFieldScanError.FieldSetMismatch
+        assert mismatch_rejected
+
+        fixed_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.FixedWidth, fixed_widths: [4, 4]}
+        fixed_record: Record = Record{source: "fixture", raw: "leftrigh"}
+        fixed_fields: darray[RecordField] = try split_record_fields(fixed_record, fixed_policy)
+        unsupported_rejected: mutable bool = false
+        catch record_field_edit_session_from_fields(fixed_record, fixed_policy, fixed_fields, edit_policy):
+            ok value:
+                assert false
+            error failure:
+                unsupported_rejected <- failure == RecordFieldScanError.UnsupportedMode
+        assert unsupported_rejected

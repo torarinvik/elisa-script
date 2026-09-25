@@ -1284,10 +1284,18 @@ field/edit/output ceilings, explicit output separators and trailing-newline
 policy, optional append-at-NF behavior, stable field positions, and
 subtraction-safe reconstruction accounting. Missing edits clear a value to the
 empty field rather than silently renumbering it; `Ready`-only joining and
-post-terminal rejection are typed through `error[RecordFieldEditError]`. The
-focused IR fixture, namespace inclusion, documentation, and
-check_record_fields.sh audit are static evidence; scanner integration, typed
-numeric conversion, and host execution remain open.
+post-terminal rejection are typed through `error[RecordFieldEditError]`.
+`EsRecordFieldEditAdapter` admits whole-record, ASCII-whitespace, and literal
+separator fields only after exact comparison against a fresh bounded scan,
+rejecting incomplete or forged scanner output with
+`RecordFieldScanError.FieldSetMismatch`. Reconstructed records use the edit
+policy's field separator and preserve the consumed record separator only when
+requested; otherwise they use the stream output separator, with the complete
+record checked against `max_record_bytes`. Regex-span integration,
+fixed-width/schema serialization, typed numeric conversion, and host execution
+remain open. The focused fixtures, namespace inclusion, documentation, and
+check_record_fields.sh audit are static evidence; runtime validation is
+withheld under the active compiler-process safety hold.
 
 ES-SCRIPT-031 | EsRecordWindow supplies a bounded rolling unsigned-sum window
 for streaming record actions. It retains at most `max_events`, exposes an

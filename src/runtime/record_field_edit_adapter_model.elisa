@@ -1,0 +1,60 @@
+# Bridge scanned record fields into bounded editing and record reconstruction.
+#
+# The caller chooses the output field separator (OFS-like behavior). The
+# record policy independently controls whether to preserve the consumed record
+# separator or emit its configured output separator.
+
+module EsRecordFieldEditAdapter:
+    using EsRecord
+    using EsRecordFieldScan
+    using EsRecordFields
+
+    private:
+        def record_field_edit_adapter_mode_supported(mode: RecordFieldMode) -> bool:
+            return mode in {RecordFieldMode.Whole, RecordFieldMode.Whitespace, RecordFieldMode.Literal}
+
+
+        def record_field_edit_adapter_fields_match(actual: darray[RecordField], expected: darray[RecordField]) -> bool:
+            return false if actual.count != expected.count
+            for index in 0..<actual.count |actual, expected|:
+                actual_field: mutable RecordField = actual[index]
+                expected_field: mutable RecordField = expected[index]
+                return false if actual_field.index != expected_field.index
+                return false if actual_field.start_byte != expected_field.start_byte or actual_field.end_byte != expected_field.end_byte
+                return false if actual_field.present != expected_field.present or actual_field.value != expected_field.value
+            return true
+
+
+    public:
+        def record_field_edit_session_from_fields(record: Record, record_policy: RecordStreamPolicy, fields: darray[RecordField], edit_policy: RecordFieldEditPolicy) -> RecordFieldEditSession error[RecordContractError, RecordFieldEditError, RecordFieldScanError] can[Memory.Allocate, Abort.Panic]:
+            admitted_record: mutable Record = record
+            admitted_record_policy: mutable RecordStreamPolicy = record_policy
+            _ = try validate_record(admitted_record, admitted_record_policy)
+            raise RecordFieldScanError.UnsupportedMode if not record_field_edit_adapter_mode_supported(record_policy.field_mode)
+            raise RecordFieldScanError.FieldLimitExceeded if fields.count > record_policy.max_fields
+            raise RecordFieldEditError.FieldLimitExceeded if fields.count > edit_policy.max_fields
+            expected_fields: darray[RecordField] = try split_record_fields(record, record_policy)
+            raise RecordFieldScanError.FieldSetMismatch if not record_field_edit_adapter_fields_match(fields, expected_fields)
+            empty_session: mutable RecordFieldEditSession = RecordFieldEditSession{policy: edit_policy}
+            _ = try validate_record_field_edit_session(empty_session)
+            values: mutable darray[sview] = []
+            for index in 0..<fields.count |admitted_record, admitted_record_policy, fields, values|:
+                field: mutable RecordField = fields[index]
+                raise RecordFieldScanError.FieldIndexInvalid if field.index != index
+                _ = try validate_record_field(field, admitted_record, admitted_record_policy)
+                values.push(field.value)
+            session: mutable RecordFieldEditSession = RecordFieldEditSession{policy: edit_policy, fields: values}
+            _ = try validate_record_field_edit_session(session)
+            return session
+
+
+        def record_field_reconstruct_record(record: Record, record_policy: RecordStreamPolicy, session: RecordFieldEditSession&) -> sview error[RecordContractError, RecordFieldEditError] can[Memory.Allocate, Abort.Panic]:
+            admitted_record: mutable Record = record
+            admitted_record_policy: mutable RecordStreamPolicy = record_policy
+            _ = try validate_record(admitted_record, admitted_record_policy)
+            content: sview = try record_field_reconstruct(session)
+            separator: sview = record.separator if record_policy.preserve_separator else record_policy.output_separator
+            content_bytes: usize = sview_len(content)
+            raise RecordFieldEditError.OutputLimitExceeded if content_bytes > record_policy.max_record_bytes
+            raise RecordFieldEditError.OutputLimitExceeded if sview_len(separator) > record_policy.max_record_bytes - content_bytes
+            return content + separator

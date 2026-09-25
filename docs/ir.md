@@ -1773,6 +1773,21 @@ rejects pre-begin edits/output, post-terminal mutation, invalid indices, malform
 and output overflows through `error[RecordFieldEditError]`; host adapters own
 the borrowed field storage and any subsequent file publication.
 
+`EsRecordFieldEditAdapter::record_field_edit_session_from_fields` bridges this
+state machine to `EsRecordFieldScan` for whole-record, ASCII-whitespace, and
+literal-separator modes. It compares the caller's fields with a fresh bounded
+scan before opening an edit session, rejecting omitted, reordered, or altered
+fields as `RecordFieldScanError.FieldSetMismatch` rather than reconstructing a
+partial record. Regex spans need an explicit matcher-to-adapter contract;
+fixed-width padding and schema serializers are not inferred, so those modes
+currently return `UnsupportedMode`. `record_field_reconstruct_record` joins
+the edited fields with the edit policy's field separator and then appends either
+the consumed record separator (`preserve_separator`) or the record policy's
+output separator. It checks content and separator together against
+`max_record_bytes` before returning the rebuilt record. Focused adapter fixtures
+and the compiler-free audit are source-level evidence only; runtime validation
+remains withheld under the active compiler-process safety hold.
+
 `EsRecordWindow::RecordWindowSession` supplies a bounded rolling numeric
 window for streaming actions. It retains an event history capped by
 `max_events`, tracks an active suffix capped by `width`, stages eviction and
