@@ -15,18 +15,156 @@ def elisascript_float_format_candidate(buffer: mutable u8&, capacity: usize, val
         panic("float formatting failed") if length < 0 or length.usize() >= capacity
         return length.usize()
 
+# Normalize a round-tripping C `%g` candidate to Python's fixed/scientific
+# exponent ranges. The source and destination buffers must not overlap.
+def elisascript_float_python_notation(source: mutable u8&, source_length: usize, destination: mutable u8&, destination_capacity: usize) -> usize:
+    can Console.Format, Abort.Panic:
+        normalized: mutable u8[64] = zeroed
+        digits: mutable u8[32] = zeroed
+        sign_length: usize = 1 if source_length > 0 and source[0] == 45u8 else 0
+        first: u8 = source[sign_length]
+        if first == 110u8:
+            panic("float formatting buffer is too small") if destination_capacity < 4
+            destination[0] <- 110
+            destination[1] <- 97
+            destination[2] <- 110
+            destination[3] <- 0
+            return 3
+        if first == 105u8:
+            panic("float formatting buffer is too small") if destination_capacity < source_length + 1
+            for index in 0..<source_length:
+                destination[index] <- source[index]
+            destination[source_length] <- 0
+            return source_length
+
+        exponent_marker: usize = source_length
+        decimal_marker: usize = source_length
+        for index in sign_length..<source_length:
+            exponent_marker <- index if source[index] == 101u8 or source[index] == 69u8
+            decimal_marker <- index if source[index] == 46u8
+
+        digit_count: mutable usize = 0
+        digits_before_decimal: mutable usize = 0
+        mantissa_end: usize = exponent_marker
+        for index in sign_length..<mantissa_end:
+            byte: u8 = source[index]
+            if byte >= 48u8 and byte <= 57u8:
+                digits[digit_count] <- byte
+                digit_count <- digit_count + 1
+                digits_before_decimal <- digits_before_decimal + 1 if decimal_marker == source_length or index < decimal_marker
+
+        scientific_exponent: mutable i32 = 0
+        if exponent_marker < source_length:
+            exponent_start: mutable usize = exponent_marker + 1
+            exponent_negative: mutable bool = false
+            if exponent_start < source_length and (source[exponent_start] == 43u8 or source[exponent_start] == 45u8):
+                exponent_negative <- source[exponent_start] == 45u8
+                exponent_start <- exponent_start + 1
+            for index in exponent_start..<source_length:
+                byte: u8 = source[index]
+                if byte >= 48u8 and byte <= 57u8:
+                    scientific_exponent <- scientific_exponent * 10 + (byte - 48u8).i32()
+            scientific_exponent <- -scientific_exponent if exponent_negative
+            if scientific_exponent >= -4 and scientific_exponent < 16:
+                decimal_position: i32 = digits_before_decimal.i32() + scientific_exponent
+                output_length: mutable usize = 0
+                if sign_length != 0:
+                    normalized[output_length] <- 45
+                    output_length <- output_length + 1
+                if decimal_position <= 0:
+                    normalized[output_length] <- 48
+                    normalized[output_length + 1] <- 46
+                    output_length <- output_length + 2
+                    zero_count: usize = (-decimal_position).usize()
+                    for _ in 0..<zero_count:
+                        normalized[output_length] <- 48
+                        output_length <- output_length + 1
+                    for index in 0..<digit_count:
+                        normalized[output_length] <- digits[index]
+                        output_length <- output_length + 1
+                elif decimal_position.usize() >= digit_count:
+                    for index in 0..<digit_count:
+                        normalized[output_length] <- digits[index]
+                        output_length <- output_length + 1
+                    zero_count: usize = decimal_position.usize() - digit_count
+                    for _ in 0..<zero_count:
+                        normalized[output_length] <- 48
+                        output_length <- output_length + 1
+                else:
+                    for index in 0..<digit_count:
+                        normalized[output_length] <- digits[index]
+                        output_length <- output_length + 1
+                        if index + 1 == decimal_position.usize():
+                            normalized[output_length] <- 46
+                            output_length <- output_length + 1
+                panic("float formatting buffer is too small") if output_length >= destination_capacity
+                for index in 0..<output_length:
+                    destination[index] <- normalized[index]
+                destination[output_length] <- 0
+                return output_length
+
+        first_nonzero: mutable usize = digit_count
+        for index in 0..<digit_count:
+            first_nonzero <- index if first_nonzero == digit_count and digits[index] != 48u8
+        if first_nonzero == digit_count:
+            panic("float formatting buffer is too small") if destination_capacity < source_length + 1
+            for index in 0..<source_length:
+                destination[index] <- source[index]
+            destination[source_length] <- 0
+            return source_length
+
+        fixed_exponent: i32 = digits_before_decimal.i32() - first_nonzero.i32() - 1
+        if fixed_exponent >= 16:
+            last_nonzero: mutable usize = digit_count - 1
+            while last_nonzero > first_nonzero and digits[last_nonzero] == 48u8:
+                last_nonzero <- last_nonzero - 1
+            output_length: mutable usize = 0
+            if sign_length != 0:
+                normalized[output_length] <- 45
+                output_length <- output_length + 1
+            normalized[output_length] <- digits[first_nonzero]
+            output_length <- output_length + 1
+            if last_nonzero > first_nonzero:
+                normalized[output_length] <- 46
+                output_length <- output_length + 1
+                for index in (first_nonzero + 1)..<(last_nonzero + 1):
+                    normalized[output_length] <- digits[index]
+                    output_length <- output_length + 1
+            normalized[output_length] <- 101
+            output_length <- output_length + 1
+            exponent_text: mutable u8[16] = zeroed
+            exponent_length: int = snprintf((&exponent_text[0]).cast[u8&?], 16.usize(), "%+03d", fixed_exponent)
+            panic("float formatting exponent failed") if exponent_length < 0 or exponent_length.usize() >= 16
+            final_length: usize = output_length + exponent_length.usize()
+            panic("float formatting buffer is too small") if final_length >= destination_capacity
+            for index in 0..<output_length:
+                destination[index] <- normalized[index]
+            for index in 0..<exponent_length.usize():
+                destination[output_length + index] <- exponent_text[index]
+            destination[final_length] <- 0
+            return final_length
+
+        panic("float formatting buffer is too small") if destination_capacity < source_length + 1
+        for index in 0..<source_length:
+            destination[index] <- source[index]
+        destination[source_length] <- 0
+        return source_length
+
 # Write the shortest round-tripping candidate among 15, 16, and 17 significant
-# digits into caller-owned NUL-terminated storage. Callers choose their own
-# policy for non-finite values; NaN intentionally falls through to 17 digits
-# because IEEE NaN is unequal to itself.
+# digits in Python's fixed/scientific notation into caller-owned NUL-terminated
+# storage. Callers choose their own policy for non-finite values.
 def format_float_roundtrip_buffer(buffer: mutable u8&, capacity: usize, value: f64) -> usize:
     can Console.Format, Abort.Panic:
         panic("float formatting buffer is too small") if capacity < 2
-        length15: usize = elisascript_float_format_candidate(buffer, capacity, value, "%.15g")
-        return length15 if elisascript_float_strtod(buffer, null) == value
-        length16: usize = elisascript_float_format_candidate(buffer, capacity, value, "%.16g")
-        return length16 if elisascript_float_strtod(buffer, null) == value
-        return elisascript_float_format_candidate(buffer, capacity, value, "%.17g")
+        candidate: mutable u8[64] = zeroed
+        length15: usize = elisascript_float_format_candidate((&candidate[0]), 64.usize(), value, "%.15g")
+        selected_length: mutable usize = length15
+        if elisascript_float_strtod((&candidate[0]), null) != value:
+            length16: usize = elisascript_float_format_candidate((&candidate[0]), 64.usize(), value, "%.16g")
+            selected_length <- length16
+            if elisascript_float_strtod((&candidate[0]), null) != value:
+                selected_length <- elisascript_float_format_candidate((&candidate[0]), 64.usize(), value, "%.17g")
+        return elisascript_float_python_notation((&candidate[0]), selected_length, buffer, capacity)
 
 def int_to_string(value: i64) -> heap u8&:
     return int_to_string_into(&perm_arena, value) can Memory.Allocate, Console.Format, Abort.Panic
