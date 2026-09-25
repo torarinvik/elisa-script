@@ -33,6 +33,7 @@ for declaration in \
     'def seal_unordered_differential_filesystem_snapshot(' \
     'def advance_differential_filesystem_snapshot(' \
     'def differential_filesystem_snapshot_fingerprint(' \
+    'def differential_filesystem_entry_mode_valid(' \
     'def compare_differential_filesystem_snapshots(' \
     'def copy_differential_filesystem_entry_path(' \
     'def copy_differential_filesystem_entry_content('; do
@@ -50,6 +51,11 @@ for boundary in \
     'PathStorageLimitExceeded' \
     'SnapshotAccountingInvalid' \
     'AncestorNotDirectory' \
+    'InvalidMode' \
+    'mode > 511u32' \
+    'mode & 73u32' \
+    'differential_filesystem_entry_mode_valid(entry.kind, entry.mode, entry.executable)' \
+    'InvalidMode if not differential_filesystem_entry_mode_valid(entry.kind, entry.mode, entry.executable)' \
     'EntryOrderInvalid' \
     'ByteLimitExceeded' \
     'SnapshotNotSealed' \
@@ -83,6 +89,8 @@ for fixture_pattern in \
     'content_data.count' \
     'differential_filesystem_unordered_batch_is_bounded_sorted_and_sealed' \
     'differential_filesystem_rejects_non_directory_ancestors' \
+    'differential_filesystem_requires_canonical_permission_metadata' \
+    'DifferentialFilesystemError.InvalidMode' \
     'DifferentialFilesystemError.AncestorNotDirectory' \
     'DifferentialFilesystemError.PathStorageLimitExceeded' \
     'DifferentialFilesystemState.Cancelled'; do
@@ -91,6 +99,8 @@ done
 
 rg -Fq 'EsDifferentialFilesystem::DifferentialFilesystemSnapshot' "$docs"
 rg -Fq 'Exact-payload snapshot contract' "$docs"
+rg -Fq 'ordinary permission bits (`0000` through `0777`)' "$docs"
+rg -Fq 'executable marker must match those bits' "$docs"
 rg -Fq 'backslash is an' "$docs"
 
 printf 'differential filesystem audit: bounded exact payload snapshots, valid tree ancestors, fingerprints, and first-difference comparison are present\n'

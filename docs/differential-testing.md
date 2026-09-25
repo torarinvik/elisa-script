@@ -1011,6 +1011,10 @@ bounded in-place O(n log n) heapsort. Both paths enforce 4 KiB per path, a
 entry-count ceiling, and typed metadata. Regular files carry exact bytes
 (including NUL and non-UTF-8 bytes), symlinks carry their non-empty raw target
 bytes (non-UTF-8 is allowed, NUL is not), and directories carry no content.
+Entry modes are restricted to ordinary permission bits (`0000` through `0777`);
+the executable marker must match those bits for regular files and must be false
+for directories and symlinks. This prevents caller-constructed snapshots from
+claiming contradictory mode and executable metadata.
 Only `/` separates components in this POSIX path contract; backslash is an
 ordinary filename byte. Every ancestor entry that is present must be a
 directory: a file or symlink cannot also contain a descendant path. This is
