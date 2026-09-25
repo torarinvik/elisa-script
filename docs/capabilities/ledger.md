@@ -805,7 +805,12 @@ State validation rejects contradictory failure, cancellation, or success
 shapes before an event can advance them.
 The focused IR fixture, namespace inclusion, documentation, and
 check_build_scheduler.sh audit are static evidence; process launch, cache
-persistence, and host cancellation adapters remain open.
+persistence, and host cancellation adapters remain open. In addition, current
+recipe signing rejects `Inherit` because ambient environment is not signed,
+while the serial executor supports only `Inherit` and rejects `Replace`/`Clear`.
+Thus no command mode is both cacheable and dispatchable for a dirty incremental
+node; end-to-end exact environment semantics are a prerequisite for E07
+acceptance, not a completed capability.
 
 ES-SCRIPT-003 | EsOutputRender supplies sealed-document admission at validation,
 ordered record consumption, format framing, JSON/XML escape expansion accounting
