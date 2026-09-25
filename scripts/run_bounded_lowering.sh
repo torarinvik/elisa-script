@@ -152,16 +152,8 @@ process_group_has_processes() {
 
 compiler_process_state() {
     process_id="$1"
-    process_table="$(ps -axo pid=,stat= 2>/dev/null)" || return 2
-    [ -n "$process_table" ] || return 2
-    if process_state="$(printf '%s\n' "$process_table" | awk -v pid="$process_id" '$1 == pid { print $2; found = 1; exit } END { if (!found) exit 1 }')"; then
-        case "$process_state" in
-            *Z*) printf 'zombie\n' ;;
-            *) printf 'live\n' ;;
-        esac
-    else
-        printf 'absent\n'
-    fi
+    process_table="$( { ps -axo pid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || { printf 'unknown\n'; return 0; }
+    printf '%s\n' "$process_table" | validation_process_state_from_snapshot "$process_id" "$process_snapshot_row_limit"
 }
 
 reap_compiler_if_exited() {

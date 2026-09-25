@@ -43,6 +43,39 @@ validation_process_group_has_live_members_from_snapshot() {
     '
 }
 
+validation_process_state_from_snapshot() {
+    awk -v target="$1" -v row_limit="$2" '
+        BEGIN { if (target !~ /^[0-9]+$/ || target == "0") malformed = 1 }
+        NR > row_limit + 1 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" {
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
+            status_seen = 1
+            if ($2 != 0) ps_failed = 1
+            next
+        }
+        ++process_rows > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || NF != 2 || $2 == "" { malformed = 1; exit }
+        {
+            if ($1 == target) {
+                target_rows++
+                target_state = $2
+            }
+        }
+        END {
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1 || target_rows > 1) {
+                print "unknown"
+                exit 0
+            }
+            if (!target_rows) {
+                print "absent"
+                exit 0
+            }
+            if (target_state ~ /^Z/) print "zombie"
+            else print "live"
+        }
+    '
+}
+
 validation_process_tree_pids_from_snapshot() {
     awk -v root="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }

@@ -54,6 +54,15 @@ assert_group_liveness_status() {
     assert_equal "$expected_status" "$actual_status" "$description"
 }
 
+assert_process_state() {
+    state_input="$1"
+    target_pid="$2"
+    expected_state="$3"
+    description="$4"
+    actual_state="$(printf '%s\n' "$state_input" | validation_process_state_from_snapshot "$target_pid" 4)"
+    assert_equal "$expected_state" "$actual_state" "$description"
+}
+
 owned_group="$(validation_owned_process_group_id 301 301 100)"
 assert_equal 301 "$owned_group" 'session-leader PGID is safe to signal'
 for rejected_group_case in '301 100 100' '301 302 100' '0 0 100' '301 bad 100'; do
@@ -80,6 +89,25 @@ assert_group_liveness_status '10 S
 11 R
 12 R
 __ELISASCRIPT_PS_STATUS__ 0' 0 'oversized liveness snapshot conservatively retains leader'
+
+state_snapshot='10 S
+11 Z+
+__ELISASCRIPT_PS_STATUS__ 0'
+assert_process_state "$state_snapshot" 10 live 'live compiler process state'
+assert_process_state "$state_snapshot" 11 zombie 'zombie compiler process state'
+assert_process_state "$state_snapshot" 12 absent 'absent compiler process state'
+assert_process_state '10 S
+__ELISASCRIPT_PS_STATUS__ 1' 10 unknown 'failed process-state snapshot'
+assert_process_state '10 S' 10 unknown 'missing process-state sentinel'
+assert_process_state '10 S
+11 R
+12 R
+13 S
+14 R
+__ELISASCRIPT_PS_STATUS__ 0' 10 unknown 'oversized process-state snapshot'
+assert_process_state '10 S
+10 R
+__ELISASCRIPT_PS_STATUS__ 0' 10 unknown 'duplicate process-state row'
 
 tree_snapshot='10 1
 11 10
@@ -132,4 +160,4 @@ assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 1' rss 'failed RSS process-table command'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process states, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
