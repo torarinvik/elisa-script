@@ -588,9 +588,11 @@ attaching edges and the index. This avoids hand-copying parallel edge arrays
 and rejects malformed resolutions before graph mutation. Indexed graph
 validation then checks unique names linearly and cache lookups use binary
 search. The resolver bounds node names, per-node edges, and aggregate edges.
-Manual graphs without the index keep the legacy pairwise uniqueness check,
-and duplicate cache-entry validation remains pairwise, so large-graph scaling
-is still unqualified.
+Manual graphs without an index are accepted only up to
+`UNINDEXED_NAME_SCAN_NODES` (128 nodes); larger graphs fail with
+`NodeNameIndexRequired` and must use the resolver/attachment path. This caps
+the legacy pairwise uniqueness check while preserving indexed linear
+validation and logarithmic cache lookup for large graphs.
 Validation rejects missing, duplicate, unordered, and cyclic dependencies and
 preserves process-command errors. `advance_build_graph` limits active nodes and
 records per-node completion or failure. It exposes cancellation acknowledgement

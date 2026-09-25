@@ -46,6 +46,7 @@ for declaration in \
     'Limits::DEPENDENCIES' \
     'Limits::TOTAL_DEPENDENCIES' \
     'Limits::NAME_BYTES' \
+    'Limits::UNINDEXED_NAME_SCAN_NODES' \
     'Limits::LOG_BYTES' \
     'const enum BuildNodeState of u8:' \
     'const enum BuildGraphState of u8:' \
@@ -69,6 +70,7 @@ for boundary in \
     'DependencyShapeInvalid' \
     'NodeNameIndexInvalid' \
     'NodeNameOrderInvalid' \
+    'NodeNameIndexRequired' \
     'TOTAL_DEPENDENCIES - total_dependencies' \
     'sview_len(name) < Limits::NAME_BYTES' \
     'DuplicateDependency' \
@@ -108,6 +110,8 @@ rg -Fq 'include "../runtime/build_usage_graph_model.elisa"' "$ir"
 rg -Fq 'def validate_build_execution_output_sets(' "$executor_model"
 for fixture_pattern in \
     'typed_build_dependency_resolution_maps_names_to_canonical_indices' \
+    'build_graph_requires_canonical_name_index_above_legacy_scan_limit' \
+    'BuildContractError.NodeNameIndexRequired' \
     'typed_build_graph_contract_is_ordered_bounded_and_cancelable' \
     'BuildGraphEvent.NodeStart' \
     'BuildGraphEvent.NodeFailure' \
@@ -129,6 +133,7 @@ done
 rg -Fq 'BuildContractError.DependencyShapeInvalid' "$model"
 rg -Fq 'graph.nodes[node_index].name != entry.name' "$model"
 rg -Fq 'graph.node_name_order.count != 0 and graph.node_name_order.count != graph.nodes.count' "$model"
+rg -Fq 'graph.node_name_order.count == 0 and graph.nodes.count > Limits::UNINDEXED_NAME_SCAN_NODES' "$model"
 rg -Fq 'scheduler.graph.node_name_order.count == scheduler.graph.nodes.count' "$repo_root/src/runtime/build_scheduler_model.elisa"
 rg -Fq 'BuildContractError.NodeNameOrderInvalid' "$fixture"
 rg -Fq 'BuildContractError.NodeNameIndexInvalid' "$fixture"

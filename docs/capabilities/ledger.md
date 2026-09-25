@@ -780,7 +780,9 @@ for duplicates and order in one pass, and searched by binary search on cache
 hits. Incremental admission derives cache rows from graph-validated `UpToDate`
 decisions and sorts them canonically, so callers need not seed a duplicate cache
 list. BuildBatch uses the same binary lookup when applying and validating cache
-hits.
+hits. Graphs above the 128-node unindexed fallback ceiling must carry the
+resolver-produced sorted name index; small legacy graphs retain bounded
+pairwise duplicate-name validation.
 This remains a scheduler-state contract only: the current build host executor
 is serial, and `EsProcessSession`/`EsProcessBatch` do not yet launch or reap
 multiple children. No claim of bounded parallel process execution, CMake build
