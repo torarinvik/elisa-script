@@ -268,14 +268,18 @@ done
 for boundary in \
     'BuildUsageGraphError.UnsupportedCommand' \
     'BuildUsageGraphError.PlanOwnershipInvalid' \
+    'build_usage_graph_account_command_text' \
+    'measured_metadata_bytes != plan.metadata_bytes' \
     'validate_build_usage_process_command(action.command)' \
     'validate_build_execution_output_sets(plan.graph, plan.output_sets)' \
     'execute_build_graph_serial_with_outputs(plan.graph, plan.output_sets)'; do
     rg -Fq "$boundary" "$usage_graph_model"
 done
 rg -Fq 'build_usage_actions_become_owned_ordered_output_checked_graph' "$usage_graph_fixture"
+rg -Fq 'expected_metadata_bytes' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_relative_declared_outputs' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_rejects_forged_metadata_total' "$usage_graph_fixture"
 rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
 rg -Fq 'entry.library_form == BuildUsageLibraryForm.Path' "$target_usage_candidate"
 rg -Fq 'arguments.push("./" + entry.value)' "$target_usage_candidate"

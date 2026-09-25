@@ -795,7 +795,11 @@ command support, owner/view consistency, and output shape before returning a
 plan. `execute_build_usage_graph` is the explicit Process.Run boundary and
 repeats plan validation before serial execution with output checks. Source
 fixtures specify planning and invalid-edge rejection; none ran. Real compiler
-outputs, artifact cleanup/recovery, and CMake parity remain unverified.
+outputs, artifact cleanup/recovery, and CMake parity remain unverified. The
+plan's 64 MiB aggregate metadata budget now includes retained executable,
+working-directory, argv, and environment text plus per-string terminators across
+the whole graph, not only node names and declared outputs; the fixture checks
+the recomputed byte total.
 `build_usage_raw_argv` now gives archivers, generators, and test-run actions the
 same bounded argument ownership without interpreting shell syntax. Its fixture
 pins preservation of spaces, globs, and dollar-prefixed text as literal argv
