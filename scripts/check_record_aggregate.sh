@@ -179,5 +179,8 @@ rg -q 'record_aggregate_group_count\(index_growth, "i"\) == 1' "$runtime_fixture
 rg -q 'damaged.index_slots\[index\] <- 0' "$runtime_fixture"
 rg -q 'RecordAggregateError.AccountingInvalid' "$runtime_fixture"
 rg -q 'RecordAggregateError.SumLimitExceeded' "$runtime_fixture"
+rg -q 'record_aggregate_signed_sum_ceiling_is_inclusive_in_both_directions' "$runtime_fixture"
+rg -q '"positive", 5' "$runtime_fixture"
+rg -q '"negative", -5' "$runtime_fixture"
 
 printf 'record aggregate audit: bounded insertion-ordered groups and sealed lookup are present\n'
