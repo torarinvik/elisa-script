@@ -32,6 +32,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'double-forked process' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
     rg -Fq 'expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"' "$wrapper"
+    rg -Fq 'if [ "$#" -ne 1 ]; then' "$wrapper"
     rg -Fq 'compiler_path="$canonical_compiler_dir/$compiler_name"' "$wrapper"
     rg -Fq 'if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then' "$wrapper"
     rg -q 'refusing symlinked compiler path' "$wrapper"

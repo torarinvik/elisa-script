@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Lower one or more small Elisascript fixtures with the local StructPy compiler.
+# Lower one small Elisascript fixture per invocation with the local StructPy compiler.
 # This wrapper intentionally refuses installed or Elisa-core main-worktree
 # binaries and enforces an RSS guard because a virtual-memory limit is not enough
 # to protect the host from a runaway compiler.
@@ -66,8 +66,8 @@ if [ -z "$setsid_path" ]; then
     exit 125
 fi
 
-if [ "$#" -eq 0 ]; then
-    echo "usage: run_bounded_lowering.sh SOURCE.elisascript [...]" >&2
+if [ "$#" -ne 1 ]; then
+    echo "usage: run_bounded_lowering.sh SOURCE.elisascript" >&2
     exit 2
 fi
 

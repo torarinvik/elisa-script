@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Run one or more small Elisascript test fixtures with the local StructPy
+# Run one small Elisascript test fixture per invocation with the local StructPy
 # compiler. This wrapper is deliberately separate from run_bounded_lowering.sh:
 # executable test fixtures may run user code, so they need the same process-tree
 # RSS guard before they are allowed on a development host.
@@ -66,8 +66,8 @@ if [ -z "$setsid_path" ]; then
     exit 125
 fi
 
-if [ "$#" -eq 0 ]; then
-    echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript [...]" >&2
+if [ "$#" -ne 1 ]; then
+    echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript" >&2
     exit 2
 fi
 
