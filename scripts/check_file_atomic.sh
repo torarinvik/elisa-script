@@ -102,7 +102,9 @@ rg -q 'EsFileAtomic::AtomicFileSession' "$docs"
 rg -q 'ES-FS-007' "$ledger"
 
 rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtime_fixture"
+rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
+rg -Fq 'premature_ack_rejected' "$runtime_fixture"
 
 printf 'file atomic source audit: contract transitions and fixtures are present; filesystem adapter and runtime parity are not covered\n'
