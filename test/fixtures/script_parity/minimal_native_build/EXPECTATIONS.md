@@ -107,7 +107,11 @@ only the first rebuild frontier; these checks are source-only and unverified.
 The generated input is also rewritten with identical bytes at the same path;
 after CMake reconfiguration, neither route should rebuild because the generated
 header content is unchanged. This timestamp-only input case is source-only and
-unverified.
+unverified. The harness snapshots each generated header's modification time,
+waits across the file API's whole-second timestamp resolution, then requires
+both timestamps to remain unchanged after the no-op configure/build. This
+guards against rewriting identical output bytes while accidentally invalidating
+downstream tools that use modification times.
 
 To prove the dirty-output guard runs before process dispatch, the harness backs
 up the cached main object, overwrites that output with the default header, and
