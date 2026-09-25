@@ -174,5 +174,7 @@ rg -Fq 'atomic_file_posix_observation_rejects_invalid_parent' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 rg -Fq 'premature_ack_rejected' "$runtime_fixture"
+rg -Fq 'atomic_file_cleanup_ack_is_pending_only_and_idempotence_is_rejected' "$runtime_fixture"
+rg -Fq 'duplicate_ack_rejected' "$runtime_fixture"
 
 printf 'file atomic source audit: transition, compare, commit, and sealed-stage cleanup seams are present; restore, partial-stage cleanup, and runtime parity remain open\n'
