@@ -766,14 +766,16 @@ admitted for that node; validation rejects command mutation while a result is
 outstanding, preventing a stale child result from being attributed to a changed
 build recipe. Its declared output paths are snapshotted at dispatch as well, so
 the output verifier cannot be redirected to different paths while the child is
-running. The session also snapshots the initial graph plan (node names,
-commands, dependency edges, fingerprints, recipe signatures, name index, and
-parallelism limit) and declared output sets, rejecting structurally valid plan
-mutation even before dispatch. Focused regression fixtures and the static audit
-cover these bindings, but execution remains unverified. A nominally successful
-process result with nonempty host `error_text` is rejected before graph state or
-output reservations change, so receipt admission and incremental-result export
-agree on which results are successful.
+running. The session also records a validation baseline for the initial graph
+plan (node names, commands, dependency edges, fingerprints, recipe signatures,
+name index, and parallelism limit) and declared output sets, rejecting
+structurally valid graph/output mutation even before dispatch. Since the session
+is a public record, callers can also mutate the baseline; this detects
+inconsistent state, not hostile tampering. Focused regression fixtures and the
+static audit cover these bindings, but execution remains unverified. A
+nominally successful process result with nonempty host `error_text` is rejected
+before graph state or output reservations change, so receipt admission and
+incremental-result export agree on which results are successful.
 Successful integrated batches can now be converted to the canonical
 `BuildExecutionResult` used by the existing incremental commit path: cached
 nodes remain unstarted cache hits, while dispatched nodes preserve successful
