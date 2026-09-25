@@ -1,0 +1,144 @@
+# Explicit pkg-config discovery commands.
+#
+# This model never invokes a shell or searches PATH implicitly. Callers choose
+# the executable, working directory, and exact child environment; the build
+# executor later runs the ordered ProcessCommand values.
+
+module EsPkgConfig:
+    using EsProcess
+
+    public:
+        const module Limits:
+            EXECUTABLE_BYTES: usize = 4096
+            WORKING_DIRECTORY_BYTES: usize = 4096
+            PACKAGE_NAME_BYTES: usize = 255
+            VERSION_BYTES: usize = 256
+            QUERY_TIMEOUT_MICROS: u64 = 30000000u64
+            CAPTURE_OUTPUT_BYTES: usize = 1048576
+
+
+        const enum PkgConfigVersionOperator of u8:
+            Any
+            Equal
+            AtLeast
+            GreaterThan
+            AtMost
+            LessThan
+
+
+        struct PkgConfigRequirement:
+            name: sview
+            version_operator: PkgConfigVersionOperator = PkgConfigVersionOperator.Any
+            version: sview = ""
+            static_linking: bool = false
+
+
+        struct PkgConfigQueryPlan:
+            requirement: PkgConfigRequirement
+            exists: ProcessCommand
+            version: ProcessCommand
+            compile_flags: ProcessCommand
+            link_flags: ProcessCommand
+
+
+        error PkgConfigError:
+            InvalidExecutable
+            InvalidWorkingDirectory
+            InvalidPackageName
+            InvalidVersion
+            InvalidVersionOperator
+            InvalidProcessCommand
+
+
+    private:
+        def pkg_config_ascii_alphanumeric(byte: u8) -> bool:
+            return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122)
+
+
+        def pkg_config_package_name_valid(name: sview) -> bool:
+            length: usize = sview_len(name)
+            return false if length == 0 or length > Limits::PACKAGE_NAME_BYTES
+            return false if not pkg_config_ascii_alphanumeric(sview_at(name, 0))
+            valid: mutable bool = true
+            for offset in 1..<length |name, valid|:
+                byte: u8 = sview_at(name, offset)
+                valid <- false if not pkg_config_ascii_alphanumeric(byte) and byte != 45 and byte != 46 and byte != 43 and byte != 95
+            return valid
+
+
+        def pkg_config_version_valid(version: sview) -> bool:
+            length: usize = sview_len(version)
+            return false if length == 0 or length > Limits::VERSION_BYTES
+            valid: mutable bool = true
+            for byte in version |valid|:
+                valid <- false if not pkg_config_ascii_alphanumeric(byte) and byte != 45 and byte != 46 and byte != 43 and byte != 58 and byte != 95 and byte != 126
+            return valid
+
+
+        def pkg_config_version_operator_text(operator: PkgConfigVersionOperator) -> sview error[PkgConfigError]:
+            return "=" if operator == PkgConfigVersionOperator.Equal
+            return ">=" if operator == PkgConfigVersionOperator.AtLeast
+            return ">" if operator == PkgConfigVersionOperator.GreaterThan
+            return "<=" if operator == PkgConfigVersionOperator.AtMost
+            return "<" if operator == PkgConfigVersionOperator.LessThan
+            raise PkgConfigError.InvalidVersionOperator
+
+
+        def pkg_config_requirement_valid(requirement: PkgConfigRequirement) -> bool error[PkgConfigError]:
+            raise PkgConfigError.InvalidPackageName if not pkg_config_package_name_valid(requirement.name)
+            if requirement.version_operator == PkgConfigVersionOperator.Any:
+                raise PkgConfigError.InvalidVersion if requirement.version != ""
+                return true
+            raise PkgConfigError.InvalidVersionOperator if requirement.version_operator != PkgConfigVersionOperator.Equal and requirement.version_operator != PkgConfigVersionOperator.AtLeast and requirement.version_operator != PkgConfigVersionOperator.GreaterThan and requirement.version_operator != PkgConfigVersionOperator.AtMost and requirement.version_operator != PkgConfigVersionOperator.LessThan
+            raise PkgConfigError.InvalidVersion if not pkg_config_version_valid(requirement.version)
+            return true
+
+
+        def pkg_config_requirement_spec(requirement: PkgConfigRequirement) -> sview error[PkgConfigError] can[Memory.Allocate, Abort.Panic]:
+            _ = try pkg_config_requirement_valid(requirement)
+            return requirement.name if requirement.version_operator == PkgConfigVersionOperator.Any
+            operator: sview = try pkg_config_version_operator_text(requirement.version_operator)
+            return requirement.name + " " + operator + " " + requirement.version
+
+
+        def pkg_config_query_command(executable: sview, working_directory: sview, arguments: darray[sview], environment: darray[sview]) -> ProcessCommand error[PkgConfigError] can[Memory.Allocate, Abort.Panic]:
+            command: mutable ProcessCommand = ProcessCommand{
+                executable: executable,
+                arguments: arguments,
+                working_directory: working_directory,
+                environment: environment,
+                environment_mode: ProcessEnvironmentMode.Clear if environment.count == 0 else ProcessEnvironmentMode.Replace,
+                stdin_mode: ProcessStdioMode.Null,
+                stdout_mode: ProcessStdioMode.Capture,
+                stderr_mode: ProcessStdioMode.Capture,
+                timeout_micros: Limits::QUERY_TIMEOUT_MICROS,
+                capture_output_limit_bytes: Limits::CAPTURE_OUTPUT_BYTES,
+                failure_mode: ProcessFailureMode.Check
+            }
+            valid: mutable bool = false
+            catch validate_process_command(command):
+                ok result:
+                    valid <- result
+                error failure:
+                    raise PkgConfigError.InvalidProcessCommand
+            raise PkgConfigError.InvalidProcessCommand if not valid
+            return command
+
+
+    public:
+        # Create a four-command ordered query. The Exists command carries the
+        # version spec as one argv element, so package/version syntax cannot
+        # become shell syntax. Hosts must stop if Exists fails before using the
+        # later version/flag captures.
+        def pkg_config_query_plan(executable: sview, working_directory: sview, requirement: PkgConfigRequirement, environment: darray[sview] = []) -> PkgConfigQueryPlan error[PkgConfigError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigError.InvalidExecutable if sview_len(executable) == 0 or sview_len(executable) > Limits::EXECUTABLE_BYTES or sview_contains_byte(executable, 0) or not path_is_absolute(path(executable))
+            raise PkgConfigError.InvalidWorkingDirectory if sview_len(working_directory) == 0 or sview_len(working_directory) > Limits::WORKING_DIRECTORY_BYTES or sview_contains_byte(working_directory, 0) or not path_is_absolute(path(working_directory))
+            spec: sview = try pkg_config_requirement_spec(requirement)
+            exists: ProcessCommand = try pkg_config_query_command(executable, working_directory, ["--print-errors", "--exists", spec], environment)
+            version: ProcessCommand = try pkg_config_query_command(executable, working_directory, ["--modversion", requirement.name], environment)
+            compile_flags: ProcessCommand = try pkg_config_query_command(executable, working_directory, ["--cflags", requirement.name], environment)
+            link_arguments: darray[sview] = ["--libs", requirement.name]
+            if requirement.static_linking:
+                link_arguments <- ["--static", "--libs", requirement.name]
+            link_flags: ProcessCommand = try pkg_config_query_command(executable, working_directory, link_arguments, environment)
+            return PkgConfigQueryPlan{requirement: requirement, exists: exists, version: version, compile_flags: compile_flags, link_flags: link_flags}
