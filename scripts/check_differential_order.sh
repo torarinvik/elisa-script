@@ -42,7 +42,9 @@ for boundary in \
     'WorldContaminated' \
     'expected_order_dependency' \
     'expected_world_contamination' \
-    'session.has_world_contamination != expected_world_contamination'; do
+    'session.has_world_contamination != expected_world_contamination' \
+    'session.has_baseline and session.observations.count == 0' \
+    'session.observations.count != 0 or session.baseline_initial_world_fingerprint != 0 or session.baseline_comparison_fingerprint != 0 or session.baseline_equal'; do
     rg -Fq "$boundary" "$model"
 done
 
@@ -56,7 +58,9 @@ for fixture_pattern in \
     'DifferentialOrderClassification.WorldContaminated' \
     'DifferentialOrderError.OrderContaminationRejected' \
     'retained_leak' \
-    'forged_order_flags'; do
+    'forged_order_flags' \
+    'hidden_order_baseline_rejected' \
+    'orphan_order_baseline_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 

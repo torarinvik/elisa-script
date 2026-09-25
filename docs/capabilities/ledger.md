@@ -1197,7 +1197,10 @@ ES-SCRIPT-015 | EsDifferentialOrder supplies a bounded dual-order execution
 session, initial/final world fingerprints, duplicate-order rejection, and typed
 order-independent, order-dependent, or world-contaminated classifications with
 reject/report policy. Contamination and order-dependency flags are derived
-cumulatively from retained observations. The focused differential fixture, namespace inclusion,
+cumulatively from retained observations. Baseline presence must agree with
+retained observations; an empty session cannot carry baseline fingerprints or
+comparison state. Forged empty/orphan-baseline fixtures and an audit assertion
+were added but not run. The focused differential fixture, namespace inclusion,
 documentation, and check_differential_order.sh audit are static evidence;
 actual world reset and repeated host execution remain open.
 

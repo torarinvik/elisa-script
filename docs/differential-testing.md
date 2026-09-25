@@ -1089,7 +1089,12 @@ Contamination and order-dependency flags are derived cumulatively from every
 retained observation, so a later clean ordering cannot erase an earlier world
 leak. The policy either rejects contamination before completion or reports the typed
 classification for an inconclusive artifact. The contract does not execute or
-restore a world; adapters must perform those operations around each run.
+restore a world; adapters must perform those operations around each run. The
+session validator also ties `has_baseline` to the retained observations: no
+observation may exist without a baseline, a claimed baseline requires at least
+one observation, and inactive baseline fingerprints/flags must be zeroed. This
+prevents a forged empty baseline from passing validation and corrupting the next
+observation transition.
 
 `EsDifferentialTraceWindow::DifferentialTraceWindow` bounds the context retained
 around a lockstep divergence. Its policy fixes the number of steps before and
