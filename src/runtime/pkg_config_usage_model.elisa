@@ -2,8 +2,8 @@
 #
 # The lower-level adapter preserves exact argv order and owns every resulting
 # requirement value. The build-facing operation adds effectful canonical path
-# and filesystem-kind preflight; a build host still owns any stronger roots or
-# race-resistant descriptor policy required before command dispatch.
+# and filesystem-kind preflight against caller-approved roots; a build host
+# still owns any race-resistant descriptor policy required before dispatch.
 
 module EsPkgConfigUsage:
     using EsBuildUsage
@@ -14,6 +14,7 @@ module EsPkgConfigUsage:
         const module Limits:
             REQUIREMENTS: usize = EsBuildUsage::Limits::REQUIREMENTS_PER_TARGET
             PATH_BYTES: usize = 4096
+            TRUSTED_ROOTS: usize = 256
 
 
         struct PkgConfigBuildUsage:
@@ -21,6 +22,13 @@ module EsPkgConfigUsage:
             # Requirement.value views point into these individually owned
             # buffers. Retain this record while the requirements are used.
             owned_values: darray[darray[u8]] = []
+
+
+        struct PkgConfigPathPolicy:
+            # Roots are caller-approved absolute directory spellings. They
+            # are canonicalized and checked before any pkg-config path is
+            # admitted; symlink targets must remain inside one such root.
+            allowed_roots: darray[sview] = []
 
 
         error PkgConfigUsageError:
@@ -31,6 +39,8 @@ module EsPkgConfigUsage:
             InvalidWorkingDirectory
             PathResolutionFailed
             WrongPathKind
+            InvalidPathPolicy
+            OutsideTrustedRoots
 
 
     private:
@@ -101,10 +111,46 @@ module EsPkgConfigUsage:
             return canonical
 
 
-        def pkg_config_usage_canonical_path_text(discovery: PkgConfigDiscovery, raw_path: sview, want_directory: bool) -> sview error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        struct PkgConfigCanonicalRoots:
+            values: darray[darray[u8]] = []
+
+
+        def pkg_config_usage_canonical_roots(discovery: PkgConfigDiscovery, policy: PkgConfigPathPolicy) -> PkgConfigCanonicalRoots error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            raise PkgConfigUsageError.InvalidPathPolicy if policy.allowed_roots.count == 0 or policy.allowed_roots.count > Limits::TRUSTED_ROOTS
+            roots: mutable darray[darray[u8]] = []
+            for root in policy.allowed_roots |discovery, roots|:
+                raise PkgConfigUsageError.InvalidPathPolicy if root == "" or sview_len(root) >= Limits::PATH_BYTES or sview_contains_byte(root, 0) or not path_is_absolute(path(root))
+                canonical_root: Path = try pkg_config_usage_canonical_path(discovery, root, true)
+                root_text: sview = f"{canonical_root}"
+                raise PkgConfigUsageError.InvalidPathPolicy if sview_len(root_text) >= Limits::PATH_BYTES
+                root_bytes: darray[u8] = try pkg_config_usage_text_bytes(root_text)
+                duplicate: mutable bool = false
+                for earlier in roots |duplicate|:
+                    duplicate <- true if bytes_view(earlier) == bytes_view(root_bytes)
+                if not duplicate:
+                    roots.push(root_bytes)
+            raise PkgConfigUsageError.InvalidPathPolicy if roots.count == 0
+            return PkgConfigCanonicalRoots{values: roots}
+
+
+        def pkg_config_usage_path_within_root(candidate: sview, root_bytes: darray[u8]) -> bool:
+            root: sview = bytes_view(root_bytes)
+            return false if candidate == "" or root == "" or not candidate.startswith("/") or not root.startswith("/")
+            return true if root == "/"
+            return true if candidate == root
+            root_length: usize = sview_len(root)
+            return false if sview_len(candidate) <= root_length or not candidate.startswith(root)
+            return sview_at(candidate, root_length) == 47
+
+
+        def pkg_config_usage_canonical_path_text(discovery: PkgConfigDiscovery, raw_path: sview, want_directory: bool, roots: PkgConfigCanonicalRoots) -> sview error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             canonical: Path = try pkg_config_usage_canonical_path(discovery, raw_path, want_directory)
             canonical_text: sview = f"{canonical}"
             raise PkgConfigUsageError.InvalidFlagShape if canonical_text == "" or sview_len(canonical_text) >= Limits::PATH_BYTES or sview_contains_byte(canonical_text, 0)
+            allowed: mutable bool = false
+            for root in roots.values |canonical_text, allowed|:
+                allowed <- true if pkg_config_usage_path_within_root(canonical_text, root)
+            raise PkgConfigUsageError.OutsideTrustedRoots if not allowed
             return canonical_text
 
 
@@ -146,23 +192,24 @@ module EsPkgConfigUsage:
         # preflight snapshot, not an open-handle guarantee; the build host must
         # revalidate immediately before using the paths if concurrent mutation
         # is in scope.
-        def pkg_config_canonicalize_build_usage_paths(discovery: PkgConfigDiscovery, usage: PkgConfigBuildUsage) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def pkg_config_canonicalize_build_usage_paths(discovery: PkgConfigDiscovery, usage: PkgConfigBuildUsage, policy: PkgConfigPathPolicy) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             raise PkgConfigUsageError.DiscoveryUnavailable if discovery.outcome != PkgConfigDiscoveryOutcome.Resolved
             raise PkgConfigUsageError.RequirementLimitExceeded if usage.requirements.count > Limits::REQUIREMENTS or usage.owned_values.count != usage.requirements.count
+            roots: PkgConfigCanonicalRoots = try pkg_config_usage_canonical_roots(discovery, policy)
             requirements: mutable darray[BuildUsageRequirement] = []
             owned_values: mutable darray[darray[u8]] = []
-            for index in 0..<usage.requirements.count |discovery, usage, requirements, owned_values|:
+            for index in 0..<usage.requirements.count |discovery, usage, roots, requirements, owned_values|:
                 requirement: BuildUsageRequirement = usage.requirements[index]
                 owned_value: darray[u8] = []
                 if requirement.kind == BuildUsageKind.IncludeDirectory:
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, true)
+                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, true, roots)
                     owned_value <- try pkg_config_usage_text_bytes(canonical_text)
                 elif requirement.kind == BuildUsageKind.LinkOption and requirement.value.startswith("-L"):
                     raw_path: sview = string_view_slice(requirement.value, 2, -1)
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true)
+                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
                     owned_value <- try pkg_config_usage_text_bytes("-L" + canonical_text)
                 elif requirement.kind == BuildUsageKind.LinkLibrary and requirement.library_form == BuildUsageLibraryForm.Path:
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, false)
+                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, false, roots)
                     owned_value <- try pkg_config_usage_text_bytes(canonical_text)
                 else:
                     owned_value <- try pkg_config_usage_text_bytes(requirement.value)
@@ -182,6 +229,6 @@ module EsPkgConfigUsage:
         # and type-checked before the caller receives build usage. The lower
         # level `...unchecked_paths` mapper remains available for
         # inspection/reporting only.
-        def pkg_config_build_usage_with_canonical_paths(discovery: PkgConfigDiscovery, visibility: BuildUsageVisibility) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def pkg_config_build_usage_with_canonical_paths(discovery: PkgConfigDiscovery, visibility: BuildUsageVisibility, policy: PkgConfigPathPolicy) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             uncanonicalized: PkgConfigBuildUsage = try pkg_config_build_usage_requirements_unchecked_paths(discovery, visibility)
-            return try pkg_config_canonicalize_build_usage_paths(discovery, uncanonicalized)
+            return try pkg_config_canonicalize_build_usage_paths(discovery, uncanonicalized, policy)
