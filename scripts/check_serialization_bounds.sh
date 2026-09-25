@@ -197,8 +197,20 @@ rg -q '_ = try decode_build_incremental_cache\(bytes\)' "$artifact_cache"
 rg -q 'def publish_build_incremental_cache_at_locked' "$artifact_cache"
 rg -q 'incremental_cache_descriptor_io_rejects_invalid_directory_handles' "$incremental_cache_adapter_tests"
 rg -q 'read_build_incremental_cache_at\(arena, -1, "cache.bin"\)' "$incremental_cache_adapter_tests"
-rg -q 'publish_build_incremental_cache_at_locked\(lock, -1, "cache.lock", 7, "cache.tmp", "cache.bin", bytes\)' "$incremental_cache_adapter_tests"
-rg -q 'artifact_cache_publish_payload_at_locked\(lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
+rg -q 'publish_build_incremental_cache_at_locked\(arena, lock, -1, "cache.lock", 7, "cache.tmp", "cache.bin", bytes\)' "$incremental_cache_adapter_tests"
+rg -q 'artifact_cache_publish_payload_at_locked\(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
+rg -q 'unchanged: bool = false' "$artifact_cache"
+rg -q 'artifact_cache_payload_matches_at\(a, directory_fd, destination_name, bytes, byte_limit\)' "$artifact_cache"
+if ! awk '
+    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
+    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
+    in_payload_publish && /unchanged: true/ { noop_line = NR }
+    in_payload_publish && /artifact_cache_write_staging_at\(/ { stage_line = NR }
+    END { exit !(noop_line > 0 && stage_line > noop_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: unchanged cache payload is not returned before staging\n' >&2
+    exit 1
+fi
 rg -q 'def artifact_cache_write_staging_at' "$artifact_cache"
 rg -q 'def artifact_cache_directory_descriptor_valid' "$artifact_cache"
 rg -q 'elisascript_posix_fstat\(directory_fd, info\)' "$artifact_cache"

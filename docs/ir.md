@@ -695,7 +695,14 @@ preflighted against their previous complete fingerprints and removed through
 the same no-follow directory capability before the new cache manifest is
 published. A modified stale output is preserved and prevents cache publication;
 stale cleanup candidates are cleared from the returned commit only after their
-cleanup succeeds.
+cleanup succeeds. The cache publisher also compares an existing regular cache
+manifest against the validated new bytes while holding its writer lock; an
+exact match returns a committed publication marked `unchanged` without creating
+a staging file or replacing the manifest, preserving its timestamp. The
+descriptor-relative comparison rejects non-regular destinations and confirms
+the opened file still has the identity observed at its directory entry. The
+lock serializes cooperating writers only; hostile non-cooperating mutation is
+not excluded by this cache adapter.
 
 `EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
 host route. It requires every declared absolute output path to be absent before
