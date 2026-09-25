@@ -1189,10 +1189,13 @@ check_record_materializer.sh audit are static evidence. `EsRecordFieldScan`
 now derives validated byte-span fields for whole records, ASCII-whitespace
 runs, literal separators (including empty fields), and fixed-width layouts;
 short fixed-width records preserve absent trailing columns, while unsupported
-regex/schema modes and excess fixed-width bytes are typed failures. Its
-focused runtime fixtures and record-model source audit are static, unexecuted
-evidence. Byte-stream integration, regex/schema scanning, external sort, and
-transactional rewrite execution remain open.
+schema mode and excess fixed-width bytes are typed failures. Its regex companion
+consumes the caller's complete ordered separator-span list, preserving empty
+fields and enforcing zero-width forward progress, but connecting matcher
+output to that span API is still open. Focused runtime fixtures and the
+record-model source audit are
+static, unexecuted evidence. Byte-stream integration, schema scanning, external
+sort, and transactional rewrite execution remain open.
 
 ES-SCRIPT-024 | EsRecordSort supplies a bounded external-sort ordering contract
 with unique typed text/integer key positions, ascending/descending direction,

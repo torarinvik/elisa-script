@@ -38,6 +38,7 @@ for declaration in \
 done
 
 for scanner_boundary in \
+    'struct RecordFieldSeparatorSpan:' \
     'def split_record_fields\(' \
     'record_field_scan_ascii_whitespace' \
     'record_field_scan_separator_at' \
@@ -47,6 +48,9 @@ for scanner_boundary in \
     'RecordFieldMode.FixedWidth' \
     'RecordFieldScanError.FieldLimitExceeded' \
     'RecordFieldScanError.FixedWidthRemainder' \
+    'def split_record_fields_from_regex_spans\(' \
+    'RecordFieldScanError.InvalidSeparatorSpan' \
+    'RecordFieldScanError.NonProgressingSeparator' \
     'RecordFieldScanError.UnsupportedMode'; do
     rg -q "$scanner_boundary" "$field_scanner"
 done
@@ -73,11 +77,15 @@ done
 for scanner_fixture_pattern in \
     'record_scanner_materializes_whitespace_literal_and_whole_fields' \
     'fixed_width_record_scanner_marks_absent_columns_and_rejects_remainders' \
+    'regex_separator_spans_preserve_empty_fields_and_zero_width_progress' \
     'unicode_fields[1].start_byte == 3' \
     'literal_fields.count == 4' \
     'literal_empty_fields.count == 0' \
     'advance_record_materializer' \
     'validate_record_materializer' \
+    'empty_regex_fields.count == 1' \
+    'NonProgressingSeparator' \
+    'invalid_span' \
     'not fields[2].present' \
     'RecordFieldScanError.FieldLimitExceeded' \
     'RecordFieldScanError.UnsupportedMode'; do

@@ -1611,8 +1611,12 @@ transactional in-place rewriting remain host adapters.
 for `Whole`, collapsed ASCII-whitespace, literal separators that preserve
 empty fields, and fixed-width columns. Empty non-whole records produce no
 fields; short fixed-width records carry explicit absent trailing columns, and
-bytes beyond the declared widths are rejected. Regex and schema modes fail
-explicitly until their matching schema/matcher adapter is connected.
+bytes beyond the declared widths are rejected. Regex mode has a companion
+`split_record_fields_from_regex_spans` entry point that consumes validated,
+complete delimiter byte spans in matcher order, preserves empty fields, and
+follows the matcher’s zero-width forward-progress rule. Regex matching itself
+and schema extraction remain adapter responsibilities; the ordinary scanner
+rejects those modes instead of silently guessing.
 Its output can be submitted in field-index order to
 `EsRecordMaterialize::RecordMaterializer`, which retains the validated spans
 under its record/field/text ceilings.
