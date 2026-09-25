@@ -41,12 +41,18 @@ for adapter_boundary in \
     'split_record_fields_from_regex_spans' \
     'def record_field_reconstruct_record\(' \
     'record_field_edit_adapter_mode_supported' \
-    'validate_record_field' \
+    'record_field_edit_adapter_fields_match' \
     'record.separator if record_policy.preserve_separator' \
     'record_field_edit_reconstruct_length(session)' \
     'RecordFieldEditError.OutputLimitExceeded'; do
     rg -q "$adapter_boundary" "$adapter"
 done
+
+validated_transfer_body="$(sed -n '/def record_field_edit_session_from_validated_fields(/,/^        def /p' "$adapter")"
+if printf '%s\n' "$validated_transfer_body" | rg -q 'validate_record\(|validate_record_field\('; then
+    printf 'record fields audit: validated field transfer must not rescan the owning record\n' >&2
+    exit 1
+fi
 
 reconstruct_record_body="$(sed -n '/def record_field_reconstruct_record(/,/^        def /p' "$adapter")"
 planned_bytes_line="$(printf '%s\n' "$reconstruct_record_body" | awk '/record_field_edit_reconstruct_length\(session\)/ { print NR; exit }')"

@@ -1288,7 +1288,8 @@ post-terminal rejection are typed through `error[RecordFieldEditError]`.
 `EsRecordFieldEditAdapter` admits whole-record, ASCII-whitespace, and literal
 separator fields only after exact comparison against a fresh bounded scan,
 rejecting incomplete or forged scanner output with
-`RecordFieldScanError.FieldSetMismatch`. Reconstructed records use the edit
+`RecordFieldScanError.FieldSetMismatch`; field transfer avoids a whole-record
+validation pass per field. Reconstructed records use the edit
 policy's field separator and preserve the consumed record separator only when
 requested; otherwise they use the stream output separator, with the complete
 record length checked against `max_record_bytes` before reconstruction

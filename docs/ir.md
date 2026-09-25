@@ -1778,7 +1778,9 @@ state machine to `EsRecordFieldScan` for whole-record, ASCII-whitespace, and
 literal-separator modes. It compares the caller's fields with a fresh bounded
 scan before opening an edit session, rejecting omitted, reordered, or altered
 fields as `RecordFieldScanError.FieldSetMismatch` rather than reconstructing a
-partial record. Regex spans need an explicit matcher-to-adapter contract;
+partial record. After that admission, the private transfer copies validated
+field views without rescanning the entire record for every field. Regex spans
+need an explicit matcher-to-adapter contract;
 `record_field_edit_session_from_regex_spans` accepts ordered spans from a
 bounded regex matcher and lets the scanner validate progress and produce the
 canonical field list. Malformed/overlapping spans and field-ceiling overflow
