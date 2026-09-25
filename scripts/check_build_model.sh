@@ -272,6 +272,8 @@ rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_f
 rg -Fq 'build_executor_dispatches_exact_child_environment_modes' "$executor_fixture"
 rg -Fq 'replacement-only' "$executor_fixture"
 rg -Fq 'replaced_path_result' "$executor_fixture"
+rg -Fq 'inherited_overlay: ProcessCommand' "$executor_fixture"
+rg -Fq 'elisascript-build-inherit-probe' "$executor_fixture"
 rg -Fq 'process_stdout(cleared_result) == ""' "$executor_fixture"
 rg -Fq 'using EsBuild' "$executor_fixture"
 rg -Fq 'build_executor_rejects_late_unsupported_command_before_any_launch' "$executor_fixture"
@@ -286,6 +288,8 @@ rg -Fq 'observe_build_recipe_toolchain_set_at' "$incremental_posix_executor"
 rg -Fq 'observe_build_recipe_toolchain_identity_at(scratch, root_fd, helper_path)' "$incremental_posix_executor"
 rg -Fq 'helper_paths: ["usr/bin/env"]' "$minimal_native_candidate"
 rg -Fq 'environment_mode: ProcessEnvironmentMode.Replace' "$minimal_native_candidate"
+[[ "$(rg -c --no-filename 'environment_mode: ProcessEnvironmentMode.Replace' "$minimal_native_candidate")" == "6" ]]
+[[ "$(rg -c --no-filename 'helper_paths: \["usr/bin/env"\]' "$minimal_native_candidate")" == "6" ]]
 rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
 rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
 rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
