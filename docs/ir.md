@@ -1619,7 +1619,10 @@ and schema extraction remain adapter responsibilities; the ordinary scanner
 rejects those modes instead of silently guessing.
 Its output can be submitted in field-index order to
 `EsRecordMaterialize::RecordMaterializer`, which retains the validated spans
-under its record/field/text ceilings.
+under its record/field/text ceilings. `select_record_field` exposes AWK-style
+`$0` as the raw record and positive one-based field numbers as validated
+selections; out-of-range fields return an explicit absent/empty selection,
+while inconsistent field indexes and requests above the policy ceiling fail.
 
 `EsRecordNumeric::RecordNumericSession` supplies bounded lexical numeric
 admission for extracted fields. Signed and unsigned integers use a checked

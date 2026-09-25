@@ -1195,7 +1195,10 @@ fields and enforcing zero-width forward progress, but connecting matcher
 output to that span API is still open. Focused runtime fixtures and the
 record-model source audit are
 static, unexecuted evidence. Byte-stream integration, schema scanning, external
-sort, and transactional rewrite execution remain open.
+sort, and transactional rewrite execution remain open. A field-selection
+helper maps `$0` to raw record text and positive one-based `$N` positions to
+validated fields, with explicit absent/empty results for missing fields and a
+policy ceiling on requested field numbers.
 
 ES-SCRIPT-024 | EsRecordSort supplies a bounded external-sort ordering contract
 with unique typed text/integer key positions, ascending/descending direction,

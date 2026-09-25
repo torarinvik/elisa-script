@@ -40,6 +40,9 @@ done
 for scanner_boundary in \
     'struct RecordFieldSeparatorSpan:' \
     'def split_record_fields\(' \
+    'def select_record_field\(' \
+    'struct RecordFieldSelection:' \
+    'RecordFieldScanError.FieldIndexInvalid' \
     'record_field_scan_ascii_whitespace' \
     'record_field_scan_separator_at' \
     'RecordFieldMode.Whole' \
@@ -80,6 +83,9 @@ for scanner_fixture_pattern in \
     'regex_separator_spans_preserve_empty_fields_and_zero_width_progress' \
     'unicode_fields[1].start_byte == 3' \
     'literal_fields.count == 4' \
+    'select_record_field(literal_record, literal_fields, literal_policy, 0)' \
+    'not missing_selection.present' \
+    'bounded_selection_rejected' \
     'literal_empty_fields.count == 0' \
     'advance_record_materializer' \
     'validate_record_materializer' \
@@ -107,8 +113,10 @@ done
 
 rg -q 'EsRecord::RecordStreamPolicy' "$docs"
 rg -q 'EsRecordFieldScan::split_record_fields' "$docs"
+rg -q 'select_record_field' "$docs"
 rg -q 'error\[RecordContractError\]' "$docs"
 rg -q 'EsRecord::RecordStreamPolicy' "$ledger"
 rg -q 'EsRecordFieldScan' "$ledger"
+rg -q 'field-selection' "$ledger"
 
 printf 'record model audit: bounded separator, field, metadata, and range contracts are present\n'
