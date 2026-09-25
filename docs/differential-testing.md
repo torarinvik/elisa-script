@@ -1174,7 +1174,10 @@ caller cannot supply an ambient or out-of-order seed, and both the transition
 edge and validation reject a completed session without at least one generated
 case. The generator only
 admits typed seed/fingerprint metadata; actual schema-aware input construction
-and shrinking remain adapter responsibilities.
+and shrinking remain adapter responsibilities. A `Planned` session must also
+be pristine: no generated input, byte accounting, or next-case progress may be
+present before `Begin`. This prevents a prior generation history from being
+reintroduced as a new deterministic run.
 
 The directory publication protocol is modeled separately from the host I/O
 adapter by `DifferentialArtifactDirectoryPlan`. A plan has a bounded parent

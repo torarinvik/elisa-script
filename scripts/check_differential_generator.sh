@@ -37,6 +37,7 @@ for boundary in \
     'ByteLimitExceeded' \
     'expected_bytes' \
     'session.state == DifferentialGeneratorState.Completed and session.inputs.count == 0' \
+    'session.state == DifferentialGeneratorState.Planned and (session.next_case != 0 or session.generated_bytes != 0 or session.inputs.count != 0)' \
     'session.generated_bytes != expected_bytes' \
     'CompleteNotReady'; do
     rg -Fq "$boundary" "$model"
@@ -50,6 +51,8 @@ for fixture_pattern in \
     'DifferentialGeneratorError.SeedMismatch' \
     'DifferentialGeneratorState.Completed' \
     'forged_generator_bytes' \
+    'forged_planned_generator' \
+    'planned_generator_rejected' \
     'forged_empty_complete'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
