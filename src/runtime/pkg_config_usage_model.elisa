@@ -168,35 +168,8 @@ module EsPkgConfigUsage:
             return 0
 
 
-        def pkg_config_usage_wl_path_prefix(option: sview) -> usize:
-            return sview_len("-Wl,-rpath,") if option.startswith("-Wl,-rpath,")
-            return sview_len("-Wl,-rpath=") if option.startswith("-Wl,-rpath=")
-            return sview_len("-Wl,-rpath-link,") if option.startswith("-Wl,-rpath-link,")
-            return sview_len("-Wl,-rpath-link=") if option.startswith("-Wl,-rpath-link=")
-            return sview_len("-Wl,-syslibroot,") if option.startswith("-Wl,-syslibroot,")
-            return sview_len("-Wl,-syslibroot=") if option.startswith("-Wl,-syslibroot=")
-            return sview_len("-Wl,--rpath,") if option.startswith("-Wl,--rpath,")
-            return sview_len("-Wl,--rpath=") if option.startswith("-Wl,--rpath=")
-            return sview_len("-Wl,--rpath-link,") if option.startswith("-Wl,--rpath-link,")
-            return sview_len("-Wl,--rpath-link=") if option.startswith("-Wl,--rpath-link=")
-            return sview_len("-Wl,--syslibroot,") if option.startswith("-Wl,--syslibroot,")
-            return sview_len("-Wl,--syslibroot=") if option.startswith("-Wl,--syslibroot=")
-            return 0
-
-
         def pkg_config_usage_link_option_is_rpath_operand(option: sview) -> bool:
             return option == "-R"
-
-
-        def pkg_config_usage_link_option_missing_embedded_path(option: sview) -> bool:
-            return option == "-Wl,-rpath" or option == "-Wl,-rpath-link" or option == "-Wl,-syslibroot" or option == "-Wl,--rpath" or option == "-Wl,--rpath-link" or option == "-Wl,--syslibroot"
-
-
-        def pkg_config_usage_wl_contains_path_option(option: sview) -> bool:
-            for index in 0..<sview_len(option) |option|:
-                remaining: sview = string_view_slice(option, index.i64(), -1)
-                return true if remaining.startswith("-rpath") or remaining.startswith("--rpath") or remaining.startswith("-syslibroot") or remaining.startswith("--syslibroot")
-            return false
 
 
         def pkg_config_usage_link_option_path_prefix(option: sview) -> usize:
@@ -207,6 +180,77 @@ module EsPkgConfigUsage:
             for index in start..<sview_len(option) |option, start|:
                 return index if sview_at(option, index) == 44
             return sview_len(option)
+
+
+        def pkg_config_usage_wl_separate_directory_option(option: sview) -> bool:
+            return option == "-rpath" or option == "-rpath-link" or option == "-syslibroot" or option == "--rpath" or option == "--rpath-link" or option == "--syslibroot" or option == "-R"
+
+
+        def pkg_config_usage_wl_inline_directory_prefix(option: sview) -> usize:
+            return 2 if option.startswith("-R") and sview_len(option) > 2
+            return sview_len("-rpath=") if option.startswith("-rpath=")
+            return sview_len("-rpath-link=") if option.startswith("-rpath-link=")
+            return sview_len("-syslibroot=") if option.startswith("-syslibroot=")
+            return sview_len("--rpath=") if option.startswith("--rpath=")
+            return sview_len("--rpath-link=") if option.startswith("--rpath-link=")
+            return sview_len("--syslibroot=") if option.startswith("--syslibroot=")
+            return 0
+
+
+        def pkg_config_usage_wl_unrecognized_path_option(option: sview) -> bool:
+            return option.startswith("-rpath") or option.startswith("--rpath") or option.startswith("-syslibroot") or option.startswith("--syslibroot")
+
+
+        def pkg_config_usage_append_sview(output: mutable darray[u8]&, value: sview) -> void error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigUsageError.InvalidFlagShape if output.count > EsBuildUsage::Limits::VALUE_BYTES
+            raise PkgConfigUsageError.InvalidFlagShape if sview_len(value) > EsBuildUsage::Limits::VALUE_BYTES - output.count
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def pkg_config_usage_canonicalize_wl_option(discovery: PkgConfigDiscovery, option: sview, roots: PkgConfigCanonicalRoots) -> darray[u8] error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            raise PkgConfigUsageError.InvalidFlagShape if sview_len(option) <= 4 or sview_at(option, sview_len(option) - 1) == 44
+            output: mutable darray[u8] = []
+            try pkg_config_usage_append_sview(output, "-Wl,")
+            cursor: mutable usize = 4
+            separator: mutable bool = false
+            while cursor < sview_len(option) |discovery, option, roots, output, cursor, separator|:
+                if separator:
+                    try pkg_config_usage_append_sview(output, ",")
+                    separator <- false
+                token_end: usize = pkg_config_usage_embedded_path_end(option, cursor)
+                token: sview = string_view_slice(option, cursor.i64(), (token_end - cursor).i64())
+                raise PkgConfigUsageError.InvalidFlagShape if token == ""
+                inline_prefix: usize = pkg_config_usage_wl_inline_directory_prefix(token)
+                if inline_prefix != 0:
+                    raise PkgConfigUsageError.InvalidFlagShape if sview_len(token) <= inline_prefix
+                    raw_path: sview = string_view_slice(token, inline_prefix.i64(), -1)
+                    raise PkgConfigUsageError.InvalidFlagShape if raw_path.startswith("-")
+                    canonical_path: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+                    prefix: sview = string_view_slice(token, 0, inline_prefix.i64())
+                    try pkg_config_usage_append_sview(output, prefix + canonical_path)
+                elif pkg_config_usage_wl_separate_directory_option(token):
+                    raise PkgConfigUsageError.InvalidFlagShape if token_end >= sview_len(option)
+                    path_start: usize = token_end + 1
+                    path_end: usize = pkg_config_usage_embedded_path_end(option, path_start)
+                    raise PkgConfigUsageError.InvalidFlagShape if path_end == path_start
+                    raw_path: sview = string_view_slice(option, path_start.i64(), (path_end - path_start).i64())
+                    raise PkgConfigUsageError.InvalidFlagShape if raw_path.startswith("-")
+                    canonical_path: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+                    try pkg_config_usage_append_sview(output, token)
+                    try pkg_config_usage_append_sview(output, ",")
+                    try pkg_config_usage_append_sview(output, canonical_path)
+                    token_end <- path_end
+                else:
+                    raise PkgConfigUsageError.InvalidFlagShape if pkg_config_usage_wl_unrecognized_path_option(token)
+                    try pkg_config_usage_append_sview(output, token)
+
+                if token_end < sview_len(option):
+                    cursor <- token_end + 1
+                    separator <- true
+                else:
+                    cursor <- sview_len(option)
+            return output
 
 
     public:
@@ -263,16 +307,8 @@ module EsPkgConfigUsage:
                     raw_path: sview = string_view_slice(requirement.value, 2, -1)
                     canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
                     owned_value <- try pkg_config_usage_text_bytes("-L" + canonical_text)
-                elif requirement.kind == BuildUsageKind.LinkOption and pkg_config_usage_wl_path_prefix(requirement.value) != 0:
-                    prefix_length: usize = pkg_config_usage_wl_path_prefix(requirement.value)
-                    path_end: usize = pkg_config_usage_embedded_path_end(requirement.value, prefix_length)
-                    raise PkgConfigUsageError.InvalidFlagShape if path_end == prefix_length
-                    raw_path: sview = string_view_slice(requirement.value, prefix_length.i64(), (path_end - prefix_length).i64())
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
-                    prefix: sview = string_view_slice(requirement.value, 0, prefix_length.i64())
-                    suffix: sview = string_view_slice(requirement.value, path_end.i64(), -1)
-                    raise PkgConfigUsageError.InvalidFlagShape if pkg_config_usage_wl_contains_path_option(suffix)
-                    owned_value <- try pkg_config_usage_text_bytes(prefix + canonical_text + suffix)
+                elif requirement.kind == BuildUsageKind.LinkOption and requirement.value.startswith("-Wl,"):
+                    owned_value <- try pkg_config_usage_canonicalize_wl_option(discovery, requirement.value, roots)
                 elif requirement.kind == BuildUsageKind.LinkOption and pkg_config_usage_link_option_path_prefix(requirement.value) != 0:
                     prefix_length: usize = pkg_config_usage_link_option_path_prefix(requirement.value)
                     raw_path: sview = string_view_slice(requirement.value, prefix_length.i64(), -1)
@@ -288,10 +324,6 @@ module EsPkgConfigUsage:
                 elif requirement.kind == BuildUsageKind.LinkOption and index > 0 and pkg_config_usage_link_option_is_rpath_operand(usage.requirements[index - 1].value):
                     canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, true, roots)
                     owned_value <- try pkg_config_usage_text_bytes(canonical_text)
-                elif requirement.kind == BuildUsageKind.LinkOption and pkg_config_usage_link_option_missing_embedded_path(requirement.value):
-                    raise PkgConfigUsageError.InvalidFlagShape
-                elif requirement.kind == BuildUsageKind.LinkOption and requirement.value.startswith("-Wl,") and pkg_config_usage_wl_contains_path_option(requirement.value):
-                    raise PkgConfigUsageError.InvalidFlagShape
                 elif requirement.kind == BuildUsageKind.CompileOption:
                     joined_prefix: usize = pkg_config_usage_compile_joined_path_prefix(requirement.value)
                     current_path_kind: u8 = pkg_config_usage_compile_option_path_kind(requirement.value)
