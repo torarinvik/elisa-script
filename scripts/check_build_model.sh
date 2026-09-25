@@ -307,6 +307,8 @@ for boundary in \
     'raise BuildContractError.FingerprintMissing if node.fingerprint == 0' \
     'def build_usage_graph_dependencies_preflight(' \
     'try build_usage_graph_dependencies_preflight(actions)' \
+    'def build_usage_graph_dependency_resolution(' \
+    'attach_build_dependency_resolution(plan.graph, resolution)' \
     'build_usage_graph_account_command_text' \
     'measured_metadata_bytes != plan.metadata_bytes' \
     'validate_build_usage_process_command(action.command)' \
@@ -315,6 +317,7 @@ for boundary in \
     rg -Fq "$boundary" "$usage_graph_model"
 done
 rg -Fq 'build_usage_actions_become_owned_ordered_output_checked_graph' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_plans_large_graph_with_canonical_name_index' "$usage_graph_fixture"
 rg -Fq 'expected_metadata_bytes' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_missing_fingerprint_during_action_preflight' "$usage_graph_fixture"
