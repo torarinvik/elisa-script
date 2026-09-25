@@ -29,6 +29,10 @@ module EsPkgConfigUsage:
             # are canonicalized and checked before any pkg-config path is
             # admitted; symlink targets must remain inside one such root.
             allowed_roots: darray[sview] = []
+            # `$ORIGIN` and `@loader_path` rpaths are relative to the linked
+            # image, not the pkg-config cwd. Admit them only when the build
+            # caller supplies that image's existing directory explicitly.
+            loader_path_directory: sview = ""
 
 
         error PkgConfigUsageError:
@@ -154,6 +158,31 @@ module EsPkgConfigUsage:
             return canonical_text
 
 
+        def pkg_config_usage_loader_path_prefix(raw_path: sview) -> usize:
+            return sview_len("$ORIGIN") if raw_path == "$ORIGIN" or raw_path.startswith("$ORIGIN/")
+            return sview_len("${ORIGIN}") if raw_path == "${ORIGIN}" or raw_path.startswith("${ORIGIN}/")
+            return sview_len("@loader_path") if raw_path == "@loader_path" or raw_path.startswith("@loader_path/")
+            return 0
+
+
+        def pkg_config_usage_canonical_runtime_directory_text(discovery: PkgConfigDiscovery, raw_path: sview, roots: PkgConfigCanonicalRoots, policy: PkgConfigPathPolicy) -> sview error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            token_length: usize = pkg_config_usage_loader_path_prefix(raw_path)
+            if token_length == 0:
+                return try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+            raise PkgConfigUsageError.InvalidPathPolicy if policy.loader_path_directory == ""
+            raise PkgConfigUsageError.InvalidPathPolicy if not path_is_absolute(path(policy.loader_path_directory))
+            origin_text: sview = try pkg_config_usage_canonical_path_text(discovery, policy.loader_path_directory, true, roots)
+            if sview_len(raw_path) > token_length:
+                raise PkgConfigUsageError.InvalidFlagShape if sview_at(raw_path, token_length) != 47
+                suffix_start: usize = token_length + 1
+                if suffix_start < sview_len(raw_path):
+                    suffix: sview = string_view_slice(raw_path, suffix_start.i64(), -1)
+                    candidate: Path = path_join(path(origin_text), suffix)
+                    candidate_text: sview = f"{candidate}"
+                    _ = try pkg_config_usage_canonical_path_text(discovery, candidate_text, true, roots)
+            return raw_path
+
+
         def pkg_config_usage_compile_option_path_kind(option: sview) -> u8:
             # 1 = directory operand; 2 = file operand; 0 = not a recognized
             # path-taking option. Keep this in sync with the word classifier.
@@ -208,7 +237,7 @@ module EsPkgConfigUsage:
                 output.push(byte)
 
 
-        def pkg_config_usage_canonicalize_wl_option(discovery: PkgConfigDiscovery, option: sview, roots: PkgConfigCanonicalRoots) -> darray[u8] error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+        def pkg_config_usage_canonicalize_wl_option(discovery: PkgConfigDiscovery, option: sview, roots: PkgConfigCanonicalRoots, policy: PkgConfigPathPolicy) -> darray[u8] error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             raise PkgConfigUsageError.InvalidFlagShape if sview_len(option) <= 4 or sview_at(option, sview_len(option) - 1) == 44
             output: mutable darray[u8] = []
             try pkg_config_usage_append_sview(output, "-Wl,")
@@ -226,7 +255,7 @@ module EsPkgConfigUsage:
                     raise PkgConfigUsageError.InvalidFlagShape if sview_len(token) <= inline_prefix
                     raw_path: sview = string_view_slice(token, inline_prefix.i64(), -1)
                     raise PkgConfigUsageError.InvalidFlagShape if raw_path.startswith("-")
-                    canonical_path: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+                    canonical_path: sview = try pkg_config_usage_canonical_runtime_directory_text(discovery, raw_path, roots, policy)
                     prefix: sview = string_view_slice(token, 0, inline_prefix.i64())
                     try pkg_config_usage_append_sview(output, prefix + canonical_path)
                 elif pkg_config_usage_wl_separate_directory_option(token):
@@ -236,7 +265,7 @@ module EsPkgConfigUsage:
                     raise PkgConfigUsageError.InvalidFlagShape if path_end == path_start
                     raw_path: sview = string_view_slice(option, path_start.i64(), (path_end - path_start).i64())
                     raise PkgConfigUsageError.InvalidFlagShape if raw_path.startswith("-")
-                    canonical_path: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+                    canonical_path: sview = try pkg_config_usage_canonical_runtime_directory_text(discovery, raw_path, roots, policy)
                     try pkg_config_usage_append_sview(output, token)
                     try pkg_config_usage_append_sview(output, ",")
                     try pkg_config_usage_append_sview(output, canonical_path)
@@ -308,11 +337,11 @@ module EsPkgConfigUsage:
                     canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
                     owned_value <- try pkg_config_usage_text_bytes("-L" + canonical_text)
                 elif requirement.kind == BuildUsageKind.LinkOption and requirement.value.startswith("-Wl,"):
-                    owned_value <- try pkg_config_usage_canonicalize_wl_option(discovery, requirement.value, roots)
+                    owned_value <- try pkg_config_usage_canonicalize_wl_option(discovery, requirement.value, roots, policy)
                 elif requirement.kind == BuildUsageKind.LinkOption and pkg_config_usage_link_option_path_prefix(requirement.value) != 0:
                     prefix_length: usize = pkg_config_usage_link_option_path_prefix(requirement.value)
                     raw_path: sview = string_view_slice(requirement.value, prefix_length.i64(), -1)
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, raw_path, true, roots)
+                    canonical_text: sview = try pkg_config_usage_canonical_runtime_directory_text(discovery, raw_path, roots, policy)
                     prefix: sview = string_view_slice(requirement.value, 0, prefix_length.i64())
                     owned_value <- try pkg_config_usage_text_bytes(prefix + canonical_text)
                 elif requirement.kind == BuildUsageKind.LinkLibrary and requirement.library_form == BuildUsageLibraryForm.Path:
@@ -322,7 +351,7 @@ module EsPkgConfigUsage:
                     raise PkgConfigUsageError.InvalidFlagShape if index + 1 >= usage.requirements.count or usage.requirements[index + 1].kind != BuildUsageKind.LinkOption or usage.requirements[index + 1].value.startswith("-")
                     owned_value <- try pkg_config_usage_text_bytes(requirement.value)
                 elif requirement.kind == BuildUsageKind.LinkOption and index > 0 and pkg_config_usage_link_option_is_separate_directory(usage.requirements[index - 1].value):
-                    canonical_text: sview = try pkg_config_usage_canonical_path_text(discovery, requirement.value, true, roots)
+                    canonical_text: sview = try pkg_config_usage_canonical_runtime_directory_text(discovery, requirement.value, roots, policy)
                     owned_value <- try pkg_config_usage_text_bytes(canonical_text)
                 elif requirement.kind == BuildUsageKind.CompileOption:
                     joined_prefix: usize = pkg_config_usage_compile_joined_path_prefix(requirement.value)
