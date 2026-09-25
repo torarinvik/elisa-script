@@ -775,6 +775,15 @@ static libraries reach consumers as link-only entries. Interface targets reject
 non-INTERFACE target edges. Focused source fixtures and the build-model audit
 cover these cases; no compiler or test execution was performed under the
 validation hold.
+`EsBuildUsageArgv` now materializes resolved compile and link entries as
+owned, shell-free argv vectors. Compiler-family `-I`/`-D`/`-l` prefixes are
+explicit inputs, literal options and relative library paths retain their
+argument boundaries, and target-artifact identities require an exact mapping
+to an absolute artifact path rather than falling back to a library name.
+Fixtures and the compiler-free audit cover ordering, ownership, unmapped
+artifacts, and arguments containing spaces. The caller still supplies the
+working directory, source/object/output arguments, and actual `ProcessCommand`;
+compiler execution and CMake parity remain unverified.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild

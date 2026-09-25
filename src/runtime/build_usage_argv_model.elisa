@@ -1,0 +1,158 @@
+# Materialize resolved C/C++ target usage into shell-free argv vectors.
+#
+# Compiler-family spellings are explicit inputs; this module never parses a
+# command string or invokes a process. Every returned argument has owned
+# backing storage so generated prefixes and borrowed model views stay valid.
+# Relative literal link paths are intentionally not rewritten; the caller
+# selects the ProcessCommand working directory that gives them meaning.
+
+module EsBuildUsageArgv:
+    using EsBuildUsage
+    using EsProcess
+
+    public:
+        const module Limits:
+            ARGUMENTS: usize = EsProcess::PROCESS_COMMAND_MAX_ARGUMENTS
+            ARGUMENT_BYTES: usize = EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES
+            TOTAL_ARGUMENT_BYTES: usize = EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES
+
+
+        struct BuildUsageArgSyntax:
+            # Typical GCC/Clang values are `-I`, `-D`, and `-l`. Other drivers
+            # supply their own joined prefixes; they remain one argv word.
+            include_prefix: sview
+            definition_prefix: sview
+            library_prefix: sview
+
+
+        struct BuildUsageTargetArtifact:
+            target_name: sview
+            path: sview
+
+
+        struct BuildUsageArgv:
+            arguments: darray[sview] = []
+            # `arguments` views point into these owned buffers. Retain both.
+            owned_arguments: darray[darray[u8]] = []
+            total_argument_bytes: mutable usize = 0
+
+
+        error BuildUsageArgvError:
+            InvalidSyntax
+            InvalidArgument
+            ArgumentLimitExceeded
+            ArgumentBytesExceeded
+            InvalidCompileEntry
+            InvalidLinkEntry
+            InvalidArtifactMap
+            MissingTargetArtifact
+
+
+    private:
+        def build_usage_argv_prefix_valid(prefix: sview) -> bool:
+            return false if prefix == "" or sview_len(prefix) > Limits::ARGUMENT_BYTES or sview_contains_byte(prefix, 0)
+            return false if sview_contains_byte(prefix, 32) or sview_contains_byte(prefix, 9) or sview_contains_byte(prefix, 10) or sview_contains_byte(prefix, 13)
+            return true
+
+
+        def build_usage_argv_append_bytes(output: mutable darray[u8]&, value: sview) -> void error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageArgvError.InvalidArgument if sview_len(value) > Limits::ARGUMENT_BYTES or sview_contains_byte(value, 0)
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def build_usage_argv_append(result: mutable BuildUsageArgv&, value: sview) -> void error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageArgvError.ArgumentLimitExceeded if result.arguments.count >= Limits::ARGUMENTS
+            raise BuildUsageArgvError.InvalidArgument if sview_len(value) > Limits::ARGUMENT_BYTES or sview_contains_byte(value, 0)
+            raise BuildUsageArgvError.ArgumentBytesExceeded if sview_len(value) > Limits::TOTAL_ARGUMENT_BYTES - result.total_argument_bytes
+            owned: mutable darray[u8] = []
+            try build_usage_argv_append_bytes(owned, value)
+            result.total_argument_bytes <- result.total_argument_bytes + owned.count
+            result.owned_arguments.push(owned)
+            result.arguments.push(bytes_view(result.owned_arguments[result.owned_arguments.count - 1]))
+
+
+        def build_usage_argv_append_joined(result: mutable BuildUsageArgv&, prefix: sview, value: sview) -> void error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            prefix_bytes: usize = sview_len(prefix)
+            value_bytes: usize = sview_len(value)
+            raise BuildUsageArgvError.ArgumentLimitExceeded if result.arguments.count >= Limits::ARGUMENTS
+            raise BuildUsageArgvError.InvalidArgument if value_bytes == 0 or prefix_bytes > Limits::ARGUMENT_BYTES or value_bytes > Limits::ARGUMENT_BYTES - prefix_bytes
+            raise BuildUsageArgvError.InvalidArgument if sview_contains_byte(prefix, 0) or sview_contains_byte(value, 0)
+            combined_bytes: usize = prefix_bytes + value_bytes
+            raise BuildUsageArgvError.ArgumentBytesExceeded if combined_bytes > Limits::TOTAL_ARGUMENT_BYTES - result.total_argument_bytes
+            owned: mutable darray[u8] = []
+            try build_usage_argv_append_bytes(owned, prefix)
+            try build_usage_argv_append_bytes(owned, value)
+            result.total_argument_bytes <- result.total_argument_bytes + owned.count
+            result.owned_arguments.push(owned)
+            result.arguments.push(bytes_view(result.owned_arguments[result.owned_arguments.count - 1]))
+
+
+        def build_usage_artifact_map_valid(artifacts: darray[BuildUsageTargetArtifact]) -> bool:
+            return false if artifacts.count > EsBuildUsage::Limits::TARGETS
+            for index in 0..<artifacts.count |artifacts|:
+                current: BuildUsageTargetArtifact = artifacts[index]
+                return false if current.target_name == "" or sview_len(current.target_name) > EsBuildUsage::Limits::NAME_BYTES or sview_contains_byte(current.target_name, 0)
+                return false if current.path == "" or sview_len(current.path) > Limits::ARGUMENT_BYTES or sview_contains_byte(current.path, 0) or not path_is_absolute(path(current.path))
+                for previous in 0..<index |artifacts, current|:
+                    return false if artifacts[previous].target_name == current.target_name
+            return true
+
+
+        def build_usage_artifact_path(artifacts: darray[BuildUsageTargetArtifact], target_name: sview) -> sview error[BuildUsageArgvError]:
+            for artifact in artifacts |target_name|:
+                return artifact.path if artifact.target_name == target_name
+            raise BuildUsageArgvError.MissingTargetArtifact
+
+
+    public:
+        # Prefix arguments are copied first, followed by resolved target-local
+        # compile entries in order. Include and definition values each become
+        # one argv word; compiler-specific prefix syntax is caller-selected.
+        def build_usage_compile_argv(target: BuildUsageTargetResult, prefix_arguments: darray[sview], syntax: BuildUsageArgSyntax) -> BuildUsageArgv error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageArgvError.InvalidSyntax if not build_usage_argv_prefix_valid(syntax.include_prefix) or not build_usage_argv_prefix_valid(syntax.definition_prefix) or not build_usage_argv_prefix_valid(syntax.library_prefix)
+            result: mutable BuildUsageArgv = BuildUsageArgv{}
+            for argument in prefix_arguments |result|:
+                try build_usage_argv_append(result, argument)
+            for entry in target.compile |result, syntax|:
+                raise BuildUsageArgvError.InvalidCompileEntry if entry.target_artifact or entry.link_only or entry.library_form != BuildUsageLibraryForm.SearchName or entry.value == "" or sview_contains_byte(entry.value, 0)
+                if entry.kind == BuildUsageKind.IncludeDirectory:
+                    try build_usage_argv_append_joined(result, syntax.include_prefix, entry.value)
+                elif entry.kind == BuildUsageKind.CompileDefinition:
+                    try build_usage_argv_append_joined(result, syntax.definition_prefix, entry.value)
+                elif entry.kind == BuildUsageKind.CompileOption:
+                    try build_usage_argv_append(result, entry.value)
+                else:
+                    raise BuildUsageArgvError.InvalidCompileEntry
+            return result
+
+
+        # Object/input arguments precede target link entries. Target artifacts
+        # must map by exact target identity to absolute output paths; a target
+        # name can never silently fall through to `-lNAME` handling.
+        def build_usage_link_argv(target: BuildUsageTargetResult, input_arguments: darray[sview], artifacts: darray[BuildUsageTargetArtifact], syntax: BuildUsageArgSyntax) -> BuildUsageArgv error[BuildUsageArgvError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildUsageArgvError.InvalidSyntax if not build_usage_argv_prefix_valid(syntax.include_prefix) or not build_usage_argv_prefix_valid(syntax.definition_prefix) or not build_usage_argv_prefix_valid(syntax.library_prefix)
+            raise BuildUsageArgvError.InvalidArtifactMap if not build_usage_artifact_map_valid(artifacts)
+            result: mutable BuildUsageArgv = BuildUsageArgv{}
+            for argument in input_arguments |result|:
+                try build_usage_argv_append(result, argument)
+            for entry in target.link |result, artifacts, syntax|:
+                raise BuildUsageArgvError.InvalidLinkEntry if entry.link_only or entry.value == "" or sview_contains_byte(entry.value, 0)
+                raise BuildUsageArgvError.InvalidLinkEntry if entry.target_artifact and (entry.kind != BuildUsageKind.LinkLibrary or entry.library_form != BuildUsageLibraryForm.SearchName)
+                raise BuildUsageArgvError.InvalidLinkEntry if entry.kind == BuildUsageKind.LinkOption and entry.library_form != BuildUsageLibraryForm.SearchName
+                if entry.target_artifact:
+                    artifact_path: sview = try build_usage_artifact_path(artifacts, entry.value)
+                    try build_usage_argv_append(result, artifact_path)
+                elif entry.kind == BuildUsageKind.LinkLibrary and entry.library_form == BuildUsageLibraryForm.SearchName:
+                    raise BuildUsageArgvError.InvalidLinkEntry if entry.value.startswith("-") or sview_contains_byte(entry.value, 47) or sview_contains_byte(entry.value, 92) or sview_contains_byte(entry.value, 32) or sview_contains_byte(entry.value, 9) or sview_contains_byte(entry.value, 10) or sview_contains_byte(entry.value, 13)
+                    try build_usage_argv_append_joined(result, syntax.library_prefix, entry.value)
+                elif entry.kind == BuildUsageKind.LinkLibrary and entry.library_form == BuildUsageLibraryForm.Path:
+                    try build_usage_argv_append(result, entry.value)
+                elif entry.kind == BuildUsageKind.LinkLibrary and entry.library_form == BuildUsageLibraryForm.LinkerArgument:
+                    raise BuildUsageArgvError.InvalidLinkEntry if not entry.value.startswith("-")
+                    try build_usage_argv_append(result, entry.value)
+                elif entry.kind == BuildUsageKind.LinkOption and not entry.target_artifact:
+                    try build_usage_argv_append(result, entry.value)
+                else:
+                    raise BuildUsageArgvError.InvalidLinkEntry
+            return result
