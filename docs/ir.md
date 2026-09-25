@@ -1883,7 +1883,9 @@ the parent descriptor and either an observed absence or a regular-file
 identity backed by SHA-256 of a no-follow, stable read. The caller must retain
 and revalidate that parent capability and destination receipt under its
 mutation policy; this observation seam does not yet write or publish staging
-files.
+files. `atomic_file_bytes_equal_at` separately compares a bounded destination
+read to caller-owned bytes byte-for-byte for a future unchanged-content fast
+path; the SHA-256 identity is not treated as proof of exact content equality.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a
