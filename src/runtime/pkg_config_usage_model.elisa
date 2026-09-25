@@ -7,6 +7,7 @@
 
 module EsPkgConfigUsage:
     using EsBuildUsage
+    using EsPkgConfig
     using EsPkgConfigResult
     using EsPkgConfigWords
 
@@ -22,6 +23,15 @@ module EsPkgConfigUsage:
             # Requirement.value views point into these individually owned
             # buffers. Retain this record while the requirements are used.
             owned_values: darray[darray[u8]] = []
+
+
+        struct PkgConfigBuildPreparation:
+            # `usage` is populated only for Resolved discovery. Keep discovery
+            # in the same owned result so all requirement values remain tied to
+            # their package/version and query-directory provenance.
+            discovery: PkgConfigDiscovery
+            usage: PkgConfigBuildUsage = PkgConfigBuildUsage{}
+            failure_diagnostic: darray[u8] = []
 
 
         struct PkgConfigPathPolicy:
@@ -50,6 +60,18 @@ module EsPkgConfigUsage:
     private:
         def pkg_config_usage_visibility_valid(visibility: BuildUsageVisibility) -> bool:
             return visibility == BuildUsageVisibility.Private or visibility == BuildUsageVisibility.Public or visibility == BuildUsageVisibility.Interface
+
+
+        # Reject caller-controlled policy shape before authorizing the
+        # pkg-config process. Filesystem canonicalization remains post-query,
+        # but missing roots, relative roots, and malformed loader anchors do
+        # not need an external command to diagnose.
+        def pkg_config_usage_path_policy_shape_valid(policy: PkgConfigPathPolicy) -> bool:
+            return false if policy.allowed_roots.count == 0 or policy.allowed_roots.count > Limits::TRUSTED_ROOTS
+            for root in policy.allowed_roots |policy|:
+                return false if root == "" or sview_len(root) >= Limits::PATH_BYTES or sview_contains_byte(root, 0) or not path_is_absolute(path(root))
+            return false if policy.loader_path_directory != "" and (sview_len(policy.loader_path_directory) >= Limits::PATH_BYTES or sview_contains_byte(policy.loader_path_directory, 0) or not path_is_absolute(path(policy.loader_path_directory)))
+            return true
 
 
         def pkg_config_usage_append_value(output: mutable darray[u8]&, input: darray[u8]) -> void error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic]:
@@ -396,3 +418,25 @@ module EsPkgConfigUsage:
         def pkg_config_build_usage_with_canonical_paths(discovery: PkgConfigDiscovery, visibility: BuildUsageVisibility, policy: PkgConfigPathPolicy) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
             uncanonicalized: PkgConfigBuildUsage = try pkg_config_build_usage_requirements_unchecked_paths(discovery, visibility)
             return try pkg_config_canonicalize_build_usage_paths(discovery, uncanonicalized, policy)
+
+
+        # Convert one discovered package into either admitted target usage or
+        # a bounded dependency diagnostic. Unavailable dependencies are data,
+        # not transport errors; malformed failure state remains a typed error.
+        def pkg_config_prepare_build_usage(discovery: PkgConfigDiscovery, visibility: BuildUsageVisibility, policy: PkgConfigPathPolicy) -> PkgConfigBuildPreparation error[PkgConfigUsageError, PkgConfigResultError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            preparation: mutable PkgConfigBuildPreparation = PkgConfigBuildPreparation{discovery: discovery}
+            if discovery.outcome == PkgConfigDiscoveryOutcome.Resolved:
+                preparation.usage <- try pkg_config_build_usage_with_canonical_paths(discovery, visibility, policy)
+            else:
+                preparation.failure_diagnostic <- try pkg_config_failure_diagnostic(discovery)
+            return preparation
+
+
+        # End-to-end dependency adapter for build callers. The Process.Run
+        # effect is deliberately visible here; planning remains side-effect
+        # free, and path admission happens before usage reaches the caller.
+        def pkg_config_discover_build_usage(plan: PkgConfigQueryPlan, visibility: BuildUsageVisibility, policy: PkgConfigPathPolicy) -> PkgConfigBuildPreparation error[PkgConfigError, PkgConfigWordsError, PkgConfigResultError, BuildExecutionError, BuildContractError, PkgConfigUsageError] can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read, Process.Run]:
+            raise PkgConfigUsageError.InvalidVisibility if not pkg_config_usage_visibility_valid(visibility)
+            raise PkgConfigUsageError.InvalidPathPolicy if not pkg_config_usage_path_policy_shape_valid(policy)
+            discovery: PkgConfigDiscovery = try pkg_config_discover(plan)
+            return try pkg_config_prepare_build_usage(discovery, visibility, policy)
