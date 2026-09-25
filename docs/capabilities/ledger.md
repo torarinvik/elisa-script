@@ -18,6 +18,13 @@ that lacks an execution revision remains unqualified for release.
 
 ## Current entries
 
+The compiler's closure-safety pass now distinguishes `submit` wrappers through
+the parser's explicit `__submit` marker instead of guessing from an empty
+`Expr.Block` shape. A single-expression value block ending in a call therefore
+does not spuriously apply cross-thread container-argument rules. The focused
+semantic fixture covers a process call receiving a container parameter through
+such a block; execution remains suspended, so this is static evidence.
+
 The in-process test runner now checks its case-count ceiling before adding the
 completed case's resource usage to the suite ledger. An over-limit publication
 therefore cannot charge steps, elapsed time, output, or regex work for a case
