@@ -82,7 +82,8 @@ for fixture_pattern in \
     'empty_materializer.records.count == 0' \
     'blank_record_materializer.records.count == 1' \
     'blank_record_materializer.records[0].field_count == 0' \
-    'quoted_empty_materializer.records.count == 1'; do
+    'quoted_empty_materializer.records.count == 1' \
+    'mixed_materializer.fields.count == 2 and mixed_materializer.records.count == 3'; do
     rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 

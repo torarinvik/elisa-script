@@ -69,7 +69,8 @@ for fixture_pattern in \
     'csv_empty_input_and_blank_records_match_python_shape' \
     'empty_stream.records == 0' \
     'blank_record_stream.records == 1 and blank_record_stream.fields_total == 0' \
-    'quoted_empty_stream.records == 1 and quoted_empty_stream.fields_total == 1'; do
+    'quoted_empty_stream.records == 1 and quoted_empty_stream.fields_total == 1' \
+    'mixed_stream.records == 3 and mixed_stream.fields_total == 2'; do
     rg -Fq "$fixture_pattern" "$runtime_fixture"
 done
 
