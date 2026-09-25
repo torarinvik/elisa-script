@@ -1480,8 +1480,11 @@ byte-comparison receipt. `Commit → DirectorySync → CommitAck` makes the
 post-rename directory durability edge explicit, and `CommitAck` requires a
 post-publication identity whose content matches the staged result.
 `PublishedUncertain` represents an ambiguous post-rename outcome, while
-`BeginRestore`/`RestoreAck` reaches cleanup-pending rollback only with an exact
-pre-commit identity receipt. Destination races, duplicate synchronization,
+`BeginRestore` records a current destination identity only when it matches the
+pre-commit snapshot or a known staged/published identity; the host adapter must
+use it as a compare-and-restore precondition. `RestoreAck` reaches
+cleanup-pending rollback only with an exact pre-commit identity receipt.
+Destination races, duplicate synchronization,
 invalid receipts, missing cleanup, and every pre/post-commit transition are
 typed through `error[AtomicFileError]`; embedded NULs are classified before
 ordinary path-shape errors. The focused IR fixture, namespace

@@ -1881,8 +1881,12 @@ and `CommitAck` requires a post-publication identity whose content matches the
 staged result. A
 `PublishedUncertain` state represents any post-rename result that the host
 cannot prove, and `BeginRestore → RestoreAck` reaches `RolledBack` only when
-the restored destination object/content identity exactly matches the pre-commit
-snapshot and cleanup has been acknowledged. `Fail` and `Cancel` first enter
+the host first observes a destination identity matching the pre-commit
+snapshot or a known staged/published identity. That observed source identity is
+retained as the restore precondition; the host adapter must refuse a
+compare-and-restore operation if the destination changes before mutation.
+`RestoreAck` then requires the restored destination identity to exactly match
+the pre-commit snapshot, and cleanup must be acknowledged. `Fail` and `Cancel` first enter
 cleanup-pending states, and an ambiguous publication cannot be mistaken for
 an ordinary failure. `error[AtomicFileError]` covers path/NUL/owner/receipt limits,
 duplicate synchronization, destination races, unproven restoration, missing

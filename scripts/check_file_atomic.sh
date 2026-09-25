@@ -45,6 +45,7 @@ for boundary in \
     'OBSERVED_BYTES' \
     'APPENDS' \
     'expected_destination: AtomicFileIdentity' \
+    'restore_source_identity: AtomicFileIdentity' \
     'volume_id: u64' \
     'object_id: u64' \
     'owner_token: u64' \
@@ -110,6 +111,7 @@ rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtim
 rg -Fq 'atomic_file_paths_must_name_file_entries' "$runtime_fixture"
 rg -Fq 'atomic_file_stage_and_backup_must_be_siblings' "$runtime_fixture"
 rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixture"
+rg -Fq 'atomic_file_restore_requires_a_known_current_destination' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 rg -Fq 'premature_ack_rejected' "$runtime_fixture"
