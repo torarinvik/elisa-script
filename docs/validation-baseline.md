@@ -10,7 +10,7 @@ It is intentionally separate from execution evidence: compiler and test
 execution remain disabled until the explicit reauthorization gate is opened.
 
 Initial baseline captured: 2026-09-14
-Latest metadata recheck: 2026-09-16
+Latest metadata recheck: 2026-09-25
 
 ## Elisascript worktree
 
@@ -88,6 +88,19 @@ existing character-literal decoder, adapting `15c54315`. The separate
 empty-struct diagnostic correction in `44a9cf62` now queries declaration
 symbols for the shared named-type and invalid-struct-cast predicate and has a
 focused semantic regression fixture. No compiler was rebuilt or launched.
+
+Self-hosted source recheck (2026-09-25; read-only): the local
+`../Elisa-compiler` checkout is on `main` at
+`2570ff08b33d0f12cff4d4b45b143a23eb754e88`, 55 commits ahead of its locally
+recorded `origin/main` ref. The checkout has uncommitted compiler,
+standard-library, and test changes, so this is the newest observed local
+source, not a clean/reproducible compiler input. The Elisascript vendored
+snapshot remains the older adapted source at
+`e56d6f2d3612a855066596f13f027926e9dea016`; the safety-pinned Go compiler
+binary path remains absent. No source was copied and no compiler was built or
+launched. Adopting newer optimizations requires reviewing a clean source
+revision and updating the compatibility adapter deliberately after the
+validation gate is explicitly reopened.
 
 An earlier Go Elisa-core source observation recorded
 `e85e8282c7b8dc588ba2ba53f0912d98769b1f1a` on `codex/structpy-tree`. Its work
