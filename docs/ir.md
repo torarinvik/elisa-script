@@ -702,7 +702,9 @@ a staging file or replacing the manifest, preserving its timestamp. The
 descriptor-relative comparison rejects non-regular destinations and confirms
 the opened file still has the identity observed at its directory entry. The
 lock serializes cooperating writers only; hostile non-cooperating mutation is
-not excluded by this cache adapter.
+not excluded by this cache adapter. `BuildIncrementalPosixCacheRun` exposes this
+case as `cache_unchanged`, separately from `cache_published`, so callers can
+distinguish an up-to-date manifest from one that was newly replaced.
 
 `EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
 host route. It requires every declared absolute output path to be absent before
