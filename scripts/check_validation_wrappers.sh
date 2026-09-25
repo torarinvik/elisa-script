@@ -109,10 +109,8 @@ done
 
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; do
-    if rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED' "$parity_test"; then
-        rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
-        rg -q 'assert rss_guard == "active"' "$parity_test"
-    fi
+    rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
+    rg -q 'assert rss_guard == "active"' "$parity_test"
 done
 
 rg -q 'emergency-stop latch' "$stopper"
