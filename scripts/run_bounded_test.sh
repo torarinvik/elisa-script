@@ -162,9 +162,11 @@ process_group_rss_kb() {
     # predicate prevents counting ordinary same-group children twice. This is
     # still best-effort observation, not containment: a double-forked process
     # reparented after leaving this group can evade both snapshots.
-    process_table="$(ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null | head -n "$((process_snapshot_row_limit + 1))")" || return 1
+    process_table="$( { ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
     printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v row_limit="$process_snapshot_row_limit" '
-        NR > row_limit { overflow = 1; exit }
+        NR > row_limit + 2 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" { status_seen = 1; if ($2 != 0) ps_failed = 1; next }
+        ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }
         {
             pid = $1
@@ -175,7 +177,7 @@ process_group_rss_kb() {
             if (pid == root || $3 == group) scope_seen = 1
         }
         END {
-            if (overflow || malformed || NR > row_limit) exit 2
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 2) exit 2
             if (!scope_seen) exit 1
             if (root in present) {
                 head = 1
