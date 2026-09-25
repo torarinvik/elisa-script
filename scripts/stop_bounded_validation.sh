@@ -6,6 +6,12 @@
 
 set -u
 umask 077
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if ! . "$script_dir/validation_process_snapshot.sh"; then
+    echo "stop_bounded_validation: unable to load process snapshot helpers; refusing to signal" >&2
+    exit 125
+fi
+process_snapshot_row_limit=16384
 
 validation_lease_dir="${TMPDIR:-/tmp}/elisascript-validation.lease"
 validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
@@ -66,14 +72,25 @@ fi
 
 process_tree_pids() {
     process_tree_root="$1"
-    echo "$process_tree_root"
-    for process_tree_child in $(pgrep -P "$process_tree_root" 2>/dev/null); do
-        (process_tree_pids "$process_tree_child")
-    done
+    process_snapshot="$( { ps -axo pid=,ppid= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    printf '%s\n' "$process_snapshot" | validation_process_tree_pids_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
 }
 
 process_group_for_pid() {
     ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+process_snapshot_contains_pid() {
+    process_snapshot_membership=" $(printf '%s\n' "$1" | tr '\012' ' ') "
+    case "$process_snapshot_membership" in
+        *" $2 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+owner_start_matches() {
+    owner_live_start="$(ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+    [ -n "$owner_live_start" ] && [ "$owner_start" = "$owner_live_start" ] && kill -0 "$owner_pid" 2>/dev/null
 }
 
 owner_group_id="$(process_group_for_pid "$owner_pid")"
@@ -83,26 +100,57 @@ case "$owner_group_id" in
         exit 125
         ;;
 esac
-process_tree_snapshot="$(process_tree_pids "$owner_pid")"
+if ! process_tree_snapshot="$(process_tree_pids "$owner_pid")"; then
+    echo "stop_bounded_validation: process-tree snapshot is failed, malformed, or over limit; refusing to signal from incomplete data" >&2
+    exit 125
+fi
+if ! process_snapshot_contains_pid "$process_tree_snapshot" "$owner_pid"; then
+    echo "stop_bounded_validation: verified lease owner is absent from the process snapshot; refusing to signal" >&2
+    exit 125
+fi
 for process_tree_pid in $process_tree_snapshot; do
     process_group_id="$(process_group_for_pid "$process_tree_pid")"
-    case "$process_group_id" in
-        ''|*[!0-9]*|"$owner_group_id") ;;
-        *) kill -TERM -- "-$process_group_id" 2>/dev/null || true ;;
-    esac
+    owned_group_id="$(validation_owned_process_group_id "$process_tree_pid" "$process_group_id" "$owner_group_id" 2>/dev/null || true)"
+    if [ -n "$owned_group_id" ]; then
+        kill -TERM -- "-$owned_group_id" 2>/dev/null || true
+    fi
 done
-for process_tree_pid in $process_tree_snapshot; do
+if ! owner_start_matches; then
+    echo "stop_bounded_validation: verified owner stopped or changed identity after TERM; no stale PID escalation attempted"
+    exit 0
+fi
+if ! term_tree_snapshot="$(process_tree_pids "$owner_pid")"; then
+    echo "stop_bounded_validation: refreshed process-tree snapshot failed; refusing stale PID escalation" >&2
+    exit 125
+fi
+if ! process_snapshot_contains_pid "$term_tree_snapshot" "$owner_pid"; then
+    echo "stop_bounded_validation: verified lease owner is absent from the refreshed snapshot; refusing stale PID escalation" >&2
+    exit 125
+fi
+for process_tree_pid in $term_tree_snapshot; do
     kill -TERM "$process_tree_pid" 2>/dev/null || true
 done
 sleep 1
-for process_tree_pid in $process_tree_snapshot; do
+if ! owner_start_matches; then
+    echo "stop_bounded_validation: verified owner stopped or changed identity after TERM; no stale PID escalation attempted"
+    exit 0
+fi
+if ! kill_tree_snapshot="$(process_tree_pids "$owner_pid")"; then
+    echo "stop_bounded_validation: refreshed process-tree snapshot failed; refusing stale PID escalation" >&2
+    exit 125
+fi
+if ! process_snapshot_contains_pid "$kill_tree_snapshot" "$owner_pid"; then
+    echo "stop_bounded_validation: verified lease owner is absent from the refreshed snapshot; refusing stale PID escalation" >&2
+    exit 125
+fi
+for process_tree_pid in $kill_tree_snapshot; do
     process_group_id="$(process_group_for_pid "$process_tree_pid")"
-    case "$process_group_id" in
-        ''|*[!0-9]*|"$owner_group_id") ;;
-        *) kill -KILL -- "-$process_group_id" 2>/dev/null || true ;;
-    esac
+    owned_group_id="$(validation_owned_process_group_id "$process_tree_pid" "$process_group_id" "$owner_group_id" 2>/dev/null || true)"
+    if [ -n "$owned_group_id" ]; then
+        kill -KILL -- "-$owned_group_id" 2>/dev/null || true
+    fi
 done
-for process_tree_pid in $process_tree_snapshot; do
+for process_tree_pid in $kill_tree_snapshot; do
     kill -KILL "$process_tree_pid" 2>/dev/null || true
 done
 

@@ -176,7 +176,24 @@ done
 rg -q 'emergency-stop latch' "$stopper"
 rg -q 'owner\.start' "$stopper"
 rg -q 'process_tree_snapshot' "$stopper"
+rg -Fq '. "$script_dir/validation_process_snapshot.sh"' "$stopper"
+rg -Fq 'process_snapshot_row_limit=16384' "$stopper"
+rg -Fq 'ps -axo pid=,ppid= 2>/dev/null; process_snapshot_ps_status=$?' "$stopper"
+rg -Fq 'head -n "$((process_snapshot_row_limit + 2))")" || return 1' "$stopper"
+rg -Fq '__ELISASCRIPT_PS_STATUS__ %s\n' "$stopper"
+rg -Fq 'validation_process_tree_pids_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"' "$stopper"
+rg -Fq 'refusing to signal from incomplete data' "$stopper"
+rg -Fq 'process_snapshot_contains_pid()' "$stopper"
+rg -Fq 'owner_start_matches()' "$stopper"
+rg -Fq 'term_tree_snapshot="$(process_tree_pids "$owner_pid")"' "$stopper"
+rg -Fq 'kill_tree_snapshot="$(process_tree_pids "$owner_pid")"' "$stopper"
 rg -q 'process_group_for_pid' "$stopper"
-rg -q 'kill -TERM -- "-\$process_group_id"' "$stopper"
-rg -q 'kill -KILL -- "-\$process_group_id"' "$stopper"
+rg -Fq 'validation_owned_process_group_id "$process_tree_pid" "$process_group_id" "$owner_group_id"' "$stopper"
+rg -q 'kill -TERM -- "-\$owned_group_id"' "$stopper"
+rg -q 'kill -KILL -- "-\$owned_group_id"' "$stopper"
+if rg -Fq 'pgrep -P' "$stopper"; then
+    printf 'validation wrapper audit: emergency stop must not recursively spawn pgrep\n' >&2
+    exit 1
+fi
+rg -Fq 'refusing stale PID escalation' "$stopper"
 printf 'validation wrapper audit: disabled gate, StructPy pin, bounded snapshots, sampled guards, evidence retention, lease, parity-fixture attestation, and owned stop path present\n'
