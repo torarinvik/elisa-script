@@ -1898,7 +1898,12 @@ the model to `FailedPendingCleanup`; this still needs an integrated stage
 creation, cleanup, and publication lifecycle. `seal_atomic_file_stage` syncs
 and closes the stage descriptor exactly once, then obtains a stable post-close
 identity/digest receipt and advances `StageReady`; it does not yet perform
-destination comparison or commit.
+destination comparison or commit. `compare_atomic_file_stage` binds caller
+bytes to the sealed stage by digest and exact readback, takes stable
+destination identity snapshots around an exact byte comparison, and advances
+`Compare`; it requires the caller to hold the directory lease through the next
+mutation decision. Identity-only reads rewind their temporary arena storage so
+repeated comparisons do not retain one full-file allocation per snapshot.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

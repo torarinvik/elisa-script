@@ -55,6 +55,8 @@ module EsFileAtomicPosix:
             StageSyncFailed
             StageCloseFailed
             StageReceiptFailed
+            StageContentMismatch
+            DestinationChanged
 
 
     private:
@@ -116,6 +118,30 @@ module EsFileAtomicPosix:
 
         def atomic_file_posix_stage_proof_equal(left: AtomicFilePosixStageProof, right: AtomicFilePosixStageProof) -> bool:
             return left.parent_device == right.parent_device and left.parent_inode == right.parent_inode and left.parent_descriptor_token == right.parent_descriptor_token and left.stage_device == right.stage_device and left.stage_inode == right.stage_inode and left.stage_descriptor_token == right.stage_descriptor_token and left.owner_token == right.owner_token and left.link_count == right.link_count
+
+
+        def atomic_file_posix_digest_equal(left: HashDigest, right: HashDigest) -> bool:
+            return left.algorithm == right.algorithm and left.word_count == right.word_count and left.word0 == right.word0 and left.word1 == right.word1 and left.word2 == right.word2 and left.word3 == right.word3 and left.word4 == right.word4 and left.word5 == right.word5 and left.word6 == right.word6 and left.word7 == right.word7
+
+
+        def atomic_file_posix_identity_equal(left: AtomicFileIdentity, right: AtomicFileIdentity) -> bool:
+            return false if not left.observed or not right.observed
+            return false if left.present != right.present or left.size != right.size or left.volume_id != right.volume_id or left.object_id != right.object_id
+            return true if not left.present
+            return atomic_file_posix_digest_equal(left.digest, right.digest)
+
+
+        def atomic_file_posix_path_leaf_matches(path: sview, leaf_name: cstr) -> bool:
+            path_length: usize = sview_len(path)
+            leaf_length: usize = runtime_strlen(leaf_name)
+            leaf_start: mutable usize = 0
+            for index in 0..<path_length |leaf_start, path|:
+                leaf_start <- index + 1 if path[index] == 47u8
+            return false if path_length - leaf_start != leaf_length
+            leaf_bytes: u8& = leaf_name.cast[u8&]
+            for index in 0..<leaf_length |path, leaf_bytes|:
+                return false if path[leaf_start + index] != leaf_bytes[index]
+            return true
 
 
         def atomic_file_posix_write_fully(fd: int, buffer: u8&, length: usize) -> usize error[AtomicFilePosixError] can[Blocking.IO]:
@@ -248,7 +274,8 @@ module EsFileAtomicPosix:
                     pass
                 error failure:
                     raise AtomicFilePosixError.StageNotReady
-            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.stage_descriptor_token != stage_fd.u64() + 1u64 or expected.parent_descriptor_token != parent_fd.u64() + 1u64
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.stage_descriptor_token != stage_fd.u64() + 1u64 or expected.parent_descriptor_token != parent_fd.u64() + 1u64 or not atomic_file_posix_path_leaf_matches(session.plan.staging_path, leaf_name)
             raise AtomicFilePosixError.StageNotReady if bytes.count > session.plan.max_content_bytes - session.staged_bytes or (bytes.count != 0 and session.append_count >= EsFileAtomic::Limits::APPENDS)
             return 0 if bytes.count == 0
 
@@ -299,7 +326,8 @@ module EsFileAtomicPosix:
                     pass
                 error failure:
                     raise AtomicFilePosixError.StageNotReady
-            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or stage_fd < 0 or parent_fd < 0 or parent_fd == stage_fd or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.parent_descriptor_token != parent_fd.u64() + 1u64 or expected.stage_descriptor_token != stage_fd.u64() + 1u64
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or stage_fd < 0 or parent_fd < 0 or parent_fd == stage_fd or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.parent_descriptor_token != parent_fd.u64() + 1u64 or expected.stage_descriptor_token != stage_fd.u64() + 1u64 or not atomic_file_posix_path_leaf_matches(session.plan.staging_path, leaf_name)
 
             preflight_matches: mutable bool = true
             catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
@@ -352,6 +380,7 @@ module EsFileAtomicPosix:
         # allocation. The caller must recapture under its mutation lock before
         # allowing a later rename or restore.
         def observe_atomic_file_at(a: mutable Arena&, parent_fd: int, leaf_name: cstr, byte_limit: usize = EsFileReadAtPosix::Limits::MAX_BYTES) -> AtomicFilePosixObservation error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            scratch_mark: ArenaMark = arena_snapshot(a)
             raise AtomicFilePosixError.InvalidDirectoryDescriptor if parent_fd < 0
             raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
             raise AtomicFilePosixError.DestinationTooLarge(leaf_name) if byte_limit == 0 or byte_limit > EsFileReadAtPosix::Limits::MAX_BYTES
@@ -373,19 +402,32 @@ module EsFileAtomicPosix:
                     ok snapshot:
                         bytes <- snapshot
                     error failure:
+                        arena_rewind(a, scratch_mark)
                         raise AtomicFilePosixError.DestinationReadFailed(leaf_name)
 
                 after: mutable ElisascriptStat = ElisascriptStat{}
-                raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if not atomic_file_posix_stat_name(parent_fd, leaf_name, after)
-                raise AtomicFilePosixError.DestinationReadFailed(leaf_name) if not atomic_file_posix_snapshot_matches(before, after) or bytes.count != before.size.usize()
+                if not atomic_file_posix_stat_name(parent_fd, leaf_name, after):
+                    arena_rewind(a, scratch_mark)
+                    raise AtomicFilePosixError.DestinationStatFailed(leaf_name)
+                if not atomic_file_posix_snapshot_matches(before, after) or bytes.count != before.size.usize():
+                    arena_rewind(a, scratch_mark)
+                    raise AtomicFilePosixError.DestinationReadFailed(leaf_name)
                 digest: HashDigest = atomic_file_posix_digest(bytes)
-                raise AtomicFilePosixError.DigestUnavailable(leaf_name) if digest.word_count != 4
-                raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if before.device == 0 or before.inode == 0
+                if digest.word_count != 4:
+                    arena_rewind(a, scratch_mark)
+                    raise AtomicFilePosixError.DigestUnavailable(leaf_name)
+                if before.device == 0 or before.inode == 0:
+                    arena_rewind(a, scratch_mark)
+                    raise AtomicFilePosixError.DestinationStatFailed(leaf_name)
                 destination <- AtomicFileIdentity{observed: true, present: true, size: bytes.count, volume_id: before.device.u64(), object_id: before.inode, digest: digest}
 
             parent_after: mutable ElisascriptStat = ElisascriptStat{}
-            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after)
-            return AtomicFilePosixObservation{parent_device: parent_before.device.u64(), parent_inode: parent_before.inode, parent_descriptor_token: parent_fd.u64() + 1u64, destination: destination}
+            if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after):
+                arena_rewind(a, scratch_mark)
+                raise AtomicFilePosixError.InvalidDirectoryDescriptor
+            result: AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: parent_before.device.u64(), parent_inode: parent_before.inode, parent_descriptor_token: parent_fd.u64() + 1u64, destination: destination}
+            arena_rewind(a, scratch_mark)
+            return result
 
 
         # Compare the current leaf with caller-owned output bytes exactly, not
@@ -393,6 +435,7 @@ module EsFileAtomicPosix:
         # AtomicFileSession publisher; the caller still supplies its exclusive
         # directory-mutation policy around comparison and publication.
         def atomic_file_bytes_equal_at(a: mutable Arena&, parent_fd: int, leaf_name: cstr, expected: darray[u8]&, byte_limit: usize = EsFileReadAtPosix::Limits::MAX_BYTES) -> bool error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            scratch_mark: ArenaMark = arena_snapshot(a)
             raise AtomicFilePosixError.InvalidDirectoryDescriptor if parent_fd < 0
             raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(leaf_name)
             raise AtomicFilePosixError.DestinationTooLarge(leaf_name) if byte_limit == 0 or byte_limit > EsFileReadAtPosix::Limits::MAX_BYTES or expected.count > byte_limit
@@ -406,6 +449,7 @@ module EsFileAtomicPosix:
                 raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if errno[0] != AtomicFilePosixErrno::ENOENT
                 parent_after_absent: mutable ElisascriptStat = ElisascriptStat{}
                 raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after_absent) or not atomic_file_posix_parent_matches(parent_before, parent_after_absent)
+                arena_rewind(a, scratch_mark)
                 return false
 
             raise AtomicFilePosixError.DestinationNotRegular(leaf_name) if (before.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
@@ -415,11 +459,60 @@ module EsFileAtomicPosix:
                 ok bytes:
                     observed <- bytes
                 error failure:
+                    arena_rewind(a, scratch_mark)
                     raise AtomicFilePosixError.DestinationReadFailed(leaf_name)
 
             after: mutable ElisascriptStat = ElisascriptStat{}
-            raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if not atomic_file_posix_stat_name(parent_fd, leaf_name, after)
-            raise AtomicFilePosixError.DestinationReadFailed(leaf_name) if not atomic_file_posix_snapshot_matches(before, after) or observed.count != before.size.usize()
+            if not atomic_file_posix_stat_name(parent_fd, leaf_name, after):
+                arena_rewind(a, scratch_mark)
+                raise AtomicFilePosixError.DestinationStatFailed(leaf_name)
+            if not atomic_file_posix_snapshot_matches(before, after) or observed.count != before.size.usize():
+                arena_rewind(a, scratch_mark)
+                raise AtomicFilePosixError.DestinationReadFailed(leaf_name)
             parent_after: mutable ElisascriptStat = ElisascriptStat{}
-            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after)
-            return atomic_file_posix_bytes_equal(observed, expected)
+            if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after):
+                arena_rewind(a, scratch_mark)
+                raise AtomicFilePosixError.InvalidDirectoryDescriptor
+            equal: bool = atomic_file_posix_bytes_equal(observed, expected)
+            arena_rewind(a, scratch_mark)
+            return equal
+
+
+        # Capture Compare evidence from the sealed stage and current
+        # destination. Exact stage/destination comparisons are tied to their
+        # stable identity snapshots; the caller must hold the directory lease
+        # across this operation and the following commit/cleanup decision.
+        def compare_atomic_file_stage(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_leaf: cstr, destination_leaf: cstr, staged_contents: darray[u8]&) -> AtomicFileIdentity error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Ready or parent_fd < 0 or session.plan.parent_identity != parent_fd.u64() + 1u64
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf) or not elisascript_posix_leaf_name_valid(destination_leaf)
+            raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf) or not atomic_file_posix_path_leaf_matches(session.plan.destination_path, destination_leaf)
+            raise AtomicFilePosixError.StageContentMismatch if staged_contents.count != session.staged_bytes or staged_contents.count > session.plan.max_content_bytes
+            digest_mark: ArenaMark = arena_snapshot(a)
+            supplied_digest: HashDigest = atomic_file_posix_digest(staged_contents)
+            supplied_digest_matches: bool = atomic_file_posix_digest_equal(supplied_digest, session.staged_identity.digest)
+            arena_rewind(a, digest_mark)
+            raise AtomicFilePosixError.StageContentMismatch if not supplied_digest_matches
+
+            stage_before: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_before.destination, session.staged_identity)
+            stage_content_matches: bool = try atomic_file_bytes_equal_at(a, parent_fd, stage_leaf, staged_contents, session.plan.max_content_bytes)
+            raise AtomicFilePosixError.StageContentMismatch if not stage_content_matches
+
+            destination_before: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+            destination_contents_match: bool = try atomic_file_bytes_equal_at(a, parent_fd, destination_leaf, staged_contents, EsFileAtomic::Limits::CONTENT_BYTES)
+            destination_after: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+            raise AtomicFilePosixError.DestinationChanged if not atomic_file_posix_identity_equal(destination_before.destination, destination_after.destination)
+
+            stage_after: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_after.destination, session.staged_identity)
+            catch advance_atomic_file(session, AtomicFileEvent.Compare, identity: destination_after.destination, exact_contents_equal: destination_contents_match):
+                ok state:
+                    return destination_after.destination
+                error failure:
+                    raise AtomicFilePosixError.DestinationChanged if failure == AtomicFileError.DestinationChanged
+                    raise AtomicFilePosixError.StageNotReady
