@@ -3,7 +3,9 @@
 # `EsBuild` describes nodes and dependencies; this module describes the
 # scheduler that may dispatch them. Readiness is derived from completed
 # dependency states, cache identity is an exact fingerprint match, and every
-# mutation is bounded by the graph's declared parallelism.
+# mutation is bounded by the graph's declared parallelism. Cache rows must be
+# in strict target-name order so duplicate checks are linear and cache-hit
+# lookup is logarithmic for large graphs.
 
 module EsBuildScheduler:
     using EsBuild
@@ -61,6 +63,7 @@ module EsBuildScheduler:
             CacheLimitExceeded
             CacheEntryInvalid
             DuplicateCacheEntry
+            CacheOrderInvalid
             QueueLimitExceeded
             QueueEntryInvalid
             DuplicateQueueEntry
@@ -147,9 +150,17 @@ module EsBuildScheduler:
 
 
         def scheduler_cache_matches(scheduler: BuildScheduler&, node_index: usize) -> bool:
-            for entry in scheduler.cache:
-                if entry.node_name == scheduler.graph.nodes[node_index].name and entry.fingerprint == scheduler.graph.nodes[node_index].fingerprint:
-                    return true
+            target_name: sview = scheduler.graph.nodes[node_index].name
+            low: mutable usize = 0
+            high: mutable usize = scheduler.cache.count
+            while low < high:
+                middle: usize = low + (high - low) / 2
+                entry: BuildCacheEntry = scheduler.cache[middle]
+                name_order: SchedulerNameOrder = scheduler_name_order(entry.node_name, target_name)
+                if name_order == SchedulerNameOrder.Equal:
+                    return entry.fingerprint == scheduler.graph.nodes[node_index].fingerprint
+                low <- middle + 1 if name_order == SchedulerNameOrder.Before
+                high <- middle if name_order == SchedulerNameOrder.After
             return false
 
 
@@ -201,8 +212,11 @@ module EsBuildScheduler:
             for index in 0..<scheduler.cache.count |scheduler|:
                 entry: BuildCacheEntry = scheduler.cache[index]
                 raise BuildSchedulerError.CacheEntryInvalid if not scheduler_name_valid(entry.node_name) or entry.fingerprint == 0 or scheduler_node_index(scheduler, entry.node_name) == scheduler.graph.nodes.count
-                for earlier in 0..<index |scheduler, entry|:
-                    raise BuildSchedulerError.DuplicateCacheEntry if scheduler.cache[earlier].node_name == entry.node_name
+                if index > 0:
+                    previous: BuildCacheEntry = scheduler.cache[index - 1]
+                    name_order: SchedulerNameOrder = scheduler_name_order(previous.node_name, entry.node_name)
+                    raise BuildSchedulerError.DuplicateCacheEntry if name_order == SchedulerNameOrder.Equal
+                    raise BuildSchedulerError.CacheOrderInvalid if name_order == SchedulerNameOrder.After
             for index in 0..<scheduler.ready_queue.count |scheduler|:
                 queued: usize = scheduler.ready_queue[index]
                 raise BuildSchedulerError.QueueEntryInvalid if queued >= scheduler.graph.nodes.count or scheduler.graph.nodes[queued].state != BuildNodeState.Planned

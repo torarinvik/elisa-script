@@ -55,13 +55,22 @@ done
 rg -Fq 'plan_build_incremental_graph_transition(previous_targets, scheduler.graph, current_recipes, observations)' "$model"
 
 queue_lookup_body="$(sed -n '/^        def scheduler_queue_contains(/,/^        def scheduler_dependency_ready(/p' "$model")"
+cache_lookup_body="$(sed -n '/^        def scheduler_cache_matches(/,/^        def scheduler_refresh_ready(/p' "$model")"
 readiness_rebuild_body="$(sed -n '/^        def scheduler_refresh_ready(/,/^        def scheduler_rebuild_ready(/p' "$model")"
 queue_validation_body="$(sed -n '/^        def validate_build_scheduler(/,/^    private:/p' "$model")"
-[[ -n "$queue_lookup_body" && -n "$readiness_rebuild_body" && -n "$queue_validation_body" ]]
+[[ -n "$queue_lookup_body" && -n "$cache_lookup_body" && -n "$readiness_rebuild_body" && -n "$queue_validation_body" ]]
 printf '%s\n' "$queue_lookup_body" | rg -Fq 'while low < high'
 printf '%s\n' "$queue_lookup_body" | rg -Fq 'middle: usize = low + (high - low) / 2'
 if printf '%s\n' "$queue_lookup_body" | rg -Fq 'for queued in scheduler.ready_queue'; then
     printf 'build scheduler audit: ready-queue membership regressed to a linear scan\n' >&2
+    exit 1
+fi
+printf '%s\n' "$cache_lookup_body" | rg -Fq 'while low < high'
+printf '%s\n' "$cache_lookup_body" | rg -Fq 'middle: usize = low + (high - low) / 2'
+printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.DuplicateCacheEntry if name_order == SchedulerNameOrder.Equal'
+printf '%s\n' "$queue_validation_body" | rg -Fq 'raise BuildSchedulerError.CacheOrderInvalid if name_order == SchedulerNameOrder.After'
+if printf '%s\n' "$queue_validation_body" | rg -Fq 'for earlier in 0..<index |scheduler, entry|'; then
+    printf 'build scheduler audit: cache duplicate validation regressed to a nested scan\n' >&2
     exit 1
 fi
 printf '%s\n' "$readiness_rebuild_body" | rg -Fq 'if node.state == BuildNodeState.Planned:'
@@ -82,6 +91,7 @@ for boundary in \
     'scheduler_rebuild_ready' \
     'CacheMiss' \
     'CacheEntryInvalid' \
+    'CacheOrderInvalid' \
     'DependencyNotReady' \
     'ActiveLimitExceeded' \
     'BuildGraphState.Failing' \
@@ -121,6 +131,9 @@ rg -Fq 'include "../runtime/build_scheduler_model.elisa"' "$ir"
 rg -Fq 'using EsBuildScheduler' "$fixture"
 for fixture_pattern in \
     'typed_build_scheduler_contract_is_deterministic_cache_aware_and_cancelable' \
+    'two_cache_scheduler' \
+    'unsorted_cache_rejected' \
+    'duplicate_cache_rejected' \
     'BuildSchedulerEvent.CacheHit' \
     'BuildSchedulerEvent.Dispatch' \
     'BuildSchedulerEvent.NodeComplete' \

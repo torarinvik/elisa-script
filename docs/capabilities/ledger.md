@@ -775,7 +775,9 @@ queues with clean ready-state admission, ascending ready-queue order, exact fing
 completion/failure accounting, queue-gated cache hits, and cancellation transitions over EsBuild;
 cancellation cannot relabel an already succeeded graph, and a pre-start cancellation
 marks every planned node terminal while keeping the scheduler and embedded graph
-ledgers synchronized.
+ledgers synchronized. Cache snapshots are strictly target-name ordered, checked
+for duplicates and order in one pass, and searched by binary search on cache
+hits.
 This remains a scheduler-state contract only: the current build host executor
 is serial, and `EsProcessSession`/`EsProcessBatch` do not yet launch or reap
 multiple children. No claim of bounded parallel process execution, CMake build
