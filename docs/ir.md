@@ -1895,7 +1895,10 @@ caller's exclusive directory-mutation policy and do not themselves publish.
 bounded short-write/EINTR handling, revalidates the stage, and advances the
 model's append count only after a complete write. Partial/uncertain writes move
 the model to `FailedPendingCleanup`; this still needs an integrated stage
-creation, close, cleanup, and publication lifecycle.
+creation, cleanup, and publication lifecycle. `seal_atomic_file_stage` syncs
+and closes the stage descriptor exactly once, then obtains a stable post-close
+identity/digest receipt and advances `StageReady`; it does not yet perform
+destination comparison or commit.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

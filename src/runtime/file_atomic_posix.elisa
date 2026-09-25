@@ -52,6 +52,9 @@ module EsFileAtomicPosix:
             StageIdentityChanged
             StageNotReady
             StageWriteFailed
+            StageSyncFailed
+            StageCloseFailed
+            StageReceiptFailed
 
 
     private:
@@ -154,6 +157,17 @@ module EsFileAtomicPosix:
 
             raise AtomicFilePosixError.StageWriteFailed if cursor.state != AtomicFilePosixWriteState.Done
             return cursor.offset
+
+
+        def atomic_file_posix_sync_stage(fd: int) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fsync(fd) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == AtomicFilePosixErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
 
 
         def atomic_file_posix_fail_session(session: mutable AtomicFileSession&) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -269,6 +283,65 @@ module EsFileAtomicPosix:
             catch advance_atomic_file(session, AtomicFileEvent.Append, appended_bytes: written):
                 ok state:
                     return written
+                error failure:
+                    _ = atomic_file_posix_fail_session(session)
+                    raise AtomicFilePosixError.StageNotReady
+
+
+        # Consume the admitted stage descriptor: sync once with bounded EINTR
+        # handling, never retry close, verify the descriptor was not swapped,
+        # and build the StageReady receipt only from a stable post-close read.
+        # Once session/proof admission succeeds this function owns stage_fd and
+        # closes it exactly once on every exit path.
+        def seal_atomic_file_stage(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_fd: int, leaf_name: cstr, expected: AtomicFilePosixStageProof) -> AtomicFileIdentity error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Staging or stage_fd < 0 or parent_fd < 0 or parent_fd == stage_fd or expected.owner_token != session.plan.owner_token or expected.parent_descriptor_token != session.plan.parent_identity or expected.parent_descriptor_token != parent_fd.u64() + 1u64 or expected.stage_descriptor_token != stage_fd.u64() + 1u64
+
+            preflight_matches: mutable bool = true
+            catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
+                ok observed:
+                    preflight_matches <- atomic_file_posix_stage_proof_equal(expected, observed)
+                error failure:
+                    preflight_matches <- false
+            if not preflight_matches:
+                _ = atomic_file_posix_fail_session(session)
+                raise AtomicFilePosixError.StageIdentityChanged
+
+            synced: bool = atomic_file_posix_sync_stage(stage_fd)
+            post_sync_matches: mutable bool = true
+            if synced:
+                catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
+                    ok observed:
+                        post_sync_matches <- atomic_file_posix_stage_proof_equal(expected, observed)
+                    error failure:
+                        post_sync_matches <- false
+
+            close_status: int = elisascript_posix_close(stage_fd)
+            if not synced or not post_sync_matches or close_status != 0:
+                _ = atomic_file_posix_fail_session(session)
+                raise AtomicFilePosixError.StageSyncFailed if not synced
+                raise AtomicFilePosixError.StageIdentityChanged if not post_sync_matches
+                raise AtomicFilePosixError.StageCloseFailed
+
+            snapshot: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}}
+            catch observe_atomic_file_at(a, parent_fd, leaf_name, session.plan.max_content_bytes):
+                ok observed:
+                    snapshot <- observed
+                error failure:
+                    _ = atomic_file_posix_fail_session(session)
+                    raise AtomicFilePosixError.StageReceiptFailed
+            staged: AtomicFileIdentity = snapshot.destination
+            if not staged.present or staged.volume_id != expected.stage_device or staged.object_id != expected.stage_inode or staged.size != session.staged_bytes:
+                _ = atomic_file_posix_fail_session(session)
+                raise AtomicFilePosixError.StageReceiptFailed
+
+            catch advance_atomic_file(session, AtomicFileEvent.StageReady, identity: staged):
+                ok state:
+                    return staged
                 error failure:
                     _ = atomic_file_posix_fail_session(session)
                     raise AtomicFilePosixError.StageNotReady
