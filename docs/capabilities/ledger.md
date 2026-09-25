@@ -796,6 +796,10 @@ plan. `execute_build_usage_graph` is the explicit Process.Run boundary and
 repeats plan validation before serial execution with output checks. Source
 fixtures specify planning and invalid-edge rejection; none ran. Real compiler
 outputs, artifact cleanup/recovery, and CMake parity remain unverified.
+`build_usage_raw_argv` now gives archivers, generators, and test-run actions the
+same bounded argument ownership without interpreting shell syntax. Its fixture
+pins preservation of spaces, globs, and dollar-prefixed text as literal argv
+values; it has not run.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild

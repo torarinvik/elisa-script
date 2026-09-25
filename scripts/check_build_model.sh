@@ -229,6 +229,7 @@ for declaration in \
     'struct BuildUsageArgv:' \
     'struct BuildUsageProcessCommand:' \
     'error BuildUsageArgvError:' \
+    'def build_usage_raw_argv(' \
     'def build_usage_compile_argv(' \
     'def build_usage_link_argv(' \
     'def build_usage_process_command('; do
@@ -249,6 +250,7 @@ for boundary in \
     'path_is_absolute(path(current.path))'; do
     rg -Fq "$boundary" "$usage_argv_model"
 done
+rg -Fq 'build_usage_raw_argv_preserves_literal_tool_arguments' "$usage_argv_fixture"
 rg -Fq 'build_usage_compile_entries_materialize_as_owned_argv' "$usage_argv_fixture"
 rg -Fq 'build_usage_link_entries_resolve_artifacts_without_shell_parsing' "$usage_argv_fixture"
 rg -Fq 'build_usage_link_entries_reject_unmapped_target_artifacts' "$usage_argv_fixture"
