@@ -1,0 +1,281 @@
+# Process-level parity for the ChordBrain database table generator.
+# Run only through the bounded validation wrapper after explicit
+# reauthorization; this source is intentionally not run during the validation
+# suspension.
+include "../../src/testing/differential.elisa"
+include "../../src/runtime/bounded_text_posix.elisa"
+
+using EsDifferential
+using EsBoundedText
+
+
+module EsChordBrainDatabaseLauncherParity:
+    private:
+        const module Commands:
+            PYTHON: sview = "python3"
+            REFERENCE_SCRIPT: sview = "../ChordBrain/tools/generate_chord_database.py"
+            CANDIDATE_SCRIPT: sview = "scripts/generate_chordbrain_database.elisascript"
+            INPUT_FILE: sview = "../ChordBrain/resources/data/chords.json"
+            OUTPUT_SNAPSHOT: sview = "../ChordBrain/src/chordbrain_database_generated.elisa"
+            SHA256_TOOL: sview = "/usr/bin/shasum"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            REFERENCE_SHA256: sview = "607d09559296b8f2246bd0a2b3f8112c897b8f1f185ddbd50a113247eea0758e"
+            CANDIDATE_SHA256: sview = "65839dccf9f3dc96ae3f4b06f26d9683d390d0d8bbb563fc857f3a005874a77a"
+            INPUT_SHA256: sview = "8b65704ebedaad0979b44dd4df0d22bc29d89dfbb08d7aee0ac1475842acc5f4"
+            OUTPUT_SNAPSHOT_SHA256: sview = "afaf8c78d341a9cf8098e4278f0b74344d2d6862f0b69a625feb1d0dca4e2a32"
+            MAX_HASH_OUTPUT_BYTES: u64 = 8192
+            MAX_PROCESS_OUTPUT_BYTES: u64 = 8192
+            MAX_HASHED_FILE_BYTES: usize = 16777216
+            MAX_INPUT_BYTES: usize = 8388608
+            MAX_GENERATED_BYTES: usize = 16777216
+            TIMEOUT_STEPS: u64 = 10000
+
+
+        def lowercase_sha256_hex_byte(value: u8) -> bool:
+            return value >= 48u8 and value <= 57u8 or value >= 97u8 and value <= 102u8
+
+
+        def file_has_expected_sha256(file_path: sview, expected_hex: sview, process_name: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if len(expected_hex) != 64
+            input_path: Path = path(file_path)
+            return false if not is_file(input_path)
+            input_size: usize = try file_size(input_path) else err:
+                return false
+            return false if input_size == 0 or input_size > Commands::MAX_HASHED_FILE_BYTES
+
+            hash_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: process_name,
+                target: Commands::SHA256_TOOL,
+                arguments: ["-a", "256", file_path],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_HASH_OUTPUT_BYTES
+            }
+            hash_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(hash_runner):
+                ok value:
+                    hash_run <- value
+                error failure:
+                    return false
+
+            return false if hash_run.outcome != DifferentialRunOutcome.Completed
+            return false if hash_run.exit_status != 0 or hash_run.stderr != ""
+            return false if hash_run.stdout != expected_hex + "  " + file_path + "\n"
+            for index in 0..<64 |hash_run, expected_hex|:
+                return false if not lowercase_sha256_hex_byte(sview_at(expected_hex, index))
+            return true
+
+
+        def output_file_cleanup(output_path: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write]:
+            return true if not is_file(output_path)
+            return try remove_path(output_path) else false
+
+
+        def pinned_inputs_match() -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            input_path: Path = try path_real(path(Commands::INPUT_FILE)) else err:
+                return false
+            input_size: usize = try file_size(input_path) else err:
+                return false
+            return false if input_size == 0 or input_size > Commands::MAX_INPUT_BYTES
+            return file_has_expected_sha256(f"{input_path}", Commands::INPUT_SHA256, "chordbrain-database-input-sha256")
+
+
+        def source_pins_match() -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            output_snapshot: Path = try path_real(path(Commands::OUTPUT_SNAPSHOT)) else err:
+                return false
+            return false if not file_has_expected_sha256(f"{reference_script}", Commands::REFERENCE_SHA256, "chordbrain-database-reference-sha256")
+            return false if not file_has_expected_sha256(f"{candidate_script}", Commands::CANDIDATE_SHA256, "chordbrain-database-candidate-sha256")
+            return file_has_expected_sha256(f"{output_snapshot}", Commands::OUTPUT_SNAPSHOT_SHA256, "chordbrain-database-output-snapshot-sha256")
+
+
+        def generated_files_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            input_path: Path = try path_real(path(Commands::INPUT_FILE)) else err:
+                return false
+            snapshot_path: Path = try path_real(path(Commands::OUTPUT_SNAPSHOT)) else err:
+                return false
+            temporary: Path = try temp_directory("chordbrain-database-parity") else err:
+                return false
+
+            reference_output: Path = temporary.joinpath("reference.elisa")
+            candidate_output: Path = temporary.joinpath("candidate.elisa")
+            reference_text_path: sview = f"{reference_output}"
+            candidate_text_path: sview = f"{candidate_output}"
+            input_text_path: sview = f"{input_path}"
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.PythonAdapter,
+                name: "pinned-python-chordbrain-database-reference",
+                target: Commands::PYTHON,
+                entry: f"{reference_script}",
+                arguments: ["--input", input_text_path, "--output", reference_text_path],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    print("ChordBrain Python database generator failed to run")
+
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-chordbrain-database-candidate",
+                target: launcher,
+                arguments: [f"{candidate_script}", "--input", input_text_path, "--output", candidate_text_path],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    print("ChordBrain Elisascript database generator failed to run")
+
+            generated_match: mutable bool = false
+            if reference_run.outcome == DifferentialRunOutcome.Completed and candidate_run.outcome == DifferentialRunOutcome.Completed and reference_run.exit_status == 0 and candidate_run.exit_status == 0:
+                reference_generated: sview = try EsBoundedText::read_utf8(reference_output, Commands::MAX_GENERATED_BYTES) else err:
+                    ""
+                candidate_generated: sview = try EsBoundedText::read_utf8(candidate_output, Commands::MAX_GENERATED_BYTES) else err:
+                    ""
+                snapshot_generated: sview = try EsBoundedText::read_utf8(snapshot_path, Commands::MAX_GENERATED_BYTES) else err:
+                    ""
+                generated_match <- reference_generated != "" and reference_generated == candidate_generated and reference_generated == snapshot_generated
+                generated_match <- generated_match and reference_run.stdout == candidate_run.stdout and reference_run.stderr == "" and candidate_run.stderr == ""
+            else:
+                print("ChordBrain database generator process outcome mismatch")
+
+            reference_removed: bool = output_file_cleanup(reference_output)
+            candidate_removed: bool = output_file_cleanup(candidate_output)
+            directory_removed: bool = try remove_directory(temporary) else false
+            return generated_match and reference_removed and candidate_removed and directory_removed
+
+
+        def missing_input_preserves_outputs(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            reference_script: Path = try path_real(path(Commands::REFERENCE_SCRIPT)) else err:
+                return false
+            candidate_script: Path = try path_real(path(Commands::CANDIDATE_SCRIPT)) else err:
+                return false
+            temporary: Path = try temp_directory("chordbrain-database-failure-parity") else err:
+                return false
+            missing_input: Path = temporary.joinpath("missing-chords.json")
+            reference_output: Path = temporary.joinpath("reference-sentinel.elisa")
+            candidate_output: Path = temporary.joinpath("candidate-sentinel.elisa")
+            sentinel: sview = "preserve this existing output\n"
+            reference_written: usize = try write_text(reference_output, sentinel) else 0u64
+            candidate_written: usize = try write_text(candidate_output, sentinel) else 0u64
+            setup_ok: bool = reference_written == len(sentinel) and candidate_written == len(sentinel)
+            if not setup_ok:
+                _ = output_file_cleanup(reference_output)
+                _ = output_file_cleanup(candidate_output)
+                _ = try remove_directory(temporary) else false
+                return false
+
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+            reference_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.PythonAdapter,
+                name: "pinned-python-chordbrain-database-missing-input",
+                target: Commands::PYTHON,
+                entry: f"{reference_script}",
+                arguments: ["--input", f"{missing_input}", "--output", f"{reference_output}"],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            candidate_runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: "public-elisascript-chordbrain-database-missing-input",
+                target: launcher,
+                arguments: [f"{candidate_script}", "--input", f"{missing_input}", "--output", f"{candidate_output}"],
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_differential_process(reference_runner):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    print("ChordBrain Python missing-input reference failed to run")
+            catch run_differential_process(candidate_runner):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    print("ChordBrain Elisascript missing-input candidate failed to run")
+
+            reference_sentinel: sview = try EsBoundedText::read_utf8(reference_output, 128) else err:
+                ""
+            candidate_sentinel: sview = try EsBoundedText::read_utf8(candidate_output, 128) else err:
+                ""
+            outcomes_match: bool = reference_run.outcome == DifferentialRunOutcome.Completed and candidate_run.outcome == DifferentialRunOutcome.Completed and reference_run.exit_status == 1 and candidate_run.exit_status == 1 and reference_run.stdout == "" and candidate_run.stdout == "" and reference_run.stderr.index("FileNotFoundError:") >= 0 and candidate_run.stderr == "ChordBrain database generator: unable to read or parse input\n"
+            preserved: bool = reference_sentinel == sentinel and candidate_sentinel == sentinel
+
+            reference_removed: bool = output_file_cleanup(reference_output)
+            candidate_removed: bool = output_file_cleanup(candidate_output)
+            directory_removed: bool = try remove_directory(temporary) else false
+            return outcomes_match and preserved and reference_removed and candidate_removed and directory_removed
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def launcher_hash_matches(launcher: sview, expected_hex: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return file_has_expected_sha256(launcher, expected_hex, "chordbrain-database-launcher-sha256")
+
+
+        def process_parity_matches(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            return pinned_inputs_match() and source_pins_match() and generated_files_match(launcher) and missing_input_preserves_outputs(launcher)
+
+
+@test
+def chordbrain_database_generator_matches_pinned_python_output() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else err:
+            ""
+        rss_guard: sview = try getenv("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "") else err:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else err:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else err:
+            ""
+        launcher_hash: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256", "") else err:
+            ""
+        assert reauthorized == "1"
+        assert rss_guard == "active"
+        assert compiler == EsChordBrainDatabaseLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsChordBrainDatabaseLauncherParity::pinned_compiler_path()
+        assert launcher != "" and launcher.startswith("/")
+        assert EsChordBrainDatabaseLauncherParity::launcher_hash_matches(launcher, launcher_hash)
+        assert EsChordBrainDatabaseLauncherParity::process_parity_matches(launcher)
