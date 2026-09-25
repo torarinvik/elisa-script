@@ -300,5 +300,17 @@ rg -Fq 'tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION' "$reference"
 rg -Fq 'unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION' "$reference"
 rg -Fq 'reference requires Python 3.14.7 with Unicode 16.0.0' "$reference"
 rg -Fq 'fails closed unless it runs Python 3.14.7 with' "$contract"
+runtime_guard_lines="$(awk '
+    /^def main\(arguments:/ { in_main = 1; main_line = NR }
+    in_main && /tuple\(sys\.version_info\[:3\]\) != PINNED_PYTHON_VERSION/ { python_line = NR }
+    in_main && /unicodedata\.unidata_version != PINNED_UNICODE_DATA_VERSION/ { unicode_line = NR }
+    in_main && /build_component_payload = bool\(arguments\)/ { argument_line = NR }
+    END { print main_line, python_line, unicode_line, argument_line }
+' "$reference")"
+set -- $runtime_guard_lines
+if [ "$#" -ne 4 ] || [ "$1" -ge "$2" ] || [ "$2" -ge "$3" ] || [ "$3" -ge "$4" ]; then
+    printf 'W09 bounds audit: Python and Unicode runtime guards must precede CLI mode handling\n' >&2
+    exit 1
+fi
 
 printf 'W09 source audit: bounded scanner work and component ABI paths have source-level coverage; runtime parity remains unverified\n'
