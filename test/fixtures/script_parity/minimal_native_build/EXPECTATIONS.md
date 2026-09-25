@@ -72,6 +72,15 @@ header with the distinct default template. Elisascript must fail before
 re-blessing or deleting those bytes; after restoring the variant bytes, the
 old cache must again be reusable.
 
+With the variant header selected, the harness next changes only the executable
+target's `MINIMAL_MAIN_VARIANT` compile definition from 0 to 1. Both source
+branches compute the same value, so status/stdout/stderr must remain identical.
+CMake and Elisascript must rebuild only `main.c`/`compile-main` and relink the
+executable; the independent answer-library compile and archive must remain
+untouched. The harness restores the definition to 0 and requires the same
+minimal rebuild frontier again before continuing with missing-output recovery.
+This compile-option sequence is source-only and unverified.
+
 To prove the dirty-output guard runs before process dispatch, the harness backs
 up the cached main object, overwrites that output with the default header, and
 invokes a compile recipe whose command would create a marker with `/usr/bin/touch`.

@@ -5,6 +5,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+set(MINIMAL_MAIN_VARIANT 0 CACHE STRING "Compile-time variant for the minimal executable")
+
 set(
     MINIMAL_BUILD_CONFIG_INPUT
     "${CMAKE_CURRENT_SOURCE_DIR}/include/generated_build_config.h.in"
@@ -22,6 +24,7 @@ target_include_directories(minimal-answer PRIVATE include)
 
 add_executable(minimal-native src/main.c)
 target_include_directories(minimal-native PRIVATE include "${CMAKE_CURRENT_BINARY_DIR}")
+target_compile_definitions(minimal-native PRIVATE MINIMAL_MAIN_VARIANT=${MINIMAL_MAIN_VARIANT})
 target_link_libraries(minimal-native PRIVATE minimal-answer)
 
 if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")

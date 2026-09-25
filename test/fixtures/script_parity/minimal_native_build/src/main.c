@@ -3,8 +3,14 @@
 
 #include <stdio.h>
 
+#if MINIMAL_MAIN_VARIANT == 0
+#define MINIMAL_MAIN_ADJUSTMENT 0
+#else
+#define MINIMAL_MAIN_ADJUSTMENT 42 - 42
+#endif
+
 int main(void) {
-    const int value = answer();
+    const int value = answer() + MINIMAL_MAIN_ADJUSTMENT;
     if (value != MINIMAL_BUILD_ANSWER) {
         return 1;
     }
