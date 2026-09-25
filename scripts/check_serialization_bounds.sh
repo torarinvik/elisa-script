@@ -8,12 +8,13 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 runtime_model="$repo_root/src/ir/runtime_model.elisa"
 bytecode="$repo_root/src/bytecode/bytecode.elisa"
 artifact_cache="$repo_root/src/ir/artifact_cache.elisa"
+file_read_at="$repo_root/src/runtime/file_read_at_posix.elisa"
 verifier="$repo_root/src/ir/ir_verify.elisa"
 type_table="$repo_root/src/ir/type_table.elisa"
 tests="$repo_root/test/ir/elisascript_ir_test.elisa"
 incremental_cache_adapter_tests="$repo_root/test/runtime/build_incremental_cache_adapter_test.elisa"
 
-for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$verifier" "$tests" "$incremental_cache_adapter_tests"; do
+for required_file in "$runtime_model" "$bytecode" "$artifact_cache" "$file_read_at" "$verifier" "$tests" "$incremental_cache_adapter_tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'serialization bounds audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -94,7 +95,6 @@ rg -q 'bytes.count != expected_count' "$artifact_cache"
 rg -q 'catch artifact_cache_write_staging' "$artifact_cache"
 ! rg -q 'try artifact_cache_write_staging' "$artifact_cache"
 rg -q 'def artifact_cache_write_descriptor_fully' "$artifact_cache"
-rg -q 'def artifact_cache_read_descriptor_fully' "$artifact_cache"
 rg -q 'machine over cursor.state' "$artifact_cache"
 rg -q 'DarwinOpenFlags::WRONLY \| DarwinOpenFlags::CREATE \| DarwinOpenFlags::EXCLUSIVE \| DarwinOpenFlags::NOFOLLOW \| DarwinOpenFlags::CLOSE_ON_EXEC' "$artifact_cache"
 rg -q 'elisascript_posix_fsync\(descriptor\)' "$artifact_cache"
@@ -188,15 +188,23 @@ rg -q 'def read_build_incremental_cache_file' "$artifact_cache"
 rg -q 'artifact_cache_read_bounded_file\(a, path, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
 rg -q 'def read_build_incremental_cache_at' "$artifact_cache"
 rg -q 'def artifact_cache_read_file_at' "$artifact_cache"
-rg -q 'DarwinOpenFlags::RDONLY \| DarwinOpenFlags::NONBLOCK \| DarwinOpenFlags::NOFOLLOW \| DarwinOpenFlags::CLOSE_ON_EXEC' "$artifact_cache"
-rg -q 'elisascript_posix_openat\(directory_fd, cache_name, flags, 0u32\)' "$artifact_cache"
-rg -q 'elisascript_posix_read\(descriptor, destination.cast\[mutable void&\], remaining\)' "$artifact_cache"
-rg -q 'artifact_cache_read_descriptor_fully\(descriptor, bytes, expected_count\)' "$artifact_cache"
-rg -q 'arena_da_reserve\(a, bytes, expected_count\)' "$artifact_cache"
+rg -q 'read_regular_file_at\(a, directory_fd, cache_name, Limits::PAYLOAD_BYTES\)' "$artifact_cache"
+rg -q 'def read_regular_file_at\(' "$file_read_at"
+rg -q 'MAX_BYTES: usize = 268435456' "$file_read_at"
+rg -q 'MAX_READ_CALLS: usize = 1048576' "$file_read_at"
+rg -q 'machine over cursor.state' "$file_read_at"
+rg -q 'elisascript_posix_openat\(directory_fd, leaf_name, flags, 0u32\)' "$file_read_at"
+rg -q 'elisascript_posix_read\(descriptor, destination.cast\[mutable void&\], remaining\)' "$file_read_at"
+rg -q 'arena_da_reserve\(a, bytes, expected_count\)' "$file_read_at"
+rg -Fq 'expected.modify_time.seconds == observed.modify_time.seconds' "$file_read_at"
+rg -Fq 'expected.modify_time.nanoseconds == observed.modify_time.nanoseconds' "$file_read_at"
+rg -Fq 'expected.change_time.seconds == observed.change_time.seconds' "$file_read_at"
+rg -Fq 'expected.change_time.nanoseconds == observed.change_time.nanoseconds' "$file_read_at"
 rg -q '_ = try decode_build_incremental_cache\(bytes\)' "$artifact_cache"
 rg -q 'def publish_build_incremental_cache_at_locked' "$artifact_cache"
 rg -q 'incremental_cache_descriptor_io_rejects_invalid_directory_handles' "$incremental_cache_adapter_tests"
 rg -q 'read_build_incremental_cache_at\(arena, -1, "cache.bin"\)' "$incremental_cache_adapter_tests"
+rg -q 'read_regular_file_at\(arena, -1, "cache.bin", 1024\)' "$incremental_cache_adapter_tests"
 rg -q 'publish_build_incremental_cache_at_locked\(arena, lock, -1, "cache.lock", 7, "cache.tmp", "cache.bin", bytes\)' "$incremental_cache_adapter_tests"
 rg -q 'artifact_cache_publish_payload_at_locked\(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
 rg -q 'unchanged: bool = false' "$artifact_cache"
@@ -227,17 +235,20 @@ if ! awk '
     exit 1
 fi
 if ! awk '
-    /def artifact_cache_read_file_at\(/ { in_cache_read = 1 }
-    /def artifact_cache_payload_matches_at\(/ { in_cache_read = 0 }
-    in_cache_read && /fstatat\(directory_fd, cache_name, named_before, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { named_before_line = NR }
-    in_cache_read && /openat\(directory_fd, cache_name, flags, 0u32\)/ { open_line = NR }
-    in_cache_read && /info\.device != named_before\.device/ { descriptor_identity_line = NR }
-    in_cache_read && /fstatat\(directory_fd, cache_name, named_after, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { named_after_line = NR }
-    in_cache_read && /named_after\.inode == info\.inode/ { final_identity_line = NR }
-    in_cache_read && /not name_still_matches/ { identity_reject_line = NR }
-    END { exit !(named_before_line > 0 && open_line > named_before_line && descriptor_identity_line > open_line && named_after_line > descriptor_identity_line && final_identity_line >= named_after_line && identity_reject_line > final_identity_line) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: no-op cache read does not bind bytes to a stable named inode\n' >&2
+    /def read_regular_file_at\(/ { in_cache_read = 1 }
+    in_cache_read && /named_before:/ { named_before_line = NR }
+    in_cache_read && /file_read_at_open\(directory_fd, leaf_name\)/ { open_line = NR }
+    in_cache_read && /file_read_at_snapshot_matches\(named_before, opened\)/ { descriptor_identity_line = NR }
+    in_cache_read && /machine over cursor\.state/ { read_machine_line = NR }
+    in_cache_read && /descriptor_unchanged: bool/ { descriptor_recheck_line = NR }
+    in_cache_read && /file_read_at_snapshot_matches\(opened, after_fd\)/ { descriptor_after_line = NR }
+    in_cache_read && /name_unchanged: bool/ { named_after_line = NR }
+    in_cache_read && /file_read_at_snapshot_matches\(opened, after_name\)/ { final_identity_line = NR }
+    in_cache_read && /close_status: int/ { close_line = NR }
+    in_cache_read && /not descriptor_unchanged or not name_unchanged/ { identity_reject_line = NR }
+    END { exit !(named_before_line > 0 && open_line > named_before_line && descriptor_identity_line > open_line && read_machine_line > descriptor_identity_line && descriptor_recheck_line > read_machine_line && descriptor_after_line == descriptor_recheck_line && named_after_line > descriptor_recheck_line && final_identity_line == named_after_line && close_line > final_identity_line && identity_reject_line > close_line) }
+' "$file_read_at"; then
+    printf 'serialization bounds audit: shared no-op cache read does not bind bytes to a stable named inode\n' >&2
     exit 1
 fi
 if ! awk '

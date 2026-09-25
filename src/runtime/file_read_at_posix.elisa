@@ -1,0 +1,144 @@
+# Stable, bounded no-follow reads of one regular file under an open directory
+# capability. Shared by cache and atomic-file adapters; paths never escape the
+# supplied parent descriptor.
+
+module EsFileReadAtPosix:
+    using EsRuntime
+
+    public:
+        const module Limits:
+            MAX_BYTES: usize = 268435456
+            MAX_READ_CALLS: usize = 1048576
+            EINTR_RETRIES: usize = 8
+
+
+    private:
+        const module ReadErrno:
+            EINTR: i32 = 4
+
+
+        const enum ReadState of u8:
+            Read
+            Done
+            Failed
+
+
+        struct ReadCursor:
+            state: ReadState = ReadState.Read
+            offset: usize = 0
+            calls: usize = 0
+            interrupted: usize = 0
+
+
+        def file_read_at_stat_name(directory_fd: int, leaf_name: cstr, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstatat(directory_fd, leaf_name, result, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == ReadErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def file_read_at_stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == ReadErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def file_read_at_open(directory_fd: int, leaf_name: cstr) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            while true:
+                descriptor: int = elisascript_posix_openat(directory_fd, leaf_name, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == ReadErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def file_read_at_regular(stat: ElisascriptStat) -> bool:
+            return (stat.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR
+
+
+        def file_read_at_snapshot_matches(expected: ElisascriptStat, observed: ElisascriptStat) -> bool:
+            return file_read_at_regular(observed) and expected.device == observed.device and expected.inode == observed.inode and expected.size == observed.size and expected.modify_time.seconds == observed.modify_time.seconds and expected.modify_time.nanoseconds == observed.modify_time.nanoseconds and expected.change_time.seconds == observed.change_time.seconds and expected.change_time.nanoseconds == observed.change_time.nanoseconds
+
+
+    public:
+        # Open with O_NOFOLLOW, bind the opened descriptor to the entry observed
+        # before open, and verify descriptor plus name again after the bounded
+        # read. This rejects replacement and ordinary in-place modification;
+        # it is not a lock against an adversary able to mutate and restore all
+        # metadata concurrently.
+        def read_regular_file_at(a: mutable Arena&, directory_fd: int, leaf_name: cstr, byte_limit: usize) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            raise FileIoError.ReadFailed(leaf_name) if directory_fd < 0 or not elisascript_posix_leaf_name_valid(leaf_name)
+            raise FileIoError.ReadFailed(leaf_name) if byte_limit == 0 or byte_limit > Limits::MAX_BYTES
+
+            named_before: mutable ElisascriptStat = ElisascriptStat{}
+            raise FileIoError.ReadFailed(leaf_name) if not file_read_at_stat_name(directory_fd, leaf_name, named_before)
+            raise FileIoError.ReadFailed(leaf_name) if not file_read_at_regular(named_before) or named_before.size < 0 or named_before.size.usize().i64() != named_before.size or named_before.size.usize() > byte_limit
+
+            descriptor: int = file_read_at_open(directory_fd, leaf_name)
+            raise FileIoError.ReadFailed(leaf_name) if descriptor < 0
+
+            opened: mutable ElisascriptStat = ElisascriptStat{}
+            opened_valid: bool = file_read_at_stat_descriptor(descriptor, opened) and file_read_at_snapshot_matches(named_before, opened) and opened.size.usize() <= byte_limit
+            if not opened_valid:
+                _ = elisascript_posix_close(descriptor)
+                raise FileIoError.ReadFailed(leaf_name)
+
+            expected_count: usize = opened.size.usize()
+            bytes: mutable darray[u8] = []
+            _ = arena_da_reserve(a, bytes, expected_count) if expected_count != 0
+            cursor: mutable ReadCursor = ReadCursor{}
+            machine over cursor.state:
+                state Read
+                start Read
+
+                Read, ReadState.Read if cursor.offset >= expected_count:
+                    cursor.state <- ReadState.Done
+                    -> Read
+                Read, ReadState.Read if cursor.calls >= Limits::MAX_READ_CALLS:
+                    cursor.state <- ReadState.Failed
+                    -> Read
+                Read, ReadState.Read:
+                    remaining: usize = expected_count - cursor.offset
+                    destination: mutable u8& = bytes.items + cursor.offset
+                    amount: isize = elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == ReadErrno::EINTR and cursor.interrupted < Limits::EINTR_RETRIES:
+                            cursor.interrupted <- cursor.interrupted + 1
+                            -> Read
+                        cursor.state <- ReadState.Failed
+                        -> Read
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.state <- ReadState.Failed
+                        -> Read
+                    cursor.offset <- cursor.offset + amount.usize()
+                    bytes.count <- cursor.offset
+                    cursor.interrupted <- 0
+                    -> Read
+
+                Read, ReadState.Done:
+                    break
+                Read, ReadState.Failed:
+                    break
+
+            after_fd: mutable ElisascriptStat = ElisascriptStat{}
+            descriptor_unchanged: bool = file_read_at_stat_descriptor(descriptor, after_fd) and file_read_at_snapshot_matches(opened, after_fd)
+            after_name: mutable ElisascriptStat = ElisascriptStat{}
+            name_unchanged: bool = file_read_at_stat_name(directory_fd, leaf_name, after_name) and file_read_at_snapshot_matches(opened, after_name)
+            close_status: int = elisascript_posix_close(descriptor)
+            raise FileIoError.ReadFailed(leaf_name) if cursor.state != ReadState.Done or not descriptor_unchanged or not name_unchanged or close_status != 0 or bytes.count != expected_count
+            return bytes

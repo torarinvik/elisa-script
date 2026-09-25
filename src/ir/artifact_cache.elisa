@@ -26,6 +26,7 @@ module EsArtifactCache:
     using EsBytecode
     using EsBuildIncremental
     using EsBuildIncrementalCache
+    using EsFileReadAtPosix
     using EsRuntime
 
     private:
@@ -197,19 +198,6 @@ module EsArtifactCache:
             interrupted: usize = 0
 
 
-        const enum CacheReadState of u8:
-            Read
-            Done
-            Failed
-
-
-        struct CacheReadCursor:
-            state: CacheReadState = CacheReadState.Read
-            offset: usize = 0
-            calls: usize = 0
-            interrupted: usize = 0
-
-
         struct ArtifactCacheStagingIdentity:
             device: u32 = 0
             inode: u64 = 0
@@ -271,44 +259,6 @@ module EsArtifactCache:
             return cursor.state == StageWriteState.Done
 
 
-        def artifact_cache_read_descriptor_fully(descriptor: int, bytes: mutable darray[u8]&, expected_count: usize) -> bool can[Blocking.IO]:
-            cursor: mutable CacheReadCursor = CacheReadCursor{}
-            machine over cursor.state:
-                state Read
-                start Read
-
-                Read, CacheReadState.Read if cursor.offset >= expected_count:
-                    cursor.state <- CacheReadState.Done
-                    -> Read
-                Read, CacheReadState.Read:
-                    if cursor.calls >= expected_count + StageWriteLimits::EINTR_RETRIES:
-                        cursor.state <- CacheReadState.Failed
-                        -> Read
-                    remaining: usize = expected_count - cursor.offset
-                    destination: mutable u8& = bytes.items + cursor.offset
-                    amount: isize = elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)
-                    cursor.calls <- cursor.calls + 1
-                    if amount < 0:
-                        errno: mutable i32& = elisascript_posix_errno()
-                        if errno[0] == DarwinErrno::EINTR and cursor.interrupted < StageWriteLimits::EINTR_RETRIES:
-                            cursor.interrupted <- cursor.interrupted + 1
-                            -> Read
-                        cursor.state <- CacheReadState.Failed
-                        -> Read
-                    if amount == 0 or amount.usize() > remaining:
-                        cursor.state <- CacheReadState.Failed
-                        -> Read
-                    cursor.offset <- cursor.offset + amount.usize()
-                    bytes.count <- cursor.offset
-                    -> Read
-
-                Read, CacheReadState.Done:
-                    break
-                Read, CacheReadState.Failed:
-                    break
-            return cursor.state == CacheReadState.Done
-
-
         def artifact_cache_read_bounded_file(a: mutable Arena&, path: cstr, byte_limit: usize = Limits::BYTES) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
             raise FileIoError.ReadFailed(path) if not artifact_cache_path_terminated(path)
             raise FileIoError.ReadFailed(path) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES
@@ -342,24 +292,8 @@ module EsArtifactCache:
 
 
         def artifact_cache_read_file_at(a: mutable Arena&, directory_fd: int, cache_name: cstr) -> darray[u8] error[FileIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
-            raise FileIoError.ReadFailed(cache_name) if not artifact_cache_directory_descriptor_valid(directory_fd) or not elisascript_posix_leaf_name_valid(cache_name)
-            named_before: mutable ElisascriptStat = ElisascriptStat{}
-            raise FileIoError.ReadFailed(cache_name) if elisascript_posix_fstatat(directory_fd, cache_name, named_before, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0 or (named_before.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR
-            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
-            descriptor: int = elisascript_posix_openat(directory_fd, cache_name, flags, 0u32)
-            raise FileIoError.ReadFailed(cache_name) if descriptor < 0
-            info: mutable ElisascriptStat = ElisascriptStat{}
-            if elisascript_posix_fstat(descriptor, info) != 0 or (info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or info.device != named_before.device or info.inode != named_before.inode or info.size != named_before.size or info.size <= 0 or info.size.usize().i64() != info.size or info.size.usize() > Limits::PAYLOAD_BYTES:
-                _ = elisascript_posix_close(descriptor)
-                raise FileIoError.ReadFailed(cache_name)
-            expected_count: usize = info.size.usize()
-            bytes: mutable darray[u8] = []
-            _ = arena_da_reserve(a, bytes, expected_count)
-            read_complete: bool = artifact_cache_read_descriptor_fully(descriptor, bytes, expected_count)
-            named_after: mutable ElisascriptStat = ElisascriptStat{}
-            name_still_matches: bool = elisascript_posix_fstatat(directory_fd, cache_name, named_after, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0 and (named_after.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and named_after.device == info.device and named_after.inode == info.inode and named_after.size == info.size
-            close_status: int = elisascript_posix_close(descriptor)
-            raise FileIoError.ReadFailed(cache_name) if not read_complete or not name_still_matches or close_status != 0 or bytes.count != expected_count
+            bytes: darray[u8] = try read_regular_file_at(a, directory_fd, cache_name, Limits::PAYLOAD_BYTES)
+            raise FileIoError.ReadFailed(cache_name) if bytes.count == 0
             return bytes
 
 
