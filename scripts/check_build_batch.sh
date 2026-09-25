@@ -62,6 +62,7 @@ for incremental_batch_invariant in \
     'admit_build_incremental_graph(session.scheduler, previous_targets, recipes, observations)' \
     'result.cache_hit != (job.state == ProcessBatchJobState.Skipped)' \
     'cache_hit_results != session.scheduler.cache_hits' \
+    'session.scheduler.cache.count != session.scheduler.cache_hits' \
     'BuildSchedulerEvent.CacheHit'; do
     rg -Fq "$incremental_batch_invariant" "$model"
 done
@@ -105,6 +106,7 @@ for fixture_case in \
     'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
     'incremental_build_batch_invalidates_cached_dependents_of_dirty_inputs' \
     'forged_cache_count_rejected' \
+    'forged_unused_cache_rejected' \
     'session.processes.jobs[0].state == ProcessBatchJobState.Skipped' \
     'ProcessBatchState.Succeeded' \
     'session.processes.jobs[0].attempts == 0 and session.scheduler.ready_queue.count == 0' \
