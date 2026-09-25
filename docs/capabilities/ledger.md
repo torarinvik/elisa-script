@@ -761,6 +761,13 @@ the live reservation. Receipt admission also reuses `validate_process_result`
 to reject malformed status/signal combinations and invalid captured text before
 changing scheduler state or consuming reservations. This remains a host-neutral
 contract, not child launch or runtime evidence.
+Successful integrated batches can now be converted to the canonical
+`BuildExecutionResult` used by the existing incremental commit path: cached
+nodes remain unstarted cache hits, while dispatched nodes preserve successful
+status and captured stdout/stderr. The adapter rejects incomplete or failed
+batches before export. Focused source fixtures cover both conversion cases and
+the failure boundary; compiler/runtime execution remains disabled, and this
+does not provide the missing parallel child launcher or establish CMake parity.
 `EsBuildUsage` target edges now carry PRIVATE/PUBLIC/INTERFACE visibility,
 separate from build-order edges. Resolution applies compile/link requirements
 locally and exports only the declared visibility; PRIVATE dependencies of
