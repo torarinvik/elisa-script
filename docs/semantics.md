@@ -2045,7 +2045,12 @@ positional value arguments followed by at most one `sep: sview`, one
 default. `flush` is a
 typed compatibility spelling: stream writes use POSIX `write` directly, so
 bytes are visible immediately and no additional user-space flush operation is
-needed. The unsupported Python `file` control remains statically rejected:
+needed.
+
+Use `print` and `printr` as the canonical stdout formatting names; there are no
+`println` or `eprint` builtins. For explicit stderr output, use
+`write_stderr(text)` rather than a print-name variant. The unsupported Python
+`file` control remains statically rejected:
 
 - `read_stdin() -> sview error[ConsoleError] can[Console.Read]` reads bytes from file
   descriptor 0 until EOF, up to the interpreter's 64 MiB stdin safety ceiling, and
