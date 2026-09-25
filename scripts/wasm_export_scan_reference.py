@@ -9,11 +9,17 @@ import os
 import stat
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 from types import ModuleType
 
 
 PINNED_COMMIT = "0019dfcfff405b98369dd1b51562619668e29707"
+# The candidate's Python-compatible diagnostic repr follows this reference
+# runtime's Unicode printability table. Refuse other runtimes instead of
+# silently changing the parity oracle when PATH resolves a different Python.
+PINNED_PYTHON_VERSION = (3, 14, 7)
+PINNED_UNICODE_DATA_VERSION = "16.0.0"
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 16 * 1024 * 1024
 # Expected snapshots are tiny checked-in contracts. Keep their decoded object
@@ -325,6 +331,11 @@ def preflight_reference_input(
 
 
 def main(arguments: list[str]) -> int:
+    if tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION:
+        return fail("reference requires Python 3.14.7 with Unicode 16.0.0", 2)
+    if unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION:
+        return fail("reference requires Python 3.14.7 with Unicode 16.0.0", 2)
+
     build_component_payload = bool(arguments) and arguments[0] == "--build-component-payload"
     build_payload = bool(arguments) and (arguments[0] == BUILD_PAYLOAD_OPTION or build_component_payload)
     flatten_payload = bool(arguments) and arguments[0] == FLATTEN_PAYLOAD_OPTION

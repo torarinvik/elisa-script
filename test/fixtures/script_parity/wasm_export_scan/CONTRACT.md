@@ -362,6 +362,11 @@ the Git blob ID from those captured bytes, compares it with the pinned commit,
 and compiles that exact verified snapshot. This avoids both an unbounded
 path-based `git hash-object` read and a second path-based Python import that
 could execute bytes different from the checked blob.
+The reference process also fails closed unless it runs Python 3.14.7 with
+Unicode database 16.0.0. This pins the runtime-dependent Unicode printability
+table used by Python `repr` diagnostics; selecting another `python3` from PATH
+must produce the adapter's stable status-2 runtime-requirement diagnostic,
+not silently alter the oracle.
 Before invoking the reference's recursive loader, the adapter performs a
 streaming include-graph preflight with the same per-file, graph-byte,
 output-byte, path, path-component-work, directive, depth, and unique-file

@@ -294,5 +294,11 @@ rg -Fq 'append_utf8_scalar(source_bytes, 917506u64)' "$fixture"
 rg -Fq 'append_utf8_scalar(source_bytes, 917535u64)' "$fixture"
 rg -Fq 'def unsupported_nonprintable_unicode_type_repr_matches_python()' "$fixture"
 rg -Fq 'U+E0000, U+E0002, and U+E001F' "$contract"
+rg -Fq 'PINNED_PYTHON_VERSION = (3, 14, 7)' "$reference"
+rg -Fq 'PINNED_UNICODE_DATA_VERSION = "16.0.0"' "$reference"
+rg -Fq 'tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION' "$reference"
+rg -Fq 'unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION' "$reference"
+rg -Fq 'reference requires Python 3.14.7 with Unicode 16.0.0' "$reference"
+rg -Fq 'fails closed unless it runs Python 3.14.7 with' "$contract"
 
 printf 'W09 source audit: bounded scanner work and component ABI paths have source-level coverage; runtime parity remains unverified\n'
