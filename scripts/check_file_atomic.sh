@@ -105,4 +105,4 @@ rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtim
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 
-printf 'file atomic audit: bounded staging, unchanged no-op, destination identity, and uncertain publication receipts are present\n'
+printf 'file atomic source audit: contract transitions and fixtures are present; filesystem adapter and runtime parity are not covered\n'
