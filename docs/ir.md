@@ -625,7 +625,11 @@ Cache recipe signing rejects commands with inherited host environments unless a
 future API supplies and hashes an explicit environment snapshot. Cacheable build
 actions must currently use a fully specified `Replace` or `Clear` environment;
 otherwise an ambient variable change could leave the signature unchanged while
-changing the compiler or generator output.
+changing the compiler or generator output. The current build executor still only
+dispatches `Inherit` commands and rejects `Replace`/`Clear`, so no command mode
+can yet be both signed and dispatched for an incremental rebuild. End-to-end
+environment-mode support at the process boundary is required before E07 cache
+execution is usable or can be accepted.
 `resolve_incremental_build_dependencies` validates that same manifest and
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
