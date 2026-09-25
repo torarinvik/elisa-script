@@ -37,6 +37,7 @@ done
 
 for adapter_boundary in \
     'def record_sort_key_from_field\(' \
+    'def record_sort_entry_from_fields\(' \
     'validate_record_sort_session' \
     'field.index != spec.field_index' \
     'validate_record_field' \
@@ -79,6 +80,8 @@ done
 for adapter_fixture_pattern in \
     'text_integer_and_absent_record_fields_form_declared_sort_keys' \
     'malformed_numeric_sort_field_is_rejected_before_key_publication' \
+    'integer_sort_entries_use_numeric_not_lexical_order' \
+    'record_sort_entry_from_fields' \
     'RecordNumericError.InvalidCharacter' \
     'integer_key.integer == -12' \
     'not absent_key.present'; do
@@ -87,6 +90,7 @@ done
 
 rg -q 'EsRecordSort::RecordSortSession' "$docs"
 rg -q 'EsRecordSortFields::record_sort_key_from_field' "$docs"
+rg -q 'record_sort_entry_from_fields' "$docs"
 rg -q 'ES-SCRIPT-024' "$ledger"
 
 printf 'record sort audit: bounded typed keys, stable order, and lifecycle checks are present\n'

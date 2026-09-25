@@ -1197,8 +1197,10 @@ by in-memory and disk-merge adapters. The focused IR fixture, namespace
 inclusion, documentation, and check_record_sort.sh audit are static evidence;
 `EsRecordSortFields` now validates source field spans and materializes text or
 checked signed-integer keys, preserving missing fields explicitly and rejecting
-malformed numeric keys before entry publication. Focused adapter fixtures cover
-text, negative integer, absent, and malformed keys; execution remains disabled.
+malformed numeric keys before entry publication. Its entry builder enforces
+spec order and constructs the full key vector before publishing a sort entry;
+focused adapter fixtures distinguish numeric from lexical ordering and cover
+text, negative integer, absent, and malformed keys. Execution remains disabled.
 Spill files, atomic publication, and merge I/O remain host work.
 
 ES-SCRIPT-025 | EsRecordRewrite supplies a transactional in-place rewrite

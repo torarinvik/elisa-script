@@ -1676,7 +1676,9 @@ atomic spill files, and merge I/O remain host responsibilities.
 against its owning record/policy, retains text views as text keys, and routes
 integer keys through bounded lexical parsing plus checked `i64` conversion;
 absent fields become explicit missing keys, while malformed integers fail
-before a key is published.
+before a key is published. `record_sort_entry_from_fields` validates the sort
+policy once, requires one field per declared key in spec order, and builds the
+complete key vector in private scratch storage before returning an entry.
 
 `EsRecordRewrite::RecordRewriteSession` is the safe in-place transformation
 boundary for Perl `-pi`, sed-like, and record/regex rewrite adapters. A plan
