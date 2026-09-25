@@ -4166,7 +4166,10 @@ rejected once the embedded graph has already succeeded; a ready scheduler can
 also be cancelled before `Begin`, which marks every planned node cancelled and
 keeps the embedded graph and scheduler ledgers in sync. A ready scheduler
 cannot carry a pre-injected dispatch queue (preloaded cache entries remain
-valid for the first refresh).
+valid for the first refresh). Queue membership uses binary search over that
+strictly ascending invariant, and queue validation checks adjacent entries for
+order and duplicates in one pass. Rebuilding readiness scans graph nodes once,
+so a wide graph of independent targets does not incur a quadratic queue search.
 The scheduler mirrors its active/completed ledger into the embedded graph and
 reconciles both state machines, so a forged complete or failed scheduler cannot
 hide graph progress. Cancellation acknowledgement drains the ready queue and

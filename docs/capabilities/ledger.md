@@ -849,7 +849,12 @@ recipe signing rejects `Inherit` because ambient environment is not signed,
 while the serial executor supports only `Inherit` and rejects `Replace`/`Clear`.
 Thus no command mode is both cacheable and dispatchable for a dirty incremental
 node; end-to-end exact environment semantics are a prerequisite for E07
-acceptance, not a completed capability.
+acceptance, not a completed capability. The sorted ready queue now uses
+binary membership lookup, one-pass duplicate/order validation, and a single
+graph-order readiness rebuild, avoiding quadratic work across wide target
+frontiers; focused source fixtures and the compiler-free scheduler audit cover
+the lookup and duplicate-rejection paths, but remain unexecuted under the
+validation hold.
 
 ES-SCRIPT-003 | EsOutputRender supplies sealed-document admission at validation,
 ordered record consumption, format framing, JSON/XML escape expansion accounting

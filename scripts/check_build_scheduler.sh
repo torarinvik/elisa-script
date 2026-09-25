@@ -53,6 +53,10 @@ for integration_check in \
     rg -Fq "$integration_check" "$model"
 done
 rg -Fq 'plan_build_incremental_graph_transition(previous_targets, scheduler.graph, current_recipes, observations)' "$model"
+rg -Fq 'middle: usize = low + (high - low) / 2' "$model"
+rg -Fq 'if node.state == BuildNodeState.Planned:' "$model"
+rg -Fq 'raise BuildSchedulerError.DuplicateQueueEntry if previous == queued' "$model"
+rg -Fq 'raise BuildSchedulerError.QueueOrderInvalid if previous > queued' "$model"
 
 for boundary in \
     'scheduler_dependency_ready' \
@@ -116,6 +120,14 @@ for fixture_pattern in \
     'BuildSchedulerState.Complete' \
     'completed_cancel_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
+done
+
+for queue_fixture_pattern in \
+    'build_scheduler_uses_ordered_queue_membership_and_rejects_duplicates' \
+    'advance_build_scheduler(scheduler, BuildSchedulerEvent.Dispatch, 2)' \
+    'duplicate_scheduler.ready_queue <- [0, 0]' \
+    'BuildSchedulerError.DuplicateQueueEntry'; do
+    rg -Fq "$queue_fixture_pattern" "$incremental_fixture"
 done
 
 rg -Fq 'EsBuildScheduler adds the execution-facing queue contract' "$docs"
