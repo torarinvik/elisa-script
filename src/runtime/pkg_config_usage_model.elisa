@@ -1,0 +1,99 @@
+# Convert resolved pkg-config flags into ordered build-target usage inputs.
+#
+# This is a pure adapter. It preserves the exact argv order and owns every
+# resulting requirement value. It does not bless include/library paths: a build
+# host must apply its canonical-path policy before constructing commands.
+
+module EsPkgConfigUsage:
+    using EsBuildUsage
+    using EsPkgConfigResult
+    using EsPkgConfigWords
+
+    public:
+        const module Limits:
+            REQUIREMENTS: usize = EsBuildUsage::Limits::REQUIREMENTS_PER_TARGET
+
+
+        struct PkgConfigBuildUsage:
+            requirements: darray[BuildUsageRequirement] = []
+            # Requirement.value views point into these individually owned
+            # buffers. Retain this record while the requirements are used.
+            owned_values: darray[darray[u8]] = []
+
+
+        error PkgConfigUsageError:
+            DiscoveryUnavailable
+            InvalidVisibility
+            InvalidFlagShape
+            RequirementLimitExceeded
+
+
+    private:
+        def pkg_config_usage_visibility_valid(visibility: BuildUsageVisibility) -> bool:
+            return visibility == BuildUsageVisibility.Private or visibility == BuildUsageVisibility.Public or visibility == BuildUsageVisibility.Interface
+
+
+        def pkg_config_usage_append_value(output: mutable darray[u8]&, input: darray[u8]) -> void error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigUsageError.InvalidFlagShape if input.count == 0 or input.count > EsBuildUsage::Limits::VALUE_BYTES
+            for byte in input |output|:
+                raise PkgConfigUsageError.InvalidFlagShape if byte == 0
+                raise PkgConfigUsageError.InvalidFlagShape if output.count >= EsBuildUsage::Limits::VALUE_BYTES
+                output.push(byte)
+
+
+        def pkg_config_usage_copy_flag_value(flag: PkgConfigFlag) -> darray[u8] error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic]:
+            value: mutable darray[u8] = []
+            if flag.kind == PkgConfigFlagKind.LibraryDirectory:
+                raise PkgConfigUsageError.InvalidFlagShape if flag.value.count > EsBuildUsage::Limits::VALUE_BYTES - 2
+                value.push(45u8)
+                value.push(76u8)
+            try pkg_config_usage_append_value(value, flag.value)
+            return value
+
+
+        def pkg_config_usage_requirement_kind(flag: PkgConfigFlag, stream: PkgConfigFlagStream) -> BuildUsageKind error[PkgConfigUsageError]:
+            if stream == PkgConfigFlagStream.Compile:
+                return BuildUsageKind.IncludeDirectory if flag.kind == PkgConfigFlagKind.IncludeDirectory
+                return BuildUsageKind.CompileDefinition if flag.kind == PkgConfigFlagKind.CompileDefinition
+                return BuildUsageKind.CompileOption if flag.kind == PkgConfigFlagKind.CompileOption
+                raise PkgConfigUsageError.InvalidFlagShape
+            return BuildUsageKind.LinkOption if flag.kind == PkgConfigFlagKind.LibraryDirectory or flag.kind == PkgConfigFlagKind.LinkOption
+            return BuildUsageKind.LinkLibrary if flag.kind == PkgConfigFlagKind.LibraryName or flag.kind == PkgConfigFlagKind.LibraryPath
+            raise PkgConfigUsageError.InvalidFlagShape
+
+
+        def pkg_config_usage_library_form(flag: PkgConfigFlag) -> BuildUsageLibraryForm error[PkgConfigUsageError]:
+            return BuildUsageLibraryForm.SearchName if flag.kind == PkgConfigFlagKind.LibraryName
+            return BuildUsageLibraryForm.Path if flag.kind == PkgConfigFlagKind.LibraryPath
+            raise PkgConfigUsageError.InvalidFlagShape
+
+
+    public:
+        # Produce requirements suitable for one consumer-selected target.
+        # Visibility is explicit because pkg-config cannot decide whether a
+        # discovered dependency is private, public, or interface-only.
+        def pkg_config_build_usage_requirements(discovery: PkgConfigDiscovery, visibility: BuildUsageVisibility) -> PkgConfigBuildUsage error[PkgConfigUsageError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigUsageError.DiscoveryUnavailable if discovery.outcome != PkgConfigDiscoveryOutcome.Resolved
+            raise PkgConfigUsageError.InvalidVisibility if not pkg_config_usage_visibility_valid(visibility)
+            raise PkgConfigUsageError.InvalidFlagShape if discovery.compile_flags.stream != PkgConfigFlagStream.Compile or discovery.link_flags.stream != PkgConfigFlagStream.Link
+            raise PkgConfigUsageError.RequirementLimitExceeded if discovery.compile_flags.flags.count > Limits::REQUIREMENTS
+            raise PkgConfigUsageError.RequirementLimitExceeded if discovery.link_flags.flags.count > Limits::REQUIREMENTS - discovery.compile_flags.flags.count
+
+            requirements: mutable darray[BuildUsageRequirement] = []
+            owned_values: mutable darray[darray[u8]] = []
+            for flag in discovery.compile_flags.flags |requirements, owned_values, visibility|:
+                kind: BuildUsageKind = try pkg_config_usage_requirement_kind(flag, PkgConfigFlagStream.Compile)
+                value: darray[u8] = try pkg_config_usage_copy_flag_value(flag)
+                owned_values.push(value)
+                requirements.push(BuildUsageRequirement{kind: kind, visibility: visibility, value: bytes_view(owned_values[owned_values.count - 1])})
+
+            for flag in discovery.link_flags.flags |requirements, owned_values, visibility|:
+                kind: BuildUsageKind = try pkg_config_usage_requirement_kind(flag, PkgConfigFlagStream.Link)
+                value: darray[u8] = try pkg_config_usage_copy_flag_value(flag)
+                library_form: BuildUsageLibraryForm = BuildUsageLibraryForm.SearchName
+                if kind == BuildUsageKind.LinkLibrary:
+                    library_form <- try pkg_config_usage_library_form(flag)
+                owned_values.push(value)
+                requirements.push(BuildUsageRequirement{kind: kind, visibility: visibility, value: bytes_view(owned_values[owned_values.count - 1]), library_form: library_form})
+
+            return PkgConfigBuildUsage{requirements: requirements, owned_values: owned_values}
