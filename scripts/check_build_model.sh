@@ -142,6 +142,7 @@ for declaration in \
     'TOTAL_RESOLVED_ENTRIES' \
     'TOTAL_VALUE_BYTES' \
     'INDEX_WORK_BYTES' \
+    'INDEX_PROBE_STEPS' \
     'INDEX_SLOTS' \
     'INDEX_PROBES' \
     'const enum BuildUsageTargetKind of u8:' \
@@ -169,6 +170,7 @@ for boundary in \
     'DuplicateDependency' \
     'TotalValueLimitExceeded' \
     'IndexWorkLimitExceeded' \
+    'IndexProbeWorkLimitExceeded' \
     'IndexProbeLimitExceeded' \
     'IndexCapacityExceeded' \
     'BuildUsageTargetKind.StaticLibrary' \
@@ -191,10 +193,17 @@ for boundary in \
     'candidate.target_artifact else 0' \
     'struct BuildUsageIndexSlot:' \
     'def usage_index_hash(signature: u8, value: sview)' \
-    'usage_index_probe(indices.slots, signature, candidate.value, hash, work_bytes)' \
-    'try usage_index_ensure_capacity(indices, indices.count + 1)' \
+    'def usage_index_count_probe(probe_steps: mutable usize&)' \
+    'index_probe_steps: mutable usize = 0' \
+    'for target_index in 0..<targets.count |targets, results, resolved_count, index_work_bytes, index_probe_steps|' \
+    'for dependency in target.dependencies |target, results, result, indices, resolved_count, index_work_bytes, index_probe_steps|' \
+    'for entry in dependency_result.exported_compile |indices, result, resolved_count, index_work_bytes, index_probe_steps|' \
+    'usage_index_probe(indices.slots, signature, candidate.value, hash, work_bytes, probe_steps)' \
+    'try usage_index_count_probe(probe_steps)' \
+    'try usage_index_ensure_capacity(indices, indices.count + 1, probe_steps)' \
     'target_artifact: entry.target_artifact' \
     'Limits::INDEX_PROBES' \
+    'Limits::INDEX_PROBE_STEPS' \
     'Limits::INDEX_WORK_BYTES - work_bytes' \
     'current.value == value' \
     'entries[existing.entry_index].link_only <- false if not candidate.link_only' \
@@ -216,6 +225,8 @@ rg -Fq 'build_usage_distinguishes_target_artifacts_from_linker_names' "$usage_fi
 rg -Fq 'build_usage_rejects_mismatched_library_forms' "$usage_fixture"
 rg -Fq 'build_usage_index_preserves_order_and_deduplicates_high_cardinality_entries' "$usage_fixture"
 rg -Fq 'build_usage_index_rejects_collision_chains_over_probe_budget' "$usage_fixture"
+rg -Fq 'build_usage_index_rejects_excessive_aggregate_fanout_probe_work' "$usage_fixture"
+rg -Fq 'BuildUsageError.IndexProbeWorkLimitExceeded' "$usage_fixture"
 rg -Fq 'option_as_search_name' "$usage_fixture"
 rg -Fq 'whitespace_as_search_name' "$usage_fixture"
 rg -Fq 'bare_path_resolution' "$usage_fixture"
