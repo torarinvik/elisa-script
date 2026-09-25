@@ -824,6 +824,16 @@ status and captured stdout/stderr. The adapter rejects incomplete or failed
 batches before export. Focused source fixtures cover both conversion cases and
 the failure boundary; compiler/runtime execution remains disabled, and this
 does not provide the missing parallel child launcher or establish CMake parity.
+The optional declared-output receipt path currently checks only `is_file` for
+each output after a successful child result. It does not prove the file was
+created or refreshed by that attempt: a stale pre-existing artifact can satisfy
+the existence check. Therefore this host-neutral batch API is not yet safe as a
+parallel incremental-build executor for generated outputs. Such
+an adapter must join dispatch with the incremental executor's ownership-aware
+preflight/invalidation boundary (or provide equivalent exclusive-root
+evidence), and verify post-run outputs before releasing dependent nodes; a
+plain post-run `is_file` check is insufficient. This is an explicit E06/E09
+integration gap, not output-freshness evidence.
 `EsBuildUsage` target edges now carry PRIVATE/PUBLIC/INTERFACE visibility,
 separate from build-order edges. Resolution applies compile/link requirements
 locally and exports only the declared visibility; PRIVATE dependencies of
