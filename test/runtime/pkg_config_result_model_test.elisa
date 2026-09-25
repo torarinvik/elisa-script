@@ -1,0 +1,102 @@
+include "../../src/ir/ir.elisa"
+
+using EsPkgConfig
+using EsPkgConfigResult
+using EsPkgConfigWords
+using EsBuildExecutor
+using EsBuild
+
+
+def pkg_config_result_test_advance(graph: mutable BuildGraph&, event: BuildGraphEvent, index: usize = 0) -> void:
+    advanced: mutable bool = false
+    catch advance_build_graph(graph, event, index):
+        ok state:
+            _ = state
+            advanced <- true
+        error failure:
+            _ = failure
+    assert advanced
+
+
+@test
+def pkg_config_result_binds_version_and_ordered_compile_link_flags() -> void:
+    can Memory.Allocate, Abort.Panic:
+        plan: PkgConfigQueryPlan = pkg_config_query_plan("/usr/bin/pkg-config", "/work/project", PkgConfigRequirement{name: "zlib"})
+        graph: mutable BuildGraph = pkg_config_query_graph(plan)
+        pkg_config_result_test_advance(graph, BuildGraphEvent.Start)
+        for index in 0..<graph.nodes.count |graph|:
+            pkg_config_result_test_advance(graph, BuildGraphEvent.NodeStart, index)
+            pkg_config_result_test_advance(graph, BuildGraphEvent.NodeSuccess, index)
+        result: BuildExecutionResult = BuildExecutionResult{
+            graph_state: BuildGraphState.Succeeded,
+            nodes: [
+                BuildExecutionNodeResult{target_name: "pkg_config:zlib:exists", started: true},
+                BuildExecutionNodeResult{target_name: "pkg_config:zlib:version", started: true, stdout: "1.2.13\n"},
+                BuildExecutionNodeResult{target_name: "pkg_config:zlib:compile_flags", started: true, stdout: "-I/opt/zlib/include -DZLIB_API=1"},
+                BuildExecutionNodeResult{target_name: "pkg_config:zlib:link_flags", started: true, stdout: "-L/opt/zlib/lib -lz"}
+            ],
+            log_bytes: 58
+        }
+        discovery: PkgConfigDiscovery = pkg_config_admit_execution_result(plan, graph, result)
+        assert discovery.outcome == PkgConfigDiscoveryOutcome.Resolved
+        assert discovery.failed_stage == PkgConfigQueryStage.None
+        assert discovery.version.count == 6 and discovery.version[0] == 49u8 and discovery.version[5] == 51u8
+        assert discovery.compile_flags.stream == PkgConfigFlagStream.Compile
+        assert discovery.compile_flags.flags.count == 2
+        assert discovery.compile_flags.flags[0].kind == PkgConfigFlagKind.IncludeDirectory
+        assert pkg_config_flag_matches(discovery.compile_flags, 0, "/opt/zlib/include")
+        assert pkg_config_flag_matches(discovery.compile_flags, 1, "ZLIB_API=1")
+        assert discovery.link_flags.stream == PkgConfigFlagStream.Link
+        assert discovery.link_flags.flags.count == 2
+        assert discovery.link_flags.flags[0].kind == PkgConfigFlagKind.LibraryDirectory
+        assert pkg_config_flag_matches(discovery.link_flags, 0, "/opt/zlib/lib")
+        assert discovery.link_flags.flags[1].kind == PkgConfigFlagKind.LibraryName
+        assert pkg_config_flag_matches(discovery.link_flags, 1, "z")
+
+
+@test
+def pkg_config_result_distinguishes_dependency_failure_from_query_failure() -> void:
+    can Memory.Allocate, Abort.Panic:
+        plan: PkgConfigQueryPlan = pkg_config_query_plan("/usr/bin/pkg-config", "/work/project", PkgConfigRequirement{name: "missing-lib"})
+        unavailable_graph: mutable BuildGraph = pkg_config_query_graph(plan)
+        pkg_config_result_test_advance(unavailable_graph, BuildGraphEvent.Start)
+        pkg_config_result_test_advance(unavailable_graph, BuildGraphEvent.NodeStart, 0)
+        pkg_config_result_test_advance(unavailable_graph, BuildGraphEvent.NodeFailure, 0)
+        unavailable_result: BuildExecutionResult = BuildExecutionResult{
+            graph_state: BuildGraphState.Failed,
+            nodes: [
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:exists", started: true, failure: BuildExecutionFailureKind.NonzeroExit, exit_status: 1, stderr: "missing package"},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:version"},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:compile_flags"},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:link_flags"}
+            ],
+            log_bytes: 15
+        }
+        unavailable: PkgConfigDiscovery = pkg_config_admit_execution_result(plan, unavailable_graph, unavailable_result)
+        assert unavailable.outcome == PkgConfigDiscoveryOutcome.DependencyUnavailable
+        assert unavailable.failed_stage == PkgConfigQueryStage.Exists
+        assert unavailable.failure_kind == BuildExecutionFailureKind.NonzeroExit
+        assert unavailable.diagnostic.count == 15
+
+        query_failed_graph: mutable BuildGraph = pkg_config_query_graph(plan)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.Start)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeStart, 0)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeSuccess, 0)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeStart, 1)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeSuccess, 1)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeStart, 2)
+        pkg_config_result_test_advance(query_failed_graph, BuildGraphEvent.NodeFailure, 2)
+        query_failed_result: BuildExecutionResult = BuildExecutionResult{
+            graph_state: BuildGraphState.Failed,
+            nodes: [
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:exists", started: true},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:version", started: true, stdout: "1.0\n"},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:compile_flags", started: true, failure: BuildExecutionFailureKind.Invocation},
+                BuildExecutionNodeResult{target_name: "pkg_config:missing-lib:link_flags"}
+            ],
+            log_bytes: 4
+        }
+        query_failed: PkgConfigDiscovery = pkg_config_admit_execution_result(plan, query_failed_graph, query_failed_result)
+        assert query_failed.outcome == PkgConfigDiscoveryOutcome.QueryFailed
+        assert query_failed.failed_stage == PkgConfigQueryStage.CompileFlags
+        assert query_failed.failure_kind == BuildExecutionFailureKind.Invocation

@@ -1,0 +1,217 @@
+# Admission and decoding of pkg-config build-executor receipts.
+#
+# This layer binds output to the validated four-stage query graph, distinguishes
+# dependency rejection from probe execution failures, and owns decoded flags.
+
+module EsPkgConfigResult:
+    using EsBuild
+    using EsBuildExecutor
+    using EsPkgConfig
+    using EsPkgConfigWords
+
+    public:
+        const enum PkgConfigQueryStage of u8:
+            None
+            Exists
+            Version
+            CompileFlags
+            LinkFlags
+
+
+        const enum PkgConfigDiscoveryOutcome of u8:
+            Resolved
+            DependencyUnavailable
+            QueryFailed
+
+
+        struct PkgConfigDiscovery:
+            requirement: PkgConfigRequirement
+            outcome: PkgConfigDiscoveryOutcome
+            version: darray[u8] = []
+            compile_flags: PkgConfigFlagSet
+            link_flags: PkgConfigFlagSet
+            failed_stage: PkgConfigQueryStage = PkgConfigQueryStage.None
+            failure_kind: BuildExecutionFailureKind = BuildExecutionFailureKind.None
+            exit_status: i64 = 0
+            diagnostic: darray[u8] = []
+
+
+        error PkgConfigResultError:
+            InvalidPlan
+            InvalidExecutionGraph
+            InvalidExecutionShape
+            InvalidLogAccounting
+            OutputLimitExceeded
+            InvalidVersionOutput
+
+
+    private:
+        const module StageNames:
+            EXISTS: sview = "exists"
+            VERSION: sview = "version"
+            COMPILE_FLAGS: sview = "compile_flags"
+            LINK_FLAGS: sview = "link_flags"
+
+
+        def pkg_config_result_target_name(requirement: PkgConfigRequirement, stage: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "pkg_config:" + requirement.name + ":" + stage
+
+
+        def pkg_config_result_stage(index: usize) -> PkgConfigQueryStage:
+            return PkgConfigQueryStage.Exists if index == 0 else PkgConfigQueryStage.Version if index == 1 else PkgConfigQueryStage.CompileFlags if index == 2 else PkgConfigQueryStage.LinkFlags
+
+
+        def pkg_config_result_stage_name(index: usize) -> sview:
+            return StageNames::EXISTS if index == 0 else StageNames::VERSION if index == 1 else StageNames::COMPILE_FLAGS if index == 2 else StageNames::LINK_FLAGS
+
+
+        def pkg_config_result_copy_text(value: sview, limit: usize) -> darray[u8] error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigResultError.OutputLimitExceeded if sview_len(value) > limit
+            bytes: mutable darray[u8] = []
+            for offset in 0..<sview_len(value) |value, bytes|:
+                bytes.push(sview_at(value, offset))
+            return bytes
+
+
+        def pkg_config_result_version(value: sview) -> darray[u8] error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(value)
+            raise PkgConfigResultError.OutputLimitExceeded if length > EsPkgConfig::Limits::VERSION_BYTES + 2
+            end: mutable usize = length
+            if end > 0 and sview_at(value, end - 1) == 10:
+                end <- end - 1
+                end <- end - 1 if end > 0 and sview_at(value, end - 1) == 13
+            for offset in 0..<end |value|:
+                byte: u8 = sview_at(value, offset)
+                raise PkgConfigResultError.InvalidVersionOutput if byte == 0 or byte == 10 or byte == 13
+            version_view: sview = string_view_slice(value, 0, end.i64())
+            raise PkgConfigResultError.InvalidVersionOutput if not EsPkgConfig::pkg_config_version_is_valid(version_view)
+            return try pkg_config_result_copy_text(version_view, EsPkgConfig::Limits::VERSION_BYTES)
+
+
+        def pkg_config_result_node_valid(node: BuildExecutionNodeResult, expected_name: sview, succeeded: bool) -> bool:
+            return false if node.target_name != expected_name or node.cache_hit or node.missing_output != ""
+            if succeeded:
+                return node.started and node.failure == BuildExecutionFailureKind.None and node.exit_status == 0
+            return not node.started and node.failure == BuildExecutionFailureKind.None and node.exit_status == 0 and node.stdout == "" and node.stderr == ""
+
+
+        def pkg_config_result_total_add_fits(total: usize, node: BuildExecutionNodeResult) -> bool:
+            stdout_bytes: usize = sview_len(node.stdout)
+            stderr_bytes: usize = sview_len(node.stderr)
+            return false if sview_contains_byte(node.stdout, 0) or sview_contains_byte(node.stderr, 0)
+            return false if stdout_bytes > EsPkgConfig::Limits::CAPTURE_OUTPUT_BYTES
+            return false if stderr_bytes > EsPkgConfig::Limits::CAPTURE_OUTPUT_BYTES - stdout_bytes
+            return false if stdout_bytes + stderr_bytes > EsBuild::Limits::LOG_BYTES - total
+            return true
+
+
+        def pkg_config_process_commands_equal(left: ProcessCommand, right: ProcessCommand) -> bool:
+            return false if left.executable != right.executable or left.arguments != right.arguments or left.working_directory != right.working_directory
+            return false if left.environment != right.environment or left.environment_mode != right.environment_mode
+            return false if left.stdin_mode != right.stdin_mode or left.stdout_mode != right.stdout_mode or left.stderr_mode != right.stderr_mode
+            return false if left.stdin_path != right.stdin_path or left.stdout_path != right.stdout_path or left.stderr_path != right.stderr_path
+            return false if left.timeout_micros != right.timeout_micros or left.capture_output_limit_bytes != right.capture_output_limit_bytes or left.failure_mode != right.failure_mode
+            return true
+
+
+        def pkg_config_execution_graph_matches(plan: PkgConfigQueryPlan, graph: BuildGraph, result: BuildExecutionResult) -> bool:
+            return false if graph.nodes.count != 4 or graph.max_parallel != 1 or graph.node_name_order.count != 0
+            return false if graph.state != result.graph_state
+            plan_commands: darray[ProcessCommand] = [plan.exists, plan.version, plan.compile_flags, plan.link_flags]
+            for index in 0..<graph.nodes.count |graph, result, plan, plan_commands|:
+                graph_node: BuildNode = graph.nodes[index]
+                result_node: BuildExecutionNodeResult = result.nodes[index]
+                expected_name: sview = pkg_config_result_target_name(plan.requirement, pkg_config_result_stage_name(index))
+                return false if graph_node.name != expected_name or graph_node.fingerprint != (index + 1).u64()
+                return false if not pkg_config_process_commands_equal(graph_node.command, plan_commands[index])
+                if index == 0:
+                    return false if graph_node.dependencies.count != 0
+                else:
+                    return false if graph_node.dependencies.count != 1 or graph_node.dependencies[0] != index - 1
+                if result_node.started and result_node.failure == BuildExecutionFailureKind.None:
+                    return false if graph_node.state != BuildNodeState.Succeeded
+                elif result_node.started:
+                    return false if graph_node.state != BuildNodeState.Failed
+                else:
+                    return false if graph_node.state != BuildNodeState.Cancelled
+            return true
+
+
+        def pkg_config_result_success(requirement: PkgConfigRequirement, version: darray[u8], compile_flags: PkgConfigFlagSet, link_flags: PkgConfigFlagSet) -> PkgConfigDiscovery:
+            return PkgConfigDiscovery{
+                requirement: requirement,
+                outcome: PkgConfigDiscoveryOutcome.Resolved,
+                version: version,
+                compile_flags: compile_flags,
+                link_flags: link_flags
+            }
+
+
+        def pkg_config_result_failure(requirement: PkgConfigRequirement, outcome: PkgConfigDiscoveryOutcome, stage: PkgConfigQueryStage, node: BuildExecutionNodeResult) -> PkgConfigDiscovery error[PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            diagnostic: darray[u8] = try pkg_config_result_copy_text(node.stderr, EsPkgConfig::Limits::CAPTURE_OUTPUT_BYTES)
+            return PkgConfigDiscovery{
+                requirement: requirement,
+                outcome: outcome,
+                compile_flags: PkgConfigFlagSet{stream: PkgConfigFlagStream.Compile},
+                link_flags: PkgConfigFlagSet{stream: PkgConfigFlagStream.Link},
+                failed_stage: stage,
+                failure_kind: node.failure,
+                exit_status: node.exit_status,
+                diagnostic: diagnostic
+            }
+
+
+    public:
+        # Decode only a complete or fail-fast result from the exact graph
+        # generated for this plan. Result rows are positional but also checked
+        # against package-qualified target names before any bytes are trusted.
+        def pkg_config_admit_execution_result(plan: PkgConfigQueryPlan, graph: BuildGraph, result: BuildExecutionResult) -> PkgConfigDiscovery error[PkgConfigError, PkgConfigWordsError, PkgConfigResultError] can[Memory.Allocate, Abort.Panic]:
+            plan_valid: bool = try pkg_config_query_plan_valid(plan)
+            raise PkgConfigResultError.InvalidPlan if not plan_valid
+            raise PkgConfigResultError.InvalidExecutionShape if result.nodes.count != 4
+            raise PkgConfigResultError.InvalidExecutionShape if result.graph_state != BuildGraphState.Succeeded and result.graph_state != BuildGraphState.Failed
+            raise PkgConfigResultError.InvalidLogAccounting if result.log_bytes > EsBuild::Limits::LOG_BYTES
+            graph_valid: mutable bool = false
+            catch validate_build_graph(graph):
+                ok value:
+                    graph_valid <- value
+                error failure:
+                    raise PkgConfigResultError.InvalidExecutionGraph
+            raise PkgConfigResultError.InvalidExecutionGraph if not graph_valid or not pkg_config_execution_graph_matches(plan, graph, result)
+
+            total_log_bytes: mutable usize = 0
+            failed_index: mutable usize = result.nodes.count
+            for index in 0..<result.nodes.count |result, plan, total_log_bytes, failed_index|:
+                node: BuildExecutionNodeResult = result.nodes[index]
+                expected_name: sview = pkg_config_result_target_name(plan.requirement, pkg_config_result_stage_name(index))
+                if failed_index != result.nodes.count:
+                    raise PkgConfigResultError.InvalidExecutionShape if not pkg_config_result_node_valid(node, expected_name, false)
+                elif node.failure == BuildExecutionFailureKind.None:
+                    raise PkgConfigResultError.InvalidExecutionShape if not pkg_config_result_node_valid(node, expected_name, true)
+                    raise PkgConfigResultError.InvalidLogAccounting if not pkg_config_result_total_add_fits(total_log_bytes, node)
+                    total_log_bytes <- total_log_bytes + sview_len(node.stdout) + sview_len(node.stderr)
+                else:
+                    raise PkgConfigResultError.InvalidExecutionShape if result.graph_state != BuildGraphState.Failed or not node.started or node.cache_hit or node.missing_output != ""
+                    raise PkgConfigResultError.InvalidExecutionShape if node.failure != BuildExecutionFailureKind.Invocation and node.failure != BuildExecutionFailureKind.NonzeroExit
+                    raise PkgConfigResultError.InvalidExecutionShape if node.failure == BuildExecutionFailureKind.Invocation and (node.exit_status != 0 or node.stdout != "" or node.stderr != "")
+                    raise PkgConfigResultError.InvalidExecutionShape if node.failure == BuildExecutionFailureKind.NonzeroExit and node.exit_status <= 0
+                    raise PkgConfigResultError.InvalidLogAccounting if not pkg_config_result_total_add_fits(total_log_bytes, node)
+                    total_log_bytes <- total_log_bytes + sview_len(node.stdout) + sview_len(node.stderr)
+                    failed_index <- index
+
+            raise PkgConfigResultError.InvalidLogAccounting if total_log_bytes != result.log_bytes
+            if result.graph_state == BuildGraphState.Succeeded:
+                raise PkgConfigResultError.InvalidExecutionShape if failed_index != result.nodes.count
+                version: darray[u8] = try pkg_config_result_version(result.nodes[1].stdout)
+                compile_words: PkgConfigWords = try pkg_config_parse_words(result.nodes[2].stdout)
+                compile_flags: PkgConfigFlagSet = try pkg_config_classify_flags(compile_words, PkgConfigFlagStream.Compile)
+                link_words: PkgConfigWords = try pkg_config_parse_words(result.nodes[3].stdout)
+                link_flags: PkgConfigFlagSet = try pkg_config_classify_flags(link_words, PkgConfigFlagStream.Link)
+                return pkg_config_result_success(plan.requirement, version, compile_flags, link_flags)
+
+            raise PkgConfigResultError.InvalidExecutionShape if failed_index == result.nodes.count
+            failed_node: BuildExecutionNodeResult = result.nodes[failed_index]
+            stage: PkgConfigQueryStage = pkg_config_result_stage(failed_index)
+            outcome: PkgConfigDiscoveryOutcome = PkgConfigDiscoveryOutcome.QueryFailed
+            outcome <- PkgConfigDiscoveryOutcome.DependencyUnavailable if failed_index == 0 and failed_node.failure == BuildExecutionFailureKind.NonzeroExit
+            return try pkg_config_result_failure(plan.requirement, outcome, stage, failed_node)
