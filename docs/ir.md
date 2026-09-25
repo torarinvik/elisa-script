@@ -1897,13 +1897,19 @@ model's append count only after a complete write. Partial/uncertain writes move
 the model to `FailedPendingCleanup`; this still needs an integrated stage
 creation, cleanup, and publication lifecycle. `seal_atomic_file_stage` syncs
 and closes the stage descriptor exactly once, then obtains a stable post-close
-identity/digest receipt and advances `StageReady`; it does not yet perform
-destination comparison or commit. `compare_atomic_file_stage` binds caller
+identity/digest receipt and advances `StageReady`. `compare_atomic_file_stage` binds caller
 bytes to the sealed stage by digest and exact readback, takes stable
 destination identity snapshots around an exact byte comparison, and advances
 `Compare`; it requires the caller to hold the directory lease through the next
 mutation decision. Identity-only reads rewind their temporary arena storage so
 repeated comparisons do not retain one full-file allocation per snapshot.
+`commit_atomic_file_stage` recaptures the stage and destination, transitions to
+`Committing`, performs one same-directory `renameat`, syncs the parent when
+required, and acknowledges only after observing the staged inode at the
+destination with private mode and a single link. Rename failures and all post-rename proof/sync failures transition
+to `PublishedUncertain`; callers must observe/recover and must not blindly
+retry the rename. The caller's exclusive directory lease must cover the final
+revalidation through the rename.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

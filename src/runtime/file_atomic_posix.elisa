@@ -20,6 +20,8 @@ module EsFileAtomicPosix:
             parent_inode: u64
             parent_descriptor_token: u64
             destination: AtomicFileIdentity
+            link_count: usize
+            private_mode: bool
 
 
         struct AtomicFilePosixStageProof:
@@ -57,6 +59,8 @@ module EsFileAtomicPosix:
             StageReceiptFailed
             StageContentMismatch
             DestinationChanged
+            RenameOutcomeUnknown
+            DirectorySyncFailed
 
 
     private:
@@ -185,7 +189,7 @@ module EsFileAtomicPosix:
             return cursor.offset
 
 
-        def atomic_file_posix_sync_stage(fd: int) -> bool can[Blocking.IO]:
+        def atomic_file_posix_sync_descriptor(fd: int) -> bool can[Blocking.IO]:
             retries: mutable usize = 0
             while true:
                 return true if elisascript_posix_fsync(fd) == 0
@@ -201,6 +205,15 @@ module EsFileAtomicPosix:
             catch advance_atomic_file(session, AtomicFileEvent.Fail):
                 ok state:
                     return state == AtomicFileState.FailedPendingCleanup
+                error failure:
+                    return false
+
+
+        def atomic_file_posix_mark_publish_uncertain(session: mutable AtomicFileSession&) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if session.state != AtomicFileState.Committing and session.state != AtomicFileState.Committed
+            catch advance_atomic_file(session, AtomicFileEvent.PublishUncertain):
+                ok state:
+                    return state == AtomicFileState.PublishedUncertain
                 error failure:
                     return false
 
@@ -339,7 +352,7 @@ module EsFileAtomicPosix:
                 _ = atomic_file_posix_fail_session(session)
                 raise AtomicFilePosixError.StageIdentityChanged
 
-            synced: bool = atomic_file_posix_sync_stage(stage_fd)
+            synced: bool = atomic_file_posix_sync_descriptor(stage_fd)
             post_sync_matches: mutable bool = true
             if synced:
                 catch revalidate_atomic_file_stage_proof(parent_fd, stage_fd, leaf_name, expected.owner_token, expected):
@@ -355,7 +368,7 @@ module EsFileAtomicPosix:
                 raise AtomicFilePosixError.StageIdentityChanged if not post_sync_matches
                 raise AtomicFilePosixError.StageCloseFailed
 
-            snapshot: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}}
+            snapshot: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}, link_count: 0, private_mode: false}
             catch observe_atomic_file_at(a, parent_fd, leaf_name, session.plan.max_content_bytes):
                 ok observed:
                     snapshot <- observed
@@ -363,7 +376,7 @@ module EsFileAtomicPosix:
                     _ = atomic_file_posix_fail_session(session)
                     raise AtomicFilePosixError.StageReceiptFailed
             staged: AtomicFileIdentity = snapshot.destination
-            if not staged.present or staged.volume_id != expected.stage_device or staged.object_id != expected.stage_inode or staged.size != session.staged_bytes:
+            if not staged.present or staged.volume_id != expected.stage_device or staged.object_id != expected.stage_inode or staged.size != session.staged_bytes or snapshot.link_count != 1 or not snapshot.private_mode:
                 _ = atomic_file_posix_fail_session(session)
                 raise AtomicFilePosixError.StageReceiptFailed
 
@@ -390,6 +403,8 @@ module EsFileAtomicPosix:
 
             before: mutable ElisascriptStat = ElisascriptStat{}
             destination: mutable AtomicFileIdentity = AtomicFileIdentity{observed: true}
+            link_count: mutable usize = 0
+            private_mode: mutable bool = false
             if not atomic_file_posix_stat_name(parent_fd, leaf_name, before):
                 errno: mutable i32& = elisascript_posix_errno()
                 raise AtomicFilePosixError.DestinationStatFailed(leaf_name) if errno[0] != AtomicFilePosixErrno::ENOENT
@@ -419,13 +434,15 @@ module EsFileAtomicPosix:
                 if before.device == 0 or before.inode == 0:
                     arena_rewind(a, scratch_mark)
                     raise AtomicFilePosixError.DestinationStatFailed(leaf_name)
+                link_count <- after.link_count.usize()
+                private_mode <- atomic_file_posix_private(after)
                 destination <- AtomicFileIdentity{observed: true, present: true, size: bytes.count, volume_id: before.device.u64(), object_id: before.inode, digest: digest}
 
             parent_after: mutable ElisascriptStat = ElisascriptStat{}
             if not atomic_file_posix_stat_descriptor(parent_fd, parent_after) or not atomic_file_posix_parent_matches(parent_before, parent_after):
                 arena_rewind(a, scratch_mark)
                 raise AtomicFilePosixError.InvalidDirectoryDescriptor
-            result: AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: parent_before.device.u64(), parent_inode: parent_before.inode, parent_descriptor_token: parent_fd.u64() + 1u64, destination: destination}
+            result: AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: parent_before.device.u64(), parent_inode: parent_before.inode, parent_descriptor_token: parent_fd.u64() + 1u64, destination: destination, link_count: link_count, private_mode: private_mode}
             arena_rewind(a, scratch_mark)
             return result
 
@@ -499,7 +516,7 @@ module EsFileAtomicPosix:
             raise AtomicFilePosixError.StageContentMismatch if not supplied_digest_matches
 
             stage_before: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
-            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_before.destination, session.staged_identity)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_before.destination, session.staged_identity) or stage_before.link_count != 1 or not stage_before.private_mode
             stage_content_matches: bool = try atomic_file_bytes_equal_at(a, parent_fd, stage_leaf, staged_contents, session.plan.max_content_bytes)
             raise AtomicFilePosixError.StageContentMismatch if not stage_content_matches
 
@@ -509,10 +526,77 @@ module EsFileAtomicPosix:
             raise AtomicFilePosixError.DestinationChanged if not atomic_file_posix_identity_equal(destination_before.destination, destination_after.destination)
 
             stage_after: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
-            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_after.destination, session.staged_identity)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_after.destination, session.staged_identity) or stage_after.link_count != 1 or not stage_after.private_mode
             catch advance_atomic_file(session, AtomicFileEvent.Compare, identity: destination_after.destination, exact_contents_equal: destination_contents_match):
                 ok state:
                     return destination_after.destination
                 error failure:
                     raise AtomicFilePosixError.DestinationChanged if failure == AtomicFileError.DestinationChanged
                     raise AtomicFilePosixError.StageNotReady
+
+
+        # Commit only from a completed non-no-op Compare transition. The
+        # destination and stage receipts are recaptured immediately before the
+        # one renameat attempt. Every rename error and every post-rename proof
+        # failure remains PublishedUncertain; callers must recover by observing
+        # the destination instead of retrying the rename blindly.
+        def commit_atomic_file_stage(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_leaf: cstr, destination_leaf: cstr) -> AtomicFileIdentity error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Ready or not session.comparison_acknowledged or session.contents_equal or parent_fd < 0 or session.plan.parent_identity != parent_fd.u64() + 1u64
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf) or not elisascript_posix_leaf_name_valid(destination_leaf)
+            raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf) or not atomic_file_posix_path_leaf_matches(session.plan.destination_path, destination_leaf)
+
+            stage_before: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+            raise AtomicFilePosixError.StageContentMismatch if not atomic_file_posix_identity_equal(stage_before.destination, session.staged_identity) or stage_before.link_count != 1 or not stage_before.private_mode
+            destination_before: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+            raise AtomicFilePosixError.DestinationChanged if not atomic_file_posix_identity_equal(destination_before.destination, session.destination_snapshot)
+            catch advance_atomic_file(session, AtomicFileEvent.Commit):
+                ok state:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+
+            rename_status: mutable int = -1
+            catch elisascript_posix_renameat(parent_fd, stage_leaf, parent_fd, destination_leaf):
+                ok status:
+                    rename_status <- status
+                error failure:
+                    _ = atomic_file_posix_mark_publish_uncertain(session)
+                    raise AtomicFilePosixError.RenameOutcomeUnknown
+            if rename_status != 0:
+                _ = atomic_file_posix_mark_publish_uncertain(session)
+                raise AtomicFilePosixError.RenameOutcomeUnknown
+
+            if session.plan.require_directory_sync:
+                if not atomic_file_posix_sync_descriptor(parent_fd):
+                    _ = atomic_file_posix_mark_publish_uncertain(session)
+                    raise AtomicFilePosixError.DirectorySyncFailed
+                catch advance_atomic_file(session, AtomicFileEvent.DirectorySync):
+                    ok state:
+                        pass
+                    error failure:
+                        _ = atomic_file_posix_mark_publish_uncertain(session)
+                        raise AtomicFilePosixError.DirectorySyncFailed
+
+            published_observation: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}, link_count: 0, private_mode: false}
+            catch observe_atomic_file_at(a, parent_fd, destination_leaf, session.plan.max_content_bytes):
+                ok observed:
+                    published_observation <- observed
+                error failure:
+                    _ = atomic_file_posix_mark_publish_uncertain(session)
+                    raise AtomicFilePosixError.RenameOutcomeUnknown
+            published: AtomicFileIdentity = published_observation.destination
+            if not atomic_file_posix_identity_equal(published, session.staged_identity) or published_observation.link_count != 1 or not published_observation.private_mode:
+                _ = atomic_file_posix_mark_publish_uncertain(session)
+                raise AtomicFilePosixError.RenameOutcomeUnknown
+
+            catch advance_atomic_file(session, AtomicFileEvent.CommitAck, identity: published):
+                ok state:
+                    return published
+                error failure:
+                    _ = atomic_file_posix_mark_publish_uncertain(session)
+                    raise AtomicFilePosixError.RenameOutcomeUnknown
