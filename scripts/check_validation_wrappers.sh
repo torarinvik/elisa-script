@@ -7,6 +7,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 lowering="$script_dir/run_bounded_lowering.sh"
 test_wrapper="$script_dir/run_bounded_test.sh"
 stopper="$script_dir/stop_bounded_validation.sh"
+snapshot_library="$script_dir/validation_process_snapshot.sh"
 
 for wrapper in "$lowering" "$test_wrapper" "$stopper"; do
     if [[ ! -f "$wrapper" || ! -x "$wrapper" ]]; then
@@ -14,8 +15,12 @@ for wrapper in "$lowering" "$test_wrapper" "$stopper"; do
         exit 1
     fi
 done
+if [[ ! -f "$snapshot_library" ]]; then
+    printf 'validation wrapper audit: missing process snapshot library %s\n' "$snapshot_library" >&2
+    exit 1
+fi
 
-sh -n "$lowering" "$test_wrapper" "$stopper"
+sh -n "$lowering" "$test_wrapper" "$stopper" "$snapshot_library"
 
 for checker in "$script_dir"/check_*.sh; do
     [[ "$checker" == "$script_dir/check_validation_wrappers.sh" ]] && continue
@@ -50,11 +55,10 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'rm -f "$source_snapshot"' "$wrapper"
     rg -q 'process_tree_pids "\$process_root_pid"' "$wrapper"
     rg -Fq 'process_snapshot_row_limit=16384' "$wrapper"
-    rg -Fq 'ps -axo pid=,ppid= 2>/dev/null | awk -v root="$process_tree_root" -v row_limit="$process_snapshot_row_limit"' "$wrapper"
-    rg -Fq 'NR > row_limit { overflow = 1; exit }' "$wrapper"
-    rg -Fq 'if (overflow || malformed || NR > row_limit) exit 2' "$wrapper"
-    rg -Fq 'queue[++tail] = child_pid' "$wrapper"
-    rg -q 'tree_pid\[\$1\]' "$wrapper"
+    rg -Fq '. "$script_dir/validation_process_snapshot.sh"' "$wrapper"
+    rg -Fq 'ps -axo pid=,ppid= 2>/dev/null; process_snapshot_ps_status=$?' "$wrapper"
+    rg -Fq '__ELISASCRIPT_PS_STATUS__ %s\n' "$wrapper"
+    rg -Fq 'validation_process_tree_pids_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
     case "$wrapper" in
@@ -73,11 +77,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'ps -axo pid=,ppid=,pgid=,rss=' "$wrapper"
     rg -Fq '__ELISASCRIPT_PS_STATUS__ %s\n' "$wrapper"
     rg -Fq 'head -n "$((process_snapshot_row_limit + 2))")" || return 1' "$wrapper"
-    rg -Fq '$1 == "__ELISASCRIPT_PS_STATUS__" { status_seen = 1; if ($2 != 0) ps_failed = 1; next }' "$wrapper"
-    rg -Fq '++process_rows > row_limit { overflow = 1; exit }' "$wrapper"
-    rg -Fq 'if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 2) exit 2' "$wrapper"
-    rg -Fq '$1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }' "$wrapper"
-    rg -Fq 'if (!scope_seen) exit 1' "$wrapper"
+    rg -Fq 'validation_process_group_rss_from_snapshot "$process_group_id" "$process_root_pid" "$process_snapshot_row_limit"' "$wrapper"
     rg -Fq 'process_table="$(ps -axo pgid=,stat= 2>/dev/null)" || return 0' "$wrapper"
     rg -Fq '$1 == group && $2 !~ /^Z/' "$wrapper"
     rg -q 'compiler_process_state' "$wrapper"
@@ -130,7 +130,23 @@ for wrapper in "$lowering" "$test_wrapper"; do
     fi
 done
 
+rg -Fq 'validation_process_tree_pids_from_snapshot()' "$snapshot_library"
+rg -Fq 'validation_process_group_rss_from_snapshot()' "$snapshot_library"
+rg -Fq 'NR > row_limit + 1 { overflow = 1; exit }' "$snapshot_library"
+rg -Fq 'if (overflow || malformed || ps_failed || !status_seen' "$snapshot_library"
+rg -Fq 'if (!scope_seen) exit 1' "$snapshot_library"
+rg -Fq 'queue[++tail] = child_pid' "$snapshot_library"
+
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+snapshot_fixture="$repo_root/test/validation/process_snapshot_test.sh"
+if [[ ! -f "$snapshot_fixture" ]]; then
+    printf 'validation wrapper audit: missing process snapshot fixture %s\n' "$snapshot_fixture" >&2
+    exit 1
+fi
+rg -Fq 'validation_process_tree_pids_from_snapshot 10 4' "$snapshot_fixture"
+rg -Fq 'validation_process_group_rss_from_snapshot 10 10 8' "$snapshot_fixture"
+rg -Fq 'failed descendant process-table command' "$snapshot_fixture"
+rg -Fq 'RSS row-limit overflow' "$snapshot_fixture"
 for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; do
     rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
     rg -q 'assert rss_guard == "active"' "$parity_test"

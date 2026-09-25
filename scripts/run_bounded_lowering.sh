@@ -9,6 +9,7 @@
 set -u
 umask 077
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+. "$script_dir/validation_process_snapshot.sh"
 
 validation_disabled_file="${TMPDIR:-/tmp}/elisascript-validation.disabled"
 
@@ -122,35 +123,8 @@ fi
 
 process_tree_pids() {
     process_tree_root="$1"
-    ps -axo pid=,ppid= 2>/dev/null | awk -v root="$process_tree_root" -v row_limit="$process_snapshot_row_limit" '
-        NR > row_limit { overflow = 1; exit }
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { malformed = 1; exit }
-        {
-            present[$1] = 1
-            children[$2] = children[$2] " " $1
-        }
-        END {
-            if (overflow || malformed || NR > row_limit) exit 2
-            if (!(root in present)) exit 0
-            head = 1
-            tail = 1
-            queue[tail] = root
-            seen[root] = 1
-            print root
-            while (head <= tail) {
-                parent_pid = queue[head++]
-                child_count = split(children[parent_pid], child_ids, " ")
-                for (child_index = 1; child_index <= child_count; child_index++) {
-                    child_pid = child_ids[child_index]
-                    if (child_pid ~ /^[0-9]+$/ && !seen[child_pid]) {
-                        seen[child_pid] = 1
-                        queue[++tail] = child_pid
-                        print child_pid
-                    }
-                }
-            }
-        }
-    '
+    process_snapshot="$( { ps -axo pid=,ppid= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    printf '%s\n' "$process_snapshot" | validation_process_tree_pids_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
 }
 
 process_group_rss_kb() {
@@ -163,45 +137,7 @@ process_group_rss_kb() {
     # still best-effort observation, not containment: a double-forked process
     # reparented after leaving this group can evade both snapshots.
     process_table="$( { ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
-    printf '%s\n' "$process_table" | awk -v group="$process_group_id" -v root="$process_root_pid" -v row_limit="$process_snapshot_row_limit" '
-        NR > row_limit + 2 { overflow = 1; exit }
-        $1 == "__ELISASCRIPT_PS_STATUS__" { status_seen = 1; if ($2 != 0) ps_failed = 1; next }
-        ++process_rows > row_limit { overflow = 1; exit }
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }
-        {
-            pid = $1
-            process_group[$1] = $3
-            rss[$1] = $4
-            present[$1] = 1
-            children[$2] = children[$2] " " $1
-            if (pid == root || $3 == group) scope_seen = 1
-        }
-        END {
-            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 2) exit 2
-            if (!scope_seen) exit 1
-            if (root in present) {
-                head = 1
-                tail = 1
-                queue[tail] = root
-                tree_pid[root] = 1
-                while (head <= tail) {
-                    parent_pid = queue[head++]
-                    child_count = split(children[parent_pid], child_ids, " ")
-                    for (child_index = 1; child_index <= child_count; child_index++) {
-                        child_pid = child_ids[child_index]
-                        if (child_pid ~ /^[0-9]+$/ && !tree_pid[child_pid]) {
-                            tree_pid[child_pid] = 1
-                            queue[++tail] = child_pid
-                        }
-                    }
-                }
-            }
-            for (pid in present) {
-                if (process_group[pid] == group || tree_pid[pid]) total += rss[pid]
-            }
-            print total + 0
-        }
-    '
+    printf '%s\n' "$process_table" | validation_process_group_rss_from_snapshot "$process_group_id" "$process_root_pid" "$process_snapshot_row_limit"
 }
 
 process_group_for_pid() {
