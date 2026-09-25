@@ -10,17 +10,52 @@ module EsPkgConfigWords:
             OUTPUT_BYTES: usize = 1048576
             WORDS: usize = 65536
             WORD_BYTES: usize = 65536
+            FLAGS: usize = 65536
+            FLAG_BYTES: usize = 65536
+            TOTAL_FLAG_BYTES: usize = OUTPUT_BYTES
 
 
         struct PkgConfigWords:
             values: darray[darray[u8]] = []
 
 
+        const enum PkgConfigFlagStream of u8:
+            Compile
+            Link
+
+
+        const enum PkgConfigFlagKind of u8:
+            IncludeDirectory
+            CompileDefinition
+            CompileOption
+            LibraryDirectory
+            LibraryName
+            LibraryPath
+            LinkOption
+
+
+        struct PkgConfigFlag:
+            kind: PkgConfigFlagKind
+            # Include/define/library values have their leading pkg-config
+            # switch removed; option values preserve their complete argv word.
+            value: darray[u8] = []
+
+
+        struct PkgConfigFlagSet:
+            stream: PkgConfigFlagStream
+            flags: darray[PkgConfigFlag] = []
+
+
         error PkgConfigWordsError:
             OutputLimitExceeded
             WordLimitExceeded
             WordSizeLimitExceeded
+            FlagLimitExceeded
+            FlagSizeLimitExceeded
+            TotalFlagSizeLimitExceeded
             InvalidWordOutput
+            InvalidFlagShape
+            InvalidLibraryName
 
 
     private:
@@ -45,6 +80,50 @@ module EsPkgConfigWords:
             words.push(word)
             word <- []
             active <- false
+
+
+        def pkg_config_word_has_prefix(word: darray[u8], prefix: sview) -> bool:
+            return false if word.count < sview_len(prefix)
+            for offset in 0..<sview_len(prefix) |word, prefix|:
+                return false if word[offset] != sview_at(prefix, offset)
+            return true
+
+
+        def pkg_config_word_option_like(word: darray[u8]) -> bool:
+            return word.count != 0 and word[0] == 45
+
+
+        def pkg_config_word_bytes_valid(word: darray[u8]) -> bool:
+            return false if word.count == 0 or word.count > Limits::WORD_BYTES
+            for byte in word:
+                return false if byte == 0
+            return true
+
+
+        def pkg_config_word_copy(word: darray[u8], start: usize) -> darray[u8] error[PkgConfigWordsError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigWordsError.InvalidFlagShape if start > word.count
+            value: mutable darray[u8] = []
+            for offset in start..<word.count |word, value|:
+                raise PkgConfigWordsError.FlagSizeLimitExceeded if value.count >= Limits::FLAG_BYTES
+                value.push(word[offset])
+            return value
+
+
+        def pkg_config_library_name_valid(value: darray[u8]) -> bool:
+            return false if value.count == 0 or value[0] == 45
+            valid: mutable bool = true
+            for byte in value |valid|:
+                valid <- false if byte == 32 or byte == 9 or byte == 10 or byte == 13 or byte == 11 or byte == 12 or byte == 47 or byte == 92
+            return valid
+
+
+        def pkg_config_flag_push(flags: mutable darray[PkgConfigFlag]&, kind: PkgConfigFlagKind, value: darray[u8], total_bytes: mutable usize&) -> void error[PkgConfigWordsError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigWordsError.FlagLimitExceeded if flags.count >= Limits::FLAGS
+            raise PkgConfigWordsError.FlagSizeLimitExceeded if value.count > Limits::FLAG_BYTES
+            raise PkgConfigWordsError.InvalidFlagShape if value.count == 0
+            raise PkgConfigWordsError.TotalFlagSizeLimitExceeded if value.count > Limits::TOTAL_FLAG_BYTES - total_bytes
+            flags.push(PkgConfigFlag{kind: kind, value: value})
+            total_bytes <- total_bytes + value.count
 
 
     public:
@@ -118,6 +197,80 @@ module EsPkgConfigWords:
         def pkg_config_word_matches(words: PkgConfigWords, index: usize, expected: sview) -> bool:
             return false if index >= words.values.count
             value: darray[u8] = words.values[index]
+            return false if value.count != sview_len(expected)
+            for offset in 0..<value.count |value, expected|:
+                return false if value[offset] != sview_at(expected, offset)
+            return true
+
+
+        # Classify pkg-config argv without sorting or deduplicating it. Link
+        # order is semantically significant; unknown switches remain opaque
+        # options so later command construction does not silently discard them.
+        def pkg_config_classify_flags(words: PkgConfigWords, stream: PkgConfigFlagStream) -> PkgConfigFlagSet error[PkgConfigWordsError] can[Memory.Allocate, Abort.Panic]:
+            raise PkgConfigWordsError.InvalidFlagShape if stream != PkgConfigFlagStream.Compile and stream != PkgConfigFlagStream.Link
+            raise PkgConfigWordsError.WordLimitExceeded if words.values.count > Limits::WORDS
+            flags: mutable darray[PkgConfigFlag] = []
+            total_bytes: mutable usize = 0
+            cursor: mutable usize = 0
+            while cursor < words.values.count |words, stream, flags, total_bytes, cursor|:
+                word: darray[u8] = words.values[cursor]
+                raise PkgConfigWordsError.InvalidWordOutput if not pkg_config_word_bytes_valid(word)
+                if stream == PkgConfigFlagStream.Compile:
+                    if pkg_config_word_has_prefix(word, "-I"):
+                        include_path: darray[u8] = try pkg_config_word_copy(word, 2)
+                        if word.count == 2:
+                            raise PkgConfigWordsError.InvalidFlagShape if cursor + 1 >= words.values.count
+                            next_word: darray[u8] = words.values[cursor + 1]
+                            raise PkgConfigWordsError.InvalidWordOutput if not pkg_config_word_bytes_valid(next_word)
+                            raise PkgConfigWordsError.InvalidFlagShape if pkg_config_word_option_like(next_word)
+                            include_path <- next_word
+                            cursor <- cursor + 1
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.IncludeDirectory, include_path, total_bytes)
+                    elif pkg_config_word_has_prefix(word, "-D"):
+                        definition: darray[u8] = try pkg_config_word_copy(word, 2)
+                        if word.count == 2:
+                            raise PkgConfigWordsError.InvalidFlagShape if cursor + 1 >= words.values.count
+                            next_word: darray[u8] = words.values[cursor + 1]
+                            raise PkgConfigWordsError.InvalidWordOutput if not pkg_config_word_bytes_valid(next_word)
+                            raise PkgConfigWordsError.InvalidFlagShape if pkg_config_word_option_like(next_word)
+                            definition <- next_word
+                            cursor <- cursor + 1
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.CompileDefinition, definition, total_bytes)
+                    else:
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.CompileOption, word, total_bytes)
+                else:
+                    if pkg_config_word_has_prefix(word, "-L"):
+                        library_directory: darray[u8] = try pkg_config_word_copy(word, 2)
+                        if word.count == 2:
+                            raise PkgConfigWordsError.InvalidFlagShape if cursor + 1 >= words.values.count
+                            next_word: darray[u8] = words.values[cursor + 1]
+                            raise PkgConfigWordsError.InvalidWordOutput if not pkg_config_word_bytes_valid(next_word)
+                            raise PkgConfigWordsError.InvalidFlagShape if pkg_config_word_option_like(next_word)
+                            library_directory <- next_word
+                            cursor <- cursor + 1
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.LibraryDirectory, library_directory, total_bytes)
+                    elif pkg_config_word_has_prefix(word, "-l"):
+                        library_name: darray[u8] = try pkg_config_word_copy(word, 2)
+                        if word.count == 2:
+                            raise PkgConfigWordsError.InvalidFlagShape if cursor + 1 >= words.values.count
+                            next_word: darray[u8] = words.values[cursor + 1]
+                            raise PkgConfigWordsError.InvalidWordOutput if not pkg_config_word_bytes_valid(next_word)
+                            raise PkgConfigWordsError.InvalidFlagShape if pkg_config_word_option_like(next_word)
+                            library_name <- next_word
+                            cursor <- cursor + 1
+                        raise PkgConfigWordsError.InvalidLibraryName if not pkg_config_library_name_valid(library_name)
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.LibraryName, library_name, total_bytes)
+                    elif word[0] == 47:
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.LibraryPath, word, total_bytes)
+                    else:
+                        try pkg_config_flag_push(flags, PkgConfigFlagKind.LinkOption, word, total_bytes)
+                cursor <- cursor + 1
+            return PkgConfigFlagSet{stream: stream, flags: flags}
+
+
+        def pkg_config_flag_matches(flags: PkgConfigFlagSet, index: usize, expected: sview) -> bool:
+            return false if index >= flags.flags.count
+            value: darray[u8] = flags.flags[index].value
             return false if value.count != sview_len(expected)
             for offset in 0..<value.count |value, expected|:
                 return false if value[offset] != sview_at(expected, offset)
