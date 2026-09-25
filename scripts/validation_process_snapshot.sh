@@ -5,6 +5,21 @@
 # Keeping parsing separate lets compiler-free fixtures exercise the exact RSS
 # and descendant-selection logic without starting a compiler or any process.
 
+validation_owned_process_group_id() {
+    validation_group_root="$1"
+    validation_group_candidate="$2"
+    validation_group_wrapper="$3"
+    case "$validation_group_root:$validation_group_candidate:$validation_group_wrapper" in
+        ''|:*|*::*) return 1 ;;
+        *[!0-9:]*) return 1 ;;
+    esac
+    [ "$validation_group_root" != "0" ] || return 1
+    [ "$validation_group_candidate" != "0" ] || return 1
+    [ "$validation_group_candidate" = "$validation_group_root" ] || return 1
+    [ "$validation_group_candidate" != "$validation_group_wrapper" ] || return 1
+    printf '%s\n' "$validation_group_candidate"
+}
+
 validation_process_tree_pids_from_snapshot() {
     awk -v root="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }

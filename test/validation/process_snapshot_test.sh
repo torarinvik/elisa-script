@@ -42,6 +42,15 @@ assert_parser_failure() {
     [ "$parser_status" -eq 2 ] || fail "$description returned $parser_status instead of fail-closed status 2"
 }
 
+owned_group="$(validation_owned_process_group_id 301 301 100)"
+assert_equal 301 "$owned_group" 'session-leader PGID is safe to signal'
+for rejected_group_case in '301 100 100' '301 302 100' '0 0 100' '301 bad 100'; do
+    set -- $rejected_group_case
+    if owned_group="$(validation_owned_process_group_id "$1" "$2" "$3")"; then
+        fail "unsafe process group accepted: $rejected_group_case -> $owned_group"
+    fi
+done
+
 tree_snapshot='10 1
 11 10
 12 11
@@ -89,4 +98,4 @@ assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 1' rss 'failed RSS process-table command'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'

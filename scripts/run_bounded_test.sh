@@ -201,14 +201,10 @@ kill_process_tree() {
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
     esac
-    case "$process_group_id" in
-        ''|0|*[!0-9]*) ;;
-        *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
-                kill -TERM -- "-$process_group_id" 2>/dev/null || true
-            fi
-            ;;
-    esac
+    owned_group_id="$(validation_owned_process_group_id "$process_root_pid" "$process_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
+    if [ -n "$owned_group_id" ]; then
+        kill -TERM -- "-$owned_group_id" 2>/dev/null || true
+    fi
     for process_tree_pid in $process_tree_snapshot; do
         kill -TERM "$process_tree_pid" 2>/dev/null || true
     done
@@ -216,14 +212,10 @@ kill_process_tree() {
     for process_tree_pid in $process_tree_snapshot; do
         kill -KILL "$process_tree_pid" 2>/dev/null || true
     done
-    case "$process_group_id" in
-        ''|0|*[!0-9]*) ;;
-        *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
-                kill -KILL -- "-$process_group_id" 2>/dev/null || true
-            fi
-            ;;
-    esac
+    owned_group_id="$(validation_owned_process_group_id "$process_root_pid" "$process_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
+    if [ -n "$owned_group_id" ]; then
+        kill -KILL -- "-$owned_group_id" 2>/dev/null || true
+    fi
 }
 
 kill_process_tree_immediately() {
@@ -236,14 +228,10 @@ kill_process_tree_immediately() {
     case "$process_group_id" in
         ''|0|*[!0-9]*) process_group_id="$(process_group_for_pid "$process_root_pid")" ;;
     esac
-    case "$process_group_id" in
-        ''|0|*[!0-9]*) ;;
-        *)
-            if [ "$process_group_id" != "$validation_wrapper_pgid" ] && [ "$process_group_id" = "$process_root_pid" ]; then
-                kill -KILL -- "-$process_group_id" 2>/dev/null || true
-            fi
-            ;;
-    esac
+    owned_group_id="$(validation_owned_process_group_id "$process_root_pid" "$process_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
+    if [ -n "$owned_group_id" ]; then
+        kill -KILL -- "-$owned_group_id" 2>/dev/null || true
+    fi
     for process_tree_pid in $process_tree_snapshot; do
         kill -KILL "$process_tree_pid" 2>/dev/null || true
     done
