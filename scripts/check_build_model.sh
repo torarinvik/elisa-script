@@ -502,6 +502,30 @@ rg -Fq 'invalidate_build_incremental_output_at' "$incremental_posix_executor"
 rg -Fq 'cleanup_failed_build_graph_outputs_at' "$incremental_posix_executor"
 rg -Fq 'cleanup_stale_build_outputs_at' "$incremental_posix_executor"
 rg -Fq 'prepared.commit.stale_outputs_after_success' "$incremental_posix_executor"
+awk '
+    /def cleanup_stale_build_outputs_at\(/ { inside = 1 }
+    inside && /def build_incremental_posix_find_observation\(/ { inside = 0 }
+    inside && /for stale in stale_outputs/ {
+        loops++
+        if (loops == 2 && (observations != 1 || changed_checks != 1)) exit 1
+        next
+    }
+    inside && /observe_build_incremental_file_at\(scratch, root_fd, path\)/ {
+        if (loops != 1) exit 1
+        observations++
+    }
+    inside && /OutputInvalidationError\.CachedOutputChanged\(path\)/ {
+        if (loops != 1) exit 1
+        changed_checks++
+    }
+    inside && /invalidate_build_incremental_output_at\(scratch, root_fd, stale\.output, true\)/ {
+        if (loops != 2) exit 1
+        deletions++
+    }
+    END {
+        if (loops != 2 || observations != 1 || changed_checks != 1 || deletions != 1) exit 1
+    }
+' "$incremental_posix_executor"
 rg -Fq 'if not output_observation.present:' "$incremental_posix_executor"
 rg -Fq 'results[node_index].missing_output <- missing_output' "$incremental_posix_executor"
 rg -Fq 'continue if not results[node_index].started' "$incremental_posix_executor"
