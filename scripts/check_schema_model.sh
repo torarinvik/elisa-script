@@ -14,9 +14,10 @@ integer_conversion="$repo_root/src/runtime/schema_integer_conversion.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 toml_fixture="$repo_root/test/runtime/schema_toml_materializer_test.elisa"
+csv_empty_fixture="$repo_root/test/runtime/csv_empty_input_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$toml_materializer" "$integer_conversion" "$ir" "$fixture" "$toml_fixture" "$docs"; do
+for required_file in "$model" "$json_model" "$json_materializer" "$csv_materializer" "$toml_materializer" "$integer_conversion" "$ir" "$fixture" "$toml_fixture" "$csv_empty_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'schema model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -197,8 +198,17 @@ for boundary in \
     'record.payload_bytes > SCHEMA_CSV_MAX_PAYLOAD_BYTES - batch.payload_bytes' \
     'remaining_payload: usize = payload_limit - record.payload_bytes' \
     'field_payload_limit <- remaining_payload if remaining_payload < field_payload_limit' \
-    'schema_csv_position_is_mapped'; do
+    'schema_csv_position_is_mapped' \
+    'return projection if materializer.records.count == 0' \
+    'return 0 if materializer.records.count == 0'; do
     rg -Fq "$boundary" "$csv_materializer"
+done
+
+for fixture_pattern in \
+    'header_empty_materializer' \
+    'materialize_csv_schema_batch(schema, header_empty_materializer, 0, 0)' \
+    'SchemaCsvMaterializeError.RowIndexInvalid'; do
+    rg -Fq "$fixture_pattern" "$csv_empty_fixture"
 done
 
 for boundary in \

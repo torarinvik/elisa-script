@@ -1011,8 +1011,10 @@ signed or unsigned width before storing tagged values. Its exact-range batch
 API prepares projection once and caps each result at 4,096 rows,
 `DATA_MAX_FIELDS` values, and `DATA_MAX_INPUT_BYTES` decoded text payload.
 Fixtures, namespace inclusion, IR documentation, and compiler-free audit
-source are static only; decimal/float conversion, generated record
-constructors, and runtime qualification remain open.
+source are static only. Empty headered input is represented as zero data rows;
+zero-row batches succeed without underflow or indexing a nonexistent header,
+and row lookup fails with `RowIndexInvalid`. Decimal/float conversion,
+generated record constructors, and runtime qualification remain open.
 
 ES-SCRIPT-055 | EsSchemaToml binds resolved TOML values to the shared schema
 contract, either at the document root or within one canonical dotted table
