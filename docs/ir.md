@@ -1729,6 +1729,9 @@ materialized field against its owning record and stream policy, rejects absent
 fields explicitly, then uses the same numeric bridge. Invalid spans, absent
 fields, malformed numbers, or sum-limit failures do not change the aggregate;
 decimal/floating coercion remains explicit and unavailable here.
+`record_aggregate_add_numeric_record_fields` validates a key field and a
+numeric value field from one record before applying one keyed `AddValue`, so
+AWK-style `sum[$1] += $2` does not need to reconstruct either field as text.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum

@@ -1251,7 +1251,10 @@ rejection. A materialized-field entry point now validates the `RecordField`
 against its owning record and stream policy before numeric parsing, explicitly
 rejects absent fields, and preserves the aggregate on invalid spans; its
 focused fixture is static and unexecuted. Decimal/floating coercion and
-execution evidence remain open.
+execution evidence remain open. A two-field record entry point now validates
+the key and numeric value spans together before applying a single keyed event;
+its absent-value failure fixture also checks aggregate atomicity. These source
+fixtures remain unexecuted.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces
