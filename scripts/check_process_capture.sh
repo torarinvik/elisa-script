@@ -63,17 +63,19 @@ rg -q 'def differential_read_stream_fully\(' "$differential"
 rg -q 'def elisascript_read_stream_fully\(' "$source_file"
 rg -U -q 'amount == 0 or amount > remaining or ferror\(stream\) != 0' "$source_file"
 
-# Both streams are checked independently before the next poll/sleep, and a
-# timeout compares against the predecessor before incrementing its counter.
+# Both streams share the aggregate output limit before the next poll/sleep, and
+# a timeout compares against the predecessor before incrementing its counter.
 rg -q 'if waiter\.stdout_stream != null:' "$interpreter"
 rg -q 'if waiter\.stderr_stream != null:' "$interpreter"
-rg -q 'if stdout_size\.u64\(\) > invocation\.max_output_bytes or stderr_size\.u64\(\) > invocation\.max_output_bytes' "$differential"
+rg -q 'def differential_stream_text_pair_within_limit\(' "$differential"
+rg -q 'if not differential_stream_pair_within_limit\(stdout_size, stderr_size, invocation\.max_output_bytes\)' "$differential"
 rg -q 'if polls >= invocation\.timeout_steps - 1' "$differential"
 rg -q 'if waiter\.polls >= ProcessWait::MAX_POLLS' "$interpreter"
 
 # Output-limit and timeout outcomes have typed regression fixtures. These are
 # metadata/static fixtures only; running a child process stays a gated action.
 rg -q 'differential_process_capture_adapter_rejects_oversized_inputs' "$tests"
+rg -q 'differential_process_capture_adapter_enforces_aggregate_stream_budget' "$tests"
 rg -q 'process capture exceeds output limit' "$tests"
 rg -q 'process capture inputs exceed differential budget' "$tests"
 rg -q 'process capture inputs are structurally invalid' "$tests"
