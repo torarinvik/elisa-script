@@ -80,8 +80,10 @@ the marker absent. Restoring the exact cached object must make the ordinary
 variant build an up-to-date cache hit. The same preflight also replaces the
 cached object with a symlink to a sentinel and requires refusal before the
 marker command runs, with both the symlink target and cache preserved. It then
-restores the exact cached object and requires the cache hit. These are
-source-only checks.
+replaces the cached object with a non-empty directory and likewise requires
+refusal before launch, preserving the directory contents and cache. Restoring
+the exact cached object must make the ordinary variant build an up-to-date
+cache hit. These are source-only checks.
 
 The harness then adds a declared `obsolete-config-copy` target whose output is
 copied from the generated header. Switching back to the graph without that
