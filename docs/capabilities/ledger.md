@@ -803,7 +803,10 @@ the recomputed byte total.
 `build_usage_raw_argv` now gives archivers, generators, and test-run actions the
 same bounded argument ownership without interpreting shell syntax. Its fixture
 pins preservation of spaces, globs, and dollar-prefixed text as literal argv
-values; it has not run.
+values; it has not run. The W07 target-usage candidate now uses the compile,
+link, raw-argv, ProcessCommand, and executor-ready graph APIs for all seven
+actions, with a fixed replacement environment and declared outputs. This source
+integration has not been launched and does not establish CMake parity.
 `EsBuildIncremental` adds the bounded pure manifest boundary for recipe,
 dependency, input, and output fingerprint classification, distinguishing no-op
 targets (including outputless `Phony` aggregate/test targets) from typed rebuild

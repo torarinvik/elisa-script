@@ -1,10 +1,14 @@
 # E03 candidate: resolve and apply public/private/interface target requirements.
 include "../../../../src/runtime/build_executor_model.elisa"
 include "../../../../src/runtime/build_usage_model.elisa"
+include "../../../../src/runtime/build_usage_argv_model.elisa"
+include "../../../../src/runtime/build_usage_graph_model.elisa"
 
 using EsBuild
 using EsBuildExecutor
 using EsBuildUsage
+using EsBuildUsageArgv
+using EsBuildUsageGraph
 using EsProcess
 
 
@@ -26,96 +30,56 @@ module EsTargetUsageBuild:
             return candidate.startswith(prefix)
 
 
-        def append_compile_usage(arguments: mutable darray[sview]&, entries: darray[BuildUsageEntry]&) -> bool can[Memory.Allocate, Abort.Panic]:
-            for entry in entries:
-                if entry.kind == BuildUsageKind.IncludeDirectory:
-                    arguments.push("-I")
-                    arguments.push(entry.value)
-                elif entry.kind == BuildUsageKind.CompileDefinition:
-                    arguments.push("-D")
-                    arguments.push(entry.value)
-                elif entry.kind == BuildUsageKind.CompileOption:
-                    arguments.push(entry.value)
-                else:
-                    return false
-            return true
+        const module CommandPolicy:
+            INCLUDE_PREFIX: sview = "-I"
+            DEFINITION_PREFIX: sview = "-D"
+            LIBRARY_PREFIX: sview = "-l"
 
 
-        def append_link_usage(arguments: mutable darray[sview]&, entries: darray[BuildUsageEntry]&, core_library_text: sview, helper_library_text: sview) -> bool can[Memory.Allocate, Abort.Panic]:
-            for entry in entries:
-                if entry.kind == BuildUsageKind.LinkLibrary:
-                    if entry.target_artifact:
-                        if entry.value == "core":
-                            arguments.push(core_library_text)
-                        elif entry.value == "helper":
-                            arguments.push(helper_library_text)
-                        else:
-                            return false
-                    elif entry.library_form == BuildUsageLibraryForm.Path:
-                        if entry.value.startswith("/"):
-                            arguments.push(entry.value)
-                        else:
-                            arguments.push("./" + entry.value)
-                    elif entry.library_form == BuildUsageLibraryForm.LinkerArgument:
-                        arguments.push(entry.value)
-                    elif entry.library_form == BuildUsageLibraryForm.SearchName:
-                        arguments.push("-l" + entry.value)
-                    else:
-                        return false
-                elif entry.kind == BuildUsageKind.LinkOption:
-                    arguments.push(entry.value)
-                else:
-                    return false
-            return true
+        def prepare_command(executable: sview, arguments: BuildUsageArgv, working_directory_text: sview) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            return try build_usage_process_command(
+                executable,
+                arguments,
+                working_directory_text,
+                ["PATH", "/usr/bin:/bin", "LC_ALL", "C"],
+                ProcessEnvironmentMode.Replace,
+                Toolchain::TIMEOUT_MICROS,
+                Toolchain::OUTPUT_LIMIT_BYTES
+            )
 
 
-        def compiler_command(source_text: sview, object_text: sview, working_directory_text: sview, usage: BuildUsageTargetResult&) -> ProcessCommand error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
-            arguments: mutable darray[sview] = ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror"]
-            raise BuildUsageError.InvalidRequirementKind if not append_compile_usage(arguments, usage.compile)
-            arguments.push("-c")
-            arguments.push(source_text)
-            arguments.push("-o")
-            arguments.push(object_text)
-            return ProcessCommand{
-                executable: Toolchain::C_COMPILER,
-                arguments: arguments,
-                working_directory: working_directory_text,
-                stdin_mode: ProcessStdioMode.Null,
-                stdout_mode: ProcessStdioMode.Capture,
-                stderr_mode: ProcessStdioMode.Capture,
-                timeout_micros: Toolchain::TIMEOUT_MICROS,
-                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
-            }
+        def compiler_command(source_text: sview, object_text: sview, working_directory_text: sview, usage: BuildUsageTargetResult) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            argv: BuildUsageArgv = try build_usage_compile_argv(
+                usage,
+                ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror"],
+                ["-c", source_text, "-o", object_text],
+                BuildUsageArgSyntax{include_prefix: CommandPolicy::INCLUDE_PREFIX, definition_prefix: CommandPolicy::DEFINITION_PREFIX, library_prefix: CommandPolicy::LIBRARY_PREFIX}
+            )
+            return try prepare_command(Toolchain::C_COMPILER, argv, working_directory_text)
 
 
-        def archive_command(library_text: sview, object_text: sview, working_directory_text: sview) -> ProcessCommand:
-            return ProcessCommand{
-                executable: Toolchain::ARCHIVER,
-                arguments: ["rcs", library_text, object_text],
-                working_directory: working_directory_text,
-                stdin_mode: ProcessStdioMode.Null,
-                stdout_mode: ProcessStdioMode.Capture,
-                stderr_mode: ProcessStdioMode.Capture,
-                timeout_micros: Toolchain::TIMEOUT_MICROS,
-                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
-            }
+        def archive_command(library_text: sview, object_text: sview, working_directory_text: sview) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            argv: BuildUsageArgv = try build_usage_raw_argv(["rcs", library_text, object_text])
+            return try prepare_command(Toolchain::ARCHIVER, argv, working_directory_text)
 
 
-        def link_command(source_object_text: sview, output_text: sview, working_directory_text: sview, core_library_text: sview, helper_library_text: sview, usage: BuildUsageTargetResult&) -> ProcessCommand error[BuildUsageError] can[Memory.Allocate, Abort.Panic]:
-            arguments: mutable darray[sview] = ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", source_object_text]
-            raise BuildUsageError.InvalidRequirementKind if not append_link_usage(arguments, usage.link, core_library_text, helper_library_text)
-            arguments.push("-o")
-            arguments.push(output_text)
-            return ProcessCommand{
-                executable: Toolchain::C_COMPILER,
-                arguments: arguments,
-                working_directory: working_directory_text,
-                stdin_mode: ProcessStdioMode.Null,
-                stdout_mode: ProcessStdioMode.Capture,
-                stderr_mode: ProcessStdioMode.Capture,
-                timeout_micros: Toolchain::TIMEOUT_MICROS,
-                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
-            }
+        def link_command(source_object_text: sview, output_text: sview, working_directory_text: sview, core_library_text: sview, helper_library_text: sview, usage: BuildUsageTargetResult) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            artifacts: darray[BuildUsageTargetArtifact] = [
+                BuildUsageTargetArtifact{target_name: "core", path: core_library_text},
+                BuildUsageTargetArtifact{target_name: "helper", path: helper_library_text}
+            ]
+            argv: BuildUsageArgv = try build_usage_link_argv(
+                usage,
+                ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", source_object_text, "-o", output_text],
+                artifacts,
+                BuildUsageArgSyntax{include_prefix: CommandPolicy::INCLUDE_PREFIX, definition_prefix: CommandPolicy::DEFINITION_PREFIX, library_prefix: CommandPolicy::LIBRARY_PREFIX}
+            )
+            return try prepare_command(Toolchain::C_COMPILER, argv, working_directory_text)
+
+
+        def run_command(executable_text: sview, working_directory_text: sview) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            argv: BuildUsageArgv = try build_usage_raw_argv([])
+            return try prepare_command(executable_text, argv, working_directory_text)
 
 
     public:
@@ -221,52 +185,41 @@ module EsTargetUsageBuild:
             core_source_text: sview = f"{core_source}"
             app_source_text: sview = f"{app_source}"
 
-            helper_compile: ProcessCommand = try compiler_command(helper_source_text, helper_object_text, build_directory_text, resolution.targets[1]) else err:
+            helper_compile: BuildUsageProcessCommand = try compiler_command(helper_source_text, helper_object_text, build_directory_text, resolution.targets[1]) else err:
                 print("target usage build: unable to construct helper compile command")
                 return 1i64
-            helper_archive: ProcessCommand = archive_command(helper_library_text, helper_object_text, build_directory_text)
-            core_compile: ProcessCommand = try compiler_command(core_source_text, core_object_text, build_directory_text, resolution.targets[2]) else err:
+            helper_archive: BuildUsageProcessCommand = try archive_command(helper_library_text, helper_object_text, build_directory_text) else err:
+                print("target usage build: unable to construct helper archive command")
+                return 1i64
+            core_compile: BuildUsageProcessCommand = try compiler_command(core_source_text, core_object_text, build_directory_text, resolution.targets[2]) else err:
                 print("target usage build: unable to construct core compile command")
                 return 1i64
-            core_archive: ProcessCommand = archive_command(core_library_text, core_object_text, build_directory_text)
-            app_compile: ProcessCommand = try compiler_command(app_source_text, app_object_text, build_directory_text, resolution.targets[3]) else err:
+            core_archive: BuildUsageProcessCommand = try archive_command(core_library_text, core_object_text, build_directory_text) else err:
+                print("target usage build: unable to construct core archive command")
+                return 1i64
+            app_compile: BuildUsageProcessCommand = try compiler_command(app_source_text, app_object_text, build_directory_text, resolution.targets[3]) else err:
                 print("target usage build: unable to construct app compile command")
                 return 1i64
-            app_link: ProcessCommand = try link_command(app_object_text, executable_text, build_directory_text, core_library_text, helper_library_text, resolution.targets[3]) else err:
+            app_link: BuildUsageProcessCommand = try link_command(app_object_text, executable_text, build_directory_text, core_library_text, helper_library_text, resolution.targets[3]) else err:
                 print("target usage build: unable to construct app link command")
                 return 1i64
-            run_app: ProcessCommand = ProcessCommand{
-                executable: executable_text,
-                working_directory: build_directory_text,
-                stdin_mode: ProcessStdioMode.Null,
-                stdout_mode: ProcessStdioMode.Capture,
-                stderr_mode: ProcessStdioMode.Capture,
-                timeout_micros: Toolchain::TIMEOUT_MICROS,
-                capture_output_limit_bytes: Toolchain::OUTPUT_LIMIT_BYTES
-            }
-            graph: mutable BuildGraph = BuildGraph{
-                nodes: [
-                    BuildNode{name: "compile-helper", command: helper_compile, fingerprint: 1u64},
-                    BuildNode{name: "archive-helper", command: helper_archive, dependencies: [0], fingerprint: 2u64},
-                    BuildNode{name: "compile-core", command: core_compile, dependencies: [1], fingerprint: 3u64},
-                    BuildNode{name: "archive-core", command: core_archive, dependencies: [2], fingerprint: 4u64},
-                    BuildNode{name: "compile-app", command: app_compile, dependencies: [3], fingerprint: 5u64},
-                    BuildNode{name: "link-app", command: app_link, dependencies: [1, 3, 4], fingerprint: 6u64},
-                    BuildNode{name: "run-app", command: run_app, dependencies: [5], fingerprint: 7u64}
-                ],
-                max_parallel: 1
-            }
-            expected_outputs: darray[BuildExecutionNodeOutputs] = [
-                BuildExecutionNodeOutputs{target_name: "compile-helper", paths: [helper_object_text]},
-                BuildExecutionNodeOutputs{target_name: "archive-helper", paths: [helper_library_text]},
-                BuildExecutionNodeOutputs{target_name: "compile-core", paths: [core_object_text]},
-                BuildExecutionNodeOutputs{target_name: "archive-core", paths: [core_library_text]},
-                BuildExecutionNodeOutputs{target_name: "compile-app", paths: [app_object_text]},
-                BuildExecutionNodeOutputs{target_name: "link-app", paths: [executable_text]},
-                BuildExecutionNodeOutputs{target_name: "run-app", paths: []}
+            run_app: BuildUsageProcessCommand = try run_command(executable_text, build_directory_text) else err:
+                print("target usage build: unable to construct run command")
+                return 1i64
+            actions: darray[BuildUsageActionSpec] = [
+                BuildUsageActionSpec{name: "compile-helper", command: helper_compile, fingerprint: 1u64, outputs: [helper_object_text]},
+                BuildUsageActionSpec{name: "archive-helper", command: helper_archive, dependencies: [0], fingerprint: 2u64, outputs: [helper_library_text]},
+                BuildUsageActionSpec{name: "compile-core", command: core_compile, dependencies: [1], fingerprint: 3u64, outputs: [core_object_text]},
+                BuildUsageActionSpec{name: "archive-core", command: core_archive, dependencies: [2], fingerprint: 4u64, outputs: [core_library_text]},
+                BuildUsageActionSpec{name: "compile-app", command: app_compile, dependencies: [3], fingerprint: 5u64, outputs: [app_object_text]},
+                BuildUsageActionSpec{name: "link-app", command: app_link, dependencies: [1, 3, 4], fingerprint: 6u64, outputs: [executable_text]},
+                BuildUsageActionSpec{name: "run-app", command: run_app, dependencies: [5], fingerprint: 7u64}
             ]
+            plan: mutable BuildUsageGraphPlan = try build_usage_graph_plan(actions) else err:
+                print("target usage build: invalid executor-ready graph plan")
+                return 1i64
             execution: mutable BuildExecutionResult = BuildExecutionResult{}
-            catch execute_build_graph_serial_with_outputs(graph, expected_outputs):
+            catch execute_build_usage_graph(plan):
                 ok value:
                     execution <- value
                 error failure:

@@ -19,10 +19,12 @@ the consumer compilation; and the executable checks the linked behavior. Both
 build routes must produce an executable that exits 0, writes exactly
 `usage=32\n` to stdout, and writes nothing to stderr.
 
-`build.elisascript` resolves the typed `BuildUsageTarget` graph, maps resolved
-compile/link entries into argument vectors, and executes a declared-output
-build graph. It requires an existing absolute empty non-symlink build directory
-outside the repository. No command is passed through a shell.
+`build.elisascript` resolves the typed `BuildUsageTarget` graph, materializes
+resolved compile/link entries with the shared owned argv adapters, creates raw
+argv for archiver/run actions, and submits all seven steps through the shared
+`BuildUsageGraphPlan` with declared outputs. Each child gets an explicit
+replacement environment. It requires an existing absolute empty non-symlink
+build directory outside the repository. No command is passed through a shell.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final

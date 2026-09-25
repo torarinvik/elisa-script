@@ -280,14 +280,19 @@ rg -Fq 'expected_metadata_bytes' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_relative_declared_outputs' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_forged_metadata_total' "$usage_graph_fixture"
-rg -Fq 'if entry.target_artifact:' "$target_usage_candidate"
-rg -Fq 'entry.library_form == BuildUsageLibraryForm.Path' "$target_usage_candidate"
-rg -Fq 'arguments.push("./" + entry.value)' "$target_usage_candidate"
-rg -Fq 'entry.library_form == BuildUsageLibraryForm.LinkerArgument' "$target_usage_candidate"
-rg -Fq 'entry.library_form == BuildUsageLibraryForm.SearchName' "$target_usage_candidate"
-rg -Fq 'arguments.push("-l" + entry.value)' "$target_usage_candidate"
+rg -Fq 'build_usage_compile_argv(' "$target_usage_candidate"
+rg -Fq 'build_usage_link_argv(' "$target_usage_candidate"
+rg -Fq 'build_usage_raw_argv(' "$target_usage_candidate"
+rg -Fq 'build_usage_process_command(' "$target_usage_candidate"
+rg -Fq 'ProcessEnvironmentMode.Replace' "$target_usage_candidate"
+rg -Fq 'build_usage_graph_plan(actions)' "$target_usage_candidate"
+rg -Fq 'execute_build_usage_graph(plan)' "$target_usage_candidate"
 if rg -n 'BuildUsageRequirement\{kind: BuildUsageKind.LinkLibrary, visibility: BuildUsageVisibility.Private, value: "(core|helper)"\}' "$target_usage_candidate"; then
     printf 'build model audit: target-usage parity candidate masks dependency propagation with an explicit core/helper link requirement\n' >&2
+    exit 1
+fi
+if rg -Fq 'execute_build_graph_serial_with_outputs(' "$target_usage_candidate"; then
+    printf 'build model audit: target-usage parity candidate bypasses the owned BuildUsageGraphPlan\n' >&2
     exit 1
 fi
 
@@ -640,4 +645,4 @@ rg -Fq '`EsBuildIncrementalPosixExecutor::execute_build_graph_incremental_cached
 rg -Fq 'A host kill or machine crash bypasses in-process cleanup' "$docs"
 rg -Fq 'OutputAlreadyPresent' "$docs"
 
-printf 'build model audit: bounded graph, generated-output ordering, usage propagation/argv/graph planning, serial Process.Run execution, and fail-draining/cancellation are present\n'
+printf 'build model audit: bounded graph, generated-output ordering, usage propagation/argv, W07 shared graph integration, serial Process.Run execution, and fail-draining/cancellation are present\n'
