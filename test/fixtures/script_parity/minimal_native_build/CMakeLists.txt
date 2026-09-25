@@ -17,12 +17,28 @@ set(
     "${CMAKE_CURRENT_SOURCE_DIR}/include/generated_build_config.h.in"
     CACHE FILEPATH "Input template for the generated build configuration header"
 )
+set(MINIMAL_INCLUDE_OBSOLETE_TARGET OFF CACHE BOOL
+    "Include a generated-file target that can be removed by reconfiguration"
+)
 
 configure_file(
     "${MINIMAL_BUILD_CONFIG_INPUT}"
     generated_build_config.h
     COPYONLY
 )
+
+if(MINIMAL_INCLUDE_OBSOLETE_TARGET)
+    set(OBSOLETE_CONFIG_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/obsolete-config.h")
+    add_custom_command(
+        OUTPUT "${OBSOLETE_CONFIG_OUTPUT}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${CMAKE_CURRENT_BINARY_DIR}/generated_build_config.h"
+            "${OBSOLETE_CONFIG_OUTPUT}"
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/generated_build_config.h"
+        VERBATIM
+    )
+    add_custom_target(obsolete-config-copy DEPENDS "${OBSOLETE_CONFIG_OUTPUT}")
+endif()
 
 add_library(minimal-answer STATIC src/answer.c)
 target_include_directories(minimal-answer PRIVATE include)
