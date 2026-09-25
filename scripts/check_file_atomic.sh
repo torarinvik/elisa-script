@@ -51,6 +51,8 @@ for boundary in \
     'parent_identity: u64' \
     'stage_close_acknowledged: bool' \
     'atomic_file_trim_trailing_separators' \
+    'atomic_file_paths_share_parent' \
+    'ParentPathMismatch' \
     'atomic_file_identity_equal' \
     'AtomicFileState.Unchanged' \
     'AtomicFileState.UnchangedPendingCleanup' \
@@ -105,6 +107,7 @@ rg -q 'ES-FS-007' "$ledger"
 
 rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtime_fixture"
 rg -Fq 'atomic_file_paths_must_name_file_entries' "$runtime_fixture"
+rg -Fq 'atomic_file_stage_and_backup_must_be_siblings' "$runtime_fixture"
 rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
