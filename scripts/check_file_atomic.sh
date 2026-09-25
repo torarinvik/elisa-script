@@ -82,6 +82,8 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
+rg -Fq 'return sview_at(path, length - 1) != 47' "$model"
+
 for fixture_pattern in \
     'using EsFileAtomic' \
     'typed_file_atomic_contract_preserves_noop_and_uncertain_recovery' \
@@ -102,6 +104,7 @@ rg -q 'EsFileAtomic::AtomicFileSession' "$docs"
 rg -q 'ES-FS-007' "$ledger"
 
 rg -Fq 'atomic_file_events_reject_irrelevant_payloads_without_mutation' "$runtime_fixture"
+rg -Fq 'atomic_file_paths_must_name_file_entries' "$runtime_fixture"
 rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
