@@ -586,6 +586,9 @@ tokens. `$1` through `$9` expand proven positional captures; `\1` through `\9`
 and numeric `\g<1>` through `\g<9>` are equivalent spellings. For uniquely named
 flat groups, `${name}`, `$<name>`, and `\g<name>` expand the same proven capture.
 `$$` emits a literal dollar, and `\&` emits a literal ampersand.
+These APIs accept replacement text only; they do not yet invoke a user function
+for each match. The separate bounded `EsRegexCallback` model specifies
+accounting and zero-width progress but is not connected to the regex matcher.
 `split_regex(text, pattern) -> darray[sview]` uses the same matcher for
 Perl/AWK-style field boundaries. It preserves empty fields before, between, and
 after non-overlapping matches. A zero-width match emits its current field, advances
