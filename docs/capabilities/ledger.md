@@ -1240,7 +1240,12 @@ so collision-heavy worst-case throughput is not established. The focused
 runtime fixture and compiler-free source audit are static evidence only; no
 runtime or performance validation was run. C03 acceptance remains open until
 high-cardinality throughput is measured within declared bounds and collision,
-allocation, and host-integration behavior are qualified.
+allocation, and host-integration behavior are qualified. The separate
+`EsRecordNumericAggregate` adapter now converts a completed signed integer
+field with the checked numeric accessor before submitting `AddValue`; an
+integration fixture covers negative/positive accumulation and fail-atomic sum
+ceiling rejection. Decimal/floating coercion and execution evidence remain
+open.
 
 ES-SCRIPT-030 | EsRecordFields supplies a bounded field mutation and
 reconstruction session for AWK `$N` and Perl-style record rewrites. It enforces
@@ -1328,7 +1333,8 @@ the admitted exponent-digit count. The focused IR fixture, namespace
 inclusion, focused runtime fixture, documentation, and check_record_numeric.sh
 audit are static evidence. Checked `i64`/`u64` result materialization includes
 the signed-minimum boundary; exact-decimal/floating conversion, locale policy,
-and host scanner integration remain open.
+and host scanner integration remain open. The signed `i64` result adapter is
+integrated with `EsRecordAggregate::AddValue` for integer-valued grouping.
 
 ES-SCRIPT-039 | EsRecordPattern supplies bounded pattern/action filtering and
 inclusive-range selection for Perl/AWK-style record streams. Typed predicates,

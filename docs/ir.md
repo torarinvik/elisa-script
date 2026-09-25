@@ -1709,7 +1709,7 @@ order, duplicate keys increment their count without changing that order, and
 planned sessions must be empty before `Begin`; new groups plus aggregate key
 bytes are admitted against explicit inclusive ceilings, so a key exactly
 `max_key_bytes` bytes long is valid and the next byte is rejected.
-`AddValue` adds a bounded unsigned value to the same stable group, with an
+`AddValue` adds a bounded signed integer value to the same stable group, with an
 explicit per-session sum ceiling; `record_aggregate_group_count` and
 `record_aggregate_group_sum` are available only after `Seal`. Malformed keys,
 duplicate internal groups, event/group/sum overflow, and terminal mutation
@@ -1717,6 +1717,9 @@ return `error[RecordAggregateError]`. Signed sums, averages, joins, and
 spill-to-disk aggregation remain separate policies rather than implicit numeric
 conversions. Validation derives the event total and rejects duplicate first
 ordinals, so externally assembled groups cannot forge aggregate cardinality.
+`EsRecordNumericAggregate::record_aggregate_add_numeric` bridges a completed
+integer `RecordNumericSession` through its checked `i64` conversion into
+`AddValue`; decimal/floating coercion remains explicit and unavailable here.
 
 `EsRecordFields::RecordFieldEditSession` is the bounded mutation boundary for
 AWK `$N` updates and Perl-style record rewrites. A policy fixes the maximum
