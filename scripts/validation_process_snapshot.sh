@@ -20,6 +20,12 @@ validation_owned_process_group_id() {
     printf '%s\n' "$validation_group_candidate"
 }
 
+validation_process_start_token_matches() {
+    validation_expected_start_token="$1"
+    validation_observed_start_token="$2"
+    [ -n "$validation_expected_start_token" ] && [ "$validation_expected_start_token" = "$validation_observed_start_token" ]
+}
+
 validation_process_group_has_live_members_from_snapshot() {
     awk -v group="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }

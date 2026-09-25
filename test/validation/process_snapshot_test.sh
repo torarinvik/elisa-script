@@ -71,6 +71,13 @@ assert_process_state() {
 
 owned_group="$(validation_owned_process_group_id 301 301 100)"
 assert_equal 301 "$owned_group" 'session-leader PGID is safe to signal'
+validation_process_start_token_matches 'Mon-Sep-25-10:00:00-2026' 'Mon-Sep-25-10:00:00-2026' || fail 'matching process start token was rejected'
+if validation_process_start_token_matches 'Mon-Sep-25-10:00:00-2026' 'Mon-Sep-25-10:00:01-2026'; then
+    fail 'different process start token was accepted'
+fi
+if validation_process_start_token_matches 'Mon-Sep-25-10:00:00-2026' ''; then
+    fail 'missing process start token was accepted'
+fi
 for rejected_group_case in '301 100 100' '301 302 100' '0 0 100' '301 bad 100'; do
     set -- $rejected_group_case
     if owned_group="$(validation_owned_process_group_id "$1" "$2" "$3")"; then

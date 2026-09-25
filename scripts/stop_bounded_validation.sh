@@ -104,7 +104,7 @@ process_identity_matches() {
     process_identity_pid="$1"
     process_identity_expected_start="$2"
     process_identity_current_start="$(LC_ALL=C ps -o lstart= -p "$process_identity_pid" 2>/dev/null | awk '{ $1 = $1; gsub(/[[:space:]]+/, "-"); print }')"
-    [ -n "$process_identity_current_start" ] && [ "$process_identity_current_start" = "$process_identity_expected_start" ]
+    validation_process_start_token_matches "$process_identity_expected_start" "$process_identity_current_start"
 }
 
 owner_start_matches() {
