@@ -1733,11 +1733,15 @@ Rows carry a side-local ordinal plus borrowed key/value views; planned sessions
 must be empty before `Begin`, and admission caps row, key, and value bytes before
 mutation. `Inner`, `Left`, `Right`, and `Full`
 policies are explicit. After `Seal`, `record_join_pair_count` counts duplicate
-key Cartesian matches in insertion order and adds one pair for each unmatched
-outer row where requested, all under a pair ceiling. Empty keys, NUL keys/values, broken
-ordinals, overflow-safe accounting drift checks, and post-terminal mutation return
-`error[RecordJoinError]`; materializing the paired rows and external sort/merge
-remain host responsibilities.
+key Cartesian matches and adds one pair for each unmatched outer row where
+requested, all under a pair ceiling. It sorts a bounded scratch array of row
+indexes by key with a stable merge sort, then counts each key group once, so
+counting performs O(n log n) key comparisons rather than comparing every row
+pair, with bytewise key-comparison cost bounded by the admitted key bytes; the
+row-index scratch is bounded by the session's row limit. Empty keys, NUL
+keys/values, broken ordinals, overflow-safe accounting drift checks, and
+post-terminal mutation return `error[RecordJoinError]`; materializing the
+paired rows and external sort/merge remain host responsibilities.
 
 `EsFileMetadata::FileMetadataSnapshot` is the typed stat/lstat-shaped metadata
 boundary. Entries retain stable ordinals and reject duplicate paths while

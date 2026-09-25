@@ -1256,14 +1256,17 @@ ES-SCRIPT-032 | EsRecordJoin supplies a deterministic bounded keyed-join
 contract. Left/right rows retain side-local ordinals and borrowed key/value
 views; row/key/value byte ceilings are checked before mutation; counter bounds
 are checked before reconciliation to prevent overflow; inner, left,
-right, and full outer policies are explicit; duplicate keys produce bounded
-Cartesian pair counts and unmatched outer rows contribute one pair each. The
-sealed pair-count query and all invalid lifecycle, key, ordinal, accounting,
-and pair-limit paths use `error[RecordJoinError]`, including distinct
-`EmbeddedNul` rejection for keys and values. The focused IR fixture,
-namespace inclusion, documentation, and check_record_join.sh audit are static
-evidence; pair materialization, spill/merge adapters, and host execution remain
-open.
+right, and full outer policies are explicit. Duplicate-key Cartesian pair
+counts use a bounded stable merge sort of row indexes followed by linear key
+group counting, avoiding a quadratic scan for mostly-unmatched inputs; bytewise
+comparison work is bounded by admitted key bytes and pair arithmetic is checked
+against the configured ceiling before multiplication.
+The sealed query and all invalid lifecycle, key, ordinal, accounting, and
+pair-limit paths use `error[RecordJoinError]`, including distinct `EmbeddedNul`
+rejection for keys and values. Focused IR/runtime fixtures, namespace
+inclusion, documentation, and check_record_join.sh are static evidence; pair
+materialization, spill/merge adapters, measured performance, and host execution
+remain open.
 
 ES-SCRIPT-033 | EsProcessBatch supplies a bounded fan-out/fan-in process-map
 contract without launching children. It enforces unique job IDs, maximum jobs,

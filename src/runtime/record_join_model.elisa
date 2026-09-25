@@ -40,6 +40,12 @@ module EsRecordJoin:
             Full
 
 
+        const enum RecordJoinKeyOrder of u8:
+            Before
+            Equal
+            After
+
+
         struct RecordJoinPolicy:
             kind: RecordJoinKind = RecordJoinKind.Inner
             max_rows: usize = RECORD_JOIN_MAX_ROWS
@@ -112,10 +118,52 @@ module EsRecordJoin:
             return current <= limit and delta <= limit - current
 
 
-        def record_join_pair_add(current: mutable usize&, limit: usize) -> bool error[RecordJoinError]:
-            raise RecordJoinError.PairLimitExceeded if current >= limit
-            current <- current + 1
+        def record_join_pair_add_many(current: mutable usize&, amount: usize, limit: usize) -> bool error[RecordJoinError]:
+            raise RecordJoinError.PairLimitExceeded if current > limit or amount > limit - current
+            current <- current + amount
             return true
+
+
+        def record_join_key_order(left: sview, right: sview) -> RecordJoinKeyOrder:
+            limit: usize = sview_len(left) if sview_len(left) < sview_len(right) else sview_len(right)
+            for index in 0..<limit |left, right|:
+                return RecordJoinKeyOrder.Before if sview_at(left, index) < sview_at(right, index)
+                return RecordJoinKeyOrder.After if sview_at(left, index) > sview_at(right, index)
+            return RecordJoinKeyOrder.Before if sview_len(left) < sview_len(right)
+            return RecordJoinKeyOrder.After if sview_len(left) > sview_len(right)
+            return RecordJoinKeyOrder.Equal
+
+
+        def record_join_sort_row_indices(session: RecordJoinSession&, order: mutable darray[usize]&, scratch: mutable darray[usize]&) -> void:
+            width: mutable usize = 1
+            while width < order.count:
+                start: mutable usize = 0
+                while start < order.count:
+                    middle: mutable usize = start + width
+                    middle <- order.count if middle > order.count
+                    end: mutable usize = middle + width
+                    end <- order.count if end > order.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while destination < end:
+                        if left == middle:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        elif right == end:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        elif record_join_key_order(session.rows[order[left]].key, session.rows[order[right]].key) != RecordJoinKeyOrder.After:
+                            scratch[destination] <- order[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- order[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<order.count |order, scratch|:
+                    order[index] <- scratch[index]
+                width <- order.count if width > order.count / 2 else width * 2
 
 
     public:
@@ -150,31 +198,38 @@ module EsRecordJoin:
             return true
 
 
-        def record_join_pair_count(session: RecordJoinSession&) -> usize error[RecordJoinError]:
+        def record_join_pair_count(session: RecordJoinSession&) -> usize error[RecordJoinError] can[Memory.Allocate, Abort.Panic]:
             try validate_record_join(session)
             raise RecordJoinError.LookupNotReady if session.state != RecordJoinState.Sealed
+            order: mutable darray[usize] = []
+            scratch: mutable darray[usize] = []
+            for row_index in 0..<session.rows.count |order, scratch|:
+                order.push(row_index)
+                scratch.push(row_index)
+            record_join_sort_row_indices(session, order, scratch)
             pairs: mutable usize = 0
-            for left_index in 0..<session.rows.count |session, pairs|:
-                left: RecordJoinRow = session.rows[left_index]
-                if left.side == RecordJoinSide.Left:
-                    matches: mutable usize = 0
-                    for right_index in 0..<session.rows.count |session, left, matches, pairs|:
-                        right: RecordJoinRow = session.rows[right_index]
-                        if right.side == RecordJoinSide.Right and right.key == left.key:
-                            matches <- matches + 1
-                            try record_join_pair_add(pairs, session.policy.max_pairs)
-                    if matches == 0 and (session.policy.kind == RecordJoinKind.Left or session.policy.kind == RecordJoinKind.Full):
-                        try record_join_pair_add(pairs, session.policy.max_pairs)
-            for right_index in 0..<session.rows.count |session, pairs|:
-                right: RecordJoinRow = session.rows[right_index]
-                if right.side == RecordJoinSide.Right:
-                    matches: mutable usize = 0
-                    for left_index in 0..<session.rows.count |session, right, matches, pairs|:
-                        left: RecordJoinRow = session.rows[left_index]
-                        if left.side == RecordJoinSide.Left and left.key == right.key:
-                            matches <- matches + 1
-                    if matches == 0 and (session.policy.kind == RecordJoinKind.Right or session.policy.kind == RecordJoinKind.Full):
-                        try record_join_pair_add(pairs, session.policy.max_pairs)
+            cursor: mutable usize = 0
+            while cursor < order.count:
+                group_end: mutable usize = cursor + 1
+                key: sview = session.rows[order[cursor]].key
+                while group_end < order.count and record_join_key_order(key, session.rows[order[group_end]].key) == RecordJoinKeyOrder.Equal:
+                    group_end <- group_end + 1
+                left_count: mutable usize = 0
+                right_count: mutable usize = 0
+                for group_index in cursor..<group_end |session, order, left_count, right_count|:
+                    side: RecordJoinSide = session.rows[order[group_index]].side
+                    left_count <- left_count + 1 if side == RecordJoinSide.Left
+                    right_count <- right_count + 1 if side == RecordJoinSide.Right
+                if left_count != 0 and right_count != 0:
+                    remaining_pairs: usize = session.policy.max_pairs - pairs
+                    raise RecordJoinError.PairLimitExceeded if left_count > remaining_pairs / right_count
+                    group_pairs: usize = left_count * right_count
+                    try record_join_pair_add_many(pairs, group_pairs, session.policy.max_pairs)
+                elif left_count != 0 and (session.policy.kind == RecordJoinKind.Left or session.policy.kind == RecordJoinKind.Full):
+                    try record_join_pair_add_many(pairs, left_count, session.policy.max_pairs)
+                elif right_count != 0 and (session.policy.kind == RecordJoinKind.Right or session.policy.kind == RecordJoinKind.Full):
+                    try record_join_pair_add_many(pairs, right_count, session.policy.max_pairs)
+                cursor <- group_end
             return pairs
 
 
