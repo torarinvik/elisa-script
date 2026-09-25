@@ -6,12 +6,14 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/record_model.elisa"
+field_scanner="$repo_root/src/runtime/record_field_scan_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
+scanner_fixture="$repo_root/test/runtime/record_field_scan_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$field_scanner" "$ir" "$fixture_file" "$scanner_fixture" "$docs" "$ledger"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'record model audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -19,7 +21,9 @@ for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
 done
 
 rg -q '^module EsRecord:' "$model"
+rg -q '^module EsRecordFieldScan:' "$field_scanner"
 rg -q 'include "\.\./runtime/record_model\.elisa"' "$ir"
+rg -q 'include "\.\./runtime/record_field_scan_model\.elisa"' "$ir"
 for declaration in \
     'const enum RecordSeparatorMode of u8' \
     'const enum RecordFieldMode of u8' \
@@ -31,6 +35,20 @@ for declaration in \
     'def validate_record\(' \
     'def validate_record_field\('; do
     rg -q "$declaration" "$model"
+done
+
+for scanner_boundary in \
+    'def split_record_fields\(' \
+    'record_field_scan_ascii_whitespace' \
+    'record_field_scan_separator_at' \
+    'RecordFieldMode.Whole' \
+    'RecordFieldMode.Whitespace' \
+    'RecordFieldMode.Literal' \
+    'RecordFieldMode.FixedWidth' \
+    'RecordFieldScanError.FieldLimitExceeded' \
+    'RecordFieldScanError.FixedWidthRemainder' \
+    'RecordFieldScanError.UnsupportedMode'; do
+    rg -q "$scanner_boundary" "$field_scanner"
 done
 
 for boundary in \
@@ -52,6 +70,20 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
+for scanner_fixture_pattern in \
+    'record_scanner_materializes_whitespace_literal_and_whole_fields' \
+    'fixed_width_record_scanner_marks_absent_columns_and_rejects_remainders' \
+    'unicode_fields[1].start_byte == 3' \
+    'literal_fields.count == 4' \
+    'literal_empty_fields.count == 0' \
+    'advance_record_materializer' \
+    'validate_record_materializer' \
+    'not fields[2].present' \
+    'RecordFieldScanError.FieldLimitExceeded' \
+    'RecordFieldScanError.UnsupportedMode'; do
+    rg -Fq "$scanner_fixture_pattern" "$scanner_fixture"
+done
+
 for fixture_pattern in \
     'typed_record_stream_contract_is_bounded_and_explicit' \
     'RecordSeparatorMode.Regex' \
@@ -66,7 +98,9 @@ for fixture_pattern in \
 done
 
 rg -q 'EsRecord::RecordStreamPolicy' "$docs"
+rg -q 'EsRecordFieldScan::split_record_fields' "$docs"
 rg -q 'error\[RecordContractError\]' "$docs"
 rg -q 'EsRecord::RecordStreamPolicy' "$ledger"
+rg -q 'EsRecordFieldScan' "$ledger"
 
 printf 'record model audit: bounded separator, field, metadata, and range contracts are present\n'

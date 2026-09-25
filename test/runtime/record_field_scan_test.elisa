@@ -1,0 +1,86 @@
+include "../../src/runtime/record_model.elisa"
+include "../../src/runtime/record_field_scan_model.elisa"
+include "../../src/runtime/record_materializer_model.elisa"
+
+using EsRecord
+using EsRecordFieldScan
+using EsRecordMaterialize
+
+
+@test
+def record_scanner_materializes_whitespace_literal_and_whole_fields() -> void:
+    can Memory.Allocate, Abort.Panic:
+        whitespace_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Whitespace}
+        whitespace_record: Record = Record{source: "fixture", raw: " \talpha  beta\n"}
+        whitespace_fields: darray[RecordField] = try split_record_fields(whitespace_record, whitespace_policy)
+        assert whitespace_fields.count == 2
+        assert whitespace_fields[0].index == 0 and whitespace_fields[0].value == "alpha"
+        assert whitespace_fields[0].start_byte == 2 and whitespace_fields[0].end_byte == 7
+        assert whitespace_fields[1].index == 1 and whitespace_fields[1].value == "beta"
+        assert whitespace_fields[1].start_byte == 9 and whitespace_fields[1].end_byte == 13
+
+        materializer: mutable RecordMaterializer = RecordMaterializer{policy: whitespace_policy}
+        assert advance_record_materializer(materializer, RecordMaterializerEvent.BeginRecord, whitespace_record) == RecordMaterializerState.Collecting
+        for index in 0..<whitespace_fields.count |materializer, whitespace_fields|:
+            assert advance_record_materializer(materializer, RecordMaterializerEvent.Field, field: whitespace_fields[index]) == RecordMaterializerState.Collecting
+        assert advance_record_materializer(materializer, RecordMaterializerEvent.EndRecord) == RecordMaterializerState.Collecting
+        assert advance_record_materializer(materializer, RecordMaterializerEvent.Seal) == RecordMaterializerState.Sealed
+        assert validate_record_materializer(materializer)
+
+        literal_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Literal, field_separator: ","}
+        literal_record: Record = Record{source: "fixture", raw: ",a,,"}
+        literal_fields: darray[RecordField] = try split_record_fields(literal_record, literal_policy)
+        assert literal_fields.count == 4
+        assert literal_fields[0].value == "" and literal_fields[1].value == "a"
+        assert literal_fields[2].value == "" and literal_fields[3].value == ""
+        assert literal_fields[3].start_byte == 4 and literal_fields[3].end_byte == 4 and literal_fields[3].present
+        literal_empty_fields: darray[RecordField] = try split_record_fields(Record{source: "fixture", raw: ""}, literal_policy)
+        assert literal_empty_fields.count == 0
+
+        whole_record: Record = Record{source: "fixture", raw: ""}
+        whole_fields: darray[RecordField] = try split_record_fields(whole_record, RecordStreamPolicy{})
+        assert whole_fields.count == 1 and whole_fields[0].present and whole_fields[0].value == ""
+        whitespace_empty: darray[RecordField] = try split_record_fields(whole_record, whitespace_policy)
+        assert whitespace_empty.count == 0
+
+        unicode_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Literal, field_separator: "§"}
+        unicode_fields: darray[RecordField] = try split_record_fields(Record{source: "fixture", raw: "a§b"}, unicode_policy)
+        assert unicode_fields.count == 2 and unicode_fields[1].value == "b" and unicode_fields[1].start_byte == 3
+
+
+@test
+def fixed_width_record_scanner_marks_absent_columns_and_rejects_remainders() -> void:
+    can Memory.Allocate, Abort.Panic:
+        fixed_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.FixedWidth, fixed_widths: [2, 2, 2]}
+        short_record: Record = Record{source: "fixture", raw: "abc"}
+        fields: darray[RecordField] = try split_record_fields(short_record, fixed_policy)
+        assert fields.count == 3 and fields[0].value == "ab" and fields[1].value == "c"
+        assert fields[0].present and fields[1].present
+        assert not fields[2].present and fields[2].value == "" and fields[2].start_byte == 3
+
+        long_record: Record = Record{source: "fixture", raw: "abcdefg"}
+        remainder_rejected: mutable bool = false
+        catch split_record_fields(long_record, fixed_policy):
+            ok value:
+                assert false
+            error failure:
+                remainder_rejected <- failure == RecordFieldScanError.FixedWidthRemainder
+        assert remainder_rejected
+
+        regex_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Regex, field_separator: ","}
+        regex_rejected: mutable bool = false
+        catch split_record_fields(long_record, regex_policy):
+            ok value:
+                assert false
+            error failure:
+                regex_rejected <- failure == RecordFieldScanError.UnsupportedMode
+        assert regex_rejected
+
+        limited_policy: RecordStreamPolicy = RecordStreamPolicy{field_mode: RecordFieldMode.Whitespace, max_fields: 1}
+        field_limit_rejected: mutable bool = false
+        catch split_record_fields(Record{source: "fixture", raw: "a b"}, limited_policy):
+            ok value:
+                assert false
+            error failure:
+                field_limit_rejected <- failure == RecordFieldScanError.FieldLimitExceeded
+        assert field_limit_rejected

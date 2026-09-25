@@ -1,0 +1,85 @@
+# Bounded byte-span field scanning for common Perl/AWK record policies.
+#
+# This pure scanner materializes fields for whole-record, ASCII-whitespace,
+# literal-separator, and fixed-width policies. Regex and schema extraction
+# stay explicit adapter responsibilities instead of silently guessing.
+
+module EsRecordFieldScan:
+    using EsRecord
+
+    public:
+        error RecordFieldScanError:
+            UnsupportedMode
+            FieldLimitExceeded
+            FixedWidthRemainder
+
+
+    private:
+        def record_field_scan_ascii_whitespace(byte: u8) -> bool:
+            return byte == 32 or (byte >= 9 and byte <= 13)
+
+
+        def record_field_scan_separator_at(raw: sview, separator: sview, start: usize) -> bool:
+            raw_length: usize = sview_len(raw)
+            separator_length: usize = sview_len(separator)
+            return false if start > raw_length or separator_length > raw_length - start
+            return raw[start:start + separator_length] == separator
+
+
+        def record_field_scan_append(fields: mutable darray[RecordField]&, record: Record, index: usize, start: usize, end: usize, present: bool, max_fields: usize) -> bool error[RecordFieldScanError] can[Memory.Allocate, Abort.Panic]:
+            raise RecordFieldScanError.FieldLimitExceeded if fields.count >= max_fields
+            fields.push(RecordField{index: index, start_byte: start, end_byte: end, value: record.raw[start:end], present: present})
+            return true
+
+
+    public:
+        def split_record_fields(record: Record, policy: RecordStreamPolicy) -> darray[RecordField] error[RecordContractError, RecordFieldScanError] can[Memory.Allocate, Abort.Panic]:
+            admitted_record: mutable Record = record
+            admitted_policy: mutable RecordStreamPolicy = policy
+            _ = try validate_record(admitted_record, admitted_policy)
+            raw_length: usize = sview_len(record.raw)
+            fields: mutable darray[RecordField] = []
+            if policy.field_mode == RecordFieldMode.Whole:
+                _ = try record_field_scan_append(fields, record, 0, 0, raw_length, true, policy.max_fields)
+            elif policy.field_mode == RecordFieldMode.Whitespace:
+                position: mutable usize = 0
+                while position < raw_length:
+                    if record_field_scan_ascii_whitespace(sview_at(record.raw, position)):
+                        position <- position + 1
+                    else:
+                        start: usize = position
+                        while position < raw_length and not record_field_scan_ascii_whitespace(sview_at(record.raw, position)):
+                            position <- position + 1
+                        _ = try record_field_scan_append(fields, record, fields.count, start, position, true, policy.max_fields)
+            elif policy.field_mode == RecordFieldMode.Literal:
+                if raw_length != 0:
+                    separator_length: usize = sview_len(policy.field_separator)
+                    position: mutable usize = 0
+                    field_start: mutable usize = 0
+                    while position <= raw_length:
+                        if position == raw_length:
+                            _ = try record_field_scan_append(fields, record, fields.count, field_start, raw_length, true, policy.max_fields)
+                            position <- raw_length + 1
+                        elif record_field_scan_separator_at(record.raw, policy.field_separator, position):
+                            _ = try record_field_scan_append(fields, record, fields.count, field_start, position, true, policy.max_fields)
+                            position <- position + separator_length
+                            field_start <- position
+                        else:
+                            position <- position + 1
+            elif policy.field_mode == RecordFieldMode.FixedWidth:
+                total_width: mutable usize = 0
+                for width in policy.fixed_widths |policy, total_width|:
+                    total_width <- total_width + width
+                raise RecordFieldScanError.FixedWidthRemainder if raw_length > total_width
+                position: mutable usize = 0
+                for width in policy.fixed_widths |policy, fields, record, position|:
+                    start: usize = position
+                    remaining: usize = raw_length - position
+                    take: usize = width if width < remaining else remaining
+                    end: usize = position + take
+                    present: bool = position < raw_length
+                    _ = try record_field_scan_append(fields, record, fields.count, start, end, present, policy.max_fields)
+                    position <- end
+            else:
+                raise RecordFieldScanError.UnsupportedMode
+            return fields

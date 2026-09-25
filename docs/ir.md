@@ -1607,6 +1607,15 @@ inconsistent field payloads through
 `error[RecordContractError]` before a scanner, regex walk, or aggregation buffer
 is allocated. This is a reusable contract; record I/O, external sort, and
 transactional in-place rewriting remain host adapters.
+`EsRecordFieldScan::split_record_fields` supplies bounded byte-span scanning
+for `Whole`, collapsed ASCII-whitespace, literal separators that preserve
+empty fields, and fixed-width columns. Empty non-whole records produce no
+fields; short fixed-width records carry explicit absent trailing columns, and
+bytes beyond the declared widths are rejected. Regex and schema modes fail
+explicitly until their matching schema/matcher adapter is connected.
+Its output can be submitted in field-index order to
+`EsRecordMaterialize::RecordMaterializer`, which retains the validated spans
+under its record/field/text ceilings.
 
 `EsRecordNumeric::RecordNumericSession` supplies bounded lexical numeric
 admission for extracted fields. Signed and unsigned integers use a checked
