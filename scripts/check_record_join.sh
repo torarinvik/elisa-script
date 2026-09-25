@@ -58,12 +58,13 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 
-rg -Fq 'if event == RecordJoinEvent.Add:' "$model"
+rg -Fq 'try validate_record_join(session)' "$model"
 
 for fixture_pattern in \
     'record_join_pair_count_groups_unsorted_duplicate_keys' \
     'record_join_pair_count_rejects_cartesian_pair_overflow' \
     'record_join_admits_key_and_value_at_exact_byte_limits' \
+    'record_join_rejects_forged_existing_ledger_before_add' \
     'RecordJoinKind.Full' \
     'RecordJoinError.PairLimitExceeded'; do
     rg -q "$fixture_pattern" "$runtime_fixture"

@@ -1842,10 +1842,12 @@ requested, all under a pair ceiling. It sorts a bounded scratch array of row
 indexes by key with a stable merge sort, then counts each key group once, so
 counting performs O(n log n) key comparisons rather than comparing every row
 pair. Common-prefix byte work can repeat across comparisons and remains
-workload-sensitive. Each `Add` performs constant-size header admission and
-checks only the new row; the complete row/ordinal/byte ledger is revalidated at
-`Seal` and before pair counting, avoiding a quadratic ingest scan. The row-index
-scratch is bounded by the session's row limit. Empty keys, NUL
+workload-sensitive. `Add` revalidates the complete row/ordinal/byte ledger
+before mutation because callers can construct or alter public session values;
+this preserves rejection-before-mutation for forged ledgers, though collection
+validation remains quadratic in the number of appended rows. An opaque session
+API is needed before safely removing that cost. The row-index scratch is bounded
+by the session's row limit. Empty keys, NUL
 keys/values, broken ordinals, overflow-safe accounting drift checks, and
 post-terminal mutation return `error[RecordJoinError]`; materializing the
 paired rows and external sort/merge remain host responsibilities.
