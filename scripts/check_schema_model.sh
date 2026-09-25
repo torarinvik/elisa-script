@@ -207,7 +207,9 @@ done
 for fixture_pattern in \
     'header_empty_materializer' \
     'materialize_csv_schema_batch(schema, header_empty_materializer, 0, 0)' \
-    'SchemaCsvMaterializeError.RowIndexInvalid'; do
+    'SchemaCsvMaterializeError.RowIndexInvalid' \
+    'mixed_batch.records[1].values[0].kind == SchemaCsvValueKind.Missing' \
+    'mixed_batch.records[2].values[0].bytes.count == 0'; do
     rg -Fq "$fixture_pattern" "$csv_empty_fixture"
 done
 

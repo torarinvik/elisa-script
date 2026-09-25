@@ -478,7 +478,9 @@ uses `source_index` (declaration order by default) without a header; duplicate
 headers/indexes, unknown columns, invalid quoting/UTF-8, and missing required
 fields fail explicitly. `allow_unknown` controls unmatched header and data
 columns. Optional missing columns carry a `Missing` tag, distinct from an
-empty `Text` cell. Doubled quotes and configured in-quote escapes are decoded;
+empty `Text` cell: a blank zero-field row maps an optional column to `Missing`,
+while a quoted empty cell maps it to empty `Text`. Doubled quotes and
+configured in-quote escapes are decoded;
 optional unquoted trimming is ASCII space/tab only and never affects quoted
 cells. CSV/TSV fields remain declared as `Text`; an explicit integer target
 instead parses the decoded cell as a base-10 integer without whitespace,
