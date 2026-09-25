@@ -1,0 +1,663 @@
+# Bounded Elisascript port of ChordBrain's generate_chord_database.py.
+# This candidate reads the source JSON into the validated shared JSON model,
+# then emits the language-owned allocation-free tables.
+
+include "../src/runtime/bounded_text_posix.elisa"
+include "../src/runtime/data_model.elisa"
+include "../src/runtime/json_model.elisa"
+include "../src/runtime/json_lexer_model.elisa"
+include "../src/runtime/json_parse_model.elisa"
+
+using EsBoundedText
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+
+
+module EsChordBrainDatabaseGenerator:
+    private:
+        const module Limits:
+            INPUT_BYTES: usize = 8388608
+            OUTPUT_BYTES: usize = 16777216
+            NOTES: usize = 65536
+            CHORDS: usize = 16384
+            DEGREES: usize = 4096
+            SCALES: usize = 120
+            KEYS: usize = 12
+            SCALE_NAMES: usize = 10
+            DEGREE_NAMES: usize = 7
+
+
+        const module Messages:
+            USAGE: sview = "usage: generate_chordbrain_database [--input FILE] [--output FILE]"
+            INPUT_FAILED: sview = "ChordBrain database generator: unable to read or parse input"
+            INVALID_DATA: sview = "ChordBrain database generator: invalid database data"
+            INPUT_LIMIT: sview = "ChordBrain database generator: input exceeds size limit"
+            OUTPUT_LIMIT: sview = "ChordBrain database generator: generated output exceeds size limit"
+            WRITE_FAILED: sview = "ChordBrain database generator: unable to write output"
+
+
+        struct DatabaseNote:
+            raw: sview
+            readable: sview
+            position: i64
+
+
+        struct DatabaseChord:
+            key: usize
+            scale: usize
+            degree: usize
+            chord_type: usize
+            popularity: i64
+            symbol: sview
+            readable_name: sview
+            note_start: usize
+            note_count: usize
+
+
+        struct DatabaseDegree:
+            key: usize
+            scale: usize
+            degree: usize
+            chord_start: usize
+            chord_count: usize
+
+
+        struct DatabaseScale:
+            key: usize
+            scale: usize
+            moods: darray[sview]
+            note_start: usize
+            note_count: usize
+            chord_start: usize
+            chord_count: usize
+            degree_start: usize
+            degree_count: usize
+
+
+        struct PendingChord:
+            symbol: sview
+            node_index: usize
+            popularity: i64
+            ordinal: usize
+
+
+        struct Database:
+            notes: darray[DatabaseNote] = []
+            chords: darray[DatabaseChord] = []
+            degrees: darray[DatabaseDegree] = []
+            scales: darray[DatabaseScale] = []
+
+
+        error GeneratorError:
+            InvalidData
+            InputLimitExceeded
+            OutputLimitExceeded
+            InputReadFailed
+            OutputWriteFailed
+
+
+        def key_name(index: usize) -> sview:
+            return "C" if index == 0
+            return "Db" if index == 1
+            return "D" if index == 2
+            return "Eb" if index == 3
+            return "E" if index == 4
+            return "F" if index == 5
+            return "Gb" if index == 6
+            return "G" if index == 7
+            return "Ab" if index == 8
+            return "A" if index == 9
+            return "Bb" if index == 10
+            return "B" if index == 11
+            return ""
+
+
+        def scale_name(index: usize) -> sview:
+            return "Major" if index == 0
+            return "Minor" if index == 1
+            return "Harmonic Minor" if index == 2
+            return "Melodic Minor" if index == 3
+            return "Dorian" if index == 4
+            return "Phrygian" if index == 5
+            return "Lydian" if index == 6
+            return "Mixolydian" if index == 7
+            return "Locrian" if index == 8
+            return "Minor Blues" if index == 9
+            return ""
+
+
+        def degree_name(index: usize) -> sview:
+            return "I" if index == 0
+            return "II" if index == 1
+            return "III" if index == 2
+            return "IV" if index == 3
+            return "V" if index == 4
+            return "VI" if index == 5
+            return "VII" if index == 6
+            return ""
+
+
+        def chord_type_index(name: sview) -> i64:
+            return 0i64 if name == "triad"
+            return 1i64 if name == "seventh"
+            return 2i64 if name == "ninth"
+            return 3i64 if name == "sus4"
+            return 4i64 if name == "sus2"
+            return 5i64 if name == "add9"
+            return 6i64 if name == "sixth"
+            return 7i64 if name == "7sus4"
+            return 8i64 if name == "9sus4"
+            return 9i64 if name == "power"
+            return 10i64 if name == "eleventh"
+            return 11i64 if name == "thirteenth"
+            return 12i64 if name == "inversion-1"
+            return 13i64 if name == "inversion-2"
+            return -1i64
+
+
+        def member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != len(key)
+            key_bytes: sview = bytes_view(document.key_bytes)
+            for offset in 0..<member.key_bytes |document, member, key, key_bytes|:
+                return false if key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        def member_key_view(document: JsonDocument&, member: JsonMember) -> sview:
+            key_bytes: sview = bytes_view(document.key_bytes)
+            return sview(key_bytes, member.key_start.i64(), member.key_bytes.i64())
+
+
+        def object_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return EsJson::JSON_INDEX_NONE if object_index >= document.nodes.count
+            object: JsonNode = document.nodes[object_index]
+            return EsJson::JSON_INDEX_NONE if object.kind != JsonNodeKind.Object
+            for ordinal in 0..<object.member_count |document, object, key|:
+                member_index: usize = object.member_start + ordinal
+                return member_index if member_key_equals(document, document.members[member_index], key)
+            return EsJson::JSON_INDEX_NONE
+
+
+        def required_member_value(document: JsonDocument&, object_index: usize, key: sview) -> usize error[GeneratorError]:
+            member_index: usize = object_member_index(document, object_index, key)
+            raise GeneratorError.InvalidData if member_index == EsJson::JSON_INDEX_NONE
+            return document.members[member_index].value_index
+
+
+        def optional_member_value(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            member_index: usize = object_member_index(document, object_index, key)
+            return EsJson::JSON_INDEX_NONE if member_index == EsJson::JSON_INDEX_NONE
+            return document.members[member_index].value_index
+
+
+        def node_text(document: JsonDocument&, node_index: usize) -> sview error[GeneratorError]:
+            raise GeneratorError.InvalidData if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise GeneratorError.InvalidData if node.kind != JsonNodeKind.Text
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return sview(scalar_bytes, node.scalar_start.i64(), node.scalar_bytes.i64())
+
+
+        def required_text(document: JsonDocument&, object_index: usize, key: sview) -> sview error[GeneratorError]:
+            return try node_text(document, try required_member_value(document, object_index, key))
+
+
+        def required_integer(document: JsonDocument&, object_index: usize, key: sview) -> i64 error[GeneratorError, ParseError]:
+            node_index: usize = try required_member_value(document, object_index, key)
+            raise GeneratorError.InvalidData if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            raw_number: sview = try node_text_number(document, node_index)
+            return try parse_int(raw_number)
+
+
+        def node_text_number(document: JsonDocument&, node_index: usize) -> sview error[GeneratorError]:
+            raise GeneratorError.InvalidData if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise GeneratorError.InvalidData if node.kind != JsonNodeKind.Number
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return sview(scalar_bytes, node.scalar_start.i64(), node.scalar_bytes.i64())
+
+
+        def array_item_index(document: JsonDocument&, array_index: usize, ordinal: usize) -> usize error[GeneratorError]:
+            raise GeneratorError.InvalidData if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise GeneratorError.InvalidData if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            return document.children[array.child_start + ordinal].value_index
+
+
+        def array_count(document: JsonDocument&, array_index: usize) -> usize error[GeneratorError]:
+            raise GeneratorError.InvalidData if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise GeneratorError.InvalidData if array.kind != JsonNodeKind.Array
+            return array.child_count
+
+
+        def required_array_member(document: JsonDocument&, object_index: usize, key: sview) -> usize error[GeneratorError]:
+            array_index: usize = try required_member_value(document, object_index, key)
+            raise GeneratorError.InvalidData if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            return array_index
+
+
+        def pending_chord_less(left: PendingChord, right: PendingChord) -> bool:
+            return left.popularity < right.popularity if left.popularity != right.popularity
+            return left.ordinal < right.ordinal
+
+
+        # Array.sort only accepts statically orderable scalar elements. Chords
+        # are records, so use a stable insertion pass with the exact Python
+        # ordering: popularity first, original object-member order for ties.
+        def sort_pending_chords(pending: mutable darray[PendingChord]&) -> void:
+            for index in 1..<pending.count |pending|:
+                current: PendingChord = pending[index]
+                cursor: mutable usize = index
+                machine over cursor while cursor > 0:
+                    state Insert
+                    start Insert
+
+                    Insert, Insert if not pending_chord_less(current, pending[cursor - 1]):
+                        break
+
+                    Insert, Insert:
+                        pending[cursor] <- pending[cursor - 1]
+                        cursor <- cursor - 1
+                        -> Insert
+
+                pending[cursor] <- current
+
+
+        def parse_database(contents: sview) -> Database error[GeneratorError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Memory.Allocate, Abort.Panic]:
+            lexed: JsonLexedSource = try lex_json(contents)
+            document: JsonDocument = try parse_json_document(lexed)
+            raise GeneratorError.InvalidData if document.roots.count != 1
+            root: usize = document.roots[0]
+            raise GeneratorError.InvalidData if root >= document.nodes.count or document.nodes[root].kind != JsonNodeKind.Object
+            database: mutable Database = Database{}
+            for key_index in 0..<Limits::KEYS |document, database|:
+                key_object: usize = try required_member_value(document, root, key_name(key_index))
+                raise GeneratorError.InvalidData if document.nodes[key_object].kind != JsonNodeKind.Object
+                for scale_index in 0..<Limits::SCALE_NAMES |document, database, key_index, key_object|:
+                    scale_object: usize = try required_member_value(document, key_object, scale_name(scale_index))
+                    raise GeneratorError.InvalidData if document.nodes[scale_object].kind != JsonNodeKind.Object
+                    scale_note_start: usize = database.notes.count
+                    scale_notes: usize = try required_array_member(document, scale_object, "notes")
+                    readable_notes: usize = optional_member_value(document, scale_object, "readableNotes")
+                    if readable_notes == EsJson::JSON_INDEX_NONE:
+                        readable_notes <- scale_notes
+                    raise GeneratorError.InvalidData if readable_notes >= document.nodes.count or document.nodes[readable_notes].kind != JsonNodeKind.Array
+                    for note_index in 0..<array_count(document, scale_notes) |document, database, scale_notes, readable_notes, note_index|:
+                        raise GeneratorError.InvalidData if database.notes.count >= Limits::NOTES
+                        raise GeneratorError.InvalidData if note_index >= array_count(document, readable_notes)
+                        raw_node: usize = try array_item_index(document, scale_notes, note_index)
+                        readable_node: usize = try array_item_index(document, readable_notes, note_index)
+                        database.notes.push(DatabaseNote{raw: try node_text(document, raw_node), readable: try node_text(document, readable_node), position: (note_index + 1).i64()})
+
+                    scale_chord_start: usize = database.chords.count
+                    scale_degree_start: usize = database.degrees.count
+                    for degree_index in 0..<Limits::DEGREE_NAMES |document, database, scale_object, key_index, scale_index|:
+                        degree_object: usize = optional_member_value(document, scale_object, degree_name(degree_index))
+                        continue if degree_object == EsJson::JSON_INDEX_NONE
+                        continue if document.nodes[degree_object].kind == JsonNodeKind.Null
+                        raise GeneratorError.InvalidData if document.nodes[degree_object].kind != JsonNodeKind.Object
+                        degree_chord_start: usize = database.chords.count
+                        pending: mutable darray[PendingChord] = []
+                        for ordinal in 0..<document.nodes[degree_object].member_count |document, degree_object, pending|:
+                            member_index: usize = document.nodes[degree_object].member_start + ordinal
+                            chord_node: usize = document.members[member_index].value_index
+                            popularity: i64 = try required_integer(document, chord_node, "popularityOrder")
+                            symbol: sview = member_key_view(document, document.members[member_index])
+                            pending.push(PendingChord{symbol: symbol, node_index: chord_node, popularity: popularity, ordinal: ordinal})
+                        sort_pending_chords(pending)
+                        for pending_chord in pending |document, database, pending, key_index, scale_index, degree_index|:
+                            chord_node: usize = pending_chord.node_index
+                            chord_type: i64 = chord_type_index(try required_text(document, chord_node, "type"))
+                            raise GeneratorError.InvalidData if chord_type < 0
+                            chord_note_start: usize = database.notes.count
+                            chord_notes: usize = try required_array_member(document, chord_node, "notes")
+                            for note_index in 0..<array_count(document, chord_notes) |document, database, chord_notes, chord_note_start|:
+                                raise GeneratorError.InvalidData if database.notes.count >= Limits::NOTES
+                                note_node: usize = try array_item_index(document, chord_notes, note_index)
+                                note_position: i64 = try required_integer(document, note_node, "positionInChord")
+                                raise GeneratorError.InvalidData if note_position < -2147483648i64 or note_position > 2147483647i64
+                                database.notes.push(DatabaseNote{raw: try required_text(document, note_node, "note"), readable: try required_text(document, note_node, "readableNote"), position: note_position})
+                            raise GeneratorError.InvalidData if database.chords.count >= Limits::CHORDS
+                            database.chords.push(DatabaseChord{key: key_index, scale: scale_index, degree: degree_index, chord_type: chord_type.usize(), popularity: pending_chord.popularity, symbol: pending_chord.symbol, readable_name: try required_text(document, chord_node, "readableName"), note_start: chord_note_start, note_count: database.notes.count - chord_note_start})
+                        raise GeneratorError.InvalidData if database.degrees.count >= Limits::DEGREES
+                        database.degrees.push(DatabaseDegree{key: key_index, scale: scale_index, degree: degree_index, chord_start: degree_chord_start, chord_count: database.chords.count - degree_chord_start})
+
+                    moods: mutable darray[sview] = []
+                    mood_node: usize = optional_member_value(document, scale_object, "moods")
+                    if mood_node != EsJson::JSON_INDEX_NONE:
+                        raise GeneratorError.InvalidData if document.nodes[mood_node].kind != JsonNodeKind.Array
+                        for mood_index in 0..<array_count(document, mood_node) |document, moods, mood_node|:
+                            break if moods.count == 5
+                            moods.push(try node_text(document, try array_item_index(document, mood_node, mood_index)))
+                    while moods.count < 5 |moods|:
+                        moods.push("")
+                    raise GeneratorError.InvalidData if database.scales.count >= Limits::SCALES
+                    database.scales.push(DatabaseScale{key: key_index, scale: scale_index, moods: moods, note_start: scale_note_start, note_count: database.notes.count - scale_note_start, chord_start: scale_chord_start, chord_count: database.chords.count - scale_chord_start, degree_start: scale_degree_start, degree_count: database.degrees.count - scale_degree_start})
+            return database
+
+
+        def source_next_codepoint(value: sview, cursor: mutable usize&) -> u32:
+            first: u8 = sview_at(value, cursor)
+            if first <= 127u8:
+                cursor <- cursor + 1
+                return first.u32()
+            if first <= 223u8:
+                second: u8 = sview_at(value, cursor + 1)
+                codepoint: u32 = ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                cursor <- cursor + 2
+                return codepoint
+            if first <= 239u8:
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                codepoint: u32 = ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                cursor <- cursor + 3
+                return codepoint
+            second: u8 = sview_at(value, cursor + 1)
+            third: u8 = sview_at(value, cursor + 2)
+            fourth: u8 = sview_at(value, cursor + 3)
+            codepoint: u32 = ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+            cursor <- cursor + 4
+            return codepoint
+
+
+        def append_source_hex4(output: mutable darray[u8]&, value: u32) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push(92u8)
+            output.push(117u8)
+            for shift in [12u32, 8u32, 4u32, 0u32] |output, value|:
+                digit: u8 = ((value >> shift) & 15u32).u8()
+                output.push(48u8 + digit) if digit < 10u8
+                output.push(87u8 + digit) if digit >= 10u8
+
+
+        def source_string(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = [34u8]
+            cursor: mutable usize = 0
+            while cursor < len(value) |value, output, cursor|:
+                codepoint: u32 = source_next_codepoint(value, cursor)
+                if codepoint == 34u32 or codepoint == 92u32:
+                    output.push(92u8)
+                    output.push(codepoint.u8())
+                elif codepoint == 8u32:
+                    output.push(92u8)
+                    output.push(98u8)
+                elif codepoint == 9u32:
+                    output.push(92u8)
+                    output.push(116u8)
+                elif codepoint == 10u32:
+                    output.push(92u8)
+                    output.push(110u8)
+                elif codepoint == 12u32:
+                    output.push(92u8)
+                    output.push(102u8)
+                elif codepoint == 13u32:
+                    output.push(92u8)
+                    output.push(114u8)
+                elif codepoint < 32u32:
+                    append_source_hex4(output, codepoint)
+                elif codepoint <= 127u32:
+                    output.push(codepoint.u8())
+                elif codepoint <= 65535u32:
+                    append_source_hex4(output, codepoint)
+                else:
+                    adjusted: u32 = codepoint - 65536u32
+                    append_source_hex4(output, 55296u32 + (adjusted >> 10))
+                    append_source_hex4(output, 56320u32 + (adjusted & 1023u32))
+            output.push(34u8)
+            return bytes_view(output)
+
+
+        def append_line(lines: mutable darray[sview]&, output_bytes: mutable usize&, line: sview) -> void error[GeneratorError] can[Memory.Allocate, Abort.Panic]:
+            addition: usize = len(line) + (1 if lines.count > 0 else 0)
+            raise GeneratorError.OutputLimitExceeded if output_bytes > Limits::OUTPUT_BYTES or addition > Limits::OUTPUT_BYTES - output_bytes
+            lines.push(line)
+            output_bytes <- output_bytes + addition
+
+
+        struct GeneratedOutput:
+            contents: sview
+            note_count: usize
+            chord_count: usize
+            degree_count: usize
+            scale_count: usize
+
+
+        def render_database(database: Database) -> GeneratedOutput error[GeneratorError] can[Memory.Allocate, Abort.Panic]:
+            lines: mutable darray[sview] = []
+            output_bytes: mutable usize = 0
+            try append_line(lines, output_bytes, "# Generated by tools/generate_chord_database.py; edit resources/data/chords.json instead.")
+            try append_line(lines, output_bytes, "# This table is the allocation-free Elisa representation of the original JUCE database.")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "struct ChordBrainDatabaseNote layout(c):")
+            try append_line(lines, output_bytes, "    raw: u8&?")
+            try append_line(lines, output_bytes, "    readable: u8&?")
+            try append_line(lines, output_bytes, "    position: i32")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "struct ChordBrainDatabaseChord layout(c):")
+            try append_line(lines, output_bytes, "    key: u8")
+            try append_line(lines, output_bytes, "    scale: u8")
+            try append_line(lines, output_bytes, "    degree: u8")
+            try append_line(lines, output_bytes, "    chord_type: u8")
+            try append_line(lines, output_bytes, "    popularity_order: i32")
+            try append_line(lines, output_bytes, "    symbol: u8&?")
+            try append_line(lines, output_bytes, "    readable_name: u8&?")
+            try append_line(lines, output_bytes, "    note_start: u32")
+            try append_line(lines, output_bytes, "    note_count: u32")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "struct ChordBrainDatabaseDegree layout(c):")
+            try append_line(lines, output_bytes, "    key: u8")
+            try append_line(lines, output_bytes, "    scale: u8")
+            try append_line(lines, output_bytes, "    degree: u8")
+            try append_line(lines, output_bytes, "    chord_start: u32")
+            try append_line(lines, output_bytes, "    chord_count: u32")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "struct ChordBrainDatabaseScale layout(c):")
+            try append_line(lines, output_bytes, "    key: u8")
+            try append_line(lines, output_bytes, "    scale: u8")
+            for mood_index in 0..<5 |lines, output_bytes|:
+                try append_line(lines, output_bytes, f"    mood{mood_index}: u8&?")
+            try append_line(lines, output_bytes, "    scale_note_start: u32")
+            try append_line(lines, output_bytes, "    scale_note_count: u32")
+            try append_line(lines, output_bytes, "    chord_start: u32")
+            try append_line(lines, output_bytes, "    chord_count: u32")
+            try append_line(lines, output_bytes, "    degree_start: u32")
+            try append_line(lines, output_bytes, "    degree_count: u32")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_NOTE_COUNT: u32 = {database.notes.count}")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_CHORD_COUNT: u32 = {database.chords.count}")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_DEGREE_COUNT: u32 = {database.degrees.count}")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_SCALE_COUNT: u32 = {database.scales.count}")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_NOTES: ChordBrainDatabaseNote[{database.notes.count}] = [")
+            for note in database.notes |lines, output_bytes|:
+                try append_line(lines, output_bytes, f"    ChordBrainDatabaseNote{{raw: {source_string(note.raw)}, readable: {source_string(note.readable)}, position: {note.position}}},")
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_CHORDS: ChordBrainDatabaseChord[{database.chords.count}] = [")
+            for chord in database.chords |lines, output_bytes|:
+                try append_line(lines, output_bytes, f"    ChordBrainDatabaseChord{{key: {chord.key}, scale: {chord.scale}, degree: {chord.degree}, chord_type: {chord.chord_type}, popularity_order: {chord.popularity}, symbol: {source_string(chord.symbol)}, readable_name: {source_string(chord.readable_name)}, note_start: {chord.note_start}, note_count: {chord.note_count}}},")
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_DEGREES: ChordBrainDatabaseDegree[{database.degrees.count}] = [")
+            for degree in database.degrees |lines, output_bytes|:
+                try append_line(lines, output_bytes, f"    ChordBrainDatabaseDegree{{key: {degree.key}, scale: {degree.scale}, degree: {degree.degree}, chord_start: {degree.chord_start}, chord_count: {degree.chord_count}}},")
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, f"const CHORDBRAIN_DATABASE_SCALES: ChordBrainDatabaseScale[{database.scales.count}] = [")
+            for scale in database.scales |lines, output_bytes|:
+                try append_line(lines, output_bytes, f"    ChordBrainDatabaseScale{{key: {scale.key}, scale: {scale.scale}, mood0: {source_string(scale.moods[0])}, mood1: {source_string(scale.moods[1])}, mood2: {source_string(scale.moods[2])}, mood3: {source_string(scale.moods[3])}, mood4: {source_string(scale.moods[4])}, scale_note_start: {scale.note_start}, scale_note_count: {scale.note_count}, chord_start: {scale.chord_start}, chord_count: {scale.chord_count}, degree_start: {scale.degree_start}, degree_count: {scale.degree_count}}},")
+            try append_line(lines, output_bytes, "]")
+            try append_line(lines, output_bytes, "")
+
+            try append_line(lines, output_bytes, "def chordbrain_database_scale_index(key: u8, scale: u8) -> i32:")
+            try append_line(lines, output_bytes, "    index: mutable u32 = 0")
+            try append_line(lines, output_bytes, "    while index < CHORDBRAIN_DATABASE_SCALE_COUNT |index|:")
+            try append_line(lines, output_bytes, "        record: ChordBrainDatabaseScale = CHORDBRAIN_DATABASE_SCALES[index.usize()]")
+            try append_line(lines, output_bytes, "        index.i32() return if record.key == key and record.scale == scale")
+            try append_line(lines, output_bytes, "        index <- index + 1.u32()")
+            try append_line(lines, output_bytes, "    return -1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def chordbrain_database_degree_index(scale_index: i32, degree: u8) -> i32:")
+            try append_line(lines, output_bytes, "    -1 return if scale_index < 0")
+            try append_line(lines, output_bytes, "    scale_record: ChordBrainDatabaseScale = CHORDBRAIN_DATABASE_SCALES[scale_index.usize()]")
+            try append_line(lines, output_bytes, "    offset: mutable u32 = 0")
+            try append_line(lines, output_bytes, "    while offset < scale_record.degree_count |offset, scale_record|:")
+            try append_line(lines, output_bytes, "        index: u32 = scale_record.degree_start + offset")
+            try append_line(lines, output_bytes, "        record: ChordBrainDatabaseDegree = CHORDBRAIN_DATABASE_DEGREES[index.usize()]")
+            try append_line(lines, output_bytes, "        index.i32() return if record.degree == degree")
+            try append_line(lines, output_bytes, "        offset <- offset + 1.u32()")
+            try append_line(lines, output_bytes, "    return -1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_get_scale_impl(key: u8, scale: u8, out: mutable ChordBrainDatabaseScale&) -> i32:")
+            try append_line(lines, output_bytes, "    index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    0 return if index < 0")
+            try append_line(lines, output_bytes, "    out <- CHORDBRAIN_DATABASE_SCALES[index.usize()]")
+            try append_line(lines, output_bytes, "    return 1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_get_scale_note_impl(key: u8, scale: u8, index: u32, out: mutable ChordBrainDatabaseNote&) -> i32:")
+            try append_line(lines, output_bytes, "    scale_index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    0 return if scale_index < 0")
+            try append_line(lines, output_bytes, "    scale_record: ChordBrainDatabaseScale = CHORDBRAIN_DATABASE_SCALES[scale_index.usize()]")
+            try append_line(lines, output_bytes, "    0 return if index >= scale_record.scale_note_count")
+            try append_line(lines, output_bytes, "    note_index: u32 = scale_record.scale_note_start + index")
+            try append_line(lines, output_bytes, "    out <- CHORDBRAIN_DATABASE_NOTES[note_index.usize()]")
+            try append_line(lines, output_bytes, "    return 1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_chord_count_impl(key: u8, scale: u8, degree: u8) -> i32:")
+            try append_line(lines, output_bytes, "    scale_index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    degree_index: i32 = chordbrain_database_degree_index(scale_index, degree)")
+            try append_line(lines, output_bytes, "    0 return if degree_index < 0")
+            try append_line(lines, output_bytes, "    record: ChordBrainDatabaseDegree = CHORDBRAIN_DATABASE_DEGREES[degree_index.usize()]")
+            try append_line(lines, output_bytes, "    return record.chord_count.i32()")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_get_degree_impl(key: u8, scale: u8, degree: u8, out: mutable ChordBrainDatabaseDegree&) -> i32:")
+            try append_line(lines, output_bytes, "    scale_index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    degree_index: i32 = chordbrain_database_degree_index(scale_index, degree)")
+            try append_line(lines, output_bytes, "    0 return if degree_index < 0")
+            try append_line(lines, output_bytes, "    out <- CHORDBRAIN_DATABASE_DEGREES[degree_index.usize()]")
+            try append_line(lines, output_bytes, "    return 1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_get_chord_impl(key: u8, scale: u8, degree: u8, index: u32, out: mutable ChordBrainDatabaseChord&) -> i32:")
+            try append_line(lines, output_bytes, "    scale_index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    degree_index: i32 = chordbrain_database_degree_index(scale_index, degree)")
+            try append_line(lines, output_bytes, "    0 return if degree_index < 0")
+            try append_line(lines, output_bytes, "    degree_record: ChordBrainDatabaseDegree = CHORDBRAIN_DATABASE_DEGREES[degree_index.usize()]")
+            try append_line(lines, output_bytes, "    0 return if index >= degree_record.chord_count")
+            try append_line(lines, output_bytes, "    chord_index: u32 = degree_record.chord_start + index")
+            try append_line(lines, output_bytes, "    out <- CHORDBRAIN_DATABASE_CHORDS[chord_index.usize()]")
+            try append_line(lines, output_bytes, "    return 1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def db_get_chord_note_impl(key: u8, scale: u8, degree: u8, chord_index: u32, note_index: u32, out: mutable ChordBrainDatabaseNote&) -> i32:")
+            try append_line(lines, output_bytes, "    scale_index: i32 = chordbrain_database_scale_index(key, scale)")
+            try append_line(lines, output_bytes, "    degree_index: i32 = chordbrain_database_degree_index(scale_index, degree)")
+            try append_line(lines, output_bytes, "    0 return if degree_index < 0")
+            try append_line(lines, output_bytes, "    degree_record: ChordBrainDatabaseDegree = CHORDBRAIN_DATABASE_DEGREES[degree_index.usize()]")
+            try append_line(lines, output_bytes, "    0 return if chord_index >= degree_record.chord_count")
+            try append_line(lines, output_bytes, "    chord_record: ChordBrainDatabaseChord = CHORDBRAIN_DATABASE_CHORDS[(degree_record.chord_start + chord_index).usize()]")
+            try append_line(lines, output_bytes, "    0 return if note_index >= chord_record.note_count")
+            try append_line(lines, output_bytes, "    out <- CHORDBRAIN_DATABASE_NOTES[(chord_record.note_start + note_index).usize()]")
+            try append_line(lines, output_bytes, "    return 1")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def get_database_note_count_impl() -> u32:")
+            try append_line(lines, output_bytes, "    return CHORDBRAIN_DATABASE_NOTE_COUNT")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def get_database_chord_count_impl() -> u32:")
+            try append_line(lines, output_bytes, "    return CHORDBRAIN_DATABASE_CHORD_COUNT")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def get_database_degree_count_impl() -> u32:")
+            try append_line(lines, output_bytes, "    return CHORDBRAIN_DATABASE_DEGREE_COUNT")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "def get_database_scale_count_impl() -> u32:")
+            try append_line(lines, output_bytes, "    return CHORDBRAIN_DATABASE_SCALE_COUNT")
+            try append_line(lines, output_bytes, "")
+            try append_line(lines, output_bytes, "export type ChordBrainDatabaseNote as PublicChordBrainDatabaseNote")
+            try append_line(lines, output_bytes, "export type ChordBrainDatabaseChord as PublicChordBrainDatabaseChord")
+            try append_line(lines, output_bytes, "export type ChordBrainDatabaseDegree as PublicChordBrainDatabaseDegree")
+            try append_line(lines, output_bytes, "export type ChordBrainDatabaseScale as PublicChordBrainDatabaseScale")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_get_scale(key: u8, scale: u8, out: mutable ChordBrainDatabaseScale&) -> i32 = db_get_scale_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_get_scale_note(key: u8, scale: u8, index: u32, out: mutable ChordBrainDatabaseNote&) -> i32 = db_get_scale_note_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_chord_count(key: u8, scale: u8, degree: u8) -> i32 = db_chord_count_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_get_degree(key: u8, scale: u8, degree: u8, out: mutable ChordBrainDatabaseDegree&) -> i32 = db_get_degree_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_get_chord(key: u8, scale: u8, degree: u8, index: u32, out: mutable ChordBrainDatabaseChord&) -> i32 = db_get_chord_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_get_chord_note(key: u8, scale: u8, degree: u8, chord_index: u32, note_index: u32, out: mutable ChordBrainDatabaseNote&) -> i32 = db_get_chord_note_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_note_count() -> u32 = get_database_note_count_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_chord_total() -> u32 = get_database_chord_count_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_degree_total() -> u32 = get_database_degree_count_impl")
+            try append_line(lines, output_bytes, "export fn chordbrain_database_scale_total() -> u32 = get_database_scale_count_impl")
+            try append_line(lines, output_bytes, "")
+            return GeneratedOutput{contents: join(lines, "\n"), note_count: database.notes.count, chord_count: database.chords.count, degree_count: database.degrees.count, scale_count: database.scales.count}
+
+
+        def generate_output(input_path: Path) -> GeneratedOutput error[GeneratorError, ReadError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            input_size: usize = try file_size(input_path) else err:
+                raise GeneratorError.InputReadFailed
+            raise GeneratorError.InputLimitExceeded if input_size > Limits::INPUT_BYTES
+            contents: sview = try EsBoundedText::read_utf8(input_path, Limits::INPUT_BYTES) else failure:
+                if failure == EsBoundedText::ReadError.LimitExceeded:
+                    raise GeneratorError.InputLimitExceeded
+                raise GeneratorError.InputReadFailed
+            return try render_database(try parse_database(contents))
+
+
+    public:
+        def generate(input_path: Path) -> sview error[GeneratorError, ReadError, JsonLexError, JsonParseError, JsonContractError, ParseError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            generated: GeneratedOutput = try generate_output(input_path)
+            return generated.contents
+
+
+        def run(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Write, File.Read, File.Write, Directory.Write, Unsafe.PointerCast]:
+            input_path: Path = path("resources/data/chords.json")
+            output_path: Path = path("src/chordbrain_database_generated.elisa")
+            cursor: mutable usize = 0
+            while cursor < arguments.count |arguments, input_path, output_path, cursor|:
+                argument: sview = arguments[cursor]
+                if argument == "-h" or argument == "--help":
+                    print(Messages::USAGE)
+                    return 0i64
+                elif argument == "--input":
+                    if cursor + 1 >= arguments.count:
+                        write_stderr(Messages::USAGE + "\n")
+                        return 2i64
+                    input_path <- path(arguments[cursor + 1])
+                    cursor <- cursor + 2
+                elif argument == "--output":
+                    if cursor + 1 >= arguments.count:
+                        write_stderr(Messages::USAGE + "\n")
+                        return 2i64
+                    output_path <- path(arguments[cursor + 1])
+                    cursor <- cursor + 2
+                else:
+                    write_stderr(Messages::USAGE + "\n")
+                    return 2i64
+            generated: mutable GeneratedOutput = GeneratedOutput{contents: "", note_count: 0, chord_count: 0, degree_count: 0, scale_count: 0}
+            catch generate_output(input_path):
+                ok value:
+                    generated <- value
+                error failure:
+                    if failure == GeneratorError.InputLimitExceeded:
+                        write_stderr(Messages::INPUT_LIMIT + "\n")
+                    elif failure == GeneratorError.OutputLimitExceeded:
+                        write_stderr(Messages::OUTPUT_LIMIT + "\n")
+                    elif failure == GeneratorError.OutputWriteFailed:
+                        write_stderr(Messages::WRITE_FAILED + "\n")
+                    elif failure == GeneratorError.InputReadFailed:
+                        write_stderr(Messages::INPUT_FAILED + "\n")
+                    else:
+                        write_stderr(Messages::INVALID_DATA + "\n")
+                    return 1i64
+            # Complete parsing/rendering precedes any destination mutation.
+            try create_directories(output_path.parent()) else err:
+                write_stderr(Messages::WRITE_FAILED + "\n")
+                return 1i64
+            written: usize = try write_text(output_path, generated.contents) else err:
+                write_stderr(Messages::WRITE_FAILED + "\n")
+                return 1i64
+            print("generated " + f"{output_path}" + ": " + f"{generated.note_count}" + " notes, " + f"{generated.chord_count}" + " chords, " + f"{generated.degree_count}" + " degrees, " + f"{generated.scale_count}" + " scales")
+            _ = written
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Write, File.Read, File.Write, Directory.Write, Unsafe.PointerCast]:
+    return EsChordBrainDatabaseGenerator::run(arguments)
