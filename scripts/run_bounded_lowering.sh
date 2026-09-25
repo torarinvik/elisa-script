@@ -146,9 +146,8 @@ process_group_for_pid() {
 
 process_group_has_processes() {
     process_group_id="$1"
-    process_table="$(ps -axo pgid=,stat= 2>/dev/null)" || return 0
-    [ -n "$process_table" ] || return 0
-    printf '%s\n' "$process_table" | awk -v group="$process_group_id" '$1 == group && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+    process_table="$( { ps -axo pgid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 0
+    printf '%s\n' "$process_table" | validation_process_group_has_live_members_from_snapshot "$process_group_id" "$process_snapshot_row_limit"
 }
 
 compiler_process_state() {

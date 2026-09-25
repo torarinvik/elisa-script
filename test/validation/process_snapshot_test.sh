@@ -42,6 +42,18 @@ assert_parser_failure() {
     [ "$parser_status" -eq 2 ] || fail "$description returned $parser_status instead of fail-closed status 2"
 }
 
+assert_group_liveness_status() {
+    liveness_input="$1"
+    expected_status="$2"
+    description="$3"
+    if printf '%s\n' "$liveness_input" | validation_process_group_has_live_members_from_snapshot 10 2; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_equal "$expected_status" "$actual_status" "$description"
+}
+
 owned_group="$(validation_owned_process_group_id 301 301 100)"
 assert_equal 301 "$owned_group" 'session-leader PGID is safe to signal'
 for rejected_group_case in '301 100 100' '301 302 100' '0 0 100' '301 bad 100'; do
@@ -50,6 +62,24 @@ for rejected_group_case in '301 100 100' '301 302 100' '0 0 100' '301 bad 100'; 
         fail "unsafe process group accepted: $rejected_group_case -> $owned_group"
     fi
 done
+
+assert_group_liveness_status '10 S
+__ELISASCRIPT_PS_STATUS__ 0' 0 'live member keeps group leader unreaped'
+assert_group_liveness_status '10 Z
+__ELISASCRIPT_PS_STATUS__ 0' 1 'zombie-only group permits leader release'
+assert_group_liveness_status '11 R
+__ELISASCRIPT_PS_STATUS__ 0' 1 'unrelated group does not retain leader'
+assert_group_liveness_status '10 S
+__ELISASCRIPT_PS_STATUS__ 1' 0 'failed liveness snapshot conservatively retains leader'
+assert_group_liveness_status '10 S' 0 'missing liveness sentinel conservatively retains leader'
+assert_group_liveness_status '10
+__ELISASCRIPT_PS_STATUS__ 0' 0 'malformed liveness row conservatively retains leader'
+assert_group_liveness_status '10 S unexpected
+__ELISASCRIPT_PS_STATUS__ 0' 0 'extra liveness fields conservatively retain leader'
+assert_group_liveness_status '10 S
+11 R
+12 R
+__ELISASCRIPT_PS_STATUS__ 0' 0 'oversized liveness snapshot conservatively retains leader'
 
 tree_snapshot='10 1
 11 10
@@ -66,6 +96,8 @@ assert_equal '' "$missing_root" 'exited process root is an empty snapshot'
 assert_parser_failure '10 1
 11 x
 __ELISASCRIPT_PS_STATUS__ 0' tree 'malformed descendant row'
+assert_parser_failure '10 1 extra
+__ELISASCRIPT_PS_STATUS__ 0' tree 'extra descendant fields'
 assert_parser_failure '10 1
 11 10
 12 10
@@ -90,6 +122,8 @@ assert_equal 20 "$orphaned_group_rss" 'reparented process retained in the owned 
 
 assert_parser_failure '10 1 10 bad
 __ELISASCRIPT_PS_STATUS__ 0' rss 'malformed RSS row'
+assert_parser_failure '10 1 10 30 extra
+__ELISASCRIPT_PS_STATUS__ 0' rss 'extra RSS fields'
 assert_parser_failure '10 1 10 30
 11 10 10 40
 12 11 12 50
@@ -98,4 +132,4 @@ assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 1' rss 'failed RSS process-table command'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'

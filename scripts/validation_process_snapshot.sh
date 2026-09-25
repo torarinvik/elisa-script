@@ -20,17 +20,40 @@ validation_owned_process_group_id() {
     printf '%s\n' "$validation_group_candidate"
 }
 
-validation_process_tree_pids_from_snapshot() {
-    awk -v root="$1" -v row_limit="$2" '
+validation_process_group_has_live_members_from_snapshot() {
+    awk -v group="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
-            if (status_seen || $2 !~ /^[0-9]+$/) malformed = 1
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
             status_seen = 1
             if ($2 != 0) ps_failed = 1
             next
         }
         ++process_rows > row_limit { overflow = 1; exit }
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ { malformed = 1; exit }
+        $1 !~ /^[0-9]+$/ || NF != 2 || $2 == "" { malformed = 1; exit }
+        {
+            if ($1 == group && $2 !~ /^Z/) found = 1
+        }
+        END {
+            # Success means either a live member was found or the snapshot was
+            # uncertain. Only a valid complete snapshot can authorize release.
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1 || found) exit 0
+            exit 1
+        }
+    '
+}
+
+validation_process_tree_pids_from_snapshot() {
+    awk -v root="$1" -v row_limit="$2" '
+        NR > row_limit + 1 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" {
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
+            status_seen = 1
+            if ($2 != 0) ps_failed = 1
+            next
+        }
+        ++process_rows > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || NF != 2 { malformed = 1; exit }
         {
             present[$1] = 1
             children[$2] = children[$2] " " $1
@@ -63,13 +86,13 @@ validation_process_group_rss_from_snapshot() {
     awk -v group="$1" -v root="$2" -v row_limit="$3" '
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
-            if (status_seen || $2 !~ /^[0-9]+$/) malformed = 1
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
             status_seen = 1
             if ($2 != 0) ps_failed = 1
             next
         }
         ++process_rows > row_limit { overflow = 1; exit }
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ { malformed = 1; exit }
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || NF != 4 { malformed = 1; exit }
         {
             pid = $1
             process_group[$1] = $3
