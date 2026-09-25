@@ -493,7 +493,8 @@ returns the owned batch atomically. Each batch is capped at 4,096 rows,
 `DATA_MAX_FIELDS` output values (including `Missing`), and
 `DATA_MAX_INPUT_BYTES` aggregate retained text payload. Empty ranges are
 allowed at a valid row boundary; out-of-range requests fail rather than
-truncate.
+truncate. A zero-byte source with `header: true` has no header and zero data
+rows: zero-row batches succeed, while record lookup reports `RowIndexInvalid`.
 
 `EsSchemaToml` binds a resolved typed TOML configuration to the common
 `SchemaDescriptor`. It enforces required fields, aliases, unknown-key policy,
