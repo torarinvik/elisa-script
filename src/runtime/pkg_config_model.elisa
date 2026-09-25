@@ -5,6 +5,7 @@
 # executor later runs the ordered ProcessCommand values.
 
 module EsPkgConfig:
+    using EsBuild
     using EsProcess
 
     public:
@@ -48,6 +49,7 @@ module EsPkgConfig:
             InvalidVersion
             InvalidVersionOperator
             InvalidProcessCommand
+            InvalidQueryPlan
 
 
     private:
@@ -125,7 +127,71 @@ module EsPkgConfig:
             return command
 
 
+        def pkg_config_query_arguments_match(actual: darray[sview], expected: darray[sview]) -> bool:
+            return false if actual.count != expected.count
+            for index in 0..<actual.count |actual, expected|:
+                return false if actual[index] != expected[index]
+            return true
+
+
+        def pkg_config_query_command_matches(command: ProcessCommand, executable: sview, working_directory: sview, environment: darray[sview], arguments: darray[sview]) -> bool:
+            return false if command.executable != executable or command.working_directory != working_directory
+            return false if command.environment != environment
+            return false if command.environment_mode != (ProcessEnvironmentMode.Clear if environment.count == 0 else ProcessEnvironmentMode.Replace)
+            return false if command.stdin_mode != ProcessStdioMode.Null or command.stdout_mode != ProcessStdioMode.Capture or command.stderr_mode != ProcessStdioMode.Capture
+            return false if command.timeout_micros != Limits::QUERY_TIMEOUT_MICROS or command.capture_output_limit_bytes != Limits::CAPTURE_OUTPUT_BYTES or command.failure_mode != ProcessFailureMode.Check
+            return pkg_config_query_arguments_match(command.arguments, arguments)
+
+
     public:
+        # Admit externally supplied plans before deriving executable graph
+        # nodes. This prevents a forged/mutated plan from being mistaken for a
+        # validated pkg-config request.
+        def pkg_config_query_plan_valid(plan: PkgConfigQueryPlan) -> bool error[PkgConfigError] can[Memory.Allocate, Abort.Panic]:
+            return false if sview_len(plan.exists.executable) == 0 or sview_len(plan.exists.executable) > Limits::EXECUTABLE_BYTES or sview_contains_byte(plan.exists.executable, 0) or not path_is_absolute(path(plan.exists.executable))
+            return false if sview_len(plan.exists.working_directory) == 0 or sview_len(plan.exists.working_directory) > Limits::WORKING_DIRECTORY_BYTES or sview_contains_byte(plan.exists.working_directory, 0) or not path_is_absolute(path(plan.exists.working_directory))
+            _ = try pkg_config_requirement_valid(plan.requirement)
+            spec: sview = try pkg_config_requirement_spec(plan.requirement)
+            environment: darray[sview] = plan.exists.environment
+            exists_arguments: darray[sview] = ["--print-errors", "--exists", spec]
+            version_arguments: darray[sview] = ["--modversion", plan.requirement.name]
+            compile_arguments: darray[sview] = ["--cflags", plan.requirement.name]
+            link_arguments: darray[sview] = ["--libs", plan.requirement.name]
+            if plan.requirement.static_linking:
+                link_arguments <- ["--static", "--libs", plan.requirement.name]
+            return false if not pkg_config_query_command_matches(plan.exists, plan.exists.executable, plan.exists.working_directory, environment, exists_arguments)
+            return false if not pkg_config_query_command_matches(plan.version, plan.exists.executable, plan.exists.working_directory, environment, version_arguments)
+            return false if not pkg_config_query_command_matches(plan.compile_flags, plan.exists.executable, plan.exists.working_directory, environment, compile_arguments)
+            return false if not pkg_config_query_command_matches(plan.link_flags, plan.exists.executable, plan.exists.working_directory, environment, link_arguments)
+            return true
+
+
+        # Bind the four commands into a serial fail-fast build graph. Version,
+        # cflags, and libs are never queried if the required package predicate
+        # fails, and no later query can race or obscure which output it owns.
+        def pkg_config_query_graph(plan: PkgConfigQueryPlan) -> BuildGraph error[PkgConfigError] can[Memory.Allocate, Abort.Panic]:
+            plan_valid: bool = try pkg_config_query_plan_valid(plan)
+            raise PkgConfigError.InvalidQueryPlan if not plan_valid
+            prefix: sview = "pkg_config:" + plan.requirement.name + ":"
+            graph: mutable BuildGraph = BuildGraph{
+                nodes: [
+                    BuildNode{name: prefix + "exists", command: plan.exists, fingerprint: 1},
+                    BuildNode{name: prefix + "version", command: plan.version, dependencies: [0], fingerprint: 2},
+                    BuildNode{name: prefix + "compile_flags", command: plan.compile_flags, dependencies: [1], fingerprint: 3},
+                    BuildNode{name: prefix + "link_flags", command: plan.link_flags, dependencies: [2], fingerprint: 4}
+                ],
+                max_parallel: 1
+            }
+            valid: mutable bool = false
+            catch validate_build_graph(graph):
+                ok result:
+                    valid <- result
+                error failure:
+                    raise PkgConfigError.InvalidQueryPlan
+            raise PkgConfigError.InvalidQueryPlan if not valid
+            return graph
+
+
         # Create a four-command ordered query. The Exists command carries the
         # version spec as one argv element, so package/version syntax cannot
         # become shell syntax. Hosts must stop if Exists fails before using the
