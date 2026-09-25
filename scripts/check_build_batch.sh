@@ -29,6 +29,7 @@ for declaration in \
     'def build_incremental_batch_session_for_recipes(' \
     'def validate_build_batch_session(' \
     'def begin_build_batch(' \
+    'def build_batch_execution_result(' \
     'def dispatch_build_batch_ready(' \
     'def report_build_batch_result(' \
     'def report_build_batch_result_with_outputs(' \
@@ -113,6 +114,9 @@ for fixture_case in \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
     'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
+    'build_batch_execution_result(session)' \
+    'commit_build_incremental_execution(execution, session.scheduler.graph, previous, signed.recipes, observations)' \
+    'execution.nodes[0].cache_hit and execution.nodes[1].cache_hit' \
     'cancelled_session.scheduler.cache.count == 2 and cancelled_session.scheduler.cache_hits == 0' \
     'cancelled_session.processes.jobs[0].state == ProcessBatchJobState.Cancelled' \
     'cancelled_session.processes.jobs[1].state == ProcessBatchJobState.Cancelled' \
