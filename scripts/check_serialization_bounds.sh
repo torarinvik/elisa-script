@@ -105,6 +105,28 @@ rg -q 'PublishOutcomeUnknown\(path: cstr\)' "$artifact_cache"
 rg -q 'rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'PublishOutcomeUnknown\(destination_path\) if rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'EIO: i32 = 5' "$artifact_cache"
+if ! awk '
+    /def artifact_cache_publish_file\(/ { in_publish_file = 1 }
+    /def artifact_cache_publish_payload_at\(/ { in_publish_file = 0 }
+    in_publish_file && /PublishOutcomeUnknown\(destination_path\)/ { unknown_line = NR }
+    in_publish_file && /_ = remove_file\(staging_path\)/ { cleanup_line = NR }
+    END { exit !(unknown_line > 0 && cleanup_line > unknown_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: path-based artifact publication cleans staging before classifying ambiguous rename\n' >&2
+    exit 1
+fi
+if ! awk '
+    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
+    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
+    in_payload_publish && /elif not published:/ { in_uncertain_branch = 1 }
+    in_payload_publish && in_uncertain_branch && /PublishOutcomeUnknown\(destination_name\)/ { unknown_line = NR }
+    in_payload_publish && in_uncertain_branch && /elisascript_posix_unlinkat_leaf/ { cleanup_line = NR }
+    in_payload_publish && in_uncertain_branch && /raise ArtifactCacheIoError\.PublishFailed\(destination_name\)/ { in_uncertain_branch = 0 }
+    END { exit !(unknown_line > 0 && cleanup_line > unknown_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: descriptor-relative artifact publication cleans staging before classifying ambiguous rename\n' >&2
+    exit 1
+fi
 rg -q 'ArtifactCacheIoError\.DirectorySyncFailed' "$artifact_cache"
 rg -q 'ArtifactCacheIoError\.PathTooLong' "$artifact_cache"
 rg -q 'Limits::PATH_BYTES' "$artifact_cache"
