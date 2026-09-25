@@ -11,6 +11,7 @@ module EsMinimalNativeBuildParity:
         const module Limits:
             PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
             C_COMPILER: sview = "/usr/bin/cc"
+            MKFIFO: sview = "/usr/bin/mkfifo"
             CONTROLLED_SYSTEM_PATH: sview = "/usr/bin:/bin:/usr/sbin:/sbin"
             TIMEOUT_STEPS: u64 = 60000
             MAX_PROCESS_OUTPUT_BYTES: u64 = 262144
@@ -24,6 +25,7 @@ module EsMinimalNativeBuildParity:
             ctest: sview
             launcher: sview
             cmake_directory: sview
+            mkfifo: sview
 
 
         def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -52,13 +54,14 @@ module EsMinimalNativeBuildParity:
                 ""
             cmake: sview = canonical_external_file(cmake_argument, repository_root)
             launcher: sview = canonical_external_file(launcher_argument, repository_root)
+            mkfifo: sview = canonical_external_file(Limits::MKFIFO, repository_root)
             pinned_launcher: sview = canonical_external_file(Limits::PINNED_COMPILER, repository_root)
-            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: ""} if cmake == "" or launcher == "" or launcher != pinned_launcher or cmake == launcher
+            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: "", mkfifo: ""} if cmake == "" or launcher == "" or mkfifo == "" or launcher != pinned_launcher or cmake == launcher
             cmake_directory: sview = f"{path(cmake).parent()}"
             ctest_path: Path = path(cmake_directory).joinpath("ctest")
             ctest: sview = canonical_external_file(f"{ctest_path}", repository_root)
-            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: ""} if ctest == ""
-            return Tools{cmake: cmake, ctest: ctest, launcher: launcher, cmake_directory: cmake_directory}
+            return Tools{cmake: "", ctest: "", launcher: "", cmake_directory: "", mkfifo: ""} if ctest == ""
+            return Tools{cmake: cmake, ctest: ctest, launcher: launcher, cmake_directory: cmake_directory, mkfifo: mkfifo}
 
 
         def controlled_environment(cmake_directory: sview) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
@@ -508,6 +511,56 @@ module EsMinimalNativeBuildParity:
             remove_main_object_backup_arguments: darray[sview] = ["-E", "rm", "-f", f"{main_object_backup}"]
             if not restored_main_object_cache_hit or not run_checked_process(tools.cmake, remove_main_object_backup_arguments, repository_text, "remove-main-object-backup", environment):
                 print("minimal native parity: cached object did not recover after launch refusal")
+                _ = remove_workspace(workspace)
+                return false
+
+            remove_main_for_fifo: darray[sview] = ["-E", "rm", "-f", f"{candidate_main_object}"]
+            fifo_preparation: bool = run_checked_process(tools.cmake, remove_main_for_fifo, repository_text, "prepare-dirty-fifo-output", environment)
+            fifo_preparation <- fifo_preparation and run_checked_process(tools.mkfifo, [f"{candidate_main_object}"], repository_text, "create-dirty-fifo-output", environment)
+            cache_before_dirty_fifo_refusal: darray[u8] = try read_bytes(candidate_cache) else err:
+                print("minimal native parity: could not snapshot cache before dirty-output FIFO refusal")
+                _ = remove_workspace(workspace)
+                return false
+            dirty_fifo_refused: mutable bool = false
+            if fifo_preparation:
+                catch run_process(tools.launcher, touch_main_arguments, repository_text, "elisascript-refuses-dirty-output-fifo-before-launch", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                    ok dirty_fifo_run:
+                        dirty_fifo_refused <- dirty_fifo_run.outcome == DifferentialRunOutcome.Completed and dirty_fifo_run.exit_status == 1 and dirty_fifo_run.stdout == "" and dirty_fifo_run.stderr == "minimal native build: build graph execution failed before completion\n"
+                    error failure:
+                        dirty_fifo_refused <- false
+            fifo_still_present: bool = false
+            if dirty_fifo_refused:
+                catch run_process(tools.mkfifo, [f"{candidate_main_object}"], repository_text, "confirm-dirty-fifo-output-preserved", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                    ok duplicate_fifo_run:
+                        fifo_still_present <- duplicate_fifo_run.outcome == DifferentialRunOutcome.Completed and duplicate_fifo_run.exit_status != 0
+                    error failure:
+                        fifo_still_present <- false
+            cache_after_dirty_fifo_refusal: darray[u8] = try read_bytes(candidate_cache) else err:
+                print("minimal native parity: dirty-output FIFO refusal removed the prior cache")
+                _ = remove_workspace(workspace)
+                return false
+            if not fifo_preparation or not dirty_fifo_refused or not fifo_still_present or is_file(touch_launch_marker) or not byte_arrays_equal(cache_before_dirty_fifo_refusal, cache_after_dirty_fifo_refusal):
+                print("minimal native parity: dirty cached-output FIFO was not refused and preserved before command launch")
+                _ = remove_workspace(workspace)
+                return false
+            if not run_checked_process(tools.cmake, remove_main_for_fifo, repository_text, "remove-preserved-dirty-fifo-output", environment):
+                print("minimal native parity: could not remove preserved dirty FIFO output")
+                _ = remove_workspace(workspace)
+                return false
+            fifo_recovery_matches: mutable bool = false
+            catch run_process(tools.launcher, candidate_variant_arguments, repository_text, "elisascript-recovers-after-dirty-fifo-refusal", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                ok fifo_recovery_run:
+                    fifo_recovery_matches <- fifo_recovery_run.outcome == DifferentialRunOutcome.Completed and fifo_recovery_run.exit_status == 0 and fifo_recovery_run.stdout == "build_cache=rebuilt\nrebuilt=compile-main\nrebuilt=minimal-native\n" and fifo_recovery_run.stderr == ""
+                error failure:
+                    fifo_recovery_matches <- false
+            fifo_recovery_cache_hit: mutable bool = false
+            catch run_process(tools.launcher, candidate_variant_arguments, repository_text, "elisascript-cache-hit-after-dirty-fifo-recovery", environment, Limits::MAX_PROCESS_OUTPUT_BYTES):
+                ok fifo_recovery_noop:
+                    fifo_recovery_cache_hit <- fifo_recovery_noop.outcome == DifferentialRunOutcome.Completed and fifo_recovery_noop.exit_status == 0 and fifo_recovery_noop.stdout == "build_cache=up_to_date\n" and fifo_recovery_noop.stderr == ""
+                error failure:
+                    fifo_recovery_cache_hit <- false
+            if not fifo_recovery_matches or not fifo_recovery_cache_hit:
+                print("minimal native parity: build did not recover after dirty FIFO refusal")
                 _ = remove_workspace(workspace)
                 return false
 
