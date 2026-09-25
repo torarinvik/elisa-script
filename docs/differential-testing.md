@@ -1230,7 +1230,9 @@ retains its fingerprint and observed kind as `Abandoned`; that terminal record
 does not change the active timeout and cannot be confused with acceptance or
 rejection. Validation also requires the pending slot to be its canonical empty
 value whenever the state has no pending attempt, so stale candidate data cannot
-hide behind a false `has_pending` flag. It checks attempt ordinals, each attempt
+hide behind a false `has_pending` flag. A `Planned` session must also be pristine:
+its active timeout equals the initial budget and it contains no prior attempts.
+It checks attempt ordinals, each attempt
 against the active accepted budget, decision/outcome consistency, and the final
 budget against the last accepted attempt. Completion still relies on
 the host's explicit search-exhausted declaration; this model cannot prove that

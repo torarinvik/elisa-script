@@ -1578,7 +1578,9 @@ differential fixture, documentation, and check_differential_timeout_shrink.sh
 audit are static evidence; host process control and fresh-world reruns remain
 open. Validation also requires the inactive pending slot to be canonical-empty,
 rejecting stale candidate evidence hidden behind `has_pending == false`; its
-forged-session fixture and source-audit assertion are unexecuted.
+forged-session fixture and source-audit assertion are unexecuted. It also
+requires `Planned` sessions to start at their initial timeout with an empty
+attempt history, rejecting forged pre-populated histories before `Begin`.
 
 The A01 builtin-surface audit now also has a bounded Elisascript candidate in
 `scripts/check_builtin_surface.elisascript`, plus positive, missing-registry-row,
