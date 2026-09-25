@@ -105,6 +105,31 @@ rg -q 'PublishOutcomeUnknown\(path: cstr\)' "$artifact_cache"
 rg -q 'rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'PublishOutcomeUnknown\(destination_path\) if rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'EIO: i32 = 5' "$artifact_cache"
+rg -q 'struct ArtifactCacheStagingIdentity:' "$artifact_cache"
+rg -q 'StagingIdentityChanged\(path: cstr\)' "$artifact_cache"
+rg -q 'def artifact_cache_staging_name_matches_at\(' "$artifact_cache"
+rg -q 'elisascript_posix_fstat\(descriptor, staging_info\)' "$artifact_cache"
+rg -q 'artifact_cache_staging_name_matches_at\(directory_fd, destination_name, staging_identity\)' "$artifact_cache"
+if ! awk '
+    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
+    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
+    in_payload_publish && /StagingIdentityChanged\(staging_name\)/ { identity_guard_line = NR }
+    in_payload_publish && /catch elisascript_posix_renameat\(/ { rename_line = NR }
+    END { exit !(identity_guard_line > 0 && rename_line > identity_guard_line) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: staging identity is not revalidated before rename\n' >&2
+    exit 1
+fi
+if ! awk '
+    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
+    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
+    in_payload_publish && /if artifact_cache_staging_name_matches_at\(directory_fd, staging_name, staging_identity\)/ { cleanup_guard = 1; guards++ }
+    in_payload_publish && cleanup_guard && /catch elisascript_posix_unlinkat_leaf/ { cleanups++; cleanup_guard = 0 }
+    END { exit !(guards == 2 && cleanups == 2) }
+' "$artifact_cache"; then
+    printf 'serialization bounds audit: staging cleanup lacks identity guards\n' >&2
+    exit 1
+fi
 if ! awk '
     /def artifact_cache_publish_file\(/ { in_publish_file = 1 }
     /def artifact_cache_publish_payload_at\(/ { in_publish_file = 0 }
