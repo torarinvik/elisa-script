@@ -100,6 +100,11 @@ compare generated-header bytes against the selected input and recover to the
 checked-in variant template with only the affected branch rebuilt. This is
 source-only and unverified.
 
+After each same-path source and generated-input update, a repeated invocation
+must be an up-to-date Elisascript cache hit and a CMake no-op with no compile or
+link action. This verifies cache stability after successful invalidation, not
+only the first rebuild frontier; these checks are source-only and unverified.
+
 To prove the dirty-output guard runs before process dispatch, the harness backs
 up the cached main object, overwrites that output with the default header, and
 invokes a compile recipe whose command would create a marker with `/usr/bin/touch`.
