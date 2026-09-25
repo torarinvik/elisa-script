@@ -77,7 +77,11 @@ up the cached main object, overwrites that output with the default header, and
 invokes a compile recipe whose command would create a marker with `/usr/bin/touch`.
 The attempt must fail while preserving the modified object and cache and leaving
 the marker absent. Restoring the exact cached object must make the ordinary
-variant build an up-to-date cache hit. This is source-only coverage.
+variant build an up-to-date cache hit. The same preflight also replaces the
+cached object with a symlink to a sentinel and requires refusal before the
+marker command runs, with both the symlink target and cache preserved. It then
+restores the exact cached object and requires the cache hit. These are
+source-only checks.
 
 The harness then adds a declared `obsolete-config-copy` target whose output is
 copied from the generated header. Switching back to the graph without that
