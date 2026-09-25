@@ -102,6 +102,8 @@ for fixture_case in \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
     'session.processes.jobs[0].state == ProcessBatchJobState.Skipped' \
+    'dependencies: ["cached-object"]' \
+    'session.scheduler.ready_queue.count == 1 and session.scheduler.ready_queue[0] == 1' \
     'launches.count == 1 and launches[0].node_index == 1' \
     'traversal_rejected <- failure == BuildIncrementalError.InvalidPath' \
     'first_wave[0].node_index == 0 and first_wave[1].node_index == 2' \
