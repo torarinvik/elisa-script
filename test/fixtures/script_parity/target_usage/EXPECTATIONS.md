@@ -22,9 +22,12 @@ build routes must produce an executable that exits 0, writes exactly
 `build.elisascript` resolves the typed `BuildUsageTarget` graph, materializes
 resolved compile/link entries with the shared owned argv adapters, creates raw
 argv for archiver/run actions, and submits all seven steps through the shared
-`BuildUsageGraphPlan` with declared outputs. Each child gets an explicit
-replacement environment. It requires an existing absolute empty non-symlink
-build directory outside the repository. No command is passed through a shell.
+`BuildUsageGraphPlan` with declared outputs. Archive, link, and run children
+use an explicit replacement environment. Compiler children inherit the
+controlled environment supplied by the parity launcher because the standard
+compilation database cannot represent a replaced environment. It requires an
+existing absolute empty non-symlink build directory outside the repository.
+No command is passed through a shell.
 Before execution it selects the three compiler actions from that same validated
 plan, renders their exact tokenized argv into bounded `compile_commands.json`
 records, and writes the database into the fresh build directory. Archive, link,
