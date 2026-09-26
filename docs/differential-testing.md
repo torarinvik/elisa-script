@@ -789,7 +789,15 @@ bounded byte document and exposes ordered, acknowledged chunks for a host
 writer: a short write leaves the chunk pending, and failure/cancellation are
 terminal typed states. `EsDifferentialReportTransportPosix` supplies the
 Darwin POSIX descriptor writer with bounded EINTR retries and a write-call
-ceiling; it never closes the caller-owned descriptor. This is still a
+ceiling; it never closes the caller-owned descriptor. These limits do not
+bound time spent inside a blocking write. Pipes, terminals, and filesystems
+can stall, and a closed pipe can signal the writer. Use an independently
+supervised writer process when a report sink can block; in-process deadline
+and cancellation support are not implemented by this adapter. Qualification
+must cover a full pipe with a non-reading consumer, consumer disconnection,
+deadline expiry after a partial write, and reaping the supervised writer.
+None may produce a completed transport or a successful report-delivery claim.
+This is still a
 source-level contract; it has not been compiled or executed and is not
 acceptance evidence. `EsDifferentialReportAdapter` now recomputes the
 case-aware comparison from both captured runs before projecting the report,
