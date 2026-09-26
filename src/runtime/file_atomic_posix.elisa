@@ -73,6 +73,7 @@ module EsFileAtomicPosix:
             StageContentMismatch
             DestinationChanged
             RenameOutcomeUnknown
+            PublicationStillUncertain
             DirectorySyncFailed
             StageCleanupFailed
 
@@ -810,6 +811,67 @@ module EsFileAtomicPosix:
                     raise AtomicFilePosixError.RenameOutcomeUnknown
 
 
+        # Reconcile one ambiguous rename under the same directory lease.
+        # Only two complete identity patterns are actionable: the staged inode
+        # is at the destination with the stage name absent (published), or the
+        # original destination remains with the staged inode still at its
+        # stage name (safe to retry). Any mixed/foreign pattern stays uncertain.
+        def reconcile_atomic_file_publication(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_leaf: cstr, destination_leaf: cstr, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> AtomicFileState error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.PublishedUncertain or parent_fd < 0 or session.plan.parent_identity != parent_fd.u64() + 1u64 or not session.comparison_acknowledged or session.contents_equal or not atomic_file_posix_session_stage_identity_matches(session)
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf) or not elisascript_posix_leaf_name_valid(destination_leaf)
+            raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf) or not atomic_file_posix_path_leaf_matches(session.plan.destination_path, destination_leaf)
+            _ = try atomic_file_posix_require_directory_lease(session, parent_fd, directory_lease, lock_leaf)
+
+            parent_before: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_before) or (parent_before.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY or parent_before.device.u64() != session.stage_admission.parent_device or parent_before.inode != session.stage_admission.parent_inode
+
+            destination_first: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+            stage_first: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+            _ = try atomic_file_posix_require_directory_lease(session, parent_fd, directory_lease, lock_leaf)
+
+            published_pattern: bool = atomic_file_posix_identity_equal(destination_first.destination, session.staged_identity) and destination_first.link_count == 1 and destination_first.private_mode and not stage_first.destination.present
+            not_published_pattern: bool = atomic_file_posix_identity_equal(destination_first.destination, session.destination_snapshot) and atomic_file_posix_identity_equal(stage_first.destination, session.staged_identity) and stage_first.link_count == 1 and stage_first.private_mode
+
+            if published_pattern:
+                if session.plan.require_directory_sync and not session.directory_sync_acknowledged:
+                    if not atomic_file_posix_sync_descriptor(parent_fd):
+                        raise AtomicFilePosixError.DirectorySyncFailed
+                    _ = try atomic_file_posix_require_directory_lease(session, parent_fd, directory_lease, lock_leaf)
+                    catch advance_atomic_file(session, AtomicFileEvent.DirectorySync):
+                        ok state:
+                            _ = state
+                        error failure:
+                            raise AtomicFilePosixError.DirectorySyncFailed
+
+                destination_final: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+                stage_final: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+                raise AtomicFilePosixError.PublicationStillUncertain if not atomic_file_posix_identity_equal(destination_first.destination, destination_final.destination) or destination_final.link_count != 1 or not destination_final.private_mode or stage_final.destination.present
+                _ = try atomic_file_posix_require_directory_lease(session, parent_fd, directory_lease, lock_leaf)
+                catch advance_atomic_file(session, AtomicFileEvent.ResolvePublished, identity: destination_final.destination):
+                    ok state:
+                        return state
+                    error failure:
+                        raise AtomicFilePosixError.PublicationStillUncertain
+
+            if not_published_pattern:
+                not_published_destination_final: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, destination_leaf, EsFileReadAtPosix::Limits::MAX_BYTES)
+                not_published_stage_final: AtomicFilePosixObservation = try observe_atomic_file_at(a, parent_fd, stage_leaf, session.plan.max_content_bytes)
+                raise AtomicFilePosixError.PublicationStillUncertain if not atomic_file_posix_identity_equal(destination_first.destination, not_published_destination_final.destination) or not atomic_file_posix_identity_equal(stage_first.destination, not_published_stage_final.destination) or not_published_stage_final.link_count != 1 or not not_published_stage_final.private_mode
+                _ = try atomic_file_posix_require_directory_lease(session, parent_fd, directory_lease, lock_leaf)
+                catch advance_atomic_file(session, AtomicFileEvent.ResolveNotPublished, identity: not_published_destination_final.destination):
+                    ok state:
+                        return state
+                    error failure:
+                        raise AtomicFilePosixError.PublicationStillUncertain
+
+            raise AtomicFilePosixError.PublicationStillUncertain
+
+
         # Remove an unsealed partial stage after a failed or cancelled write.
         # The caller retains ownership of any open stage descriptor; this
         # validates the exclusive lease and never hashes partial data.
@@ -904,14 +966,16 @@ module EsFileAtomicPosix:
         # Remove a closed staging entry only when its current no-follow
         # identity still matches the sealed session receipt. The exclusive
         # directory lease is checked before unlink and acknowledgement; an
-        # already-absent stage is reconciled as completed cleanup.
+        # already-absent stage is reconciled as completed cleanup. An
+        # ambiguous publication must use the reconciliation API; deleting its
+        # remaining stage could destroy the only retry candidate.
         def cleanup_atomic_file_stage(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_leaf: cstr, expected: AtomicFilePosixStageProof, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> AtomicFileState error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             catch validate_atomic_file_session(session):
                 ok:
                     pass
                 error failure:
                     raise AtomicFilePosixError.StageNotReady
-            cleanup_state: bool = session.state == AtomicFileState.UnchangedPendingCleanup or session.state == AtomicFileState.FailedPendingCleanup or session.state == AtomicFileState.CancelledPendingCleanup or session.state == AtomicFileState.RolledBackPendingCleanup or session.state == AtomicFileState.PublishedUncertain
+            cleanup_state: bool = session.state == AtomicFileState.UnchangedPendingCleanup or session.state == AtomicFileState.FailedPendingCleanup or session.state == AtomicFileState.CancelledPendingCleanup or session.state == AtomicFileState.RolledBackPendingCleanup
             raise AtomicFilePosixError.StageNotReady if not cleanup_state or not session.staged_identity.observed or not session.staged_identity.present or parent_fd < 0 or not atomic_file_posix_session_stage_identity_matches(session)
             raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf)
             raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf)

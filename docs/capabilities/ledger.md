@@ -1597,8 +1597,10 @@ validates the published identity and supports sealed/unsealed cleanup. The
 focused IR/model fixtures, namespace inclusion, documentation, and
 check_file_atomic.sh audit are static evidence only. Production stage-creation
 adoption, complete descriptor-owner recovery after failures, cross-platform
-lease adapters, restore and uncertain-publication reconciliation, crash
-recovery, production callers, and executed platform-race fixtures remain open.
+lease adapters, restore, crash recovery, production callers, and executed
+platform-race fixtures remain open. Ambiguous publication now has a
+source-only POSIX reconciliation path; runtime races and crash behavior remain
+unverified.
 The POSIX adapter now requires `FileLockPosixLease` on every mutating entrypoint
 and revalidates its exclusive host lock at staging, comparison, commit, and
 cleanup boundaries; this remains source-only and is not runtime evidence.

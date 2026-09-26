@@ -44,6 +44,8 @@ module EsFileAtomic:
             Commit
             CommitAck
             PublishUncertain
+            ResolvePublished
+            ResolveNotPublished
             BeginRestore
             RestoreAck
             CleanupAck
@@ -132,6 +134,8 @@ module EsFileAtomic:
             PublishOutcomeUnknown
             RestoreNotReady
             RestoreNotProven
+            ReconciliationNotReady
+            ReconciliationNotProven
             CleanupNotReady
             CancelNotReady
             InvalidTransition
@@ -143,7 +147,7 @@ module EsFileAtomic:
 
 
         def atomic_file_event_valid(event: AtomicFileEvent) -> bool:
-            return event in {AtomicFileEvent.Begin, AtomicFileEvent.Append, AtomicFileEvent.StageReady, AtomicFileEvent.Compare, AtomicFileEvent.DirectorySync, AtomicFileEvent.Commit, AtomicFileEvent.CommitAck, AtomicFileEvent.PublishUncertain, AtomicFileEvent.BeginRestore, AtomicFileEvent.RestoreAck, AtomicFileEvent.CleanupAck, AtomicFileEvent.Fail, AtomicFileEvent.Cancel}
+            return event in {AtomicFileEvent.Begin, AtomicFileEvent.Append, AtomicFileEvent.StageReady, AtomicFileEvent.Compare, AtomicFileEvent.DirectorySync, AtomicFileEvent.Commit, AtomicFileEvent.CommitAck, AtomicFileEvent.PublishUncertain, AtomicFileEvent.ResolvePublished, AtomicFileEvent.ResolveNotPublished, AtomicFileEvent.BeginRestore, AtomicFileEvent.RestoreAck, AtomicFileEvent.CleanupAck, AtomicFileEvent.Fail, AtomicFileEvent.Cancel}
 
 
         def atomic_file_identity_is_default(identity: AtomicFileIdentity) -> bool:
@@ -168,7 +172,7 @@ module EsFileAtomic:
                 return not exact_contents_equal and appended_bytes == 0
             if event == AtomicFileEvent.Compare:
                 return appended_bytes == 0
-            if event == AtomicFileEvent.CommitAck or event == AtomicFileEvent.BeginRestore or event == AtomicFileEvent.RestoreAck:
+            if event == AtomicFileEvent.CommitAck or event == AtomicFileEvent.ResolvePublished or event == AtomicFileEvent.ResolveNotPublished or event == AtomicFileEvent.BeginRestore or event == AtomicFileEvent.RestoreAck:
                 return not exact_contents_equal and appended_bytes == 0
             return atomic_file_identity_is_default(identity) and not exact_contents_equal and appended_bytes == 0
 
@@ -317,6 +321,8 @@ module EsFileAtomic:
                 raise AtomicFileError.InvalidState if session.plan.require_directory_sync and not session.directory_sync_acknowledged
             elif session.state == AtomicFileState.PublishedUncertain:
                 raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or session.restore_acknowledged
+                raise AtomicFileError.InvalidState if session.commit_acknowledged and not session.published_identity.observed
+                raise AtomicFileError.InvalidState if not session.commit_acknowledged and session.published_identity.observed
             elif session.state == AtomicFileState.Restoring:
                 raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.comparison_acknowledged or session.contents_equal or session.restore_acknowledged
             elif session.state == AtomicFileState.RolledBackPendingCleanup:
@@ -365,11 +371,12 @@ module EsFileAtomic:
                 session.contents_equal <- exact_contents_equal
                 session.state <- AtomicFileState.UnchangedPendingCleanup if session.contents_equal
             elif event == AtomicFileEvent.DirectorySync:
-                raise AtomicFileError.DirectorySyncNotReady if session.state != AtomicFileState.Committing or not session.stage_sync_acknowledged
+                raise AtomicFileError.DirectorySyncNotReady if (session.state != AtomicFileState.Committing and session.state != AtomicFileState.PublishedUncertain) or not session.stage_sync_acknowledged
                 raise AtomicFileError.DuplicateReceipt if session.directory_sync_acknowledged
                 session.directory_sync_acknowledged <- true
             elif event == AtomicFileEvent.Commit:
                 raise AtomicFileError.CommitNotReady if session.state != AtomicFileState.Ready or not session.comparison_acknowledged or session.contents_equal
+                session.directory_sync_acknowledged <- false
                 session.state <- AtomicFileState.Committing
             elif event == AtomicFileEvent.CommitAck:
                 raise AtomicFileError.CommitAckNotReady if session.state != AtomicFileState.Committing
@@ -382,6 +389,19 @@ module EsFileAtomic:
             elif event == AtomicFileEvent.PublishUncertain:
                 raise AtomicFileError.PublishOutcomeUnknown if session.state != AtomicFileState.Committing and session.state != AtomicFileState.Committed
                 session.state <- AtomicFileState.PublishedUncertain
+            elif event == AtomicFileEvent.ResolvePublished:
+                raise AtomicFileError.ReconciliationNotReady if session.state != AtomicFileState.PublishedUncertain or session.restore_acknowledged
+                raise AtomicFileError.DirectorySyncNotReady if session.plan.require_directory_sync and not session.directory_sync_acknowledged
+                raise AtomicFileError.ReconciliationNotProven if not atomic_file_identity_valid(identity, session.plan.max_content_bytes) or not atomic_file_identity_equal(identity, session.staged_identity)
+                session.published_identity <- identity
+                session.commit_acknowledged <- true
+                session.staging_cleanup_acknowledged <- true
+                session.state <- AtomicFileState.Committed
+            elif event == AtomicFileEvent.ResolveNotPublished:
+                raise AtomicFileError.ReconciliationNotReady if session.state != AtomicFileState.PublishedUncertain or session.commit_acknowledged or session.restore_acknowledged
+                raise AtomicFileError.ReconciliationNotProven if not atomic_file_identity_valid(identity, Limits::OBSERVED_BYTES) or not atomic_file_identity_equal(identity, session.destination_snapshot)
+                session.directory_sync_acknowledged <- false
+                session.state <- AtomicFileState.Ready
             elif event == AtomicFileEvent.BeginRestore:
                 raise AtomicFileError.RestoreNotReady if session.state != AtomicFileState.PublishedUncertain and session.state != AtomicFileState.Committed
                 raise AtomicFileError.RestoreNotReady if not session.comparison_acknowledged or not session.destination_snapshot.observed
@@ -396,7 +416,7 @@ module EsFileAtomic:
                 session.state <- AtomicFileState.RolledBack if session.staging_cleanup_acknowledged else AtomicFileState.RolledBackPendingCleanup
             elif event == AtomicFileEvent.CleanupAck:
                 raise AtomicFileError.CleanupNotReady if session.staging_cleanup_acknowledged
-                raise AtomicFileError.CleanupNotReady if session.state != AtomicFileState.UnchangedPendingCleanup and session.state != AtomicFileState.FailedPendingCleanup and session.state != AtomicFileState.CancelledPendingCleanup and session.state != AtomicFileState.RolledBackPendingCleanup and session.state != AtomicFileState.PublishedUncertain
+                raise AtomicFileError.CleanupNotReady if session.state != AtomicFileState.UnchangedPendingCleanup and session.state != AtomicFileState.FailedPendingCleanup and session.state != AtomicFileState.CancelledPendingCleanup and session.state != AtomicFileState.RolledBackPendingCleanup
                 session.staging_cleanup_acknowledged <- true
                 session.state <- AtomicFileState.Unchanged if session.state == AtomicFileState.UnchangedPendingCleanup else AtomicFileState.Failed if session.state == AtomicFileState.FailedPendingCleanup else AtomicFileState.Cancelled if session.state == AtomicFileState.CancelledPendingCleanup else AtomicFileState.RolledBack if session.state == AtomicFileState.RolledBackPendingCleanup else session.state
             elif event == AtomicFileEvent.Fail:

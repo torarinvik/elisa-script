@@ -102,6 +102,14 @@ rg -q 'def cleanup_unsealed_atomic_file_stage\(' "$adapter"
 rg -q 'def atomic_file_posix_cleanup_closed_unsealed_stage\(' "$adapter"
 rg -q 'if stage_fd < 0:' "$adapter"
 rg -q 'return try atomic_file_posix_cleanup_closed_unsealed_stage\(session, parent_fd, expected, stage_leaf, directory_lease, lock_leaf\)' "$adapter"
+rg -q 'def reconcile_atomic_file_publication\(' "$adapter"
+rg -q 'AtomicFileEvent.ResolvePublished' "$adapter"
+rg -q 'AtomicFileEvent.ResolveNotPublished' "$adapter"
+rg -q 'PublicationStillUncertain' "$adapter"
+if rg -q 'cleanup_state: bool = .*AtomicFileState\.PublishedUncertain' "$adapter"; then
+    printf 'file atomic audit: uncertain publications must be reconciled before cleanup\n' >&2
+    exit 1
+fi
 rg -q 'AtomicFilePosixError\.DirectoryLeaseRequired' "$runtime_fixture"
 rg -q 'AtomicFilePosixError\.LeaseNameCollision' "$runtime_fixture"
 rg -q 'backup_lock_collision_rejected' "$runtime_fixture"
@@ -181,12 +189,16 @@ for boundary in \
     'AtomicFileEvent.StageReady' \
     'AtomicFileEvent.Compare' \
     'AtomicFileEvent.PublishUncertain' \
+    'AtomicFileEvent.ResolvePublished' \
+    'AtomicFileEvent.ResolveNotPublished' \
     'AtomicFileEvent.BeginRestore' \
     'AtomicFileEvent.RestoreAck' \
     'AtomicFileEvent.CleanupAck' \
     'AtomicFileError.DestinationChanged' \
     'AtomicFileError.EmbeddedNul' \
     'AtomicFileError.RestoreNotProven' \
+    'AtomicFileError.ReconciliationNotReady' \
+    'AtomicFileError.ReconciliationNotProven' \
     'AtomicFileError.PathCollision' \
     'AtomicFileError.ParentInvalid' \
     'identity.size != session.staged_bytes' \

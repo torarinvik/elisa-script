@@ -1978,7 +1978,8 @@ pending. When `require_directory_sync` is set, both cleanup paths sync the
 parent directory before acknowledging removal; if that sync fails after
 unlink, the session remains pending and a retry can sync the already-absent
 entry. This sealed-stage path does not cover partial or unsealed stages that
-have no sealed identity receipt or reconcile a `PublishedUncertain` destination.
+have no sealed identity receipt; `PublishedUncertain` destinations must go
+through publication reconciliation instead of cleanup.
 `cleanup_unsealed_atomic_file_stage` covers the partial-write failure path: it
 uses the captured device/inode proof plus private, single-link metadata to
 remove the stage entry without treating incomplete bytes as a sealed receipt.
@@ -2003,7 +2004,13 @@ stored. The remaining `Commit → DirectorySync → CommitAck` edges are explici
 and `CommitAck` requires a post-publication identity whose content matches the
 staged result. A
 `PublishedUncertain` state represents any post-rename result that the host
-cannot prove, and `BeginRestore → RestoreAck` reaches `RolledBack` only when
+cannot prove. `reconcile_atomic_file_publication` now has two fail-closed
+resolutions under the live exclusive lease: the staged inode at the destination
+with its stage name absent (then directory sync and `ResolvePublished`), or the
+original destination unchanged while the exact staged inode remains at its
+stage name (`ResolveNotPublished`, returning the session to `Ready`). Mixed,
+foreign, or unstable observations remain uncertain, and stage cleanup cannot
+erase an unresolved publication candidate. `BeginRestore → RestoreAck` reaches `RolledBack` only when
 the host first observes a destination identity matching the pre-commit
 snapshot or a known staged/published identity. That observed source identity is
 retained as the restore precondition; the host adapter must refuse a
