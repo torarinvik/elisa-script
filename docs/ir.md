@@ -555,8 +555,9 @@ Renderers can therefore remain format-specific without changing result
 semantics or truncating machine output silently.
 
 EsOutputRender adds the renderer-side state machine. Validation requires a
-sealed document before any renderer state is admitted; it consumes records in index order, charges JSON and XML escaping
-expansion before each chunk, accumulates every per-record component with
+sealed document before any renderer state is admitted; it consumes records in
+index order, charges each format's exact serialized byte cost before each
+chunk, accumulates every per-record component with
 checked addition, and accounts format framing bytes against the same
 document budget. It reconciles the emitted-byte total with the exact rendered
 prefix (including header and, only on completion, footer), validates
@@ -564,7 +565,14 @@ state/chunk/record accounting, and refuses completion until every record has
 been emitted. A Ready renderer also computes the full document size before
 offering any frame, so reports that cannot fit their byte budget fail before a
 host can write a partial header. Cancellation and failure are explicit
-transitions, leaving actual host writes to a bounded adapter.
+transitions, leaving actual host writes to a bounded adapter. `EsOutputHuman`
+provides deterministic status/name/duration lines, a summary of all five
+outcome counts, and optional message/stdout/stderr blocks. It escapes
+line/control bytes and invalid UTF-8 in record fields
+so captured text cannot forge report structure or inject ANSI sequences. It
+emits ANSI status colors when explicitly enabled; `Always` requires that
+capability, `Never` forbids it, and `Auto` is resolved by the host-provided
+capability flag.
 `OutputRenderFrame` exposes only the next frame kind, record index, sequence,
 and checked byte count; it does not retain
 borrowed text; only `Emit` accepts a nonzero record index. `EsOutputTransport`
@@ -572,9 +580,13 @@ wraps that renderer with a bounded
 `Planned → Streaming → Complete/Failed/Cancelling/Cancelled` hand-off. A host
 adapter must acknowledge the exact frame descriptor and full byte count before
 the renderer advances; reordered, forged, oversized, or short writes are
-rejected. Non-`Emit` events reject frame/write payloads. The transport still
-does not perform OS writes or prove the contents of bytes produced by an
-external formatter.
+rejected. Non-`Emit` events reject frame/write payloads. The transport and
+document each enforce their own byte ceiling; a transport policy may use the
+global maximum while the document sets a smaller limit. The complete report,
+each frame ceiling, and the required frame count are checked before the
+transport is returned, so streaming cannot first discover one of those caps
+after a partial report has been written. The transport still does not perform
+OS writes or prove what an OS writer actually accepted.
 `EsOutputJunit` now provides a bounded whole-document JUnit serializer for a
 sealed `OutputDocument`. It validates UTF-8/XML characters, escapes XML text
 and attributes, maps failure/error/skip outcomes, retains flaky-pass metadata,
@@ -586,12 +598,11 @@ frame APIs use a count-only writer over the same emission path, and
 `EsOutputRender` derives JUnit frame lengths from those measures. Generic JSON
 now has the same count/write contract, emits all record fields plus summary
 counters, and rejects invalid UTF-8. Its JSON status names are `pass`, `flaky`,
-`fail`, `error`, and `skip`. Hosts can produce matching JSON/JUnit chunks, but
-`EsOutputTransport` can now hand hosts canonical owned JSON/JUnit frame bytes;
+`fail`, `error`, and `skip`. `EsOutputTransport` hands hosts canonical owned
+Human/JSON/JUnit frame bytes;
 its checked payload acknowledgement rejects mutated or independently
 reformatted content before advancing. This still cannot prove what an OS writer
 actually accepted—the byte count remains the host adapter's acknowledgement.
-Human frame accounting remains model-only and its serializer is unimplemented.
 The separate single-case differential JUnit renderer remains a different
 schema. `OutputStatus.Flaky` preserves successful retry classification in
 typed records while retaining the existing status ordinals.

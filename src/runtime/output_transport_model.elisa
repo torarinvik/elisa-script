@@ -3,13 +3,14 @@
 # EsOutputRender owns format order and escaped-size accounting.  This module
 # owns the hand-off between that renderer and a host writer: it admits only
 # complete, in-order frame acknowledgements and keeps all byte limits visible
-# in a small state machine. It can return canonical JSON/JUnit frame bytes but
-# deliberately does not retain a borrowed text view or call an OS writer. A
-# host adapter writes one payload while the transport session is alive, then
-# acknowledges it before advancing the renderer.
+# in a small state machine. It can return canonical frame bytes for every
+# supported output format, but deliberately does not retain a borrowed text
+# view or call an OS writer. The host adapter writes a payload during the
+# session and acknowledges it before advancing the renderer.
 
 module EsOutputTransport:
     using EsOutput
+    using EsOutputHuman
     using EsOutputJson
     using EsOutputJunit
     using EsOutputRender
@@ -42,6 +43,7 @@ module EsOutputTransport:
             max_chunks: usize = Limits::CHUNKS
             max_bytes: usize = Limits::BYTES
             max_frame_bytes: usize = Limits::FRAME_BYTES
+            color_enabled: bool = false
 
 
         # Canonical bytes for one peeked frame. Hosts should write this payload
@@ -120,25 +122,31 @@ module EsOutputTransport:
             return current <= limit and addition <= limit - current
 
 
-        def output_transport_render_frame_bytes(transport: OutputTransport&, frame: OutputRenderFrame) -> darray[u8] error[OutputTransportError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+        def output_transport_render_frame_bytes(transport: OutputTransport&, frame: OutputRenderFrame) -> darray[u8] error[OutputTransportError, OutputContractError, OutputHumanError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
             format: OutputFormat = transport.renderer.document.options.format
             if frame.kind == OutputRenderFrameKind.Header:
-                if format == OutputFormat.Json:
+                if format == OutputFormat.Human:
+                    return try render_output_human_header_frame(transport.renderer.document, transport.policy.max_frame_bytes, transport.policy.color_enabled)
+                elif format == OutputFormat.Json:
                     return try render_output_json_header_frame(transport.renderer.document, transport.policy.max_frame_bytes)
                 elif format == OutputFormat.Junit:
                     return try render_output_junit_header_frame(transport.renderer.document, transport.policy.max_frame_bytes)
             elif frame.kind == OutputRenderFrameKind.Record:
                 raise OutputTransportError.FrameOrderInvalid if frame.record_index >= transport.renderer.document.records.count
                 record: OutputRecord = transport.renderer.document.records[frame.record_index]
-                if format == OutputFormat.Json:
+                if format == OutputFormat.Human:
+                    return try render_output_human_record_frame(record, transport.policy.color_enabled, transport.policy.max_frame_bytes)
+                elif format == OutputFormat.Json:
                     return try render_output_json_record_frame(record, frame.record_index == 0, transport.policy.max_frame_bytes)
                 elif format == OutputFormat.Junit:
                     return try render_output_junit_record_frame(record, transport.policy.max_frame_bytes)
             elif frame.kind == OutputRenderFrameKind.Footer:
-                if format == OutputFormat.Json:
+                if format == OutputFormat.Human:
+                    return try render_output_human_footer_frame(transport.renderer.document, transport.policy.max_frame_bytes, transport.policy.color_enabled)
+                elif format == OutputFormat.Json:
                     return try render_output_json_footer_frame(transport.renderer.document, transport.policy.max_frame_bytes)
                 elif format == OutputFormat.Junit:
-                    return try render_output_junit_footer_frame(transport.renderer.document, transport.policy.max_frame_bytes)
+                    return try render_output_junit_footer_frame(transport.policy.max_frame_bytes)
             raise OutputTransportError.FrameFormatUnsupported
 
 
@@ -164,9 +172,18 @@ module EsOutputTransport:
 
         def begin_output_transport(document: OutputDocument&, policy: OutputTransportPolicy = OutputTransportPolicy{}) -> OutputTransport error[OutputTransportError, OutputRenderError]:
             raise OutputTransportError.InvalidPolicy if not output_transport_policy_valid(policy)
-            renderer: OutputRender = OutputRender{document: document}
-            try validate_output_render(renderer)
-            raise OutputTransportError.InvalidPolicy if policy.max_bytes > document.options.max_bytes
+            raise OutputTransportError.InvalidPolicy if document.options.format == OutputFormat.Human and document.options.color == OutputColorMode.Always and not policy.color_enabled
+            raise OutputTransportError.InvalidPolicy if document.options.format == OutputFormat.Human and document.options.color == OutputColorMode.Never and policy.color_enabled
+            raise OutputTransportError.ChunkLimitExceeded if document.records.count > policy.max_chunks
+            raise OutputTransportError.ChunkLimitExceeded if policy.max_chunks - document.records.count < 2
+            catch measure_output_render_document_bytes(document, policy.color_enabled, policy.max_bytes, policy.max_frame_bytes):
+                ok total:
+                    _ = total
+                error failure:
+                    if failure == OutputRenderError.FrameLimitExceeded:
+                        raise OutputTransportError.FrameTooLarge
+                    raise failure
+            renderer: OutputRender = OutputRender{document: document, color_enabled: policy.color_enabled}
             return OutputTransport{renderer: renderer, policy: policy}
 
 
@@ -180,14 +197,14 @@ module EsOutputTransport:
             return frame
 
 
-        def peek_output_transport_payload(transport: OutputTransport&) -> OutputTransportPayload error[OutputTransportError, OutputRenderError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+        def peek_output_transport_payload(transport: OutputTransport&) -> OutputTransportPayload error[OutputTransportError, OutputRenderError, OutputContractError, OutputHumanError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
             frame: OutputRenderFrame = try peek_output_transport_frame(transport)
             bytes: darray[u8] = try output_transport_render_frame_bytes(transport, frame)
             raise OutputTransportError.FrameMismatch if bytes.count != frame.bytes
             return OutputTransportPayload{frame: frame, bytes: bytes}
 
 
-        def acknowledge_output_transport_payload(transport: mutable OutputTransport&, payload: OutputTransportPayload, written_bytes: usize) -> OutputTransportState error[OutputTransportError, OutputRenderError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+        def acknowledge_output_transport_payload(transport: mutable OutputTransport&, payload: OutputTransportPayload, written_bytes: usize) -> OutputTransportState error[OutputTransportError, OutputRenderError, OutputContractError, OutputHumanError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
             expected: OutputTransportPayload = try peek_output_transport_payload(transport)
             raise OutputTransportError.FrameMismatch if not output_transport_frame_matches(payload.frame, expected.frame)
             raise OutputTransportError.FramePayloadMismatch if not output_transport_payload_bytes_equal(payload.bytes, expected.bytes)

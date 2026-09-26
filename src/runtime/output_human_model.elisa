@@ -1,0 +1,268 @@
+# Bounded deterministic human-readable serialization for output documents.
+#
+# Count-only and byte-producing writers share the exact same formatter path,
+# including optional ANSI status colors, so frame accounting cannot drift.
+
+module EsOutputHuman:
+    using EsEncoding
+    using EsOutput
+
+    public:
+        const module Limits:
+            MAX_BYTES: usize = EsOutput::Limits::TEXT_BYTES
+
+
+        error OutputHumanError:
+            InvalidLimit
+            InvalidFormat
+            InvalidColorMode
+            InvalidRecord
+            OutputLimitExceeded
+
+
+    private:
+        const module Internal:
+            HEX: sview = "0123456789abcdef"
+
+
+        struct OutputHumanWriter:
+            bytes: mutable darray[u8] = []
+            byte_count: mutable usize = 0
+            count_only: bool = false
+
+
+        struct OutputHumanCounts:
+            tests: usize = 0
+            passed: usize = 0
+            flaky: usize = 0
+            failures: usize = 0
+            errors: usize = 0
+            skipped: usize = 0
+
+
+        def output_human_append_byte(writer: mutable OutputHumanWriter&, byte: u8, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputHumanError.OutputLimitExceeded if writer.byte_count >= limit
+            if not writer.count_only:
+                writer.bytes.push(byte)
+            writer.byte_count <- writer.byte_count + 1
+
+
+        def output_human_append_text(writer: mutable OutputHumanWriter&, text: sview, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(text)
+            raise OutputHumanError.OutputLimitExceeded if writer.byte_count > limit or length > limit - writer.byte_count
+            if not writer.count_only:
+                for index in 0..<length |writer, text|:
+                    writer.bytes.push(sview_at(text, index))
+            writer.byte_count <- writer.byte_count + length
+
+
+        def output_human_utf8_valid(value: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for index in 0..<sview_len(value) |value, cursor|:
+                return false if not utf8_feed(sview_at(value, index), cursor)
+            return utf8_complete(cursor)
+
+
+        def output_human_append_hex_byte(writer: mutable OutputHumanWriter&, byte: u8, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            try output_human_append_text(writer, "\\x", limit)
+            high: u8 = sview_at(Internal::HEX, ((byte >> 4) & 15u8).usize())
+            low: u8 = sview_at(Internal::HEX, (byte & 15u8).usize())
+            try output_human_append_byte(writer, high, limit)
+            try output_human_append_byte(writer, low, limit)
+
+
+        def output_human_append_escaped_text(writer: mutable OutputHumanWriter&, value: sview, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            valid_utf8: bool = output_human_utf8_valid(value)
+            for index in 0..<sview_len(value) |writer, value, limit, valid_utf8|:
+                byte: u8 = sview_at(value, index)
+                if byte == 92u8:
+                    try output_human_append_text(writer, "\\\\", limit)
+                elif byte == 10u8:
+                    try output_human_append_text(writer, "\\n", limit)
+                elif byte == 13u8:
+                    try output_human_append_text(writer, "\\r", limit)
+                elif byte == 9u8:
+                    try output_human_append_text(writer, "\\t", limit)
+                elif byte < 32u8 or byte == 127u8 or (byte >= 128u8 and not valid_utf8):
+                    try output_human_append_hex_byte(writer, byte, limit)
+                else:
+                    try output_human_append_byte(writer, byte, limit)
+
+
+        def output_human_append_u64(writer: mutable OutputHumanWriter&, value: u64, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            remaining: mutable u64 = value
+            if remaining == 0u64:
+                digits.push(48u8)
+            while remaining != 0u64:
+                digits.push(48u8 + (remaining % 10u64).u8())
+                remaining <- remaining / 10u64
+            for index in 0..<digits.count |writer, digits, limit|:
+                try output_human_append_byte(writer, digits[digits.count - index - 1], limit)
+
+
+        def output_human_status_name(status: OutputStatus) -> sview error[OutputHumanError]:
+            return "pass" if status == OutputStatus.Pass
+            return "flaky" if status == OutputStatus.Flaky
+            return "fail" if status == OutputStatus.Fail
+            return "error" if status == OutputStatus.Error
+            return "skip" if status == OutputStatus.Skip
+            raise OutputHumanError.InvalidRecord
+
+
+        def output_human_status_color(status: OutputStatus) -> sview error[OutputHumanError]:
+            return "[32m" if status == OutputStatus.Pass
+            return "[33m" if status == OutputStatus.Flaky
+            return "[31m" if status == OutputStatus.Fail
+            return "[35m" if status == OutputStatus.Error
+            return "[36m" if status == OutputStatus.Skip
+            raise OutputHumanError.InvalidRecord
+
+
+        def output_human_record_valid(record: OutputRecord) -> bool:
+            return false if sview_len(record.name) == 0 or sview_len(record.name) >= EsOutput::Limits::NAME_BYTES or sview_contains_byte(record.name, 0)
+            return false if sview_len(record.message) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.message, 0)
+            return false if sview_len(record.stdout) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.stdout, 0)
+            return false if sview_len(record.stderr) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.stderr, 0)
+            return record.status in {OutputStatus.Pass, OutputStatus.Flaky, OutputStatus.Fail, OutputStatus.Error, OutputStatus.Skip}
+
+
+        def output_human_color_mode_valid(color: OutputColorMode, color_enabled: bool) -> bool:
+            return false if color == OutputColorMode.Always and not color_enabled
+            return false if color == OutputColorMode.Never and color_enabled
+            return color in {OutputColorMode.Auto, OutputColorMode.Always, OutputColorMode.Never}
+
+
+        def output_human_document_limit(document: OutputDocument&, requested_bytes: usize) -> usize error[OutputHumanError]:
+            raise OutputHumanError.InvalidLimit if requested_bytes == 0 or requested_bytes > Limits::MAX_BYTES
+            return document.options.max_bytes if requested_bytes > document.options.max_bytes
+            return requested_bytes
+
+
+        def output_human_prepare(document: OutputDocument&, max_bytes: usize, color_enabled: bool) -> void error[OutputContractError, OutputHumanError]:
+            raise OutputHumanError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_output_document(document)
+            raise OutputHumanError.InvalidFormat if document.state != OutputDocumentState.Sealed or document.options.format != OutputFormat.Human
+            raise OutputHumanError.InvalidColorMode if not output_human_color_mode_valid(document.options.color, color_enabled)
+
+
+        def output_human_count_records(document: OutputDocument&) -> OutputHumanCounts:
+            passed: mutable usize = 0
+            flaky: mutable usize = 0
+            failures: mutable usize = 0
+            errors: mutable usize = 0
+            skipped: mutable usize = 0
+            for record in document.records |document, passed, flaky, failures, errors, skipped|:
+                passed <- passed + 1 if record.status == OutputStatus.Pass
+                flaky <- flaky + 1 if record.status == OutputStatus.Flaky
+                failures <- failures + 1 if record.status == OutputStatus.Fail
+                errors <- errors + 1 if record.status == OutputStatus.Error
+                skipped <- skipped + 1 if record.status == OutputStatus.Skip
+            return OutputHumanCounts{tests: document.records.count, passed: passed, flaky: flaky, failures: failures, errors: errors, skipped: skipped}
+
+
+        def output_human_append_footer(writer: mutable OutputHumanWriter&, counts: OutputHumanCounts, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            try output_human_append_text(writer, "Summary: tests=", limit)
+            try output_human_append_u64(writer, counts.tests.u64(), limit)
+            try output_human_append_text(writer, " passed=", limit)
+            try output_human_append_u64(writer, counts.passed.u64(), limit)
+            try output_human_append_text(writer, " flaky=", limit)
+            try output_human_append_u64(writer, counts.flaky.u64(), limit)
+            try output_human_append_text(writer, " failures=", limit)
+            try output_human_append_u64(writer, counts.failures.u64(), limit)
+            try output_human_append_text(writer, " errors=", limit)
+            try output_human_append_u64(writer, counts.errors.u64(), limit)
+            try output_human_append_text(writer, " skipped=", limit)
+            try output_human_append_u64(writer, counts.skipped.u64(), limit)
+            try output_human_append_byte(writer, 10u8, limit)
+
+
+        def output_human_append_record(writer: mutable OutputHumanWriter&, record: OutputRecord, color_enabled: bool, limit: usize) -> void error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputHumanError.InvalidRecord if not output_human_record_valid(record)
+            status_name: sview = try output_human_status_name(record.status)
+            if color_enabled:
+                status_color: sview = try output_human_status_color(record.status)
+                try output_human_append_byte(writer, 27u8, limit)
+                try output_human_append_text(writer, status_color, limit)
+            try output_human_append_byte(writer, 91u8, limit)
+            try output_human_append_text(writer, status_name, limit)
+            try output_human_append_byte(writer, 93u8, limit)
+            if color_enabled:
+                try output_human_append_byte(writer, 27u8, limit)
+                try output_human_append_text(writer, "[0m", limit)
+            try output_human_append_text(writer, " ", limit)
+            try output_human_append_escaped_text(writer, record.name, limit)
+            if record.duration_ms != 0u64:
+                try output_human_append_text(writer, " (", limit)
+                try output_human_append_u64(writer, record.duration_ms, limit)
+                try output_human_append_text(writer, " ms)", limit)
+            try output_human_append_byte(writer, 10u8, limit)
+            if sview_len(record.message) != 0:
+                try output_human_append_text(writer, "  ", limit)
+                try output_human_append_escaped_text(writer, record.message, limit)
+                try output_human_append_byte(writer, 10u8, limit)
+            if sview_len(record.stdout) != 0:
+                try output_human_append_text(writer, "stdout:\n", limit)
+                try output_human_append_escaped_text(writer, record.stdout, limit)
+                try output_human_append_byte(writer, 10u8, limit)
+            if sview_len(record.stderr) != 0:
+                try output_human_append_text(writer, "stderr:\n", limit)
+                try output_human_append_escaped_text(writer, record.stderr, limit)
+                try output_human_append_byte(writer, 10u8, limit)
+
+
+    public:
+        def render_output_human_header_frame(document: OutputDocument&, max_bytes: usize, color_enabled: bool = false) -> darray[u8] error[OutputContractError, OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_human_document_limit(document, max_bytes)
+            try output_human_prepare(document, effective_limit, color_enabled)
+            writer: OutputHumanWriter = OutputHumanWriter{}
+            return writer.bytes
+
+
+        def render_output_human_record_frame(record: OutputRecord, color_enabled: bool, max_bytes: usize) -> darray[u8] error[OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputHumanError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            writer: mutable OutputHumanWriter = OutputHumanWriter{}
+            try output_human_append_record(writer, record, color_enabled, max_bytes)
+            return writer.bytes
+
+
+        def render_output_human_footer_frame(document: OutputDocument&, max_bytes: usize, color_enabled: bool = false) -> darray[u8] error[OutputContractError, OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_human_document_limit(document, max_bytes)
+            try output_human_prepare(document, effective_limit, color_enabled)
+            writer: OutputHumanWriter = OutputHumanWriter{}
+            counts: OutputHumanCounts = output_human_count_records(document)
+            try output_human_append_footer(writer, counts, effective_limit)
+            return writer.bytes
+
+
+        def measure_output_human_header_frame(document: OutputDocument&, max_bytes: usize, color_enabled: bool = false) -> usize error[OutputContractError, OutputHumanError]:
+            effective_limit: usize = try output_human_document_limit(document, max_bytes)
+            try output_human_prepare(document, effective_limit, color_enabled)
+            return 0
+
+
+        def measure_output_human_record_frame(record: OutputRecord, color_enabled: bool, max_bytes: usize) -> usize error[OutputHumanError]:
+            raise OutputHumanError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            writer: mutable OutputHumanWriter = OutputHumanWriter{count_only: true}
+            try output_human_append_record(writer, record, color_enabled, max_bytes)
+            return writer.byte_count
+
+
+        def measure_output_human_footer_frame(document: OutputDocument&, max_bytes: usize, color_enabled: bool = false) -> usize error[OutputContractError, OutputHumanError]:
+            effective_limit: usize = try output_human_document_limit(document, max_bytes)
+            try output_human_prepare(document, effective_limit, color_enabled)
+            writer: mutable OutputHumanWriter = OutputHumanWriter{count_only: true}
+            counts: OutputHumanCounts = output_human_count_records(document)
+            try output_human_append_footer(writer, counts, effective_limit)
+            return writer.byte_count
+
+
+        def render_output_document_human(document: OutputDocument&, max_bytes: usize = Limits::MAX_BYTES, color_enabled: bool = false) -> darray[u8] error[OutputContractError, OutputHumanError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_human_document_limit(document, max_bytes)
+            try output_human_prepare(document, effective_limit, color_enabled)
+            writer: mutable OutputHumanWriter = OutputHumanWriter{}
+            for record in document.records |writer, document, effective_limit, color_enabled|:
+                try output_human_append_record(writer, record, color_enabled, effective_limit)
+            counts: OutputHumanCounts = output_human_count_records(document)
+            try output_human_append_footer(writer, counts, effective_limit)
+            return writer.bytes

@@ -39,6 +39,7 @@ using EsSchemaCsv
 using EsInstall
 using EsSourceMap
 using EsOutput
+using EsOutputHuman
 using EsOutputJson
 using EsOutputJunit
 using EsOutputRender
@@ -6289,6 +6290,90 @@ def typed_output_junit_frames_match_bounded_document_serialization() -> void:
 
 
 @test
+def typed_output_human_frames_are_exact_bounded_and_color_aware() -> void:
+    options: OutputOptions = OutputOptions{format: OutputFormat.Human, color: OutputColorMode.Never, max_bytes: 2048}
+    document: mutable OutputDocument = OutputDocument{options: options}
+    assert advance_output_document(document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/ok", status: OutputStatus.Pass, duration_ms: 42}) == OutputDocumentState.Building
+    escape_bytes: mutable darray[u8] = [27u8, 91u8, 51u8, 49u8, 109u8]
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/fail", status: OutputStatus.Fail, message: "bad\nretry", stdout: "out\n", stderr: bytes_view(escape_bytes)}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+
+    complete: darray[u8] = render_output_document_human(document, options.max_bytes)
+    assert bytes_view(complete) == "[pass] case/ok (42 ms)\n[fail] case/fail\n  bad\\nretry\nstdout:\nout\\n\nstderr:\n\\x1b[31m\nSummary: tests=2 passed=1 flaky=0 failures=1 errors=0 skipped=0\n"
+    header: darray[u8] = render_output_human_header_frame(document, options.max_bytes)
+    assert header.count == measure_output_human_header_frame(document, options.max_bytes)
+    render: mutable OutputRender = OutputRender{document: document}
+    render_frame: mutable OutputRenderFrame = OutputRenderFrame{}
+    assert peek_output_render_frame(render).kind == OutputRenderFrameKind.Header
+    assert peek_output_render_frame(render).bytes == 0
+    assert next_output_render_frame(render, render_frame) == OutputRenderState.Rendering
+    joined: mutable darray[u8] = []
+    for byte in header |joined|:
+        joined.push(byte)
+    for index in 0..<document.records.count |document, joined, options|:
+        record: OutputRecord = document.records[index]
+        record_frame: darray[u8] = render_output_human_record_frame(record, false, options.max_bytes)
+        assert record_frame.count == measure_output_human_record_frame(record, false, options.max_bytes)
+        descriptor: OutputRenderFrame = peek_output_render_frame(render)
+        assert descriptor.kind == OutputRenderFrameKind.Record and descriptor.record_index == index and descriptor.bytes == record_frame.count
+        assert next_output_render_frame(render, render_frame) == OutputRenderState.Rendering
+        for byte in record_frame |joined|:
+            joined.push(byte)
+    footer: darray[u8] = render_output_human_footer_frame(document, options.max_bytes)
+    assert footer.count == measure_output_human_footer_frame(document, options.max_bytes)
+    descriptor <- peek_output_render_frame(render)
+    assert descriptor.kind == OutputRenderFrameKind.Footer and descriptor.bytes == footer.count
+    assert next_output_render_frame(render, render_frame) == OutputRenderState.Complete
+    for byte in footer |joined|:
+        joined.push(byte)
+    assert joined.count == complete.count
+    for index in 0..<complete.count |complete, joined|:
+        assert complete[index] == joined[index]
+
+    always_options: OutputOptions = OutputOptions{format: OutputFormat.Human, color: OutputColorMode.Always, max_bytes: 128}
+    always_document: mutable OutputDocument = OutputDocument{options: always_options}
+    assert advance_output_document(always_document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(always_document, OutputDocumentEvent.Append, OutputRecord{name: "color", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(always_document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+    colored_record: darray[u8] = render_output_human_record_frame(OutputRecord{name: "color", status: OutputStatus.Pass}, true, always_options.max_bytes)
+    colored: darray[u8] = render_output_document_human(always_document, always_options.max_bytes, true)
+    assert colored_record.count == 22 and colored[0] == 27u8 and colored[1] == 91u8 and colored[2] == 51u8 and colored[3] == 50u8 and colored[4] == 109u8
+    assert colored[5] == 91u8 and colored[10] == 93u8 and colored[11] == 27u8 and colored[12] == 91u8 and colored[13] == 48u8 and colored[14] == 109u8
+    for index in 0..<colored_record.count |colored, colored_record|:
+        assert colored[index] == colored_record[index]
+    always_color_required: mutable bool = false
+    catch render_output_document_human(always_document, always_options.max_bytes, false):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputHumanError.InvalidColorMode
+            always_color_required <- true
+    assert always_color_required
+
+    invalid_bytes: mutable darray[u8] = [255u8]
+    invalid_options: OutputOptions = OutputOptions{format: OutputFormat.Human, color: OutputColorMode.Never, max_bytes: 128}
+    invalid_document: mutable OutputDocument = OutputDocument{options: invalid_options}
+    assert advance_output_document(invalid_document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(invalid_document, OutputDocumentEvent.Append, OutputRecord{name: "invalid", status: OutputStatus.Pass, message: bytes_view(invalid_bytes)}) == OutputDocumentState.Building
+    assert advance_output_document(invalid_document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+    invalid_text: darray[u8] = render_output_document_human(invalid_document, invalid_options.max_bytes)
+    assert bytes_view(invalid_text) == "[pass] invalid\n  \\xff\nSummary: tests=1 passed=1 flaky=0 failures=0 errors=0 skipped=0\n"
+
+    transport: mutable OutputTransport = begin_output_transport(document)
+    assert advance_output_transport(transport, OutputTransportEvent.Begin) == OutputTransportState.Streaming
+    for frame_index in 0..<(document.records.count + 2) |transport, document, frame_index|:
+        payload: OutputTransportPayload = peek_output_transport_payload(transport)
+        assert payload.bytes.count == payload.frame.bytes
+        if frame_index < document.records.count + 1:
+            assert acknowledge_output_transport_payload(transport, payload, payload.bytes.count) == OutputTransportState.Streaming
+        else:
+            assert frame_index == document.records.count + 1
+            assert acknowledge_output_transport_payload(transport, payload, payload.bytes.count) == OutputTransportState.Complete
+    assert validate_output_transport(transport)
+
+
+@test
 def typed_output_json_frames_match_schema_and_bounded_document_serialization() -> void:
     options: OutputOptions = OutputOptions{format: OutputFormat.Json, color: OutputColorMode.Never, max_bytes: 4096}
     document: mutable OutputDocument = OutputDocument{options: options}
@@ -6368,6 +6453,33 @@ def typed_output_transport_binds_frames_to_exact_host_acknowledgements() -> void
     assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
     transport: mutable OutputTransport = begin_output_transport(document)
     assert validate_output_transport(transport)
+    tight_policy: OutputTransportPolicy = OutputTransportPolicy{max_bytes: 32, max_frame_bytes: 32}
+    transport_limit_rejected: mutable bool = false
+    catch begin_output_transport(document, tight_policy):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputRenderError.RenderLimitExceeded
+            transport_limit_rejected <- true
+    assert transport_limit_rejected
+    frame_policy: OutputTransportPolicy = OutputTransportPolicy{max_bytes: 1024, max_frame_bytes: 8}
+    transport_frame_limit_rejected: mutable bool = false
+    catch begin_output_transport(document, frame_policy):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputTransportError.FrameTooLarge
+            transport_frame_limit_rejected <- true
+    assert transport_frame_limit_rejected
+    chunk_policy: OutputTransportPolicy = OutputTransportPolicy{max_chunks: 2, max_bytes: 1024, max_frame_bytes: 1024}
+    transport_chunk_limit_rejected: mutable bool = false
+    catch begin_output_transport(document, chunk_policy):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputTransportError.ChunkLimitExceeded
+            transport_chunk_limit_rejected <- true
+    assert transport_chunk_limit_rejected
     extraneous_transport_payload_rejected: mutable bool = false
     catch advance_output_transport(transport, OutputTransportEvent.Begin, OutputRenderFrame{bytes: 1}, 1):
         ok value:
