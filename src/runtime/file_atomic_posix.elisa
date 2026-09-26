@@ -35,6 +35,11 @@ module EsFileAtomicPosix:
             link_count: usize
 
 
+        struct AtomicFilePosixStageHandle:
+            descriptor: int
+            proof: AtomicFilePosixStageProof
+
+
         error AtomicFilePosixError:
             InvalidDirectoryDescriptor
             InvalidLeafName
@@ -43,6 +48,9 @@ module EsFileAtomicPosix:
             DestinationTooLarge(path: cstr)
             DestinationReadFailed(path: cstr)
             DigestUnavailable(path: cstr)
+            StageCreateFailed(path: cstr, errno: i32)
+            StageCreateOutcomeUnknown(path: cstr, errno: i32)
+            StageAdmissionUncertain(path: cstr, descriptor: int, close_status: int)
             InvalidStageDescriptor
             InvalidOwnerToken
             ParentNotDirectory
@@ -68,6 +76,7 @@ module EsFileAtomicPosix:
         const module AtomicFilePosixErrno:
             ENOENT: i32 = 2
             EINTR: i32 = 4
+            EIO: i32 = 5
 
 
         const enum AtomicFilePosixWriteState of u8:
@@ -272,6 +281,43 @@ module EsFileAtomicPosix:
                     raise AtomicFilePosixError.StageNotReady
                 error failure:
                     raise AtomicFilePosixError.StageNotReady
+
+
+        # Create and admit an exclusive private sibling as one caller-facing
+        # step. On success the caller owns the returned descriptor and must
+        # keep the directory-mutation lease through sealing/publication or
+        # cleanup. If admission fails after creation, make one close attempt
+        # and report the path plus descriptor; do not unlink a name whose live
+        # identity could not be proved.
+        def create_atomic_file_stage(session: mutable AtomicFileSession&, parent_fd: int, stage_leaf: cstr) -> AtomicFilePosixStageHandle error[AtomicFilePosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch validate_atomic_file_session(session):
+                ok:
+                    pass
+                error failure:
+                    raise AtomicFilePosixError.StageNotReady
+            raise AtomicFilePosixError.StageNotReady if session.state != AtomicFileState.Planned or parent_fd < 0 or session.plan.parent_identity != parent_fd.u64() + 1u64
+            raise AtomicFilePosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(stage_leaf)
+            raise AtomicFilePosixError.StageNotReady if not atomic_file_posix_path_leaf_matches(session.plan.staging_path, stage_leaf)
+            parent_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise AtomicFilePosixError.InvalidDirectoryDescriptor if not atomic_file_posix_stat_descriptor(parent_fd, parent_info)
+            raise AtomicFilePosixError.ParentNotDirectory if (parent_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY or parent_info.device == 0 or parent_info.inode == 0
+
+            create_flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            stage_fd: int = elisascript_posix_openat(parent_fd, stage_leaf, create_flags, 384u32)
+            if stage_fd < 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                raise AtomicFilePosixError.StageCreateOutcomeUnknown(stage_leaf, errno[0]) if errno[0] == AtomicFilePosixErrno::EINTR or errno[0] == AtomicFilePosixErrno::EIO
+                raise AtomicFilePosixError.StageCreateFailed(stage_leaf, errno[0])
+
+            proof: mutable AtomicFilePosixStageProof = AtomicFilePosixStageProof{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, stage_device: 0, stage_inode: 0, stage_descriptor_token: 0, owner_token: 0, link_count: 0}
+            catch begin_atomic_file_stage(session, parent_fd, stage_fd, stage_leaf):
+                ok admitted:
+                    proof <- admitted
+                error failure:
+                    _ = failure
+                    close_status: int = elisascript_posix_close(stage_fd)
+                    raise AtomicFilePosixError.StageAdmissionUncertain(stage_leaf, stage_fd, close_status)
+            return AtomicFilePosixStageHandle{descriptor: stage_fd, proof: proof}
 
 
         # Bind an already-open exclusive staging descriptor to a no-follow

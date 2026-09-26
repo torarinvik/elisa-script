@@ -1926,8 +1926,14 @@ caller's exclusive directory-mutation policy. `begin_atomic_file_stage`
 captures the proof and retains the parent/stage device, inode, descriptor, and
 owner identities in the session before `Begin`; later POSIX append, cleanup,
 compare, and commit operations reject a proof or sealed identity that does not
-match the admitted stage. The caller still creates the exclusive sibling and
-owns its descriptor. `append_atomic_file_stage` checks the retained admission,
+match the admitted stage. `create_atomic_file_stage` creates the exclusive
+private sibling, admits its proof, and returns the descriptor to the caller.
+Create failures preserve host
+`errno`; `EINTR`/`EIO` are outcome-unknown rather than safe retry signals. If
+post-create admission fails, it makes one close attempt, preserves the
+unproven path for recovery, and returns `StageAdmissionUncertain` with the
+path, descriptor, and close status rather than unlinking an unverified name.
+`append_atomic_file_stage` checks the retained admission,
 writes with bounded short-write/EINTR handling, revalidates the stage, and
 advances the model's append count only after a complete write. Partial/uncertain
 writes move the model to `FailedPendingCleanup`. `seal_atomic_file_stage` syncs
