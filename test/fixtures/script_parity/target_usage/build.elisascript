@@ -22,8 +22,19 @@ module EsTargetUsageBuild:
             TARGET: sview = "usage-app"
             HELPER_LIBRARY: sview = "libusage_helper.a"
             CORE_LIBRARY: sview = "libusage_core.a"
+            COMPILATION_DATABASE: sview = "compile_commands.json"
+            COMPILATION_DATABASE_STAGE: sview = ".compile_commands.json.stage"
             TIMEOUT_MICROS: u64 = 60000000u64
             OUTPUT_LIMIT_BYTES: usize = 262144
+
+
+        const enum CompilationDatabasePhase of u8:
+            CheckPaths
+            WriteStage
+            VerifyStage
+            RenameStage
+            CleanupStage
+            Done
 
 
         def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -94,6 +105,85 @@ module EsTargetUsageBuild:
         def run_command(executable_text: sview, working_directory_text: sview) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
             argv: BuildUsageArgv = try build_usage_raw_argv([])
             return try prepare_command(executable_text, argv, working_directory_text)
+
+
+        def cleanup_compilation_database_stage(stage_path: Path) -> bool can[File.Read, File.Write]:
+            if not path_exists(stage_path) and not is_symlink(stage_path):
+                return true
+            if is_symlink(stage_path) or not is_file(stage_path):
+                return false
+            return try remove_path(stage_path) else false
+
+
+        def publish_compilation_database(build_directory: Path, contents: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, File.Write]:
+            destination: Path = build_directory.joinpath(Toolchain::COMPILATION_DATABASE)
+            stage: Path = build_directory.joinpath(Toolchain::COMPILATION_DATABASE_STAGE)
+            phase: mutable CompilationDatabasePhase = CompilationDatabasePhase.CheckPaths
+            written: mutable usize = 0
+            write_failed: mutable bool = false
+            published: mutable bool = false
+            failure_message: mutable sview = ""
+
+            machine over phase while phase != CompilationDatabasePhase.Done:
+                state Publish
+                start Publish
+
+                Publish, CompilationDatabasePhase.CheckPaths if path_exists(destination) or is_symlink(destination) or path_exists(stage) or is_symlink(stage):
+                    print("target usage build: refusing pre-existing compilation database path")
+                    return false
+
+                Publish, CompilationDatabasePhase.CheckPaths:
+                    phase <- CompilationDatabasePhase.WriteStage
+                    -> Publish
+
+                Publish, CompilationDatabasePhase.WriteStage:
+                    catch write_bytes(stage, contents):
+                        ok byte_count:
+                            written <- byte_count
+                        error failure:
+                            _ = failure
+                            write_failed <- true
+
+                    if write_failed or written != contents.count:
+                        failure_message <- "target usage build: incomplete compilation database staging write"
+                        phase <- CompilationDatabasePhase.CleanupStage
+                    else:
+                        phase <- CompilationDatabasePhase.VerifyStage
+                    -> Publish
+
+                Publish, CompilationDatabasePhase.VerifyStage:
+                    stage_size: usize = try file_size(stage) else err:
+                        0u64
+                    if not is_file(stage) or is_symlink(stage) or stage_size != contents.count:
+                        failure_message <- "target usage build: staged compilation database is incomplete"
+                        phase <- CompilationDatabasePhase.CleanupStage
+                    elif path_exists(destination) or is_symlink(destination):
+                        failure_message <- "target usage build: compilation database destination changed before publish"
+                        phase <- CompilationDatabasePhase.CleanupStage
+                    else:
+                        phase <- CompilationDatabasePhase.RenameStage
+                    -> Publish
+
+                Publish, CompilationDatabasePhase.RenameStage:
+                    renamed: bool = try move_path(stage, destination) else false
+                    if renamed:
+                        published <- true
+                        phase <- CompilationDatabasePhase.Done
+                    else:
+                        failure_message <- "target usage build: unable to publish compilation database"
+                        phase <- CompilationDatabasePhase.CleanupStage
+                    -> Publish
+
+                Publish, CompilationDatabasePhase.CleanupStage:
+                    if not cleanup_compilation_database_stage(stage):
+                        print(f"target usage build: unable to clean compilation database stage: {stage}")
+                    print(failure_message)
+                    return false
+
+                Publish, CompilationDatabasePhase.Done:
+                    break
+
+            return published
 
 
     public:
@@ -240,12 +330,7 @@ module EsTargetUsageBuild:
             compilation_database: darray[u8] = try render_build_compilation_database(plan, compilation_sources) else err:
                 print("target usage build: unable to render compilation database")
                 return 1i64
-            compilation_database_path: Path = build_directory.joinpath("compile_commands.json")
-            written_compilation_database: usize = try write_bytes(compilation_database_path, compilation_database) else err:
-                print("target usage build: unable to write compilation database")
-                return 1i64
-            if written_compilation_database != compilation_database.count:
-                print("target usage build: incomplete compilation database write")
+            if not publish_compilation_database(build_directory, compilation_database):
                 return 1i64
             execution: mutable BuildExecutionResult = BuildExecutionResult{}
             catch execute_build_usage_graph(plan):

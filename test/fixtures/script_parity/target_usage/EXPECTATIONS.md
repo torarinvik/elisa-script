@@ -30,8 +30,12 @@ existing absolute empty non-symlink build directory outside the repository.
 No command is passed through a shell.
 Before execution it selects the three compiler actions from that same validated
 plan, renders their exact tokenized argv into bounded `compile_commands.json`
-records, and writes the database into the fresh build directory. Archive, link,
-and run actions are intentionally excluded from the translation-unit database.
+records, writes them to a same-directory staging path, verifies the complete
+byte count and regular-file shape, then publishes the database with an atomic
+rename. Short-write and rename failures attempt to clean the stage only if it
+still appears as a regular non-symlink file; the launcher also rejects a
+successful candidate run that leaves the stage behind. Archive, link, and run
+actions are intentionally excluded from the translation-unit database.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
@@ -54,4 +58,5 @@ configure/build/CTest route and the candidate build in separate fresh roots,
 then compares executable status and both output streams. It is gated on
 explicit validation reauthorization, the bounded-test-wrapper marker, and the
 pinned local compiler path. The fixture is source-only and is not an E03
-acceptance result.
+acceptance result. Rename durability, concurrent build-directory mutation,
+and injected partial-write cleanup remain unqualified.
