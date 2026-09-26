@@ -1907,8 +1907,9 @@ inode, revalidates the no-follow name, and confirms the shared or exclusive
 `flock` before a lease is relied on or released. Persistent lock names are
 never unlinked, avoiding split-lock races. The portable model still owns
 bounded retry/timeout policy; fairness, mandatory-locking semantics, and
-behavior on other platforms remain host limitations. Generic atomic-file
-publication has not yet adopted this lease capability.
+behavior on other platforms remain host limitations. Generic atomic-file POSIX
+mutations now require this lease capability at each operation boundary; its
+runtime behavior remains unverified.
 
 `EsFileAtomic::AtomicFileSession` is the stronger publication boundary for
 generated files, cache entries, and build outputs. A plan binds a nonzero
@@ -1926,12 +1927,16 @@ equality.
 `capture_atomic_file_stage_proof` verifies that an open staging descriptor
 matches its no-follow sibling entry, is a private single-link regular file,
 and shares the parent directory's filesystem; `revalidate_atomic_file_stage_proof`
-repeats those checks before a later mutation. These receipts still require the
-caller's exclusive directory-mutation policy. `begin_atomic_file_stage`
+repeats those checks before a later mutation. These receipts are identity
+snapshots, not locks. Mutating entrypoints also require a live exclusive
+directory-lease capability. `begin_atomic_file_stage`
 captures the proof and retains the parent/stage device, inode, descriptor, and
 owner identities in the session before `Begin`; later POSIX append, cleanup,
 compare, and commit operations reject a proof or sealed identity that does not
-match the admitted stage. `create_atomic_file_stage` creates the exclusive
+match the admitted stage. Every mutating entrypoint rejects a lock leaf that
+aliases the staging, destination, or configured backup leaf, so publication or
+cleanup cannot replace the persistent lock inode being used for coordination.
+`create_atomic_file_stage` creates the exclusive
 private sibling, admits its proof, and returns the descriptor to the caller.
 Create failures preserve host
 `errno`; `EINTR`/`EIO` are outcome-unknown rather than safe retry signals. If
@@ -1952,33 +1957,39 @@ their status, stored in the handle, and are never retried.
 `compare_atomic_file_stage` binds caller bytes to the sealed stage by digest
 and exact readback, takes stable
 destination identity snapshots around an exact byte comparison, and advances
-`Compare`; it requires the caller to hold the directory lease through the next
-mutation decision. Identity-only reads rewind their temporary arena storage so
-repeated comparisons do not retain one full-file allocation per snapshot.
+`Compare`; its API requires the POSIX exclusive directory-lease capability and
+revalidates it before recording the comparison. Identity-only reads rewind
+their temporary arena storage so repeated comparisons do not retain one
+full-file allocation per snapshot.
 `commit_atomic_file_stage` recaptures the stage and destination, transitions to
 `Committing`, performs one same-directory `renameat`, syncs the parent when
 required, and acknowledges only after observing the staged inode at the
 destination with private mode and a single link. Rename failures and all post-rename proof/sync failures transition
 to `PublishedUncertain`; callers must observe/recover and must not blindly
-retry the rename. The caller's exclusive directory lease must cover the final
-revalidation through the rename. `cleanup_atomic_file_stage` removes a closed,
+retry the rename. The adapter requires and revalidates the exclusive directory
+lease immediately before rename and after publication-sensitive operations.
+If the lease is lost after entering `Committing`, it preserves
+`PublishedUncertain` for recovery. `cleanup_atomic_file_stage` removes a closed,
 sealed staging entry only after matching its no-follow identity to the session
-receipt and requiring private single-link file metadata. Under the caller's
-exclusive directory-mutation lease, an already-absent stage is reconciled as
+receipt and requiring private single-link file metadata. After revalidating
+the exclusive directory-lease capability, an already-absent stage is reconciled as
 completed cleanup; unlink or post-unlink verification failures leave cleanup
 pending. When `require_directory_sync` is set, both cleanup paths sync the
 parent directory before acknowledging removal; if that sync fails after
 unlink, the session remains pending and a retry can sync the already-absent
-entry. This sealed-stage path does not cover partial or unsealed stages that have no
-sealed identity receipt, nor does it implement lease ownership itself.
+entry. This sealed-stage path does not cover partial or unsealed stages that
+have no sealed identity receipt or reconcile a `PublishedUncertain` destination.
 `cleanup_unsealed_atomic_file_stage` covers the partial-write failure path: it
 uses the captured device/inode proof plus private, single-link metadata to
 remove the stage entry without treating incomplete bytes as a sealed receipt.
 It also confirms that the caller's still-open descriptor and the no-follow
 stage entry identify the same inode; the stage handle is consumed and closed
-only after cleanup has been acknowledged. Both cleanup paths require the
-caller to hold the exclusive directory lease. Stage creation and
-lease-capability integration remain open.
+only after cleanup has been acknowledged. If sealing consumed the descriptor
+before receipt creation failed, cleanup instead requires the retained
+admission proof, repeated no-follow inode checks, and the same live lease; it
+never claims an open descriptor remains. Both cleanup APIs require and
+revalidate the caller's exclusive directory lease. Cross-platform lease
+adapters and production publication callers remain open.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

@@ -21,7 +21,22 @@ rg -q '^module EsFileAtomic:' "$model"
 rg -q 'using EsHash' "$model"
 rg -q 'include "\.\./runtime/file_atomic_model\.elisa"' "$ir"
 rg -q '^module EsFileAtomicPosix:' "$adapter"
+rg -q 'using EsFileLockPosix' "$adapter"
 rg -q 'include "\.\./runtime/file_atomic_posix\.elisa"' "$ir"
+rg -q 'DirectoryLeaseRequired' "$adapter"
+rg -q 'def atomic_file_posix_require_directory_lease\(' "$adapter"
+rg -q 'LeaseNameCollision if atomic_file_posix_path_leaf_matches\(session\.plan\.staging_path, lock_leaf\).*session\.plan\.backup_path, lock_leaf' "$adapter"
+for lease_bound_operation in \
+    begin_atomic_file_stage \
+    create_atomic_file_stage \
+    append_atomic_file_stage \
+    seal_atomic_file_stage \
+    compare_atomic_file_stage \
+    commit_atomic_file_stage \
+    cleanup_unsealed_atomic_file_stage \
+    cleanup_atomic_file_stage; do
+    rg -q "def ${lease_bound_operation}.*directory_lease: FileLockPosixLease&.*lock_leaf: cstr" "$adapter"
+done
 rg -q 'def observe_atomic_file_at\(' "$adapter"
 rg -q 'def begin_atomic_file_stage\(' "$adapter"
 rg -q 'def create_atomic_file_stage\(' "$adapter"
@@ -84,6 +99,12 @@ rg -q 'AtomicFileEvent.CommitAck, identity: published' "$adapter"
 rg -q 'atomic_file_posix_identity_equal\(published, session.staged_identity\)' "$adapter"
 rg -q 'published_observation.link_count != 1 or not published_observation.private_mode' "$adapter"
 rg -q 'def cleanup_unsealed_atomic_file_stage\(' "$adapter"
+rg -q 'def atomic_file_posix_cleanup_closed_unsealed_stage\(' "$adapter"
+rg -q 'if stage_fd < 0:' "$adapter"
+rg -q 'return try atomic_file_posix_cleanup_closed_unsealed_stage\(session, parent_fd, expected, stage_leaf, directory_lease, lock_leaf\)' "$adapter"
+rg -q 'AtomicFilePosixError\.DirectoryLeaseRequired' "$runtime_fixture"
+rg -q 'AtomicFilePosixError\.LeaseNameCollision' "$runtime_fixture"
+rg -q 'backup_lock_collision_rejected' "$runtime_fixture"
 rg -q 'session.state == AtomicFileState.FailedPendingCleanup or session.state == AtomicFileState.CancelledPendingCleanup' "$adapter"
 rg -q 'session.staged_identity.observed or parent_fd < 0' "$adapter"
 rg -q 'expected.stage_descriptor_token != stage_fd.u64\(\) \+ 1u64' "$adapter"

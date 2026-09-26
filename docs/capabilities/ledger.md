@@ -1539,7 +1539,8 @@ errors; the artifact-cache lock now consumes it. The focused model fixture,
 namespace inclusion, documentation, and check_file_lock.sh are source evidence
 only and have not been executed. Bounded host waiting, fairness,
 mandatory-locking differences, cross-platform adapters, and race fixtures
-remain open; generic atomic publication has not yet adopted the adapter.
+remain open. Generic atomic POSIX entrypoints now require and revalidate this
+adapter, but remain unverified at runtime.
 
 ES-FS-005 | EsDirectoryMutation supplies a bounded recursive copy/remove
 planning contract. It records source/destination paths, stable identities,
@@ -1595,9 +1596,12 @@ performs exact no-op comparison and one descriptor-relative rename, then
 validates the published identity and supports sealed/unsealed cleanup. The
 focused IR/model fixtures, namespace inclusion, documentation, and
 check_file_atomic.sh audit are static evidence only. Production stage-creation
-adoption, complete descriptor-owner recovery after failures, an enforced
-directory lease, restore and uncertain-publication reconciliation, crash
+adoption, complete descriptor-owner recovery after failures, cross-platform
+lease adapters, restore and uncertain-publication reconciliation, crash
 recovery, production callers, and executed platform-race fixtures remain open.
+The POSIX adapter now requires `FileLockPosixLease` on every mutating entrypoint
+and revalidates its exclusive host lock at staging, comparison, commit, and
+cleanup boundaries; this remains source-only and is not runtime evidence.
 
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership
