@@ -561,9 +561,12 @@ checked addition, and accounts format framing bytes against the same
 document budget. It reconciles the emitted-byte total with the exact rendered
 prefix (including header and, only on completion, footer), validates
 state/chunk/record accounting, and refuses completion until every record has
-been emitted. Cancellation and failure are explicit transitions, leaving actual
-host writes to a bounded adapter. `OutputRenderFrame` exposes only the next
-frame kind, record index, sequence, and checked byte count; it does not retain
+been emitted. A Ready renderer also computes the full document size before
+offering any frame, so reports that cannot fit their byte budget fail before a
+host can write a partial header. Cancellation and failure are explicit
+transitions, leaving actual host writes to a bounded adapter.
+`OutputRenderFrame` exposes only the next frame kind, record index, sequence,
+and checked byte count; it does not retain
 borrowed text; only `Emit` accepts a nonzero record index. `EsOutputTransport`
 wraps that renderer with a bounded
 `Planned → Streaming → Complete/Failed/Cancelling/Cancelled` hand-off. A host
@@ -580,13 +583,16 @@ byte limit. Flaky status is an Elisascript-specific testcase property for now:
 `OutputRecord` retains the final result but not the failed-attempt history
 needed for a truthful `<flakyFailure>` element. Header, record, and footer
 frame APIs use a count-only writer over the same emission path, and
-`EsOutputRender` now derives JUnit frame lengths from those measures. The host
-can produce matching chunks from those APIs, but `EsOutputTransport` still
-accepts only a reported byte count; it cannot verify the content actually
-written. Human and JSON frame sizes remain model-only, and their serializers
-are unimplemented. The separate single-case differential JUnit renderer
-remains a different schema. `OutputStatus.Flaky` preserves successful retry
-classification in typed records while retaining the existing status ordinals.
+`EsOutputRender` derives JUnit frame lengths from those measures. Generic JSON
+now has the same count/write contract, emits all record fields plus summary
+counters, and rejects invalid UTF-8. Its JSON status names are `pass`, `flaky`,
+`fail`, `error`, and `skip`. Hosts can produce matching JSON/JUnit chunks, but
+`EsOutputTransport` still accepts only a reported byte count; it cannot verify
+the content actually written. Human frame accounting remains model-only and
+its serializer is unimplemented. The separate single-case differential JUnit
+renderer remains a different schema. `OutputStatus.Flaky` preserves successful
+retry classification in typed records while retaining the existing status
+ordinals.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

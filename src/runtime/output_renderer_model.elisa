@@ -1,13 +1,14 @@
 # Typed output rendering boundary.
 #
 # This module accounts the serialized byte cost of output frames while keeping
-# host writes outside the IR contract. JUnit frame sizes share the concrete
-# serializer's count/write path; Human and JSON frame accounting remain
-# modeled until their concrete frame writers are connected. A renderer must
+# host writes outside the IR contract. JSON and JUnit frame sizes share their
+# concrete serializers' count/write paths; Human frame accounting remains
+# modeled until its concrete writer is connected. A renderer must
 # consume sealed OutputDocuments in record order and never silently truncate.
 
 module EsOutputRender:
     using EsOutput
+    using EsOutputJson
     using EsOutputJunit
 
     public:
@@ -97,16 +98,6 @@ module EsOutputRender:
             total <- total + addition
 
 
-        def output_render_json_escaped_bytes(value: sview, limit: usize) -> usize error[OutputRenderError]:
-            total: mutable usize = 0
-            for index in 0..<sview_len(value) |value, limit|:
-                byte: u8 = sview_at(value, index)
-                addition: usize = 2 if byte in {8, 9, 10, 12, 13} else 6 if byte < 32 else 2 if byte == 34 or byte == 92 else 1
-                raise OutputRenderError.RenderLimitExceeded if not output_render_add(total, addition, limit)
-                total <- total + addition
-            return total
-
-
         def output_render_status_bytes(status: OutputStatus) -> usize error[OutputRenderError]:
             return 4 if status == OutputStatus.Pass or status == OutputStatus.Fail or status == OutputStatus.Skip
             return 5 if status == OutputStatus.Flaky
@@ -134,18 +125,15 @@ module EsOutputRender:
                     try output_render_accumulate(total, 8, limit)
                 return total
             elif document.options.format == OutputFormat.Json:
-                total: mutable usize = 14 + separator
-                name_bytes: usize = try output_render_json_escaped_bytes(record.name, limit)
-                status_bytes: usize = try output_render_status_bytes(record.status)
-                message_bytes: usize = try output_render_json_escaped_bytes(record.message, limit)
-                stdout_bytes: usize = try output_render_json_escaped_bytes(record.stdout, limit)
-                stderr_bytes: usize = try output_render_json_escaped_bytes(record.stderr, limit)
-                try output_render_accumulate(total, name_bytes, limit)
-                try output_render_accumulate(total, status_bytes, limit)
-                try output_render_accumulate(total, message_bytes, limit)
-                try output_render_accumulate(total, stdout_bytes, limit)
-                try output_render_accumulate(total, stderr_bytes, limit)
-                return total
+                catch measure_output_json_record_frame(record, record_index == 0, limit):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJsonError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        elif failure == OutputJsonError.InvalidUtf8:
+                            raise OutputRenderError.OutputTextInvalid
+                        raise OutputRenderError.AccountingInvalid
             elif document.options.format == OutputFormat.Junit:
                 catch measure_output_junit_record_frame(record, limit):
                     ok value:
@@ -160,7 +148,14 @@ module EsOutputRender:
 
 
         def output_render_header_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
-            return 1 if document.options.format == OutputFormat.Json
+            if document.options.format == OutputFormat.Json:
+                catch measure_output_json_header_frame(document, document.options.max_bytes):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJsonError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        raise OutputRenderError.AccountingInvalid
             if document.options.format == OutputFormat.Junit:
                 catch measure_output_junit_header_frame(document, document.options.max_bytes):
                     ok value:
@@ -175,7 +170,14 @@ module EsOutputRender:
 
 
         def output_render_footer_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
-            return 1 if document.options.format == OutputFormat.Json
+            if document.options.format == OutputFormat.Json:
+                catch measure_output_json_footer_frame(document, document.options.max_bytes):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJsonError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        raise OutputRenderError.AccountingInvalid
             if document.options.format == OutputFormat.Junit:
                 catch measure_output_junit_footer_frame(document.options.max_bytes):
                     ok value:
@@ -201,6 +203,18 @@ module EsOutputRender:
             return expected
 
 
+        def output_render_expected_document_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
+            expected: mutable usize = 0
+            header: usize = try output_render_header_bytes(document)
+            try output_render_accumulate(expected, header, document.options.max_bytes)
+            for index in 0..<document.records.count |document, expected|:
+                record_bytes: usize = try output_render_record_bytes(document, index)
+                try output_render_accumulate(expected, record_bytes, document.options.max_bytes)
+            footer: usize = try output_render_footer_bytes(document)
+            try output_render_accumulate(expected, footer, document.options.max_bytes)
+            return expected
+
+
     public:
         def validate_output_render(render: OutputRender&) -> bool error[OutputRenderError]:
             raise OutputRenderError.InvalidState if not output_render_state_valid(render.state)
@@ -217,6 +231,7 @@ module EsOutputRender:
             raise OutputRenderError.AccountingInvalid if render.emitted_bytes != expected_emitted_bytes
             if render.state == OutputRenderState.Ready:
                 raise OutputRenderError.AccountingInvalid if render.next_record != 0 or render.chunks != 0 or render.emitted_bytes != 0
+                _ = try output_render_expected_document_bytes(render.document)
             elif render.state == OutputRenderState.Rendering or render.state == OutputRenderState.Cancelling or render.state == OutputRenderState.Failed:
                 raise OutputRenderError.AccountingInvalid if render.chunks != render.next_record + 1
             elif render.state == OutputRenderState.Complete:

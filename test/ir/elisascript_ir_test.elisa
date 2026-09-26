@@ -39,6 +39,7 @@ using EsSchemaCsv
 using EsInstall
 using EsSourceMap
 using EsOutput
+using EsOutputJson
 using EsOutputJunit
 using EsOutputRender
 using EsOutputTransport
@@ -6187,15 +6188,23 @@ def typed_output_renderer_contract_is_ordered_escaped_and_cancelable() -> void:
     assert advance_output_document(tight_document, OutputDocumentEvent.Append, OutputRecord{name: "abcdefghij", status: OutputStatus.Pass, message: "12345678901234567890", stdout: "stdouttext", stderr: "stderrtext"}) == OutputDocumentState.Building
     assert advance_output_document(tight_document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
     tight_render: mutable OutputRender = OutputRender{document: tight_document}
-    assert advance_output_render(tight_render, OutputRenderEvent.Begin, 0) == OutputRenderState.Rendering
     render_budget_rejected: mutable bool = false
-    catch advance_output_render(tight_render, OutputRenderEvent.Emit, 0):
+    catch advance_output_render(tight_render, OutputRenderEvent.Begin, 0):
         ok value:
             assert false
         error failure:
             assert failure == OutputRenderError.RenderLimitExceeded
             render_budget_rejected <- true
     assert render_budget_rejected
+    assert tight_render.state == OutputRenderState.Ready and tight_render.emitted_bytes == 0
+    transport_budget_rejected: mutable bool = false
+    catch begin_output_transport(tight_document):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputRenderError.RenderLimitExceeded
+            transport_budget_rejected <- true
+    assert transport_budget_rejected
     open_document: mutable OutputDocument = OutputDocument{options: options}
     assert advance_output_document(open_document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
     open_render_rejected: mutable bool = false
@@ -6277,6 +6286,77 @@ def typed_output_junit_frames_match_bounded_document_serialization() -> void:
             assert failure == OutputJunitError.OutputLimitExceeded
             document_limit_rejected <- true
     assert document_limit_rejected
+
+
+@test
+def typed_output_json_frames_match_schema_and_bounded_document_serialization() -> void:
+    options: OutputOptions = OutputOptions{format: OutputFormat.Json, color: OutputColorMode.Never, max_bytes: 4096}
+    document: mutable OutputDocument = OutputDocument{options: options}
+    assert advance_output_document(document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/å", status: OutputStatus.Pass, message: "quote \" slash \\ \n", stdout: "out\n", duration_ms: 42}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "flaky", status: OutputStatus.Flaky, message: "retry", duration_ms: 9}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "fail", status: OutputStatus.Fail, message: "bad"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "error", status: OutputStatus.Error, message: "oops"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "skip", status: OutputStatus.Skip, message: "not run"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+
+    complete: darray[u8] = render_output_document_json(document, options.max_bytes)
+    assert bytes_view(complete) == "{\"tests\":[{\"name\":\"case/å\",\"status\":\"pass\",\"message\":\"quote \\\" slash \\\\ \\n\",\"stdout\":\"out\\n\",\"stderr\":\"\",\"duration_ms\":42},{\"name\":\"flaky\",\"status\":\"flaky\",\"message\":\"retry\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":9},{\"name\":\"fail\",\"status\":\"fail\",\"message\":\"bad\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"error\",\"status\":\"error\",\"message\":\"oops\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"skip\",\"status\":\"skip\",\"message\":\"not run\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0}],\"summary\":{\"tests\":5,\"passed\":1,\"flaky\":1,\"failures\":1,\"errors\":1,\"skipped\":1}}\n"
+
+    header: darray[u8] = render_output_json_header_frame(document, options.max_bytes)
+    assert header.count == measure_output_json_header_frame(document, options.max_bytes)
+    render: mutable OutputRender = OutputRender{document: document}
+    render_frame: mutable OutputRenderFrame = OutputRenderFrame{}
+    descriptor: OutputRenderFrame = peek_output_render_frame(render)
+    assert descriptor.kind == OutputRenderFrameKind.Header and descriptor.bytes == header.count
+    assert next_output_render_frame(render, render_frame) == OutputRenderState.Rendering
+    joined: mutable darray[u8] = []
+    for byte in header |joined|:
+        joined.push(byte)
+    for index in 0..<document.records.count |document, joined, options|:
+        record: OutputRecord = document.records[index]
+        record_frame: darray[u8] = render_output_json_record_frame(record, index == 0, options.max_bytes)
+        assert record_frame.count == measure_output_json_record_frame(record, index == 0, options.max_bytes)
+        descriptor <- peek_output_render_frame(render)
+        assert descriptor.kind == OutputRenderFrameKind.Record and descriptor.record_index == index and descriptor.bytes == record_frame.count
+        assert next_output_render_frame(render, render_frame) == OutputRenderState.Rendering
+        for byte in record_frame |joined|:
+            joined.push(byte)
+    footer: darray[u8] = render_output_json_footer_frame(document, options.max_bytes)
+    assert footer.count == measure_output_json_footer_frame(document, options.max_bytes)
+    descriptor <- peek_output_render_frame(render)
+    assert descriptor.kind == OutputRenderFrameKind.Footer and descriptor.bytes == footer.count
+    assert next_output_render_frame(render, render_frame) == OutputRenderState.Complete
+    for byte in footer |joined|:
+        joined.push(byte)
+    assert joined.count == complete.count
+    for index in 0..<complete.count |complete, joined|:
+        assert complete[index] == joined[index]
+
+    tiny_options: OutputOptions = OutputOptions{format: OutputFormat.Json, max_bytes: 32}
+    tiny_document: mutable OutputDocument = OutputDocument{options: tiny_options, state: OutputDocumentState.Sealed}
+    document_limit_rejected: mutable bool = false
+    catch render_output_document_json(tiny_document):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputJsonError.OutputLimitExceeded
+            document_limit_rejected <- true
+    assert document_limit_rejected
+
+    invalid_utf8_bytes: mutable darray[u8] = [255u8]
+    invalid_utf8_document: mutable OutputDocument = OutputDocument{options: options}
+    assert advance_output_document(invalid_utf8_document, OutputDocumentEvent.Begin, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(invalid_utf8_document, OutputDocumentEvent.Append, OutputRecord{name: bytes_view(invalid_utf8_bytes), status: OutputStatus.Pass}) == OutputDocumentState.Building
+    assert advance_output_document(invalid_utf8_document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+    invalid_utf8_rejected: mutable bool = false
+    catch render_output_document_json(invalid_utf8_document, options.max_bytes):
+        ok value:
+            assert false
+        error failure:
+            assert failure == OutputJsonError.InvalidUtf8
+            invalid_utf8_rejected <- true
+    assert invalid_utf8_rejected
 
 
 @test

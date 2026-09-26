@@ -1,0 +1,243 @@
+# Bounded JSON serialization for sealed generic output documents.
+#
+# A count-only writer shares the serialization path used to produce frame
+# bytes, keeping OutputRender's JSON size accounting tied to the emitted form.
+
+module EsOutputJson:
+    using EsEncoding
+    using EsOutput
+
+    public:
+        const module Limits:
+            MAX_BYTES: usize = EsOutput::Limits::TEXT_BYTES
+
+
+        error OutputJsonError:
+            InvalidLimit
+            InvalidFormat
+            InvalidRecord
+            InvalidUtf8
+            OutputLimitExceeded
+
+
+    private:
+        struct OutputJsonWriter:
+            bytes: mutable darray[u8] = []
+            byte_count: mutable usize = 0
+            count_only: bool = false
+
+
+        struct OutputJsonCounts:
+            tests: usize = 0
+            passed: usize = 0
+            flaky: usize = 0
+            failures: usize = 0
+            errors: usize = 0
+            skipped: usize = 0
+
+
+        const module Internal:
+            HEX: sview = "0123456789abcdef"
+
+
+        def output_json_utf8_valid(value: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for index in 0..<sview_len(value) |value, cursor|:
+                return false if not utf8_feed(sview_at(value, index), cursor)
+            return utf8_complete(cursor)
+
+
+        def output_json_append_byte(writer: mutable OutputJsonWriter&, byte: u8, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJsonError.OutputLimitExceeded if writer.byte_count >= limit
+            if not writer.count_only:
+                writer.bytes.push(byte)
+            writer.byte_count <- writer.byte_count + 1
+
+
+        def output_json_append_text(writer: mutable OutputJsonWriter&, text: sview, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(text)
+            raise OutputJsonError.OutputLimitExceeded if writer.byte_count > limit or length > limit - writer.byte_count
+            if not writer.count_only:
+                for index in 0..<length |writer, text|:
+                    writer.bytes.push(sview_at(text, index))
+            writer.byte_count <- writer.byte_count + length
+
+
+        def output_json_append_u64(writer: mutable OutputJsonWriter&, value: u64, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            remaining: mutable u64 = value
+            if remaining == 0u64:
+                digits.push(48u8)
+            while remaining != 0u64:
+                digits.push(48u8 + (remaining % 10u64).u8())
+                remaining <- remaining / 10u64
+            for index in 0..<digits.count |writer, digits, limit|:
+                try output_json_append_byte(writer, digits[digits.count - index - 1], limit)
+
+
+        def output_json_append_string(writer: mutable OutputJsonWriter&, value: sview, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJsonError.InvalidUtf8 if not output_json_utf8_valid(value)
+            try output_json_append_byte(writer, 34u8, limit)
+            for index in 0..<sview_len(value) |writer, value, limit|:
+                byte: u8 = sview_at(value, index)
+                if byte == 34u8 or byte == 92u8:
+                    try output_json_append_byte(writer, 92u8, limit)
+                    try output_json_append_byte(writer, byte, limit)
+                elif byte == 8u8:
+                    try output_json_append_text(writer, "\\b", limit)
+                elif byte == 9u8:
+                    try output_json_append_text(writer, "\\t", limit)
+                elif byte == 10u8:
+                    try output_json_append_text(writer, "\\n", limit)
+                elif byte == 12u8:
+                    try output_json_append_text(writer, "\\f", limit)
+                elif byte == 13u8:
+                    try output_json_append_text(writer, "\\r", limit)
+                elif byte < 32u8:
+                    try output_json_append_text(writer, "\\u00", limit)
+                    high: u8 = sview_at(Internal::HEX, ((byte >> 4) & 15u8).usize())
+                    low: u8 = sview_at(Internal::HEX, (byte & 15u8).usize())
+                    try output_json_append_byte(writer, high, limit)
+                    try output_json_append_byte(writer, low, limit)
+                else:
+                    try output_json_append_byte(writer, byte, limit)
+            try output_json_append_byte(writer, 34u8, limit)
+
+
+        def output_json_status_name(status: OutputStatus) -> sview error[OutputJsonError]:
+            return "pass" if status == OutputStatus.Pass
+            return "flaky" if status == OutputStatus.Flaky
+            return "fail" if status == OutputStatus.Fail
+            return "error" if status == OutputStatus.Error
+            return "skip" if status == OutputStatus.Skip
+            raise OutputJsonError.InvalidRecord
+
+
+        def output_json_record_valid(record: OutputRecord) -> bool:
+            return false if sview_len(record.name) == 0 or sview_len(record.name) >= EsOutput::Limits::NAME_BYTES or sview_contains_byte(record.name, 0)
+            return false if sview_len(record.message) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.message, 0)
+            return false if sview_len(record.stdout) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.stdout, 0)
+            return false if sview_len(record.stderr) >= EsOutput::Limits::TEXT_BYTES or sview_contains_byte(record.stderr, 0)
+            return record.status in {OutputStatus.Pass, OutputStatus.Flaky, OutputStatus.Fail, OutputStatus.Error, OutputStatus.Skip}
+
+
+        def output_json_append_record(writer: mutable OutputJsonWriter&, record: OutputRecord, first: bool, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJsonError.InvalidRecord if not output_json_record_valid(record)
+            try output_json_append_text(writer, ",", limit) if not first
+            try output_json_append_text(writer, "{\"name\":", limit)
+            try output_json_append_string(writer, record.name, limit)
+            try output_json_append_text(writer, ",\"status\":", limit)
+            status_name: sview = try output_json_status_name(record.status)
+            try output_json_append_string(writer, status_name, limit)
+            try output_json_append_text(writer, ",\"message\":", limit)
+            try output_json_append_string(writer, record.message, limit)
+            try output_json_append_text(writer, ",\"stdout\":", limit)
+            try output_json_append_string(writer, record.stdout, limit)
+            try output_json_append_text(writer, ",\"stderr\":", limit)
+            try output_json_append_string(writer, record.stderr, limit)
+            try output_json_append_text(writer, ",\"duration_ms\":", limit)
+            try output_json_append_u64(writer, record.duration_ms, limit)
+            try output_json_append_byte(writer, 125u8, limit)
+
+
+        def output_json_document_limit(document: OutputDocument&, requested_bytes: usize) -> usize error[OutputJsonError]:
+            raise OutputJsonError.InvalidLimit if requested_bytes == 0 or requested_bytes > Limits::MAX_BYTES
+            return document.options.max_bytes if requested_bytes > document.options.max_bytes
+            return requested_bytes
+
+
+        def output_json_prepare(document: OutputDocument&, max_bytes: usize) -> OutputJsonCounts error[OutputContractError, OutputJsonError]:
+            raise OutputJsonError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_output_document(document)
+            raise OutputJsonError.InvalidFormat if document.state != OutputDocumentState.Sealed or document.options.format != OutputFormat.Json
+
+            passed: mutable usize = 0
+            flaky: mutable usize = 0
+            failures: mutable usize = 0
+            errors: mutable usize = 0
+            skipped: mutable usize = 0
+            for record in document.records |document, passed, flaky, failures, errors, skipped|:
+                passed <- passed + 1 if record.status == OutputStatus.Pass
+                flaky <- flaky + 1 if record.status == OutputStatus.Flaky
+                failures <- failures + 1 if record.status == OutputStatus.Fail
+                errors <- errors + 1 if record.status == OutputStatus.Error
+                skipped <- skipped + 1 if record.status == OutputStatus.Skip
+            return OutputJsonCounts{tests: document.records.count, passed: passed, flaky: flaky, failures: failures, errors: errors, skipped: skipped}
+
+
+        def output_json_append_header(writer: mutable OutputJsonWriter&, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            try output_json_append_text(writer, "{\"tests\":[", limit)
+
+
+        def output_json_append_footer(writer: mutable OutputJsonWriter&, counts: OutputJsonCounts, limit: usize) -> void error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            try output_json_append_text(writer, "],\"summary\":{\"tests\":", limit)
+            try output_json_append_u64(writer, counts.tests.u64(), limit)
+            try output_json_append_text(writer, ",\"passed\":", limit)
+            try output_json_append_u64(writer, counts.passed.u64(), limit)
+            try output_json_append_text(writer, ",\"flaky\":", limit)
+            try output_json_append_u64(writer, counts.flaky.u64(), limit)
+            try output_json_append_text(writer, ",\"failures\":", limit)
+            try output_json_append_u64(writer, counts.failures.u64(), limit)
+            try output_json_append_text(writer, ",\"errors\":", limit)
+            try output_json_append_u64(writer, counts.errors.u64(), limit)
+            try output_json_append_text(writer, ",\"skipped\":", limit)
+            try output_json_append_u64(writer, counts.skipped.u64(), limit)
+            try output_json_append_text(writer, "}}\n", limit)
+
+
+    public:
+        def render_output_json_header_frame(document: OutputDocument&, max_bytes: usize) -> darray[u8] error[OutputContractError, OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_json_document_limit(document, max_bytes)
+            _ = try output_json_prepare(document, effective_limit)
+            writer: mutable OutputJsonWriter = OutputJsonWriter{}
+            try output_json_append_header(writer, effective_limit)
+            return writer.bytes
+
+
+        def render_output_json_record_frame(record: OutputRecord, first: bool, max_bytes: usize) -> darray[u8] error[OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJsonError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            writer: mutable OutputJsonWriter = OutputJsonWriter{}
+            try output_json_append_record(writer, record, first, max_bytes)
+            return writer.bytes
+
+
+        def render_output_json_footer_frame(document: OutputDocument&, max_bytes: usize) -> darray[u8] error[OutputContractError, OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_json_document_limit(document, max_bytes)
+            counts: OutputJsonCounts = try output_json_prepare(document, effective_limit)
+            writer: mutable OutputJsonWriter = OutputJsonWriter{}
+            try output_json_append_footer(writer, counts, effective_limit)
+            return writer.bytes
+
+
+        def measure_output_json_header_frame(document: OutputDocument&, max_bytes: usize) -> usize error[OutputContractError, OutputJsonError]:
+            effective_limit: usize = try output_json_document_limit(document, max_bytes)
+            _ = try output_json_prepare(document, effective_limit)
+            writer: mutable OutputJsonWriter = OutputJsonWriter{count_only: true}
+            try output_json_append_header(writer, effective_limit)
+            return writer.byte_count
+
+
+        def measure_output_json_record_frame(record: OutputRecord, first: bool, max_bytes: usize) -> usize error[OutputJsonError]:
+            raise OutputJsonError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            writer: mutable OutputJsonWriter = OutputJsonWriter{count_only: true}
+            try output_json_append_record(writer, record, first, max_bytes)
+            return writer.byte_count
+
+
+        def measure_output_json_footer_frame(document: OutputDocument&, max_bytes: usize) -> usize error[OutputContractError, OutputJsonError]:
+            effective_limit: usize = try output_json_document_limit(document, max_bytes)
+            counts: OutputJsonCounts = try output_json_prepare(document, effective_limit)
+            writer: mutable OutputJsonWriter = OutputJsonWriter{count_only: true}
+            try output_json_append_footer(writer, counts, effective_limit)
+            return writer.byte_count
+
+
+        def render_output_document_json(document: OutputDocument&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[OutputContractError, OutputJsonError] can[Memory.Allocate, Abort.Panic]:
+            effective_limit: usize = try output_json_document_limit(document, max_bytes)
+            counts: OutputJsonCounts = try output_json_prepare(document, effective_limit)
+            writer: mutable OutputJsonWriter = OutputJsonWriter{}
+            try output_json_append_header(writer, effective_limit)
+            for index in 0..<document.records.count |writer, document, effective_limit|:
+                try output_json_append_record(writer, document.records[index], index == 0, effective_limit)
+            try output_json_append_footer(writer, counts, effective_limit)
+            return writer.bytes
