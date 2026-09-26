@@ -593,13 +593,15 @@ OS writes or prove what an OS writer actually accepted.
 sealed `OutputDocument`. It validates UTF-8/XML characters, escapes XML text
 and attributes, maps failure/error/skip outcomes, retains flaky-pass metadata,
 wraps captured stdout/stderr, and rejects output that exceeds its selected
-byte limit. Flaky status is an Elisascript-specific testcase property for now:
-`OutputRecord` retains the final result but not the failed-attempt history
-needed for a truthful `<flakyFailure>` element. Header, record, and footer
+byte limit. `OutputRecord` includes bounded typed retry history; each failed,
+crashed, timed-out, or errored prior attempt is emitted as a `<flakyFailure>`
+child with its diagnostic and captured streams, while flaky-pass properties
+remain for consumers without flaky-history support. Header, record, and footer
 frame APIs use a count-only writer over the same emission path, and
 `EsOutputRender` derives JUnit frame lengths from those measures. Generic JSON
-now has the same count/write contract, emits all record fields plus summary
-counters, and rejects invalid UTF-8. Its JSON status names include `pass`,
+now has the same count/write contract, emits every record field and retry
+attempt plus summary counters, and rejects invalid UTF-8. Retry text is charged
+to the document's aggregate byte budget. Its JSON status names include `pass`,
 `flaky`, `fail`, `error`, `skip`, `crashed`, `timed_out`, and `cancelled`.
 JUnit preserves crash and timeout types in `<error>` children and marks
 cancellation on the `<skipped>` child while keeping standard aggregate

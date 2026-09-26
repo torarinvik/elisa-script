@@ -110,6 +110,7 @@ module EsTestRunner:
             state: TestCaseState = TestCaseState.Discovered
             attempts: usize = 0
             attempt_token: u64 = 0
+            attempt_history: darray[TestResult] = []
             result: TestResult = TestResult{}
 
 
@@ -199,14 +200,28 @@ module EsTestRunner:
 
         def test_case_result_bytes(case: TestCase, limit: usize) -> usize error[TestRunnerError]:
             total: mutable usize = 0
+            has_record_text: bool = case.result.published or case.attempt_history.count != 0
+            if has_record_text:
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.spec.name, Limits::NAME_BYTES, false)
+                raise TestRunnerError.AccountingInvalid if total > limit or sview_len(case.spec.name) > limit - total
+                total <- total + sview_len(case.spec.name)
             if case.result.published:
                 raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.message, Limits::MESSAGE_BYTES)
                 raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.stdout, Limits::MESSAGE_BYTES)
                 raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.stderr, Limits::MESSAGE_BYTES)
                 raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.result.process.error_text, Limits::MESSAGE_BYTES)
                 raise TestRunnerError.MessageInvalid if case.result.process.error_text != "" and case.result.message != case.result.process.error_text
-                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(case.spec.name, Limits::NAME_BYTES, false)
-                for value in [case.spec.name, case.result.message, case.result.process.stdout, case.result.process.stderr] |total, limit|:
+                for value in [case.result.message, case.result.process.stdout, case.result.process.stderr] |total, limit|:
+                    raise TestRunnerError.AccountingInvalid if total > limit
+                    raise TestRunnerError.AccountingInvalid if sview_len(value) > limit - total
+                    total <- total + sview_len(value)
+            for attempt in case.attempt_history |total, limit|:
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(attempt.message, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(attempt.process.stdout, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(attempt.process.stderr, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if not test_runner_text_valid(attempt.process.error_text, Limits::MESSAGE_BYTES)
+                raise TestRunnerError.MessageInvalid if attempt.process.error_text != "" and attempt.message != attempt.process.error_text
+                for value in [attempt.message, attempt.process.stdout, attempt.process.stderr] |total, limit|:
                     raise TestRunnerError.AccountingInvalid if total > limit
                     raise TestRunnerError.AccountingInvalid if sview_len(value) > limit - total
                     total <- total + sview_len(value)
@@ -285,6 +300,29 @@ module EsTestRunner:
             return outcome == TestOutcome.Failed if policy == TestRetryPolicy.Failed else true
 
 
+        def test_outcome_case_state(outcome: TestOutcome) -> TestCaseState error[TestRunnerError]:
+            return TestCaseState.Failed if outcome == TestOutcome.Failed
+            return TestCaseState.Crashed if outcome == TestOutcome.Crashed
+            return TestCaseState.TimedOut if outcome == TestOutcome.TimedOut
+            return TestCaseState.Error if outcome == TestOutcome.Error
+            raise TestRunnerError.InvalidOutcome
+
+
+        def test_outcome_output_status(outcome: TestOutcome) -> OutputStatus error[TestRunnerError]:
+            return OutputStatus.Fail if outcome == TestOutcome.Failed
+            return OutputStatus.Crashed if outcome == TestOutcome.Crashed
+            return OutputStatus.TimedOut if outcome == TestOutcome.TimedOut
+            return OutputStatus.Error if outcome == TestOutcome.Error
+            raise TestRunnerError.InvalidOutcome
+
+
+        def test_case_archive_retryable_attempt(case: mutable TestCase&, policy: TestRetryPolicy) -> void error[TestRunnerError] can[Memory.Allocate, Abort.Panic]:
+            raise TestRunnerError.InvalidOutcome if case.state != TestCaseState.Retryable
+            raise TestRunnerError.InvalidOutcome if not test_outcome_retryable(case.result.outcome, policy)
+            raise TestRunnerError.AttemptLimitExceeded if case.attempt_history.count >= Limits::ATTEMPTS
+            case.attempt_history.push(case.result)
+
+
         def test_runner_refresh_accounting(runner: mutable TestRunner&) -> void error[TestRunnerError]:
             active: mutable usize = 0
             selected: mutable usize = 0
@@ -311,7 +349,7 @@ module EsTestRunner:
                     timed_out <- timed_out + 1 if case.state == TestCaseState.TimedOut
                     cancelled <- cancelled + 1 if case.state == TestCaseState.Cancelled
                     errors <- errors + 1 if case.state == TestCaseState.Error
-                if case.result.published:
+                if case.result.published or case.attempt_history.count != 0:
                     case_bytes: usize = try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
                     raise TestRunnerError.AccountingInvalid if output > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - output
                     output <- output + case_bytes
@@ -355,7 +393,7 @@ module EsTestRunner:
                 timed_out <- timed_out + 1 if case.state == TestCaseState.TimedOut
                 cancelled <- cancelled + 1 if case.state == TestCaseState.Cancelled
                 errors <- errors + 1 if case.state == TestCaseState.Error
-                if case.result.published:
+                if case.result.published or case.attempt_history.count != 0:
                     case_bytes: usize = try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
                     raise TestRunnerError.AccountingInvalid if output > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - output
                     output <- output + case_bytes
@@ -387,7 +425,9 @@ module EsTestRunner:
                     report_started <- false
             raise TestRunnerError.ReportInvalid if not report_started
             for case in runner.cases |runner|:
-                record: OutputRecord = OutputRecord{name: case.spec.name, status: try test_case_status(case), message: case.result.message, stdout: case.result.process.stdout, stderr: case.result.process.stderr, duration_ms: case.result.duration_ms}
+                record: mutable OutputRecord = OutputRecord{name: case.spec.name, status: try test_case_status(case), message: case.result.message, stdout: case.result.process.stdout, stderr: case.result.process.stderr, duration_ms: case.result.duration_ms}
+                for attempt in case.attempt_history |record, runner|:
+                    record.retry_history.push(OutputRetryAttempt{status: try test_outcome_output_status(attempt.outcome), message: attempt.message, stdout: attempt.process.stdout, stderr: attempt.process.stderr, duration_ms: attempt.duration_ms})
                 appended: mutable bool = false
                 catch advance_output_document(runner.report, OutputDocumentEvent.Append, record):
                     ok value:
@@ -473,9 +513,30 @@ module EsTestRunner:
                 raise TestRunnerError.AttemptLimitExceeded if case.attempts > runner.max_attempts
                 raise TestRunnerError.AccountingInvalid if case.attempts == 0 and case.attempt_token != 0
                 raise TestRunnerError.AccountingInvalid if case.attempts != 0 and case.attempt_token != case.attempts.u64()
+                raise TestRunnerError.AttemptLimitExceeded if case.attempt_history.count > Limits::ATTEMPTS or case.attempt_history.count > case.attempts
+                for history_index in 0..<case.attempt_history.count |case, runner|:
+                    prior: TestResult = case.attempt_history[history_index]
+                    raise TestRunnerError.InvalidOutcome if prior.outcome == TestOutcome.Error and prior.process.kind == ProcessResultKind.Cancelled
+                    raise TestRunnerError.InvalidOutcome if not test_outcome_retryable(prior.outcome, runner.retry_policy)
+                    prior_attempt: usize = history_index + 1
+                    prior_state: TestCaseState = try test_outcome_case_state(prior.outcome)
+                    try test_result_matches_state(prior, prior_state, prior_attempt, prior_attempt.u64())
                 raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Discovering or runner.state == TestRunnerState.Selecting) and case.state != TestCaseState.Discovered
                 raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Running or runner.state == TestRunnerState.Draining or runner.state == TestRunnerState.Cancelling) and case.state == TestCaseState.Discovered
                 raise TestRunnerError.InvalidCaseState if (runner.state == TestRunnerState.Draining or runner.state == TestRunnerState.Cancelling) and (case.state == TestCaseState.Selected or case.state == TestCaseState.Retryable)
+                if case.state == TestCaseState.Discovered or case.state == TestCaseState.Selected:
+                    raise TestRunnerError.AccountingInvalid if case.attempt_history.count != case.attempts
+                elif case.state == TestCaseState.Running or case.state == TestCaseState.Retryable:
+                    raise TestRunnerError.AccountingInvalid if case.attempt_history.count + 1 != case.attempts
+                elif case.state == TestCaseState.Skipped:
+                    raise TestRunnerError.AccountingInvalid if case.attempts != 0 or case.attempt_history.count != 0
+                elif case.state == TestCaseState.Cancelled:
+                    if case.attempts == 0:
+                        raise TestRunnerError.AccountingInvalid if case.attempt_history.count != 0
+                    else:
+                        raise TestRunnerError.AccountingInvalid if case.attempt_history.count + 1 != case.attempts and case.attempt_history.count != case.attempts
+                else:
+                    raise TestRunnerError.AccountingInvalid if case.attempt_history.count + 1 != case.attempts
                 if case.state == TestCaseState.Discovered:
                     raise TestRunnerError.InvalidOutcome if case.selected or not test_result_unpublished_valid(case.result)
                 elif case.state == TestCaseState.Selected:
@@ -609,6 +670,7 @@ module EsTestRunner:
                         if runner.state == TestRunnerState.Running:
                             for pending_index in 0..<runner.cases.count |runner|:
                                 if runner.cases[pending_index].state == TestCaseState.Selected or runner.cases[pending_index].state == TestCaseState.Retryable:
+                                    test_case_archive_retryable_attempt(runner.cases[pending_index], runner.retry_policy) if runner.cases[pending_index].state == TestCaseState.Retryable
                                     runner.cases[pending_index].selected <- true
                                     runner.cases[pending_index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[pending_index].attempt_token, message: "runner stopped after test failure"}
                                     runner.cases[pending_index].state <- TestCaseState.Cancelled
@@ -623,6 +685,7 @@ module EsTestRunner:
                 raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Running
                 raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
                 raise TestRunnerError.RetryNotReady if runner.cases[case_index].state != TestCaseState.Retryable
+                try test_case_archive_retryable_attempt(runner.cases[case_index], runner.retry_policy)
                 runner.cases[case_index].state <- TestCaseState.Selected
                 runner.cases[case_index].result <- TestResult{}
                 try test_runner_refresh_accounting(runner)
@@ -654,6 +717,7 @@ module EsTestRunner:
                         runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: "runner stopped after infrastructure failure"}
                         runner.cases[index].state <- TestCaseState.Cancelled
                     elif runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
+                        test_case_archive_retryable_attempt(runner.cases[index], runner.retry_policy) if runner.cases[index].state == TestCaseState.Retryable
                         runner.cases[index].selected <- true
                         runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "runner stopped after infrastructure failure"}
                         runner.cases[index].state <- TestCaseState.Cancelled
@@ -676,6 +740,7 @@ module EsTestRunner:
                 else:
                     for index in 0..<runner.cases.count |runner|:
                         if runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
+                            test_case_archive_retryable_attempt(runner.cases[index], runner.retry_policy) if runner.cases[index].state == TestCaseState.Retryable
                             runner.cases[index].selected <- true
                             runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "cancelled before launch"}
                             runner.cases[index].state <- TestCaseState.Cancelled
