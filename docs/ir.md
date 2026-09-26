@@ -616,6 +616,17 @@ Cancellation acknowledgement also accounts any still-running nodes as
 `Cancelled` after the host confirms they stopped; it cannot leave active
 children unaccounted.
 
+`EsBuildCompilationDatabase` projects explicitly selected translation-unit
+actions from a validated `BuildUsageGraphPlan` into bounded deterministic JSON
+for `compile_commands.json`. It preserves the executable and each argument as
+separate strings in the standard `arguments` array, rather than attempting to
+quote shell command text. Paths must be absolute, bounded UTF-8; action indexes
+must be unique and in graph order; the caller may select one declared object
+output even when the action also owns byproducts. JSON escaping, entry count,
+and the 64 MiB output ceiling are checked before bytes are returned. The caller
+still owns atomic file publication and
+must decide which graph actions are compilation units.
+
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
 input, and output fingerprints plus ordered target dependencies. `Phony` targets

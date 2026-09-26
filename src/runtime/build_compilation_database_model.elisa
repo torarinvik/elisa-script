@@ -1,0 +1,153 @@
+# Deterministic, bounded clang/CMake compilation-database projection.
+#
+# The caller explicitly selects translation-unit actions from an owned build
+# plan. Argument vectors stay tokenized; no shell command is reconstructed.
+
+module EsBuildCompilationDatabase:
+    using EsBuild
+    using EsBuildExecutor
+    using EsBuildUsageGraph
+    using EsEncoding
+    using EsProcess
+
+    public:
+        const module Limits:
+            ENTRIES: usize = EsBuild::Limits::NODES
+            PATH_BYTES: usize = 4096
+            OUTPUT_BYTES: usize = 67108864
+
+
+        struct BuildCompilationSource:
+            action_index: usize
+            source_file: sview
+            output_file: sview = ""
+
+
+        error BuildCompilationDatabaseError:
+            EntryLimitExceeded
+            OutputLimitExceeded
+            InvalidLimit
+            InvalidActionIndex
+            DuplicateAction
+            ActionOrderInvalid
+            InvalidDirectory
+            InvalidSourceFile
+            InvalidOutputPath
+            InvalidUtf8
+            InvalidArgument
+
+
+    private:
+        const module Json:
+            HEX: sview = "0123456789abcdef"
+
+
+        def database_utf8_valid(value: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for byte in value |cursor|:
+                return false if not utf8_feed(byte, cursor)
+            return utf8_complete(cursor)
+
+
+        def database_append_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[BuildCompilationDatabaseError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildCompilationDatabaseError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def database_append_text(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[BuildCompilationDatabaseError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(value)
+            raise BuildCompilationDatabaseError.OutputLimitExceeded if output.count > limit or length > limit - output.count
+            for index in 0..<length |output, value|:
+                output.push(sview_at(value, index))
+
+
+        def database_append_json_string(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[BuildCompilationDatabaseError] can[Memory.Allocate, Abort.Panic]:
+            try database_append_byte(output, 34u8, limit)
+            for index in 0..<sview_len(value) |output, value, limit|:
+                byte: u8 = sview_at(value, index)
+                if byte == 34u8 or byte == 92u8:
+                    try database_append_byte(output, 92u8, limit)
+                    try database_append_byte(output, byte, limit)
+                elif byte == 8u8:
+                    try database_append_text(output, "\\b", limit)
+                elif byte == 9u8:
+                    try database_append_text(output, "\\t", limit)
+                elif byte == 10u8:
+                    try database_append_text(output, "\\n", limit)
+                elif byte == 12u8:
+                    try database_append_text(output, "\\f", limit)
+                elif byte == 13u8:
+                    try database_append_text(output, "\\r", limit)
+                elif byte < 32u8:
+                    try database_append_text(output, "\\u00", limit)
+                    try database_append_byte(output, sview_at(Json::HEX, ((byte >> 4) & 15u8).usize()), limit)
+                    try database_append_byte(output, sview_at(Json::HEX, (byte & 15u8).usize()), limit)
+                else:
+                    try database_append_byte(output, byte, limit)
+            try database_append_byte(output, 34u8, limit)
+
+
+        def database_action_valid(plan: BuildUsageGraphPlan, entry: BuildCompilationSource) -> bool error[BuildCompilationDatabaseError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildCompilationDatabaseError.InvalidActionIndex if entry.action_index >= plan.command_owners.count or entry.action_index >= plan.output_sets.count
+            command: ProcessCommand = plan.command_owners[entry.action_index].command
+            output_set: BuildExecutionNodeOutputs = plan.output_sets[entry.action_index]
+            raise BuildCompilationDatabaseError.InvalidDirectory if command.working_directory == "" or sview_len(command.working_directory) > Limits::PATH_BYTES or sview_contains_byte(command.working_directory, 0)
+            raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(command.working_directory)
+            raise BuildCompilationDatabaseError.InvalidDirectory if not path_is_absolute(path(command.working_directory))
+            raise BuildCompilationDatabaseError.InvalidSourceFile if entry.source_file == "" or sview_len(entry.source_file) > Limits::PATH_BYTES or sview_contains_byte(entry.source_file, 0)
+            raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(entry.source_file)
+            raise BuildCompilationDatabaseError.InvalidSourceFile if not path_is_absolute(path(entry.source_file))
+            if entry.output_file != "":
+                output_path: sview = entry.output_file
+                raise BuildCompilationDatabaseError.InvalidOutputPath if output_path == "" or sview_len(output_path) > Limits::PATH_BYTES or sview_contains_byte(output_path, 0)
+                raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(output_path)
+                raise BuildCompilationDatabaseError.InvalidOutputPath if not path_is_absolute(path(output_path))
+                declared: mutable bool = false
+                for declared_path in output_set.paths |output_path, declared|:
+                    declared <- true if declared_path == output_path
+                raise BuildCompilationDatabaseError.InvalidOutputPath if not declared
+            raise BuildCompilationDatabaseError.InvalidArgument if command.executable == "" or sview_len(command.executable) > Limits::PATH_BYTES or sview_contains_byte(command.executable, 0)
+            raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(command.executable)
+            for argument in command.arguments:
+                raise BuildCompilationDatabaseError.InvalidArgument if sview_len(argument) > EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES or sview_contains_byte(argument, 0)
+                raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(argument)
+            return true
+
+
+    public:
+        # The caller-selected entries map one translation unit to one graph
+        # action. The returned compact JSON has stable field/entry/argv order
+        # and ends in LF, matching common compile-database consumers.
+        def render_build_compilation_database(plan: mutable BuildUsageGraphPlan&, sources: darray[BuildCompilationSource], max_output_bytes: usize = Limits::OUTPUT_BYTES) -> darray[u8] error[BuildCompilationDatabaseError, BuildUsageGraphError, BuildUsageArgvError, ProcessCommandError, BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+            raise BuildCompilationDatabaseError.InvalidLimit if max_output_bytes == 0 or max_output_bytes > Limits::OUTPUT_BYTES
+            _ = try validate_build_usage_graph_plan(plan)
+            raise BuildCompilationDatabaseError.EntryLimitExceeded if sources.count > Limits::ENTRIES or sources.count > plan.graph.nodes.count
+            for source_index in 0..<sources.count |plan, sources|:
+                source: BuildCompilationSource = sources[source_index]
+                raise BuildCompilationDatabaseError.DuplicateAction if source_index > 0 and sources[source_index - 1].action_index == source.action_index
+                raise BuildCompilationDatabaseError.ActionOrderInvalid if source_index > 0 and sources[source_index - 1].action_index > source.action_index
+                _ = try database_action_valid(plan, source)
+
+            output: mutable darray[u8] = []
+            try Json::database_append_byte(output, 91u8, max_output_bytes)
+            for source_index in 0..<sources.count |output, plan, sources, max_output_bytes|:
+                source: BuildCompilationSource = sources[source_index]
+                command: ProcessCommand = plan.command_owners[source.action_index].command
+                if source_index != 0:
+                    try Json::database_append_byte(output, 44u8, max_output_bytes)
+                try Json::database_append_text(output, "{\"directory\":", max_output_bytes)
+                try Json::database_append_json_string(output, command.working_directory, max_output_bytes)
+                try Json::database_append_text(output, ",\"file\":", max_output_bytes)
+                try Json::database_append_json_string(output, source.source_file, max_output_bytes)
+                try Json::database_append_text(output, ",\"arguments\":[", max_output_bytes)
+                try Json::database_append_json_string(output, command.executable, max_output_bytes)
+                for argument_index in 0..<command.arguments.count |output, command, max_output_bytes|:
+                    try Json::database_append_byte(output, 44u8, max_output_bytes)
+                    try Json::database_append_json_string(output, command.arguments[argument_index], max_output_bytes)
+                try Json::database_append_byte(output, 93u8, max_output_bytes)
+                if source.output_file != "":
+                    try Json::database_append_text(output, ",\"output\":", max_output_bytes)
+                    try Json::database_append_json_string(output, source.output_file, max_output_bytes)
+                try Json::database_append_byte(output, 125u8, max_output_bytes)
+            try Json::database_append_text(output, "]\n", max_output_bytes)
+            return output

@@ -1,0 +1,116 @@
+include "../../src/ir/ir.elisa"
+
+using EsBuildUsageArgv
+using EsBuildUsageGraph
+using EsBuildCompilationDatabase
+using EsProcess
+
+
+def compilation_database_test_command(arguments: darray[sview]) -> BuildUsageProcessCommand error[BuildUsageArgvError, ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+    argv: BuildUsageArgv = try build_usage_raw_argv(arguments)
+    return try build_usage_process_command(
+        "/usr/bin/clang",
+        argv,
+        "/work space",
+        [],
+        ProcessEnvironmentMode.Clear,
+        60000000u64,
+        1048576
+    )
+
+
+def compilation_database_test_plan() -> BuildUsageGraphPlan error[BuildUsageGraphError, BuildUsageArgvError, ProcessCommandError, BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
+    actions: darray[BuildUsageActionSpec] = [
+        BuildUsageActionSpec{
+            name: "compile-main",
+            command: compilation_database_test_command(["-Iinclude path", "-DVALUE=\"quoted\"", "-DLINE=first\nsecond", "-c", "/work space/src/main.c", "-o", "/work space/main.o", "-MF", "/work space/main.d"]),
+            fingerprint: 1u64,
+            outputs: ["/work space/main.o", "/work space/main.d"]
+        },
+        BuildUsageActionSpec{
+            name: "compile-empty-argument",
+            command: compilation_database_test_command(["", "-c", "/work space/src/other.c"]),
+            fingerprint: 2u64
+        }
+    ]
+    return try build_usage_graph_plan(actions)
+
+
+@test
+def compilation_database_projects_owned_argv_as_stable_json() -> void:
+    can Memory.Allocate, Abort.Panic:
+        plan: mutable BuildUsageGraphPlan = compilation_database_test_plan()
+        sources: darray[BuildCompilationSource] = [
+            BuildCompilationSource{action_index: 0, source_file: "/work space/src/main.c", output_file: "/work space/main.o"},
+            BuildCompilationSource{action_index: 1, source_file: "/work space/src/other.c"}
+        ]
+        encoded: darray[u8] = render_build_compilation_database(plan, sources)
+        expected: sview = "[{\"directory\":\"/work space\",\"file\":\"/work space/src/main.c\",\"arguments\":[\"/usr/bin/clang\",\"-Iinclude path\",\"-DVALUE=\\\"quoted\\\"\",\"-DLINE=first\\nsecond\",\"-c\",\"/work space/src/main.c\",\"-o\",\"/work space/main.o\",\"-MF\",\"/work space/main.d\"],\"output\":\"/work space/main.o\"},{\"directory\":\"/work space\",\"file\":\"/work space/src/other.c\",\"arguments\":[\"/usr/bin/clang\",\"\",\"-c\",\"/work space/src/other.c\"]}]\n"
+        assert bytes_view(encoded) == expected
+
+
+@test
+def compilation_database_escapes_control_and_unicode_bytes_without_shell_joining() -> void:
+    can Memory.Allocate, Abort.Panic:
+        plan: mutable BuildUsageGraphPlan = compilation_database_test_plan()
+        sources: darray[BuildCompilationSource] = [BuildCompilationSource{action_index: 0, source_file: "/work space/src/\"café\".c", output_file: "/work space/main.o"}]
+        encoded: darray[u8] = render_build_compilation_database(plan, sources)
+        encoded_text: sview = bytes_view(encoded)
+        assert encoded_text.contains("café")
+        assert encoded_text.contains("\\\"café\\\".c")
+        assert encoded_text.contains("-Iinclude path")
+        assert encoded_text.contains("-DVALUE=\\\"quoted\\\"")
+        assert encoded_text.contains("-DLINE=first\\nsecond")
+
+
+@test
+def compilation_database_rejects_duplicate_actions_and_bounds_output() -> void:
+    can Memory.Allocate, Abort.Panic:
+        plan: mutable BuildUsageGraphPlan = compilation_database_test_plan()
+        duplicate_sources: darray[BuildCompilationSource] = [
+            BuildCompilationSource{action_index: 0, source_file: "/work space/src/main.c"},
+            BuildCompilationSource{action_index: 0, source_file: "/work space/src/other.c"}
+        ]
+        duplicate_rejected: mutable bool = false
+        catch render_build_compilation_database(plan, duplicate_sources):
+            ok encoded:
+                _ = encoded
+            error failure:
+                duplicate_rejected <- failure == BuildCompilationDatabaseError.DuplicateAction
+        assert duplicate_rejected
+
+        unordered_rejected: mutable bool = false
+        catch render_build_compilation_database(plan, [
+            BuildCompilationSource{action_index: 1, source_file: "/work space/src/other.c"},
+            BuildCompilationSource{action_index: 0, source_file: "/work space/src/main.c"}
+        ]):
+            ok encoded:
+                _ = encoded
+            error failure:
+                unordered_rejected <- failure == BuildCompilationDatabaseError.ActionOrderInvalid
+        assert unordered_rejected
+
+        tiny_limit_rejected: mutable bool = false
+        catch render_build_compilation_database(plan, [BuildCompilationSource{action_index: 0, source_file: "/work space/src/main.c"}], 16):
+            ok encoded:
+                _ = encoded
+            error failure:
+                tiny_limit_rejected <- failure == BuildCompilationDatabaseError.OutputLimitExceeded
+        assert tiny_limit_rejected
+
+        undeclared_output_rejected: mutable bool = false
+        catch render_build_compilation_database(plan, [BuildCompilationSource{action_index: 0, source_file: "/work space/src/main.c", output_file: "/work space/other.o"}]):
+            ok encoded:
+                _ = encoded
+            error failure:
+                undeclared_output_rejected <- failure == BuildCompilationDatabaseError.InvalidOutputPath
+        assert undeclared_output_rejected
+
+        invalid_path_bytes: mutable darray[u8] = [47u8, 119u8, 111u8, 114u8, 107u8, 47u8, 255u8]
+        invalid_utf8_rejected: mutable bool = false
+        catch render_build_compilation_database(plan, [BuildCompilationSource{action_index: 0, source_file: bytes_view(invalid_path_bytes)}]):
+            ok encoded:
+                _ = encoded
+            error failure:
+                invalid_utf8_rejected <- failure == BuildCompilationDatabaseError.InvalidUtf8
+        assert invalid_utf8_rejected
