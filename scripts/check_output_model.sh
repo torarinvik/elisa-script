@@ -9,12 +9,13 @@ model="$repo_root/src/runtime/output_model.elisa"
 json_model="$repo_root/src/runtime/output_json_model.elisa"
 junit_model="$repo_root/src/runtime/output_junit_model.elisa"
 renderer="$repo_root/src/runtime/output_renderer_model.elisa"
+transport="$repo_root/src/runtime/output_transport_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 execution="$repo_root/src/ir/execution.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$json_model" "$junit_model" "$renderer" "$ir" "$execution" "$fixture" "$docs"; do
+for required_file in "$model" "$json_model" "$junit_model" "$renderer" "$transport" "$ir" "$execution" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'output model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -87,6 +88,11 @@ rg -Fq 'using EsOutputJson' "$renderer"
 rg -Fq 'measure_output_json_record_frame' "$renderer"
 rg -Fq 'measure_output_junit_record_frame' "$renderer"
 rg -Fq 'output_render_expected_document_bytes' "$renderer"
+rg -Fq 'struct OutputTransportPayload:' "$transport"
+rg -Fq 'def peek_output_transport_payload(' "$transport"
+rg -Fq 'def acknowledge_output_transport_payload(' "$transport"
+rg -Fq 'output_transport_payload_bytes_equal' "$transport"
+rg -Fq 'FramePayloadMismatch' "$transport"
 rg -Fq 'include "../runtime/output_json_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/output_junit_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/output_json_model.elisa"' "$execution"
@@ -95,6 +101,7 @@ for fixture_pattern in \
     'typed_output_document_contract_is_stable_and_bounded' \
     'typed_output_json_frames_match_schema_and_bounded_document_serialization' \
     'typed_output_junit_frames_match_bounded_document_serialization' \
+    'altered_payload_rejected' \
     'render_budget_rejected' \
     'OutputFormat.Json' \
     'OutputStatus.Fail' \

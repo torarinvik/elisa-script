@@ -587,12 +587,14 @@ frame APIs use a count-only writer over the same emission path, and
 now has the same count/write contract, emits all record fields plus summary
 counters, and rejects invalid UTF-8. Its JSON status names are `pass`, `flaky`,
 `fail`, `error`, and `skip`. Hosts can produce matching JSON/JUnit chunks, but
-`EsOutputTransport` still accepts only a reported byte count; it cannot verify
-the content actually written. Human frame accounting remains model-only and
-its serializer is unimplemented. The separate single-case differential JUnit
-renderer remains a different schema. `OutputStatus.Flaky` preserves successful
-retry classification in typed records while retaining the existing status
-ordinals.
+`EsOutputTransport` can now hand hosts canonical owned JSON/JUnit frame bytes;
+its checked payload acknowledgement rejects mutated or independently
+reformatted content before advancing. This still cannot prove what an OS writer
+actually accepted—the byte count remains the host adapter's acknowledgement.
+Human frame accounting remains model-only and its serializer is unimplemented.
+The separate single-case differential JUnit renderer remains a different
+schema. `OutputStatus.Flaky` preserves successful retry classification in
+typed records while retaining the existing status ordinals.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

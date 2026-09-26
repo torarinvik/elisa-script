@@ -3,12 +3,15 @@
 # EsOutputRender owns format order and escaped-size accounting.  This module
 # owns the hand-off between that renderer and a host writer: it admits only
 # complete, in-order frame acknowledgements and keeps all byte limits visible
-# in a small state machine.  It deliberately does not retain a borrowed text
-# view or call an OS writer.  A host adapter formats/writes one peeked frame
-# while the transport session is alive, then acknowledges the exact byte count.
+# in a small state machine. It can return canonical JSON/JUnit frame bytes but
+# deliberately does not retain a borrowed text view or call an OS writer. A
+# host adapter writes one payload while the transport session is alive, then
+# acknowledges it before advancing the renderer.
 
 module EsOutputTransport:
     using EsOutput
+    using EsOutputJson
+    using EsOutputJunit
     using EsOutputRender
 
     public:
@@ -41,9 +44,16 @@ module EsOutputTransport:
             max_frame_bytes: usize = Limits::FRAME_BYTES
 
 
-        # `frame` contains no text.  The host adapter uses its kind and record
-        # index to format bytes synchronously; the transport then checks the
-        # adapter's successful write count against `bytes` before advancing.
+        # Canonical bytes for one peeked frame. Hosts should write this payload
+        # rather than independently formatting from the frame descriptor.
+        struct OutputTransportPayload:
+            frame: OutputRenderFrame
+            bytes: darray[u8]
+
+
+        # `frame` contains no text. `OutputTransportPayload` couples it with
+        # canonical owned bytes so the checked acknowledgement path can reject
+        # accidental host-side reformatting or payload mutation.
         struct OutputTransport:
             renderer: mutable OutputRender
             policy: OutputTransportPolicy
@@ -61,6 +71,8 @@ module EsOutputTransport:
             FrameNotReady
             FrameOrderInvalid
             FrameMismatch
+            FramePayloadMismatch
+            FrameFormatUnsupported
             FrameTooLarge
             ShortWrite
             UnexpectedPayload
@@ -108,6 +120,35 @@ module EsOutputTransport:
             return current <= limit and addition <= limit - current
 
 
+        def output_transport_render_frame_bytes(transport: OutputTransport&, frame: OutputRenderFrame) -> darray[u8] error[OutputTransportError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            format: OutputFormat = transport.renderer.document.options.format
+            if frame.kind == OutputRenderFrameKind.Header:
+                if format == OutputFormat.Json:
+                    return try render_output_json_header_frame(transport.renderer.document, transport.policy.max_frame_bytes)
+                elif format == OutputFormat.Junit:
+                    return try render_output_junit_header_frame(transport.renderer.document, transport.policy.max_frame_bytes)
+            elif frame.kind == OutputRenderFrameKind.Record:
+                raise OutputTransportError.FrameOrderInvalid if frame.record_index >= transport.renderer.document.records.count
+                record: OutputRecord = transport.renderer.document.records[frame.record_index]
+                if format == OutputFormat.Json:
+                    return try render_output_json_record_frame(record, frame.record_index == 0, transport.policy.max_frame_bytes)
+                elif format == OutputFormat.Junit:
+                    return try render_output_junit_record_frame(record, transport.policy.max_frame_bytes)
+            elif frame.kind == OutputRenderFrameKind.Footer:
+                if format == OutputFormat.Json:
+                    return try render_output_json_footer_frame(transport.renderer.document, transport.policy.max_frame_bytes)
+                elif format == OutputFormat.Junit:
+                    return try render_output_junit_footer_frame(transport.renderer.document, transport.policy.max_frame_bytes)
+            raise OutputTransportError.FrameFormatUnsupported
+
+
+        def output_transport_payload_bytes_equal(left: darray[u8], right: darray[u8]) -> bool:
+            return false if left.count != right.count
+            for index in 0..<left.count |left, right|:
+                return false if left[index] != right[index]
+            return true
+
+
     public:
         def validate_output_transport(transport: OutputTransport&) -> bool error[OutputTransportError, OutputRenderError]:
             raise OutputTransportError.InvalidState if not output_transport_state_valid(transport.state)
@@ -137,6 +178,20 @@ module EsOutputTransport:
             raise OutputTransportError.FrameTooLarge if frame.bytes > transport.policy.max_frame_bytes
             raise OutputTransportError.ByteLimitExceeded if not output_transport_add(transport.emitted_bytes, frame.bytes, transport.policy.max_bytes)
             return frame
+
+
+        def peek_output_transport_payload(transport: OutputTransport&) -> OutputTransportPayload error[OutputTransportError, OutputRenderError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            frame: OutputRenderFrame = try peek_output_transport_frame(transport)
+            bytes: darray[u8] = try output_transport_render_frame_bytes(transport, frame)
+            raise OutputTransportError.FrameMismatch if bytes.count != frame.bytes
+            return OutputTransportPayload{frame: frame, bytes: bytes}
+
+
+        def acknowledge_output_transport_payload(transport: mutable OutputTransport&, payload: OutputTransportPayload, written_bytes: usize) -> OutputTransportState error[OutputTransportError, OutputRenderError, OutputContractError, OutputJsonError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            expected: OutputTransportPayload = try peek_output_transport_payload(transport)
+            raise OutputTransportError.FrameMismatch if not output_transport_frame_matches(payload.frame, expected.frame)
+            raise OutputTransportError.FramePayloadMismatch if not output_transport_payload_bytes_equal(payload.bytes, expected.bytes)
+            return try advance_output_transport(transport, OutputTransportEvent.Emit, payload.frame, written_bytes)
 
 
         def advance_output_transport(transport: mutable OutputTransport&, event: OutputTransportEvent, frame: OutputRenderFrame = OutputRenderFrame{}, written_bytes: usize = 0) -> OutputTransportState error[OutputTransportError, OutputRenderError]:
