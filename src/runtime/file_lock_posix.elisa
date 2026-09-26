@@ -1,0 +1,191 @@
+# Descriptor-relative POSIX implementation of the portable file-lock contract.
+# Lock files are persistent coordination names: release closes the descriptor
+# but never unlinks the name, avoiding split-lock races between contenders.
+
+module EsFileLockPosix:
+    using EsFileLock
+    using EsRuntime
+
+    public:
+        const module Limits:
+            EINTR_RETRIES: usize = 8
+
+
+        const enum LeaseState of u8:
+            Available
+            Held
+            Released
+
+
+        struct FileLockPosixLease:
+            state: LeaseState = LeaseState.Available
+            descriptor: int = -1
+            directory_descriptor_token: u64 = 0
+            directory_device: u64 = 0
+            directory_inode: u64 = 0
+            lock_device: u64 = 0
+            lock_inode: u64 = 0
+            owner_token: u64 = 0
+
+
+        error FileLockPosixError:
+            InvalidDirectoryDescriptor
+            InvalidLeafName
+            InvalidOwner
+            InvalidMode
+            LeaseAlreadyUsed
+            LockUnavailable
+            LockIdentityInvalid
+            LeaseMismatch
+            AcquireCleanupUncertain(descriptor: int, close_status: int)
+            ReleaseOutcomeUncertain(close_status: int)
+
+
+    private:
+        const module Errno:
+            EINTR: i32 = 4
+
+
+        def file_lock_posix_stat_descriptor(descriptor: int, info: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, info) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == Errno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def file_lock_posix_stat_name(directory_fd: int, leaf_name: cstr, info: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstatat(directory_fd, leaf_name, info, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == Errno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def file_lock_posix_mode_valid(mode: FileLockMode) -> bool:
+            return mode == FileLockMode.Shared or mode == FileLockMode.Exclusive
+
+
+        def file_lock_posix_advisory_operation(mode: FileLockMode) -> int:
+            return PosixLockOperations::SHARED if mode == FileLockMode.Shared else PosixLockOperations::EXCLUSIVE
+
+
+        def file_lock_posix_lock_descriptor(descriptor: int, mode: FileLockMode) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_flock(descriptor, file_lock_posix_advisory_operation(mode) + PosixLockOperations::NONBLOCK) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == Errno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def file_lock_posix_private_regular(info: ElisascriptStat) -> bool:
+            return (info.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and (info.mode & 63u16) == 0u16
+
+
+        def file_lock_posix_file_matches(info: ElisascriptStat, device: u64, inode: u64) -> bool:
+            return file_lock_posix_private_regular(info) and info.link_count == 1u16 and info.device.u64() == device and info.inode == inode
+
+
+        def file_lock_posix_lease_descriptor_matches(lease: FileLockPosixLease, owner_token: u64, expected_mode: FileLockMode) -> bool can[Blocking.IO]:
+            return false if lease.state != LeaseState.Held or lease.descriptor < 0 or owner_token == 0 or lease.owner_token != owner_token
+            return false if not file_lock_posix_mode_valid(expected_mode)
+            descriptor_info: mutable ElisascriptStat = ElisascriptStat{}
+            return false if not file_lock_posix_stat_descriptor(lease.descriptor, descriptor_info)
+            return false if not file_lock_posix_private_regular(descriptor_info) or descriptor_info.device.u64() != lease.lock_device or descriptor_info.inode != lease.lock_inode
+            return file_lock_posix_lock_descriptor(lease.descriptor, expected_mode)
+
+
+        def file_lock_posix_close_failed_acquire(descriptor: int, lease: mutable FileLockPosixLease&) -> bool error[FileLockPosixError] can[Blocking.IO]:
+            close_status: int = elisascript_posix_close(descriptor)
+            if close_status != 0:
+                lease.state <- LeaseState.Released
+                lease.descriptor <- -1
+                raise FileLockPosixError.AcquireCleanupUncertain(descriptor, close_status)
+            return true
+
+
+    public:
+        # Revalidate both the open lock descriptor and its no-follow directory
+        # entry before relying on this ordinary-data lease as host evidence.
+        # flock(LOCK_*|LOCK_NB) both confirms and, if necessary, reacquires the
+        # advisory lock before the caller's next critical operation.
+        def file_lock_posix_lease_matches_at(lease: FileLockPosixLease, directory_fd: int, lock_name: cstr, owner_token: u64, expected_mode: FileLockMode) -> bool can[Blocking.IO]:
+            return false if not file_lock_posix_lease_descriptor_matches(lease, owner_token, expected_mode)
+            return false if directory_fd < 0 or lease.directory_descriptor_token != directory_fd.u64() + 1u64 or not elisascript_posix_leaf_name_valid(lock_name)
+            directory_info: mutable ElisascriptStat = ElisascriptStat{}
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            return false if not file_lock_posix_stat_descriptor(directory_fd, directory_info) or directory_info.device.u64() != lease.directory_device or directory_info.inode != lease.directory_inode or (directory_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY
+            return false if not file_lock_posix_stat_name(directory_fd, lock_name, named_info)
+            return file_lock_posix_file_matches(named_info, lease.lock_device, lease.lock_inode)
+
+
+        # Nonblocking acquisition is the host edge for FileLockWaitMode.NonBlocking.
+        # Bounded retry/deadline policy remains in the portable session driver;
+        # each retry calls this function with a fresh available lease value.
+        def acquire_file_lock_at(lease: mutable FileLockPosixLease&, directory_fd: int, lock_name: cstr, owner_token: u64, mode: FileLockMode = FileLockMode.Exclusive) -> bool error[FileLockPosixError] can[Blocking.IO]:
+            raise FileLockPosixError.LeaseAlreadyUsed if lease.state == LeaseState.Held or lease.descriptor >= 0
+            raise FileLockPosixError.InvalidDirectoryDescriptor if directory_fd < 0
+            raise FileLockPosixError.InvalidLeafName if not elisascript_posix_leaf_name_valid(lock_name)
+            raise FileLockPosixError.InvalidOwner if owner_token == 0
+            raise FileLockPosixError.InvalidMode if not file_lock_posix_mode_valid(mode)
+
+            directory_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise FileLockPosixError.InvalidDirectoryDescriptor if not file_lock_posix_stat_descriptor(directory_fd, directory_info) or (directory_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY or directory_info.device == 0 or directory_info.inode == 0
+
+            access_mode: int = DarwinOpenFlags::RDONLY if mode == FileLockMode.Shared else DarwinOpenFlags::WRONLY
+            flags: int = access_mode | DarwinOpenFlags::CREATE | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: int = elisascript_posix_openat(directory_fd, lock_name, flags, 384u32)
+            raise FileLockPosixError.LockUnavailable if descriptor < 0
+            if not file_lock_posix_lock_descriptor(descriptor, mode):
+                _ = try file_lock_posix_close_failed_acquire(descriptor, lease)
+                raise FileLockPosixError.LockUnavailable
+
+            descriptor_info: mutable ElisascriptStat = ElisascriptStat{}
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            if not file_lock_posix_stat_descriptor(descriptor, descriptor_info) or not file_lock_posix_stat_name(directory_fd, lock_name, named_info) or not file_lock_posix_private_regular(descriptor_info) or descriptor_info.device == 0 or descriptor_info.inode == 0 or descriptor_info.link_count != 1u16 or descriptor_info.device != directory_info.device or named_info.device != descriptor_info.device or named_info.inode != descriptor_info.inode:
+                _ = try file_lock_posix_close_failed_acquire(descriptor, lease)
+                raise FileLockPosixError.LockIdentityInvalid
+
+            lease.state <- LeaseState.Held
+            lease.descriptor <- descriptor
+            lease.directory_descriptor_token <- directory_fd.u64() + 1u64
+            lease.directory_device <- directory_info.device.u64()
+            lease.directory_inode <- directory_info.inode
+            lease.lock_device <- descriptor_info.device.u64()
+            lease.lock_inode <- descriptor_info.inode
+            lease.owner_token <- owner_token
+            if not file_lock_posix_lease_matches_at(lease, directory_fd, lock_name, owner_token, mode):
+                lease.state <- LeaseState.Released
+                lease.descriptor <- -1
+                lease.owner_token <- 0
+                close_status: int = elisascript_posix_close(descriptor)
+                raise FileLockPosixError.AcquireCleanupUncertain(descriptor, close_status) if close_status != 0
+                raise FileLockPosixError.LockIdentityInvalid
+            return true
+
+
+        # A persistent lock file is deliberately retained. Removing it while
+        # another process has the old inode open could split contenders across
+        # two independently locked inodes. A replaced name does not prevent
+        # releasing the still-identified old descriptor, but is reported after
+        # the descriptor is safely closed.
+        def release_file_lock_at(lease: mutable FileLockPosixLease&, directory_fd: int, lock_name: cstr, owner_token: u64, expected_mode: FileLockMode) -> bool error[FileLockPosixError] can[Blocking.IO]:
+            raise FileLockPosixError.LeaseMismatch if not file_lock_posix_lease_descriptor_matches(lease, owner_token, expected_mode)
+            name_matches: bool = file_lock_posix_lease_matches_at(lease, directory_fd, lock_name, owner_token, expected_mode)
+            descriptor: int = lease.descriptor
+            lease.state <- LeaseState.Released
+            lease.descriptor <- -1
+            lease.owner_token <- 0
+            close_status: int = elisascript_posix_close(descriptor)
+            raise FileLockPosixError.ReleaseOutcomeUncertain(close_status) if close_status != 0
+            raise FileLockPosixError.LeaseMismatch if not name_matches
+            return true

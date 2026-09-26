@@ -6,17 +6,40 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/file_lock_model.elisa"
+adapter="$repo_root/src/runtime/file_lock_posix.elisa"
+file_posix="$repo_root/src/runtime/file_posix.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$adapter" "$file_posix" "$ir" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'file lock audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 rg -q '^module EsFileLock:' "$model"
 rg -q 'include "\.\./runtime/file_lock_model\.elisa"' "$ir"
+rg -q 'include "\.\./runtime/file_lock_posix\.elisa"' "$ir"
+rg -q '^module EsFileLockPosix:' "$adapter"
+for adapter_boundary in \
+    'struct FileLockPosixLease:' \
+    'def file_lock_posix_lease_matches_at\(' \
+    'def file_lock_posix_lease_descriptor_matches\(' \
+    'def acquire_file_lock_at\(' \
+    'def release_file_lock_at\(' \
+    'access_mode: int = DarwinOpenFlags::RDONLY if mode == FileLockMode.Shared else DarwinOpenFlags::WRONLY' \
+    'elisascript_posix_openat\(directory_fd, lock_name, flags, 384u32\)' \
+    'DarwinAtFlag::SYMLINK_NOFOLLOW' \
+    'PosixLockOperations::NONBLOCK' \
+    'AcquireCleanupUncertain' \
+    'ReleaseOutcomeUncertain'; do
+    rg -q "$adapter_boundary" "$adapter"
+done
+rg -q 'SHARED: int = 1' "$file_posix"
+if rg -q 'elisascript_posix_unlinkat' "$adapter"; then
+    printf 'file lock audit: adapter must retain persistent lock names\n' >&2
+    exit 1
+fi
 for declaration in \
     'const enum FileLockMode of u8' \
     'const enum FileLockWaitMode of u8' \

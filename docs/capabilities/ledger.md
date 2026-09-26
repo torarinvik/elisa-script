@@ -1532,10 +1532,14 @@ timeout, cancellation acknowledgement, release acknowledgement, failed leases,
 terminal lease-id exhaustion before publication, and active-lease accounting
 are explicit state-machine edges under
 `error[FileLockError]`; lease and request path NULs are classified distinctly
-as `EmbeddedNul` before ordinary path errors. The focused IR fixture, namespace inclusion,
-documentation, and check_file_lock.sh audit are static evidence; platform
-flock/LockFileEx calls, fairness, mandatory-locking differences, and race
-fixtures remain host work.
+as `EmbeddedNul` before ordinary path errors. `EsFileLockPosix` now provides a
+descriptor-relative POSIX nonblocking adapter with no-follow leaf identity
+checks, shared/exclusive flock revalidation, and explicit uncertain-close
+errors; the artifact-cache lock now consumes it. The focused model fixture,
+namespace inclusion, documentation, and check_file_lock.sh are source evidence
+only and have not been executed. Bounded host waiting, fairness,
+mandatory-locking differences, cross-platform adapters, and race fixtures
+remain open; generic atomic publication has not yet adopted the adapter.
 
 ES-FS-005 | EsDirectoryMutation supplies a bounded recursive copy/remove
 planning contract. It records source/destination paths, stable identities,

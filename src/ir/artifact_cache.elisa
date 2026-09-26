@@ -27,6 +27,7 @@ module EsArtifactCache:
     using EsBuildIncremental
     using EsBuildIncrementalCache
     using EsFileReadAtPosix
+    using EsFileLockPosix
     using EsRuntime
 
     private:
@@ -67,14 +68,7 @@ module EsArtifactCache:
         def artifact_cache_writer_lock_matches_at(lock: ArtifactCacheWriterLock, directory_fd: int, lock_name: cstr, owner_token: u64) -> bool can[Blocking.IO]:
             return false if lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token or owner_token == 0 or lock.descriptor < 0
             return false if not artifact_cache_path_terminated(lock.path) or not artifact_cache_path_equal(lock.path, lock_name)
-            return false if not artifact_cache_directory_descriptor_valid(directory_fd)
-            descriptor_info: mutable ElisascriptStat = ElisascriptStat{}
-            named_info: mutable ElisascriptStat = ElisascriptStat{}
-            return false if elisascript_posix_fstat(lock.descriptor, descriptor_info) != 0
-            return false if elisascript_posix_fstatat(directory_fd, lock_name, named_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0
-            return false if (descriptor_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or descriptor_info.link_count != 1
-            return false if descriptor_info.device != named_info.device or descriptor_info.inode != named_info.inode
-            return elisascript_posix_flock(lock.descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK) == 0
+            return file_lock_posix_lease_matches_at(lock.posix_lease, directory_fd, lock_name, owner_token, FileLockMode.Exclusive)
 
     public:
         const enum ArtifactCacheKind of u8:
@@ -178,6 +172,9 @@ module EsArtifactCache:
             owner_token: u64 = 0
             path: cstr = ""
             descriptor: int = -1
+            directory_descriptor: int = -1
+            lock_name: cstr = ""
+            posix_lease: FileLockPosixLease = FileLockPosixLease{}
 
 
     private:
@@ -555,20 +552,42 @@ module EsArtifactCache:
             raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
             raise ArtifactCacheIoError.InvalidLeafName(lock_name) if not elisascript_posix_leaf_name_valid(lock_name)
             raise ArtifactCacheIoError.LockFailed(lock_name) if owner_token == 0 or (lock.state != ArtifactCacheWriterLockState.Available and lock.state != ArtifactCacheWriterLockState.Released)
-            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
-            descriptor: int = elisascript_posix_openat(directory_fd, lock_name, flags, 384u32)
-            if descriptor < 0 or elisascript_posix_flock(descriptor, PosixLockOperations::EXCLUSIVE + PosixLockOperations::NONBLOCK) != 0:
-                _ = elisascript_posix_close(descriptor) if descriptor >= 0
-                raise ArtifactCacheIoError.LockFailed(lock_name)
+            catch acquire_file_lock_at(lock.posix_lease, directory_fd, lock_name, owner_token, FileLockMode.Exclusive):
+                ok acquired:
+                    _ = acquired
+                error failure:
+                    _ = failure
+                    raise ArtifactCacheIoError.LockFailed(lock_name)
             lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Acquire)
             lock.owner_token <- owner_token
             lock.path <- lock_name
-            lock.descriptor <- descriptor
+            lock.descriptor <- lock.posix_lease.descriptor
+            lock.directory_descriptor <- directory_fd
+            lock.lock_name <- lock_name
             return true
 
 
         def artifact_cache_writer_lock_release(lock: mutable ArtifactCacheWriterLock&, owner_token: u64) -> bool error[ArtifactCacheIoError] can[Blocking.IO]:
             return false if owner_token == 0 or lock.state != ArtifactCacheWriterLockState.Held or lock.owner_token != owner_token
+            if lock.directory_descriptor >= 0:
+                catch release_file_lock_at(lock.posix_lease, lock.directory_descriptor, lock.lock_name, owner_token, FileLockMode.Exclusive):
+                    ok released:
+                        _ = released
+                    error failure:
+                        _ = failure
+                        if lock.posix_lease.state == EsFileLockPosix::LeaseState.Released:
+                            lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
+                            lock.owner_token <- 0
+                            lock.descriptor <- -1
+                            lock.directory_descriptor <- -1
+                            lock.lock_name <- ""
+                        raise ArtifactCacheIoError.LockFailed(lock.path)
+                lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
+                lock.owner_token <- 0
+                lock.descriptor <- -1
+                lock.directory_descriptor <- -1
+                lock.lock_name <- ""
+                return true
             descriptor: int = lock.descriptor
             lock.state <- artifact_cache_writer_lock_transition(lock.state, ArtifactCacheWriterLockEvent.Release)
             lock.owner_token <- 0

@@ -1900,10 +1900,15 @@ require a consumed acquisition attempt. Embedded NULs in lease and request
 paths are classified as `FileLockError.EmbeddedNul` before ordinary path errors.
 Lease allocation rejects the terminal `u64` identity before publishing a lease,
 so the next-identity counter cannot
-wrap to zero or leave a partially committed table. The contract is deliberately
-advisory-only: lease identities are monotonic and cannot collide with the next
-allocation; platform lock calls, mandatory-locking behavior, fairness, and race
-handling remain host-adapter responsibilities.
+wrap to zero or leave a partially committed table. The contract remains
+advisory-only. `EsFileLockPosix` now supplies a descriptor-relative,
+nonblocking adapter: it pins the parent directory and private single-link lock
+inode, revalidates the no-follow name, and confirms the shared or exclusive
+`flock` before a lease is relied on or released. Persistent lock names are
+never unlinked, avoiding split-lock races. The portable model still owns
+bounded retry/timeout policy; fairness, mandatory-locking semantics, and
+behavior on other platforms remain host limitations. Generic atomic-file
+publication has not yet adopted this lease capability.
 
 `EsFileAtomic::AtomicFileSession` is the stronger publication boundary for
 generated files, cache entries, and build outputs. A plan binds a nonzero
