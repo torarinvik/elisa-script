@@ -17,8 +17,10 @@ error FileStreamError:
     CloseFailed(path: cstr)
     SeekFailed(path: cstr)
     PublishFailed(path: cstr)
+    PublishOutcomeUnknown(path: cstr)
     PathCollision(path: cstr)
     DirectorySyncFailed(path: cstr)
+    DirectorySyncOutcomeUnknown(path: cstr)
     CleanupStateInvalid(path: cstr)
     Closed(path: cstr)
     WrongMode(path: cstr)
@@ -29,6 +31,10 @@ error FileStreamError:
 
 
 extend EsRuntime:
+    private:
+        const module FileStreamPublishErrno:
+            EIO: i32 = 5
+
     public:
         # A stream is bounded independently of the process-capture helpers.  A
         # caller may choose a smaller limit, but cannot silently turn this
@@ -84,6 +90,16 @@ extend EsRuntime:
             Done
             Limit
             Error
+
+
+        const enum FileStreamRenameOutcome of u8:
+            Rejected
+            Unknown
+
+
+        def file_stream_rename_outcome(errno: i32) -> FileStreamRenameOutcome:
+            return FileStreamRenameOutcome.Unknown if errno == FileStreamPublishErrno::EIO
+            return FileStreamRenameOutcome.Rejected
 
 
         def file_stream_write_transition(offset: usize, capacity: usize, amount: usize, remaining_budget: usize) -> FileStreamWriteState:
@@ -428,21 +444,28 @@ extend EsRuntime:
         # directory as the destination; this helper intentionally does not
         # invent a temporary name or silently remove a failed staging file.
         # Callers that request durability also provide the destination parent
-        # so the directory entry can be synced after the rename.
+        # so the directory entry can be synced after the rename. Rename EIO is
+        # outcome-unknown; a directory-sync error is post-rename and must not be
+        # treated as an ordinary publication failure or safe retry.
         def file_stream_publish_staged(staging_path: cstr, destination_path: cstr, directory_path: cstr = "") -> bool error[FileStreamError] can[Blocking.IO, Memory.Release]:
             raise FileStreamError.PathTooLong(staging_path) if not file_stream_path_terminated(staging_path)
             raise FileStreamError.PathTooLong(destination_path) if not file_stream_path_terminated(destination_path)
             raise FileStreamError.PathTooLong(directory_path) if directory_path != "" and not file_stream_path_terminated(directory_path)
             raise FileStreamError.PathCollision(staging_path) if file_stream_path_equal(staging_path, destination_path)
-            raise FileStreamError.PublishFailed(destination_path) if elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&]) != 0
+            rename_status: int = elisascript_posix_rename(staging_path.cast[u8&], destination_path.cast[u8&])
+            if rename_status != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                if file_stream_rename_outcome(errno[0]) == FileStreamRenameOutcome.Unknown:
+                    raise FileStreamError.PublishOutcomeUnknown(destination_path)
+                raise FileStreamError.PublishFailed(destination_path)
             return true if directory_path == ""
             directory: mutable heap void&? = elisascript_posix_opendir(directory_path)
-            raise FileStreamError.DirectorySyncFailed(directory_path) if directory == null
+            raise FileStreamError.DirectorySyncOutcomeUnknown(directory_path) if directory == null
             opened: mutable heap void& = directory
             descriptor: int = elisascript_posix_dirfd(opened)
             sync_status: int = elisascript_posix_fsync(descriptor) if descriptor >= 0 else -1
             close_status: int = elisascript_posix_closedir(opened)
-            raise FileStreamError.DirectorySyncFailed(directory_path) if descriptor < 0 or sync_status != 0 or close_status != 0
+            raise FileStreamError.DirectorySyncOutcomeUnknown(directory_path) if descriptor < 0 or sync_status != 0 or close_status != 0
             return true
 
 
