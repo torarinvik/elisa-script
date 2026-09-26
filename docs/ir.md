@@ -2283,7 +2283,10 @@ children through explicit `Draining`/`Cancelling` states. A requested
 cancellation yields `Cancelled` only when no failure is latched, so `Failed`
 wins if both events occur. Only after every case is terminal can
 `BeginReport → SealReport` construct a bounded, ordered `OutputDocument` for
-Human/JSON/JUnit renderers. The runner never
+Human/JSON/JUnit renderers. A pass after one or more failed attempts retains a
+typed `Flaky` status in the output record instead of being flattened to an
+ordinary pass; it remains a successful suite outcome while staying visible to
+machine consumers. The runner never
 spawns or writes files itself, so host adapters remain responsible for
 discovery, process launch/reap, and report transport; the source fixture and
 `check_test_runner.sh` audit are static evidence only. A process adapter's

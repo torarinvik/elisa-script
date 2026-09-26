@@ -53,6 +53,7 @@ for fixture_pattern in \
     'typed_output_document_contract_is_stable_and_bounded' \
     'OutputFormat.Json' \
     'OutputStatus.Fail' \
+    'OutputStatus.Flaky' \
     'OutputDocumentEvent.Seal' \
     'OutputContractError.OutputLimitInvalid' \
     'OutputContractError.TextAccountingInvalid' \
