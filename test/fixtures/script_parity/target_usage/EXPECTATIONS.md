@@ -25,6 +25,10 @@ argv for archiver/run actions, and submits all seven steps through the shared
 `BuildUsageGraphPlan` with declared outputs. Each child gets an explicit
 replacement environment. It requires an existing absolute empty non-symlink
 build directory outside the repository. No command is passed through a shell.
+Before execution it selects the three compiler actions from that same validated
+plan, renders their exact tokenized argv into bounded `compile_commands.json`
+records, and writes the database into the fresh build directory. Archive, link,
+and run actions are intentionally excluded from the translation-unit database.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
