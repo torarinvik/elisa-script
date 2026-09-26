@@ -2332,7 +2332,7 @@ def typed_test_runner_contract_discovers_retries_and_seals_reports() -> void:
         assert validate_test_runner(runner)
         assert runner.report.state == OutputDocumentState.Sealed and runner.report.failed_records == 0
         rendered_report: darray[u8] = render_test_runner_report(runner)
-        assert bytes_view(rendered_report) == "[flaky] unit/pass\n  passed after retry\n[skip] unit/flaky\n  platform unavailable\nSummary: tests=2 passed=0 flaky=1 failures=0 errors=0 skipped=1\n"
+        assert bytes_view(rendered_report) == "[flaky] unit/pass\n  passed after retry\n[skip] unit/flaky\n  platform unavailable\nSummary: tests=2 passed=0 flaky=1 failures=0 crashed=0 timed_out=0 cancelled=0 errors=0 skipped=1\n"
 
 
 @test
@@ -2440,6 +2440,38 @@ def typed_test_runner_contract_latches_exhausted_failures_and_unexpected_cancell
                 assert failure == TestRunnerError.AccountingInvalid
                 forged_reporting_failure <- true
         assert forged_reporting_failure
+
+
+@test
+def typed_test_runner_preserves_crash_timeout_and_cancellation_outcomes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        crash_spec: TestSpec = TestSpec{test_id: 111, name: "unit/crash", command: ProcessCommand{executable: "crash"}}
+        timeout_spec: TestSpec = TestSpec{test_id: 112, name: "unit/timeout", command: ProcessCommand{executable: "timeout"}}
+        cancelled_spec: TestSpec = TestSpec{test_id: 113, name: "unit/cancelled", command: ProcessCommand{executable: "cancelled"}}
+        runner: mutable TestRunner = TestRunner{retry_policy: TestRetryPolicy.None, max_attempts: 1, max_parallel: 2}
+        assert advance_test_runner(runner, TestRunnerEvent.Begin) == TestRunnerState.Discovering
+        assert advance_test_runner(runner, TestRunnerEvent.Discover, spec: crash_spec) == TestRunnerState.Discovering
+        assert advance_test_runner(runner, TestRunnerEvent.Discover, spec: timeout_spec) == TestRunnerState.Discovering
+        assert advance_test_runner(runner, TestRunnerEvent.Discover, spec: cancelled_spec) == TestRunnerState.Discovering
+        assert advance_test_runner(runner, TestRunnerEvent.DiscoveryDone) == TestRunnerState.Selecting
+        assert advance_test_runner(runner, TestRunnerEvent.Select, 0, true, "crash fixture") == TestRunnerState.Selecting
+        assert advance_test_runner(runner, TestRunnerEvent.Select, 1, true, "timeout fixture") == TestRunnerState.Selecting
+        assert advance_test_runner(runner, TestRunnerEvent.Select, 2, true, "cancelled after failure") == TestRunnerState.Selecting
+        assert advance_test_runner(runner, TestRunnerEvent.SelectionDone) == TestRunnerState.Running
+        assert advance_test_runner(runner, TestRunnerEvent.Launch, 0) == TestRunnerState.Running
+        assert advance_test_runner(runner, TestRunnerEvent.Launch, 1) == TestRunnerState.Running
+        crash_token: u64 = runner.cases[0].attempt_token
+        timeout_token: u64 = runner.cases[1].attempt_token
+        assert advance_test_runner(runner, TestRunnerEvent.Complete, 0, attempt_token: crash_token, process: ProcessResult{kind: ProcessResultKind.Signaled, signal: 11}) == TestRunnerState.Draining
+        assert advance_test_runner(runner, TestRunnerEvent.Complete, 1, attempt_token: timeout_token, process: ProcessResult{kind: ProcessResultKind.TimedOut}) == TestRunnerState.Failed
+        assert runner.crashed == 1 and runner.timed_out == 1 and runner.cancelled == 1
+        assert advance_test_runner(runner, TestRunnerEvent.BeginReport) == TestRunnerState.Reporting
+        assert advance_test_runner(runner, TestRunnerEvent.SealReport) == TestRunnerState.Failed
+        assert runner.report.failed_records == 2
+        assert runner.report.records[0].status == OutputStatus.Crashed
+        assert runner.report.records[1].status == OutputStatus.TimedOut
+        assert runner.report.records[2].status == OutputStatus.Cancelled
+        assert validate_test_runner(runner)
 
 
 @test
@@ -6254,11 +6286,22 @@ def typed_output_junit_frames_match_bounded_document_serialization() -> void:
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/fail<&>", status: OutputStatus.Fail, message: "bad \"case\" & value", stdout: "out\nnext", stderr: "err\tfield", duration_ms: 1234}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/flaky", status: OutputStatus.Flaky, message: "retry passed", duration_ms: 9001}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/error", status: OutputStatus.Error, message: "runner error"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/crashed", status: OutputStatus.Crashed, message: "signal 11"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/timed-out", status: OutputStatus.TimedOut, message: "deadline exceeded"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/cancelled", status: OutputStatus.Cancelled, message: "stopped"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "suite/skip", status: OutputStatus.Skip, message: "not selected"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+    assert document.failed_records == 4
 
     complete: darray[u8] = render_output_document_junit(document, options.max_bytes)
     header: darray[u8] = render_output_junit_header_frame(document, options.max_bytes)
+    assert bytes_view(header) == "<testsuites tests=\"8\" failures=\"1\" errors=\"3\" skipped=\"2\">\n  <testsuite name=\"elisascript\" tests=\"8\" failures=\"1\" errors=\"3\" skipped=\"2\">\n"
+    crashed_frame: darray[u8] = render_output_junit_record_frame(OutputRecord{name: "suite/crashed", status: OutputStatus.Crashed, message: "signal 11"}, options.max_bytes)
+    timed_out_frame: darray[u8] = render_output_junit_record_frame(OutputRecord{name: "suite/timed-out", status: OutputStatus.TimedOut, message: "deadline exceeded"}, options.max_bytes)
+    cancelled_frame: darray[u8] = render_output_junit_record_frame(OutputRecord{name: "suite/cancelled", status: OutputStatus.Cancelled, message: "stopped"}, options.max_bytes)
+    assert bytes_view(crashed_frame) == "    <testcase name=\"suite/crashed\" classname=\"elisascript\" time=\"0.000\">\n      <error message=\"signal 11\" type=\"crashed\"/>\n    </testcase>\n"
+    assert bytes_view(timed_out_frame) == "    <testcase name=\"suite/timed-out\" classname=\"elisascript\" time=\"0.000\">\n      <error message=\"deadline exceeded\" type=\"timed_out\"/>\n    </testcase>\n"
+    assert bytes_view(cancelled_frame) == "    <testcase name=\"suite/cancelled\" classname=\"elisascript\" time=\"0.000\">\n      <skipped message=\"stopped\" type=\"cancelled\"/>\n    </testcase>\n"
     assert header.count == measure_output_junit_header_frame(document, options.max_bytes)
     render: mutable OutputRender = OutputRender{document: document}
     render_frame: mutable OutputRenderFrame = OutputRenderFrame{}
@@ -6307,10 +6350,14 @@ def typed_output_human_frames_are_exact_bounded_and_color_aware() -> void:
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/ok", status: OutputStatus.Pass, duration_ms: 42}) == OutputDocumentState.Building
     escape_bytes: mutable darray[u8] = [27u8, 91u8, 51u8, 49u8, 109u8]
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/fail", status: OutputStatus.Fail, message: "bad\nretry", stdout: "out\n", stderr: bytes_view(escape_bytes)}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/crashed", status: OutputStatus.Crashed, message: "signal 11"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/timed-out", status: OutputStatus.TimedOut, message: "deadline exceeded"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "case/cancelled", status: OutputStatus.Cancelled, message: "stopped"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
+    assert document.failed_records == 3
 
     complete: darray[u8] = render_output_document_human(document, options.max_bytes)
-    assert bytes_view(complete) == "[pass] case/ok (42 ms)\n[fail] case/fail\n  bad\\nretry\nstdout:\nout\\n\nstderr:\n\\x1b[31m\nSummary: tests=2 passed=1 flaky=0 failures=1 errors=0 skipped=0\n"
+    assert bytes_view(complete) == "[pass] case/ok (42 ms)\n[fail] case/fail\n  bad\\nretry\nstdout:\nout\\n\nstderr:\n\\x1b[31m\n[crashed] case/crashed\n  signal 11\n[timed-out] case/timed-out\n  deadline exceeded\n[cancelled] case/cancelled\n  stopped\nSummary: tests=5 passed=1 flaky=0 failures=1 crashed=1 timed_out=1 cancelled=1 errors=0 skipped=0\n"
     header: darray[u8] = render_output_human_header_frame(document, options.max_bytes)
     assert header.count == measure_output_human_header_frame(document, options.max_bytes)
     render: mutable OutputRender = OutputRender{document: document}
@@ -6368,7 +6415,7 @@ def typed_output_human_frames_are_exact_bounded_and_color_aware() -> void:
     assert advance_output_document(invalid_document, OutputDocumentEvent.Append, OutputRecord{name: "invalid", status: OutputStatus.Pass, message: bytes_view(invalid_bytes)}) == OutputDocumentState.Building
     assert advance_output_document(invalid_document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
     invalid_text: darray[u8] = render_output_document_human(invalid_document, invalid_options.max_bytes)
-    assert bytes_view(invalid_text) == "[pass] invalid\n  \\xff\nSummary: tests=1 passed=1 flaky=0 failures=0 errors=0 skipped=0\n"
+    assert bytes_view(invalid_text) == "[pass] invalid\n  \\xff\nSummary: tests=1 passed=1 flaky=0 failures=0 crashed=0 timed_out=0 cancelled=0 errors=0 skipped=0\n"
 
     transport: mutable OutputTransport = begin_output_transport(document)
     assert advance_output_transport(transport, OutputTransportEvent.Begin) == OutputTransportState.Streaming
@@ -6392,11 +6439,14 @@ def typed_output_json_frames_match_schema_and_bounded_document_serialization() -
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "flaky", status: OutputStatus.Flaky, message: "retry", duration_ms: 9}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "fail", status: OutputStatus.Fail, message: "bad"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "error", status: OutputStatus.Error, message: "oops"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "crashed", status: OutputStatus.Crashed, message: "signal 11"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "timed-out", status: OutputStatus.TimedOut, message: "deadline exceeded"}) == OutputDocumentState.Building
+    assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "cancelled", status: OutputStatus.Cancelled, message: "stopped"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Append, OutputRecord{name: "skip", status: OutputStatus.Skip, message: "not run"}) == OutputDocumentState.Building
     assert advance_output_document(document, OutputDocumentEvent.Seal, OutputRecord{name: "", status: OutputStatus.Pass}) == OutputDocumentState.Sealed
 
     complete: darray[u8] = render_output_document_json(document, options.max_bytes)
-    assert bytes_view(complete) == "{\"tests\":[{\"name\":\"case/å\",\"status\":\"pass\",\"message\":\"quote \\\" slash \\\\ \\n\",\"stdout\":\"out\\n\",\"stderr\":\"\",\"duration_ms\":42},{\"name\":\"flaky\",\"status\":\"flaky\",\"message\":\"retry\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":9},{\"name\":\"fail\",\"status\":\"fail\",\"message\":\"bad\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"error\",\"status\":\"error\",\"message\":\"oops\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"skip\",\"status\":\"skip\",\"message\":\"not run\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0}],\"summary\":{\"tests\":5,\"passed\":1,\"flaky\":1,\"failures\":1,\"errors\":1,\"skipped\":1}}\n"
+    assert bytes_view(complete) == "{\"tests\":[{\"name\":\"case/å\",\"status\":\"pass\",\"message\":\"quote \\\" slash \\\\ \\n\",\"stdout\":\"out\\n\",\"stderr\":\"\",\"duration_ms\":42},{\"name\":\"flaky\",\"status\":\"flaky\",\"message\":\"retry\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":9},{\"name\":\"fail\",\"status\":\"fail\",\"message\":\"bad\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"error\",\"status\":\"error\",\"message\":\"oops\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"crashed\",\"status\":\"crashed\",\"message\":\"signal 11\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"timed-out\",\"status\":\"timed_out\",\"message\":\"deadline exceeded\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"cancelled\",\"status\":\"cancelled\",\"message\":\"stopped\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0},{\"name\":\"skip\",\"status\":\"skip\",\"message\":\"not run\",\"stdout\":\"\",\"stderr\":\"\",\"duration_ms\":0}],\"summary\":{\"tests\":8,\"passed\":1,\"flaky\":1,\"failures\":1,\"crashed\":1,\"timed_out\":1,\"cancelled\":1,\"errors\":1,\"skipped\":1}}\n"
 
     header: darray[u8] = render_output_json_header_frame(document, options.max_bytes)
     assert header.count == measure_output_json_header_frame(document, options.max_bytes)

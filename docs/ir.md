@@ -546,7 +546,8 @@ than being treated as ordinary empty results.
 `EsOutput` gives launcher, test, and differential renderers one bounded
 document contract. `OutputOptions` fixes human/JSON/JUnit format, color policy,
 quiet/fail-fast behavior, and a total text budget; `OutputRecord` carries a
-typed pass/flaky/fail/error/skip status with bounded name and channel text.
+typed pass/flaky/fail/error/skip/crashed/timed-out/cancelled status with
+bounded name and channel text.
 `advance_output_document` appends records through `Empty → Building → Sealed`
 while reconciling aggregate channel text and failed records against stored
 accounting and rejecting budget overflow before mutation. Events reject
@@ -566,8 +567,9 @@ been emitted. A Ready renderer also computes the full document size before
 offering any frame, so reports that cannot fit their byte budget fail before a
 host can write a partial header. Cancellation and failure are explicit
 transitions, leaving actual host writes to a bounded adapter. `EsOutputHuman`
-provides deterministic status/name/duration lines, a summary of all five
-outcome counts, and optional message/stdout/stderr blocks. It escapes
+provides deterministic status/name/duration lines, separate pass, flaky,
+failure, crash, timeout, error, skip, and cancellation counts, and optional
+message/stdout/stderr blocks. It escapes
 line/control bytes and invalid UTF-8 in record fields
 so captured text cannot forge report structure or inject ANSI sequences. It
 emits ANSI status colors when explicitly enabled; `Always` requires that
@@ -597,8 +599,11 @@ needed for a truthful `<flakyFailure>` element. Header, record, and footer
 frame APIs use a count-only writer over the same emission path, and
 `EsOutputRender` derives JUnit frame lengths from those measures. Generic JSON
 now has the same count/write contract, emits all record fields plus summary
-counters, and rejects invalid UTF-8. Its JSON status names are `pass`, `flaky`,
-`fail`, `error`, and `skip`. `EsOutputTransport` hands hosts canonical owned
+counters, and rejects invalid UTF-8. Its JSON status names include `pass`,
+`flaky`, `fail`, `error`, `skip`, `crashed`, `timed_out`, and `cancelled`.
+JUnit preserves crash and timeout types in `<error>` children and marks
+cancellation on the `<skipped>` child while keeping standard aggregate
+counters. `EsOutputTransport` hands hosts canonical owned
 Human/JSON/JUnit frame bytes;
 its checked payload acknowledgement rejects mutated or independently
 reformatted content before advancing. This still cannot prove what an OS writer
