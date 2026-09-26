@@ -1177,6 +1177,11 @@ stability evidence, a report is limited to one deterministic observation.
 Nondeterministic results cannot be promoted to a definitive mismatch or parity
 pass. These checks validate record consistency, not host execution provenance.
 When the evidence flag is absent, the nested stability session must be pristine.
+The replay report adapter also recomputes the comparison from retained runs
+before recording repeat evidence or projecting a stability report. A fabricated
+stable-equal comparison with a matching stored fingerprint is rejected. This
+checks consistency with retained runs, not the provenance of their execution;
+the regression fixture has not been executed under the validation hold.
 The focused differential fixture, documentation, and
 check_differential_report.sh audit are source evidence only; report rendering
 and executed end-to-end parity remain open.
