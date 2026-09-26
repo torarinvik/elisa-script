@@ -27,6 +27,12 @@ rg -q 'def begin_atomic_file_stage\(' "$adapter"
 rg -q 'session.state != AtomicFileState.Planned' "$adapter"
 rg -q 'AtomicFileEvent.Begin' "$adapter"
 rg -q 'capture_atomic_file_stage_proof\(parent_fd, stage_fd, stage_leaf, session.plan.owner_token\)' "$adapter"
+rg -q 'stage_admission: AtomicFileStageAdmission' "$model"
+rg -q 'atomic_file_stage_admission_valid\(stage_admission, session.plan\)' "$model"
+rg -q 'session.stage_admission <- stage_admission' "$model"
+rg -q 'atomic_file_posix_session_stage_admission_matches\(session, expected\)' "$adapter"
+rg -q 'atomic_file_posix_session_stage_identity_matches\(session\)' "$adapter"
+rg -q 'not atomic_file_posix_session_stage_admission_matches\(session, expected\)' "$adapter"
 rg -q 'def atomic_file_bytes_equal_at\(' "$adapter"
 rg -q 'atomic_file_posix_bytes_equal\(observed, expected\)' "$adapter"
 rg -q 'left\[index\] != right\[index\]' "$adapter"
@@ -96,6 +102,7 @@ for declaration in \
     'const enum AtomicFileEvent of u8' \
     'struct AtomicFileIdentity:' \
     'struct AtomicFilePlan:' \
+    'struct AtomicFileStageAdmission:' \
     'struct AtomicFileSession:' \
     'error AtomicFileError:' \
     'def validate_atomic_file_session\(' \
@@ -122,6 +129,7 @@ for boundary in \
     'owner_token: u64' \
     'parent_identity: u64' \
     'stage_close_acknowledged: bool' \
+    'stage_admission: AtomicFileStageAdmission' \
     'atomic_file_trim_trailing_separators' \
     'atomic_file_paths_share_parent' \
     'atomic_file_path_leaf_valid' \
@@ -185,6 +193,7 @@ rg -Fq 'atomic_file_commit_ack_requires_directory_sync_receipt' "$runtime_fixtur
 rg -Fq 'atomic_file_restore_requires_a_known_current_destination' "$runtime_fixture"
 rg -Fq 'atomic_file_posix_observation_rejects_invalid_parent' "$runtime_fixture"
 rg -Fq 'atomic_file_stage_admission_rejects_invalid_preflight_without_transition' "$runtime_fixture"
+rg -Fq 'atomic_file_begin_retains_valid_stage_admission' "$runtime_fixture"
 rg -Fq 'append_identity_rejected' "$runtime_fixture"
 rg -Fq 'begin_bytes_rejected' "$runtime_fixture"
 rg -Fq 'premature_ack_rejected' "$runtime_fixture"
@@ -192,4 +201,4 @@ rg -Fq 'atomic_file_cleanup_ack_is_pending_only_and_idempotence_is_rejected' "$r
 rg -Fq 'duplicate_ack_rejected' "$runtime_fixture"
 rg -Fq 'assert not partial.staged_identity.observed' "$runtime_fixture"
 
-printf 'file atomic source audit: stage admission, transition, compare, commit, sealed and unsealed stage cleanup seams are present; restore, lease integration, and runtime parity remain open\n'
+printf 'file atomic source audit: proof-bound stage admission, transition, compare, commit, sealed and unsealed stage cleanup seams are present; restore, lease integration, and runtime parity remain open\n'

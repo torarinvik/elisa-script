@@ -74,11 +74,26 @@ module EsFileAtomic:
             max_content_bytes: usize = Limits::CONTENT_BYTES
 
 
+        # Optional host admission evidence. Pure model users can leave this
+        # empty; filesystem adapters bind the descriptor-relative stage proof
+        # at Begin so later operations cannot silently switch to another inode.
+        struct AtomicFileStageAdmission:
+            parent_device: u64 = 0
+            parent_inode: u64 = 0
+            parent_descriptor_token: u64 = 0
+            stage_device: u64 = 0
+            stage_inode: u64 = 0
+            stage_descriptor_token: u64 = 0
+            owner_token: u64 = 0
+            link_count: usize = 0
+
+
         struct AtomicFileSession:
             plan: AtomicFilePlan
             state: AtomicFileState = AtomicFileState.Planned
             staged_bytes: usize = 0
             append_count: usize = 0
+            stage_admission: AtomicFileStageAdmission = AtomicFileStageAdmission{}
             staged_identity: AtomicFileIdentity = AtomicFileIdentity{}
             destination_snapshot: AtomicFileIdentity = AtomicFileIdentity{}
             published_identity: AtomicFileIdentity = AtomicFileIdentity{}
@@ -133,6 +148,17 @@ module EsFileAtomic:
 
         def atomic_file_identity_is_default(identity: AtomicFileIdentity) -> bool:
             return not identity.observed and not identity.present and identity.size == 0 and identity.volume_id == 0 and identity.object_id == 0 and identity.digest.algorithm == HashAlgorithm.Sha256 and identity.digest.word_count == 0 and identity.digest.word0 == 0 and identity.digest.word1 == 0 and identity.digest.word2 == 0 and identity.digest.word3 == 0 and identity.digest.word4 == 0 and identity.digest.word5 == 0 and identity.digest.word6 == 0 and identity.digest.word7 == 0
+
+
+        def atomic_file_stage_admission_is_default(admission: AtomicFileStageAdmission) -> bool:
+            return admission.parent_device == 0 and admission.parent_inode == 0 and admission.parent_descriptor_token == 0 and admission.stage_device == 0 and admission.stage_inode == 0 and admission.stage_descriptor_token == 0 and admission.owner_token == 0 and admission.link_count == 0
+
+
+        def atomic_file_stage_admission_valid(admission: AtomicFileStageAdmission, plan: AtomicFilePlan) -> bool:
+            return false if admission.parent_device == 0 or admission.parent_inode == 0 or admission.parent_descriptor_token != plan.parent_identity
+            return false if admission.stage_device == 0 or admission.stage_inode == 0 or admission.stage_descriptor_token == 0 or admission.stage_descriptor_token == admission.parent_descriptor_token
+            return false if admission.owner_token != plan.owner_token or admission.link_count != 1 or admission.stage_device != admission.parent_device
+            return true
 
 
         def atomic_file_event_payload_valid(event: AtomicFileEvent, identity: AtomicFileIdentity, exact_contents_equal: bool, appended_bytes: usize) -> bool:
@@ -260,6 +286,7 @@ module EsFileAtomic:
             raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.destination_snapshot, Limits::OBSERVED_BYTES)
             raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.published_identity, session.plan.max_content_bytes)
             raise AtomicFileError.ReceiptInvalid if not atomic_file_identity_valid(session.restore_source_identity, Limits::OBSERVED_BYTES)
+            raise AtomicFileError.InvalidState if not atomic_file_stage_admission_is_default(session.stage_admission) and not atomic_file_stage_admission_valid(session.stage_admission, session.plan)
             raise AtomicFileError.InvalidState if session.stage_sync_acknowledged and not session.staged_identity.observed
             raise AtomicFileError.InvalidState if session.stage_close_acknowledged and not session.stage_sync_acknowledged
             raise AtomicFileError.InvalidState if session.stage_sync_acknowledged and not session.stage_close_acknowledged
@@ -271,7 +298,7 @@ module EsFileAtomic:
             restore_in_progress_or_complete: bool = session.state == AtomicFileState.Restoring or session.state == AtomicFileState.RolledBackPendingCleanup or session.state == AtomicFileState.RolledBack
             raise AtomicFileError.InvalidState if restore_in_progress_or_complete != session.restore_source_identity.observed
             raise AtomicFileError.InvalidState if session.restore_source_identity.observed and not (atomic_file_identity_equal(session.restore_source_identity, session.destination_snapshot) or atomic_file_identity_equal(session.restore_source_identity, session.staged_identity) or atomic_file_identity_equal(session.restore_source_identity, session.published_identity))
-            raise AtomicFileError.InvalidState if session.state == AtomicFileState.Planned and (session.staged_bytes != 0 or session.append_count != 0 or session.staged_identity.observed or session.destination_snapshot.observed or session.published_identity.observed or session.stage_sync_acknowledged or session.stage_close_acknowledged or session.comparison_acknowledged or session.contents_equal or session.directory_sync_acknowledged or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged)
+            raise AtomicFileError.InvalidState if session.state == AtomicFileState.Planned and (session.staged_bytes != 0 or session.append_count != 0 or not atomic_file_stage_admission_is_default(session.stage_admission) or session.staged_identity.observed or session.destination_snapshot.observed or session.published_identity.observed or session.stage_sync_acknowledged or session.stage_close_acknowledged or session.comparison_acknowledged or session.contents_equal or session.directory_sync_acknowledged or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged)
             raise AtomicFileError.InvalidState if session.state == AtomicFileState.Staging and (session.stage_sync_acknowledged or session.stage_close_acknowledged or session.staged_identity.observed or session.comparison_acknowledged or session.destination_snapshot.observed or session.published_identity.observed or session.commit_acknowledged or session.restore_acknowledged or session.staging_cleanup_acknowledged)
             if session.state == AtomicFileState.Ready:
                 raise AtomicFileError.InvalidState if not session.stage_sync_acknowledged or not session.stage_close_acknowledged or not session.staged_identity.observed
@@ -303,12 +330,17 @@ module EsFileAtomic:
             return true
 
 
-        def advance_atomic_file(session: mutable AtomicFileSession&, event: AtomicFileEvent, identity: AtomicFileIdentity = AtomicFileIdentity{}, exact_contents_equal: bool = false, appended_bytes: usize = 0) -> AtomicFileState error[AtomicFileError]:
+        def advance_atomic_file(session: mutable AtomicFileSession&, event: AtomicFileEvent, identity: AtomicFileIdentity = AtomicFileIdentity{}, exact_contents_equal: bool = false, appended_bytes: usize = 0, stage_admission: AtomicFileStageAdmission = AtomicFileStageAdmission{}) -> AtomicFileState error[AtomicFileError]:
             try validate_atomic_file_session(session)
             raise AtomicFileError.InvalidEvent if not atomic_file_event_valid(event)
             raise AtomicFileError.InvalidEventPayload if not atomic_file_event_payload_valid(event, identity, exact_contents_equal, appended_bytes)
             if event == AtomicFileEvent.Begin:
+                raise AtomicFileError.InvalidEventPayload if not atomic_file_stage_admission_is_default(stage_admission) and not atomic_file_stage_admission_valid(stage_admission, session.plan)
+            else:
+                raise AtomicFileError.InvalidEventPayload if not atomic_file_stage_admission_is_default(stage_admission)
+            if event == AtomicFileEvent.Begin:
                 raise AtomicFileError.InvalidTransition if session.state != AtomicFileState.Planned
+                session.stage_admission <- stage_admission
                 session.state <- AtomicFileState.Staging
             elif event == AtomicFileEvent.Append:
                 raise AtomicFileError.InvalidTransition if session.state != AtomicFileState.Staging

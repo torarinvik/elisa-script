@@ -1585,10 +1585,15 @@ cleanup-pending rollback only with an exact pre-commit identity receipt.
 Destination races, duplicate synchronization,
 invalid receipts, missing cleanup, and every pre/post-commit transition are
 typed through `error[AtomicFileError]`; embedded NULs are classified before
-ordinary path-shape errors. The focused IR fixture, namespace
-inclusion, documentation, and check_file_atomic.sh audit are static evidence;
-locking, digest computation, staging I/O, fsync/rename, crash recovery, and
-platform race fixtures remain host work.
+ordinary path-shape errors. The POSIX source adapter now captures and retains a
+stage-admission proof in the session, uses bounded writes and file sync/close,
+performs exact no-op comparison and one descriptor-relative rename, then
+validates the published identity and supports sealed/unsealed cleanup. The
+focused IR/model fixtures, namespace inclusion, documentation, and
+check_file_atomic.sh audit are static evidence only. Secure stage creation,
+descriptor-owner transfer, an enforced directory lease, restore and uncertain
+publication reconciliation, production callers, crash recovery, and executed
+platform-race fixtures remain open.
 
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership

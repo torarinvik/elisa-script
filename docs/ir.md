@@ -1914,20 +1914,23 @@ descriptor-relative destination snapshot: it returns device/inode metadata for
 the parent descriptor and either an observed absence or a regular-file
 identity backed by SHA-256 of a no-follow, stable read. The caller must retain
 and revalidate that parent capability and destination receipt under its
-mutation policy; this observation seam does not yet write or publish staging
-files. `atomic_file_bytes_equal_at` separately compares a bounded destination
-read to caller-owned bytes byte-for-byte for a future unchanged-content fast
-path; the SHA-256 identity is not treated as proof of exact content equality.
+mutation policy. `atomic_file_bytes_equal_at` separately compares a bounded
+destination read to caller-owned bytes byte-for-byte for an unchanged-content
+fast path; the SHA-256 identity is not treated as proof of exact content
+equality.
 `capture_atomic_file_stage_proof` verifies that an open staging descriptor
 matches its no-follow sibling entry, is a private single-link regular file,
 and shares the parent directory's filesystem; `revalidate_atomic_file_stage_proof`
 repeats those checks before a later mutation. These receipts still require the
-caller's exclusive directory-mutation policy and do not themselves publish.
-`append_atomic_file_stage` checks the model owner and parent token, writes with
-bounded short-write/EINTR handling, revalidates the stage, and advances the
-model's append count only after a complete write. Partial/uncertain writes move
-the model to `FailedPendingCleanup`; this still needs an integrated stage
-creation, cleanup, and publication lifecycle. `seal_atomic_file_stage` syncs
+caller's exclusive directory-mutation policy. `begin_atomic_file_stage`
+captures the proof and retains the parent/stage device, inode, descriptor, and
+owner identities in the session before `Begin`; later POSIX append, cleanup,
+compare, and commit operations reject a proof or sealed identity that does not
+match the admitted stage. The caller still creates the exclusive sibling and
+owns its descriptor. `append_atomic_file_stage` checks the retained admission,
+writes with bounded short-write/EINTR handling, revalidates the stage, and
+advances the model's append count only after a complete write. Partial/uncertain
+writes move the model to `FailedPendingCleanup`. `seal_atomic_file_stage` syncs
 and closes the stage descriptor exactly once, then obtains a stable post-close
 identity/digest receipt and advances `StageReady`. `compare_atomic_file_stage` binds caller
 bytes to the sealed stage by digest and exact readback, takes stable
