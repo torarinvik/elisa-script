@@ -63,6 +63,7 @@ for boundary in \
     'process.error_text' \
     'effective_message' \
     'TestOutcome.Flaky and attempts < 2' \
+    'OutputStatus.Flaky if case.state == TestCaseState.Flaky' \
     'failure_latched' \
     'cancellation_requested'; do
     rg -Fq "$boundary" "$model"
