@@ -572,13 +572,19 @@ the renderer advances; reordered, forged, oversized, or short writes are
 rejected. Non-`Emit` events reject frame/write payloads. The transport still
 does not perform OS writes or prove the contents of bytes produced by an
 external formatter.
-The generic Human/JSON/JUnit byte formatter is still unimplemented. In
-particular, JUnit status-specific child elements, flaky-pass annotation,
-stdout/stderr wrappers, and their escaped-byte accounting remain unspecified;
-the separate single-case differential JUnit renderer does not supply this
-multi-record `OutputDocument` contract. `OutputStatus.Flaky` now preserves
-successful retry classification in typed records while retaining the existing
-status ordinals.
+`EsOutputJunit` now provides a bounded whole-document JUnit serializer for a
+sealed `OutputDocument`. It validates UTF-8/XML characters, escapes XML text
+and attributes, maps failure/error/skip outcomes, retains flaky-pass metadata,
+wraps captured stdout/stderr, and rejects output that exceeds its selected
+byte limit. Flaky status is an Elisascript-specific testcase property for now:
+`OutputRecord` retains the final result but not the failed-attempt history
+needed for a truthful `<flakyFailure>` element. This concrete serializer is
+not yet connected to `OutputRenderFrame` byte accounting or transport
+acknowledgements; the frame stream therefore still does not prove that emitted
+bytes match its descriptors. Human and JSON serializers are also still
+unimplemented. The separate single-case differential JUnit renderer remains a
+different schema. `OutputStatus.Flaky` preserves successful retry
+classification in typed records while retaining the existing status ordinals.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.
 `BuildGraph` contains typed `ProcessCommand` nodes, stable fingerprints,

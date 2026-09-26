@@ -1,0 +1,198 @@
+# Bounded JUnit XML serialization for sealed generic output documents.
+#
+# OutputRenderFrame remains a renderer/transport accounting contract. This
+# module is the concrete record formatter: it owns escaping, status projection,
+# counters, and the final byte ceiling before a host begins transport.
+
+module EsOutputJunit:
+    using EsEncoding
+    using EsOutput
+
+    public:
+        const module Limits:
+            MAX_BYTES: usize = EsOutput::Limits::TEXT_BYTES
+
+
+        error OutputJunitError:
+            InvalidLimit
+            InvalidFormat
+            XmlCharacterInvalid
+            OutputLimitExceeded
+
+
+    private:
+        def output_junit_xml_text_valid(value: sview) -> bool:
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for index in 0..<sview_len(value) |value, cursor|:
+                byte: u8 = sview_at(value, index)
+                return false if byte < 32u8 and byte not in {9u8, 10u8, 13u8}
+                if byte == 239u8 and index + 2 < sview_len(value):
+                    return false if sview_at(value, index + 1) == 191u8 and sview_at(value, index + 2) in {190u8, 191u8}
+                return false if not utf8_feed(byte, cursor)
+            return utf8_complete(cursor)
+
+
+        def output_junit_append_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJunitError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def output_junit_append_text(output: mutable darray[u8]&, text: sview, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJunitError.OutputLimitExceeded if output.count > limit or sview_len(text) > limit - output.count
+            for index in 0..<sview_len(text) |output, text|:
+                output.push(sview_at(text, index))
+
+
+        def output_junit_append_u64(output: mutable darray[u8]&, value: u64, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            remaining: mutable u64 = value
+            if remaining == 0u64:
+                digits.push(48u8)
+            while remaining != 0u64:
+                digits.push(48u8 + (remaining % 10u64).u8())
+                remaining <- remaining / 10u64
+            for index in 0..<digits.count |output, digits, limit|:
+                try output_junit_append_byte(output, digits[digits.count - index - 1], limit)
+
+
+        def output_junit_append_usize(output: mutable darray[u8]&, value: usize, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            try output_junit_append_u64(output, value.u64(), limit)
+
+
+        def output_junit_append_xml(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJunitError.XmlCharacterInvalid if not output_junit_xml_text_valid(value)
+            for index in 0..<sview_len(value) |output, value, limit|:
+                byte: u8 = sview_at(value, index)
+                if byte == 38u8:
+                    try output_junit_append_text(output, "&amp;", limit)
+                elif byte == 60u8:
+                    try output_junit_append_text(output, "&lt;", limit)
+                elif byte == 62u8:
+                    try output_junit_append_text(output, "&gt;", limit)
+                elif byte == 34u8:
+                    try output_junit_append_text(output, "&quot;", limit)
+                elif byte == 39u8:
+                    try output_junit_append_text(output, "&apos;", limit)
+                elif byte == 9u8:
+                    try output_junit_append_text(output, "&#x9;", limit)
+                elif byte == 10u8:
+                    try output_junit_append_text(output, "&#xA;", limit)
+                elif byte == 13u8:
+                    try output_junit_append_text(output, "&#xD;", limit)
+                else:
+                    try output_junit_append_byte(output, byte, limit)
+
+
+        def output_junit_append_attribute(output: mutable darray[u8]&, value: sview, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            try output_junit_append_byte(output, 34u8, limit)
+            try output_junit_append_xml(output, value, limit)
+            try output_junit_append_byte(output, 34u8, limit)
+
+
+        def output_junit_append_attribute_usize(output: mutable darray[u8]&, value: usize, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            try output_junit_append_byte(output, 34u8, limit)
+            try output_junit_append_usize(output, value, limit)
+            try output_junit_append_byte(output, 34u8, limit)
+
+
+        def output_junit_append_time(output: mutable darray[u8]&, milliseconds: u64, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            whole_seconds: u64 = milliseconds / 1000u64
+            fraction: u64 = milliseconds % 1000u64
+            try output_junit_append_u64(output, whole_seconds, limit)
+            try output_junit_append_byte(output, 46u8, limit)
+            try output_junit_append_byte(output, 48u8, limit) if fraction < 100u64
+            try output_junit_append_byte(output, 48u8, limit) if fraction < 10u64
+            try output_junit_append_u64(output, fraction, limit)
+
+
+        def output_junit_append_property(output: mutable darray[u8]&, name: sview, value: sview, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            try output_junit_append_text(output, "      <properties><property name=", limit)
+            try output_junit_append_attribute(output, name, limit)
+            try output_junit_append_text(output, " value=", limit)
+            try output_junit_append_attribute(output, value, limit)
+            try output_junit_append_text(output, "/></properties>\n", limit)
+
+
+        def output_junit_append_record(output: mutable darray[u8]&, record: OutputRecord, limit: usize) -> void error[OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            try output_junit_append_text(output, "    <testcase name=", limit)
+            try output_junit_append_attribute(output, record.name, limit)
+            try output_junit_append_text(output, " classname=", limit)
+            try output_junit_append_attribute(output, "elisascript", limit)
+            try output_junit_append_text(output, " time=", limit)
+            try output_junit_append_byte(output, 34u8, limit)
+            try output_junit_append_time(output, record.duration_ms, limit)
+            try output_junit_append_text(output, ">\n", limit)
+
+            if record.status == OutputStatus.Fail:
+                try output_junit_append_text(output, "      <failure message=", limit)
+                try output_junit_append_attribute(output, record.message, limit)
+                try output_junit_append_text(output, "/>\n", limit)
+            elif record.status == OutputStatus.Error:
+                try output_junit_append_text(output, "      <error message=", limit)
+                try output_junit_append_attribute(output, record.message, limit)
+                try output_junit_append_text(output, "/>\n", limit)
+            elif record.status == OutputStatus.Skip:
+                try output_junit_append_text(output, "      <skipped message=", limit)
+                try output_junit_append_attribute(output, record.message, limit)
+                try output_junit_append_text(output, "/>\n", limit)
+            elif record.status == OutputStatus.Flaky:
+                # The report record retains the final result, not failed-attempt
+                # history, so do not fabricate a JUnit <flakyFailure> payload.
+                try output_junit_append_property(output, "elisascript.flaky", "true", limit)
+                if record.message != "":
+                    try output_junit_append_property(output, "elisascript.message", record.message, limit)
+            elif record.status == OutputStatus.Pass and record.message != "":
+                try output_junit_append_property(output, "elisascript.message", record.message, limit)
+
+            if record.stdout != "":
+                try output_junit_append_text(output, "      <system-out>", limit)
+                try output_junit_append_xml(output, record.stdout, limit)
+                try output_junit_append_text(output, "</system-out>\n", limit)
+            if record.stderr != "":
+                try output_junit_append_text(output, "      <system-err>", limit)
+                try output_junit_append_xml(output, record.stderr, limit)
+                try output_junit_append_text(output, "</system-err>\n", limit)
+
+            try output_junit_append_text(output, "    </testcase>\n", limit)
+
+
+    public:
+        def render_output_document_junit(document: OutputDocument&, max_bytes: usize = Limits::MAX_BYTES) -> darray[u8] error[OutputContractError, OutputJunitError] can[Memory.Allocate, Abort.Panic]:
+            raise OutputJunitError.InvalidLimit if max_bytes == 0 or max_bytes > Limits::MAX_BYTES
+            try validate_output_document(document)
+            raise OutputJunitError.InvalidFormat if document.state != OutputDocumentState.Sealed or document.options.format != OutputFormat.Junit
+
+            failures: mutable usize = 0
+            errors: mutable usize = 0
+            skipped: mutable usize = 0
+            for record in document.records |document, failures, errors, skipped|:
+                failures <- failures + 1 if record.status == OutputStatus.Fail
+                errors <- errors + 1 if record.status == OutputStatus.Error
+                skipped <- skipped + 1 if record.status == OutputStatus.Skip
+
+            output: mutable darray[u8] = []
+            try output_junit_append_text(output, "<testsuites tests=", max_bytes)
+            try output_junit_append_attribute_usize(output, document.records.count, max_bytes)
+            try output_junit_append_text(output, " failures=", max_bytes)
+            try output_junit_append_attribute_usize(output, failures, max_bytes)
+            try output_junit_append_text(output, " errors=", max_bytes)
+            try output_junit_append_attribute_usize(output, errors, max_bytes)
+            try output_junit_append_text(output, " skipped=", max_bytes)
+            try output_junit_append_attribute_usize(output, skipped, max_bytes)
+            try output_junit_append_text(output, ">\n  <testsuite name=", max_bytes)
+            try output_junit_append_attribute(output, "elisascript", max_bytes)
+            try output_junit_append_text(output, " tests=", max_bytes)
+            try output_junit_append_attribute_usize(output, document.records.count, max_bytes)
+            try output_junit_append_text(output, " failures=", max_bytes)
+            try output_junit_append_attribute_usize(output, failures, max_bytes)
+            try output_junit_append_text(output, " errors=", max_bytes)
+            try output_junit_append_attribute_usize(output, errors, max_bytes)
+            try output_junit_append_text(output, " skipped=", max_bytes)
+            try output_junit_append_attribute_usize(output, skipped, max_bytes)
+            try output_junit_append_text(output, ">\n", max_bytes)
+
+            for record in document.records |output, document, max_bytes|:
+                try output_junit_append_record(output, record, max_bytes)
+
+            try output_junit_append_text(output, "  </testsuite>\n</testsuites>\n", max_bytes)
+            return output
