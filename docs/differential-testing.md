@@ -797,6 +797,10 @@ and cancellation support are not implemented by this adapter. Qualification
 must cover a full pipe with a non-reading consumer, consumer disconnection,
 deadline expiry after a partial write, and reaping the supervised writer.
 None may produce a completed transport or a successful report-delivery claim.
+`test/differential/report_transport_model_test.elisa` isolates chunk ordering,
+short-write rejection, final partial chunks, and cancellation from the full
+interpreter/process dependency graph. It is a model fixture, not a substitute
+for supervised host-write qualification, and has not yet been executed.
 This is still a
 source-level contract; it has not been compiled or executed and is not
 acceptance evidence. `EsDifferentialReportAdapter` now recomputes the
