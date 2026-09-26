@@ -1591,9 +1591,9 @@ performs exact no-op comparison and one descriptor-relative rename, then
 validates the published identity and supports sealed/unsealed cleanup. The
 focused IR/model fixtures, namespace inclusion, documentation, and
 check_file_atomic.sh audit are static evidence only. Production stage-creation
-adoption, descriptor-owner lifecycle integration, an enforced directory lease,
-restore and uncertain-publication reconciliation, crash recovery, production
-callers, and executed platform-race fixtures remain open.
+adoption, complete descriptor-owner recovery after failures, an enforced
+directory lease, restore and uncertain-publication reconciliation, crash
+recovery, production callers, and executed platform-race fixtures remain open.
 
 ES-SCRIPT-029 | EsRecordControl supplies explicit bounded `next`/`nextfile`/
 exit transitions for pattern-action adapters. It closes record/file ownership

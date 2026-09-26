@@ -1933,13 +1933,19 @@ Create failures preserve host
 post-create admission fails, it makes one close attempt, preserves the
 unproven path for recovery, and returns `StageAdmissionUncertain` with the
 path, descriptor, and close status rather than unlinking an unverified name.
-`append_atomic_file_stage` checks the retained admission,
-writes with bounded short-write/EINTR handling, revalidates the stage, and
-advances the model's append count only after a complete write. Partial/uncertain
-writes move the model to `FailedPendingCleanup`. `seal_atomic_file_stage` syncs
-and closes the stage descriptor exactly once, then obtains a stable post-close
-identity/digest receipt and advances `StageReady`. `compare_atomic_file_stage` binds caller
-bytes to the sealed stage by digest and exact readback, takes stable
+`append_atomic_file_stage` accepts the handle directly, checks the retained
+admission, writes with bounded short-write/EINTR handling, revalidates the
+stage, and advances the model's append count only after a complete write.
+Partial/uncertain writes move the model to `FailedPendingCleanup`; the handle
+remains open for cleanup. `seal_atomic_file_stage` consumes the mutable handle
+after live proof revalidation, records its descriptor as consumed after one
+close attempt, then obtains a stable post-close identity/digest receipt and
+advances `StageReady`. `cleanup_unsealed_atomic_file_stage` similarly closes
+and consumes the handle only after cleanup is acknowledged; on preflight or
+cleanup failure the caller retains it. Both close failures are reported with
+their status, stored in the handle, and are never retried.
+`compare_atomic_file_stage` binds caller bytes to the sealed stage by digest
+and exact readback, takes stable
 destination identity snapshots around an exact byte comparison, and advances
 `Compare`; it requires the caller to hold the directory lease through the next
 mutation decision. Identity-only reads rewind their temporary arena storage so
