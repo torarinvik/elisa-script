@@ -702,8 +702,11 @@ provides the POSIX cache-locked route. Before each dirty node starts, matching
 previously cached outputs are invalidated through a no-follow directory
 capability. If a command fails, or post-run validation/cache publication
 fails, the executor preflights and removes outputs of every node that started
-in the transaction; outputs of later, unstarted nodes and the previous cache
-manifest are retained when cleanup succeeds. This allows an ordinary observed
+in the transaction; outputs of later, unstarted nodes are retained. A failure
+before cache replacement leaves the previous manifest installed, but an
+uncertain publication may already have replaced it. Output-cleanup errors do
+not replace the original publication error, so `PublishOutcomeUnknown` remains
+visible even if some outputs could not be removed. This allows an ordinary observed
 failure to be retried without treating partial command output as a user edit.
 After each successful command, every declared output is observed before the
 node is marked successful or any dependent node can start; a missing output
