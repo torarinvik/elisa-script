@@ -109,6 +109,9 @@ assert_group_liveness_status '11 R
 __ELISASCRIPT_PS_STATUS__ 0' 1 'unrelated group does not retain leader'
 assert_group_liveness_status '10 S
 __ELISASCRIPT_PS_STATUS__ 1' 0 'failed liveness snapshot conservatively retains leader'
+assert_group_liveness_status '10 S
+__ELISASCRIPT_PS_STATUS__ 0
+11 R' 0 'rows after liveness sentinel conservatively retain leader'
 assert_group_liveness_status '10 S' 0 'missing liveness sentinel conservatively retains leader'
 assert_group_liveness_status '10
 __ELISASCRIPT_PS_STATUS__ 0' 0 'malformed liveness row conservatively retains leader'
@@ -127,6 +130,9 @@ assert_process_state "$state_snapshot" 11 zombie 'zombie compiler process state'
 assert_process_state "$state_snapshot" 12 absent 'absent compiler process state'
 assert_process_state '10 S
 __ELISASCRIPT_PS_STATUS__ 1' 10 unknown 'failed process-state snapshot'
+assert_process_state '10 S
+__ELISASCRIPT_PS_STATUS__ 0
+11 R' 10 unknown 'rows after process-state sentinel are unknown'
 assert_process_state '10 S' 10 unknown 'missing process-state sentinel'
 assert_process_state '10 S
 11 R
@@ -168,6 +174,9 @@ __ELISASCRIPT_PS_STATUS__ 0' identities 'process identity row-limit overflow'
 assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026' identities 'missing process-identity sentinel'
 assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
 __ELISASCRIPT_PS_STATUS__ 1' identities 'failed process-identity snapshot'
+assert_parser_failure '100 1 100 Mon Sep 25 10:00:00 2026
+__ELISASCRIPT_PS_STATUS__ 0
+101 100 101 Mon Sep 25 10:01:00 2026' identities 'rows after process-identity sentinel'
 
 tree_snapshot='10 1
 11 10
@@ -192,6 +201,9 @@ assert_parser_failure '10 1
 __ELISASCRIPT_PS_STATUS__ 0' tree 'descendant row-limit overflow'
 assert_parser_failure '10 1
 __ELISASCRIPT_PS_STATUS__ 1' tree 'failed descendant process-table command'
+assert_parser_failure '10 1
+__ELISASCRIPT_PS_STATUS__ 0
+11 10' tree 'rows after descendant sentinel'
 assert_parser_failure '10 1' tree 'missing descendant status sentinel'
 
 rss_snapshot='10 1 10 30
@@ -218,6 +230,9 @@ assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 0' rss 'RSS row-limit overflow'
 assert_parser_failure '10 1 10 30
 __ELISASCRIPT_PS_STATUS__ 1' rss 'failed RSS process-table command'
+assert_parser_failure '10 1 10 30
+__ELISASCRIPT_PS_STATUS__ 0
+11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
 printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'

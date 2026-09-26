@@ -78,6 +78,7 @@ validation_process_group_has_live_members_from_snapshot() {
             if ($2 != 0) ps_failed = 1
             next
         }
+        status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || NF != 2 || $2 == "" { malformed = 1; exit }
         {
@@ -102,6 +103,7 @@ validation_process_state_from_snapshot() {
             if ($2 != 0) ps_failed = 1
             next
         }
+        status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || NF != 2 || $2 == "" { malformed = 1; exit }
         {
@@ -134,6 +136,7 @@ validation_process_tree_pids_from_snapshot() {
             if ($2 != 0) ps_failed = 1
             next
         }
+        status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || NF != 2 { malformed = 1; exit }
         {
@@ -173,6 +176,7 @@ validation_process_tree_identities_from_snapshot() {
             if ($2 != 0) ps_failed = 1
             next
         }
+        status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || NF != 8 ||
             $4 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ || $5 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ ||
@@ -218,6 +222,7 @@ validation_process_group_rss_from_snapshot() {
             if ($2 != 0) ps_failed = 1
             next
         }
+        status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || NF != 4 { malformed = 1; exit }
         {
