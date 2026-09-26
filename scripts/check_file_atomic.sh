@@ -106,6 +106,8 @@ rg -q 'def reconcile_atomic_file_publication\(' "$adapter"
 rg -q 'AtomicFileEvent.ResolvePublished' "$adapter"
 rg -q 'AtomicFileEvent.ResolveNotPublished' "$adapter"
 rg -q 'PublicationStillUncertain' "$adapter"
+rg -q 'not_published_pattern: bool' "$adapter"
+rg -q 'AtomicFileEvent.ResolveNotPublished, identity: not_published_destination_final.destination' "$adapter"
 if rg -q 'cleanup_state: bool = .*AtomicFileState\.PublishedUncertain' "$adapter"; then
     printf 'file atomic audit: uncertain publications must be reconciled before cleanup\n' >&2
     exit 1
@@ -207,8 +209,11 @@ for boundary in \
     'published_identity <- identity' \
     'session.state <- AtomicFileState.UnchangedPendingCleanup if session.contents_equal' \
     'session.state == AtomicFileState.Committing' \
+    'session.state == AtomicFileState.PublishedUncertain' \
     'session.plan.require_directory_sync and not session.directory_sync_acknowledged' \
     'session.state <- AtomicFileState.PublishedUncertain' \
+    'session.state <- AtomicFileState.Ready' \
+    'session.directory_sync_acknowledged <- false' \
     'session.state <- AtomicFileState.RolledBack'; do
     rg -q "$boundary" "$model"
 done
