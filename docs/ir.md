@@ -578,12 +578,14 @@ and attributes, maps failure/error/skip outcomes, retains flaky-pass metadata,
 wraps captured stdout/stderr, and rejects output that exceeds its selected
 byte limit. Flaky status is an Elisascript-specific testcase property for now:
 `OutputRecord` retains the final result but not the failed-attempt history
-needed for a truthful `<flakyFailure>` element. This concrete serializer is
-not yet connected to `OutputRenderFrame` byte accounting or transport
-acknowledgements; the frame stream therefore still does not prove that emitted
-bytes match its descriptors. Human and JSON serializers are also still
-unimplemented. The separate single-case differential JUnit renderer remains a
-different schema. `OutputStatus.Flaky` preserves successful retry
+needed for a truthful `<flakyFailure>` element. Header, record, and footer
+frame APIs use a count-only writer over the same emission path, and
+`EsOutputRender` now derives JUnit frame lengths from those measures. The host
+can produce matching chunks from those APIs, but `EsOutputTransport` still
+accepts only a reported byte count; it cannot verify the content actually
+written. Human and JSON frame sizes remain model-only, and their serializers
+are unimplemented. The separate single-case differential JUnit renderer
+remains a different schema. `OutputStatus.Flaky` preserves successful retry
 classification in typed records while retaining the existing status ordinals.
 
 `EsBuild` is the shell-replacement boundary for build and test recipes.

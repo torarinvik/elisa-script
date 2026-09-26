@@ -1,12 +1,14 @@
 # Typed output rendering boundary.
 #
-# This module accounts the exact escaped byte cost of each output format while
-# keeping host writes outside the IR contract. A renderer must consume sealed
-# OutputDocuments in record order; no formatter may silently truncate a record
-# or emit a footer before every record has been admitted.
+# This module accounts the serialized byte cost of output frames while keeping
+# host writes outside the IR contract. JUnit frame sizes share the concrete
+# serializer's count/write path; Human and JSON frame accounting remain
+# modeled until their concrete frame writers are connected. A renderer must
+# consume sealed OutputDocuments in record order and never silently truncate.
 
 module EsOutputRender:
     using EsOutput
+    using EsOutputJunit
 
     public:
         const module Limits:
@@ -70,6 +72,7 @@ module EsOutputRender:
             RenderLimitExceeded
             Incomplete
             CancelNotReady
+            OutputTextInvalid
 
 
     private:
@@ -104,16 +107,6 @@ module EsOutputRender:
             return total
 
 
-        def output_render_xml_escaped_bytes(value: sview, limit: usize) -> usize error[OutputRenderError]:
-            total: mutable usize = 0
-            for index in 0..<sview_len(value) |value, limit|:
-                byte: u8 = sview_at(value, index)
-                addition: usize = 5 if byte == 38 else 4 if byte == 60 or byte == 62 else 6 if byte == 34 or byte == 39 else 1
-                raise OutputRenderError.RenderLimitExceeded if not output_render_add(total, addition, limit)
-                total <- total + addition
-            return total
-
-
         def output_render_status_bytes(status: OutputStatus) -> usize error[OutputRenderError]:
             return 4 if status == OutputStatus.Pass or status == OutputStatus.Fail or status == OutputStatus.Skip
             return 5 if status == OutputStatus.Flaky
@@ -121,9 +114,11 @@ module EsOutputRender:
             raise OutputRenderError.InvalidState
 
 
-        def output_render_record_bytes(document: OutputDocument&, record: OutputRecord, first: bool) -> usize error[OutputRenderError]:
+        def output_render_record_bytes(document: OutputDocument&, record_index: usize) -> usize error[OutputRenderError]:
+            raise OutputRenderError.RecordIndexInvalid if record_index >= document.records.count
+            record: OutputRecord = document.records[record_index]
             limit: usize = document.options.max_bytes
-            separator: usize = 0 if first else 1
+            separator: usize = 0 if record_index == 0 else 1
             if document.options.format == OutputFormat.Human:
                 status_bytes: usize = try output_render_status_bytes(record.status)
                 total: mutable usize = 8 + separator + status_bytes
@@ -152,25 +147,44 @@ module EsOutputRender:
                 try output_render_accumulate(total, stderr_bytes, limit)
                 return total
             elif document.options.format == OutputFormat.Junit:
-                total: mutable usize = 26 + separator
-                name_bytes: usize = try output_render_xml_escaped_bytes(record.name, limit)
-                message_bytes: usize = try output_render_xml_escaped_bytes(record.message, limit)
-                stdout_bytes: usize = try output_render_xml_escaped_bytes(record.stdout, limit)
-                stderr_bytes: usize = try output_render_xml_escaped_bytes(record.stderr, limit)
-                try output_render_accumulate(total, name_bytes, limit)
-                try output_render_accumulate(total, message_bytes, limit)
-                try output_render_accumulate(total, stdout_bytes, limit)
-                try output_render_accumulate(total, stderr_bytes, limit)
-                return total
+                catch measure_output_junit_record_frame(record, limit):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJunitError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        elif failure == OutputJunitError.XmlCharacterInvalid:
+                            raise OutputRenderError.OutputTextInvalid
+                        raise OutputRenderError.AccountingInvalid
             raise OutputRenderError.InvalidState
 
 
         def output_render_header_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
-            return 1 if document.options.format == OutputFormat.Json else 11 if document.options.format == OutputFormat.Junit else 0
+            return 1 if document.options.format == OutputFormat.Json
+            if document.options.format == OutputFormat.Junit:
+                catch measure_output_junit_header_frame(document, document.options.max_bytes):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJunitError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        elif failure == OutputJunitError.XmlCharacterInvalid:
+                            raise OutputRenderError.OutputTextInvalid
+                        raise OutputRenderError.AccountingInvalid
+            return 0
 
 
         def output_render_footer_bytes(document: OutputDocument&) -> usize error[OutputRenderError]:
-            return 1 if document.options.format == OutputFormat.Json else 12 if document.options.format == OutputFormat.Junit else 0
+            return 1 if document.options.format == OutputFormat.Json
+            if document.options.format == OutputFormat.Junit:
+                catch measure_output_junit_footer_frame(document.options.max_bytes):
+                    ok value:
+                        return value
+                    error failure:
+                        if failure == OutputJunitError.OutputLimitExceeded:
+                            raise OutputRenderError.RenderLimitExceeded
+                        raise OutputRenderError.AccountingInvalid
+            return 0
 
 
         def output_render_expected_emitted_bytes(render: OutputRender&) -> usize error[OutputRenderError]:
@@ -179,7 +193,7 @@ module EsOutputRender:
                 header: usize = try output_render_header_bytes(render.document)
                 try output_render_accumulate(expected, header, render.document.options.max_bytes)
                 for index in 0..<render.next_record |render, expected|:
-                    record_bytes: usize = try output_render_record_bytes(render.document, render.document.records[index], index == 0)
+                    record_bytes: usize = try output_render_record_bytes(render.document, index)
                     try output_render_accumulate(expected, record_bytes, render.document.options.max_bytes)
                 if render.state == OutputRenderState.Complete:
                     footer: usize = try output_render_footer_bytes(render.document)
@@ -223,7 +237,7 @@ module EsOutputRender:
                 return OutputRenderFrame{kind: OutputRenderFrameKind.Header, sequence: render.chunks, bytes: header_bytes}
             raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
             if render.next_record < render.document.records.count:
-                record_bytes: usize = try output_render_record_bytes(render.document, render.document.records[render.next_record], render.next_record == 0)
+                record_bytes: usize = try output_render_record_bytes(render.document, render.next_record)
                 return OutputRenderFrame{kind: OutputRenderFrameKind.Record, record_index: render.next_record, sequence: render.chunks, bytes: record_bytes}
             footer_bytes: usize = try output_render_footer_bytes(render.document)
             return OutputRenderFrame{kind: OutputRenderFrameKind.Footer, sequence: render.chunks, bytes: footer_bytes, final_frame: true}
@@ -261,7 +275,7 @@ module EsOutputRender:
                 raise OutputRenderError.InvalidState if render.state != OutputRenderState.Rendering
                 raise OutputRenderError.RecordIndexInvalid if record_index >= render.document.records.count
                 raise OutputRenderError.RecordOrderInvalid if record_index != render.next_record
-                chunk_bytes: usize = try output_render_record_bytes(render.document, render.document.records[record_index], record_index == 0)
+                chunk_bytes: usize = try output_render_record_bytes(render.document, record_index)
                 raise OutputRenderError.ChunkLimitExceeded if render.chunks >= Limits::CHUNKS
                 raise OutputRenderError.RenderLimitExceeded if not output_render_add(render.emitted_bytes, chunk_bytes, render.document.options.max_bytes)
                 render.emitted_bytes <- render.emitted_bytes + chunk_bytes
