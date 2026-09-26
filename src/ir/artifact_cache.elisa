@@ -26,6 +26,8 @@ module EsArtifactCache:
     using EsBytecode
     using EsBuildIncremental
     using EsBuildIncrementalCache
+    using EsFileAtomic
+    using EsFileAtomicPosix
     using EsFileReadAtPosix
     using EsFileLockPosix
     using EsRuntime
@@ -178,6 +180,38 @@ module EsArtifactCache:
 
 
     private:
+        def artifact_cache_leaf_view(name: cstr) -> sview can[Unsafe.PointerCast]:
+            bytes: u8& = name.cast[u8&]
+            return sview(bytes, 0, runtime_strlen(name).i64())
+
+
+        def artifact_cache_atomic_stage_cleanup(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_handle: mutable AtomicFilePosixStageHandle&, stage_name: cstr, lock: ArtifactCacheWriterLock&) -> bool can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            if session.state == AtomicFileState.Planned or session.state == AtomicFileState.Failed or session.state == AtomicFileState.Cancelled or session.state == AtomicFileState.Unchanged:
+                return true
+            if session.state == AtomicFileState.Staging or session.state == AtomicFileState.Ready:
+                catch advance_atomic_file(session, AtomicFileEvent.Fail):
+                    ok state:
+                        _ = state
+                    error failure:
+                        return false
+
+            if session.state == AtomicFileState.PublishedUncertain or session.state == AtomicFileState.Committed or session.state == AtomicFileState.Restoring or session.state == AtomicFileState.RolledBack or session.state == AtomicFileState.RolledBackPendingCleanup:
+                return false
+
+            if session.staged_identity.observed:
+                catch cleanup_atomic_file_stage(a, session, parent_fd, stage_name, stage_handle.proof, lock.posix_lease, lock.lock_name):
+                    ok state:
+                        return state == AtomicFileState.Failed or state == AtomicFileState.Cancelled or state == AtomicFileState.Unchanged
+                    error failure:
+                        return false
+
+            catch cleanup_unsealed_atomic_file_stage(session, parent_fd, stage_handle, stage_name, lock.posix_lease, lock.lock_name):
+                ok state:
+                    return state == AtomicFileState.Failed or state == AtomicFileState.Cancelled
+                error failure:
+                    return false
+
+
         const module StageWriteLimits:
             EINTR_RETRIES: usize = 16
 
@@ -193,30 +227,6 @@ module EsArtifactCache:
             offset: usize = 0
             calls: usize = 0
             interrupted: usize = 0
-
-
-        struct ArtifactCacheStagingIdentity:
-            device: u32 = 0
-            inode: u64 = 0
-            size: usize = 0
-            link_count: u16 = 0
-
-
-        def artifact_cache_staging_identity_valid(identity: ArtifactCacheStagingIdentity) -> bool:
-            return identity.device != 0 and identity.inode != 0 and identity.link_count == 1 and identity.size <= Limits::PAYLOAD_BYTES
-
-
-        def artifact_cache_staging_info_matches(info: ElisascriptStat, identity: ArtifactCacheStagingIdentity) -> bool:
-            return artifact_cache_staging_identity_valid(identity) and (info.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and (info.mode & 63u16) == 0u16 and info.link_count == identity.link_count and info.device == identity.device and info.inode == identity.inode and info.size >= 0 and info.size.usize().i64() == info.size and info.size.usize() == identity.size
-
-
-        # This is an identity snapshot, not an atomic name operation. Callers
-        # hold the cache writer lock across admission, revalidation, and rename;
-        # non-cooperating directory writers remain outside that guarantee.
-        def artifact_cache_staging_name_matches_at(directory_fd: int, staging_name: cstr, identity: ArtifactCacheStagingIdentity) -> bool can[Blocking.IO]:
-            return false if not artifact_cache_staging_identity_valid(identity) or not artifact_cache_directory_descriptor_valid(directory_fd) or not elisascript_posix_leaf_name_valid(staging_name)
-            named_info: mutable ElisascriptStat = ElisascriptStat{}
-            return elisascript_posix_fstatat(directory_fd, staging_name, named_info, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0 and artifact_cache_staging_info_matches(named_info, identity)
 
 
         def artifact_cache_write_descriptor_fully(descriptor: int, bytes: mutable darray[u8]&) -> bool can[Blocking.IO]:
@@ -294,53 +304,6 @@ module EsArtifactCache:
             return bytes
 
 
-        def artifact_cache_payload_matches_at(a: mutable Arena&, directory_fd: int, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> bool error[ArtifactCacheIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
-            named_info: mutable ElisascriptStat = ElisascriptStat{}
-            if elisascript_posix_fstatat(directory_fd, destination_name, named_info, DarwinAtFlag::SYMLINK_NOFOLLOW) != 0:
-                errno: mutable i32& = elisascript_posix_errno()
-                return false if errno[0] == DarwinErrno::ENOENT
-                raise ArtifactCacheIoError.DestinationCheckFailed(destination_name)
-            raise ArtifactCacheIoError.DestinationCheckFailed(destination_name) if (named_info.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or named_info.size < 0 or named_info.size.usize().i64() != named_info.size or named_info.size.usize() > byte_limit
-            return false if named_info.size.usize() != bytes.count
-            existing: mutable darray[u8] = []
-            catch artifact_cache_read_file_at(a, directory_fd, destination_name):
-                ok value:
-                    existing <- value
-                error failure:
-                    raise ArtifactCacheIoError.DestinationCheckFailed(destination_name)
-            return false if existing.count != bytes.count
-            for index in 0..<bytes.count |existing, bytes|:
-                return false if existing[index] != bytes[index]
-            return true
-
-
-        def artifact_cache_write_staging_at(directory_fd: int, staging_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCacheStagingIdentity error[ArtifactCacheIoError] can[Blocking.IO]:
-            raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
-            raise ArtifactCacheIoError.InvalidLeafName(staging_name) if not elisascript_posix_leaf_name_valid(staging_name)
-            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit or bytes.items == null
-            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
-            descriptor: int = elisascript_posix_openat(directory_fd, staging_name, flags, 384u32)
-            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if descriptor < 0
-            write_complete: bool = artifact_cache_write_descriptor_fully(descriptor, bytes)
-            staging_info: mutable ElisascriptStat = ElisascriptStat{}
-            staging_info_valid: bool = elisascript_posix_fstat(descriptor, staging_info) == 0 and (staging_info.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and (staging_info.mode & 63u16) == 0u16 and staging_info.link_count == 1 and staging_info.device != 0 and staging_info.inode != 0 and staging_info.size >= 0 and staging_info.size.usize().i64() == staging_info.size and staging_info.size.usize() <= byte_limit
-            staging_identity: mutable ArtifactCacheStagingIdentity = ArtifactCacheStagingIdentity{}
-            if staging_info_valid:
-                staging_identity <- ArtifactCacheStagingIdentity{device: staging_info.device, inode: staging_info.inode, size: staging_info.size.usize(), link_count: staging_info.link_count}
-            sync_status: int = elisascript_posix_fsync(descriptor) if write_complete and staging_info_valid and staging_info.size.usize() == bytes.count else -1
-            close_status: int = elisascript_posix_close(descriptor)
-            stage_name_matches: bool = artifact_cache_staging_name_matches_at(directory_fd, staging_name, staging_identity) if staging_info_valid else false
-            if not write_complete or sync_status != 0 or close_status != 0 or not stage_name_matches or staging_identity.size != bytes.count:
-                if stage_name_matches:
-                    catch elisascript_posix_unlinkat_leaf(directory_fd, staging_name):
-                        ok status:
-                            pass
-                        error failure:
-                            pass
-                raise ArtifactCacheIoError.StagingWriteFailed(staging_name)
-            return staging_identity
-
-
         def artifact_cache_sync_directory(directory_path: cstr) -> bool error[ArtifactCacheIoError] can[Blocking.IO, Memory.Release]:
             raise ArtifactCacheIoError.PathTooLong(directory_path) if not artifact_cache_path_terminated(directory_path)
             directory: mutable heap void&? = elisascript_posix_opendir(directory_path)
@@ -381,63 +344,115 @@ module EsArtifactCache:
             return artifact_cache_commit(publication)
 
 
-        def artifact_cache_publish_payload_at(a: mutable Arena&, directory_fd: int, lock_name: cstr, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        def artifact_cache_publish_payload_at(a: mutable Arena&, lock: ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise ArtifactCacheIoError.InvalidDirectoryDescriptor if not artifact_cache_directory_descriptor_valid(directory_fd)
             raise ArtifactCacheIoError.InvalidLeafName(lock_name) if not elisascript_posix_leaf_name_valid(lock_name)
             raise ArtifactCacheIoError.InvalidLeafName(staging_name) if not elisascript_posix_leaf_name_valid(staging_name)
             raise ArtifactCacheIoError.InvalidLeafName(destination_name) if not elisascript_posix_leaf_name_valid(destination_name)
             raise ArtifactCacheIoError.PathCollision(lock_name) if artifact_cache_path_equal(lock_name, staging_name) or artifact_cache_path_equal(lock_name, destination_name)
             raise ArtifactCacheIoError.PathCollision(staging_name) if artifact_cache_path_equal(staging_name, destination_name)
-            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit
-            stage_info: mutable ElisascriptStat = ElisascriptStat{}
-            if elisascript_posix_fstatat(directory_fd, staging_name, stage_info, DarwinAtFlag::SYMLINK_NOFOLLOW) == 0:
-                raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
-            stage_errno: mutable i32& = elisascript_posix_errno()
-            raise ArtifactCacheIoError.StagingIdentityChanged(staging_name) if stage_errno[0] != DarwinErrno::ENOENT
-            payload_unchanged: mutable bool = false
-            catch artifact_cache_payload_matches_at(a, directory_fd, destination_name, bytes, byte_limit):
-                ok matches:
-                    payload_unchanged <- matches
+            raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if byte_limit == 0 or byte_limit > Limits::PAYLOAD_BYTES or bytes.count == 0 or bytes.count > byte_limit or bytes.items == null
+            raise ArtifactCacheIoError.LockFailed(lock_name) if not artifact_cache_writer_lock_matches_at(lock, directory_fd, lock_name, owner_token)
+
+            destination_view: sview = artifact_cache_leaf_view(destination_name)
+            staging_view: sview = artifact_cache_leaf_view(staging_name)
+            initial_destination: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}, link_count: 0, private_mode: false}
+            catch observe_atomic_file_at(a, directory_fd, destination_name, byte_limit):
+                ok observed:
+                    initial_destination <- observed
                 error failure:
-                    raise failure
-            if payload_unchanged:
+                    raise ArtifactCacheIoError.DestinationCheckFailed(destination_name)
+
+            plan: AtomicFilePlan = AtomicFilePlan{
+                destination_path: destination_view,
+                staging_path: staging_view,
+                owner_token: owner_token,
+                parent_identity: directory_fd.u64() + 1u64,
+                expected_destination: initial_destination.destination,
+                max_content_bytes: byte_limit
+            }
+            session: mutable AtomicFileSession = AtomicFileSession{plan: plan}
+            stage_handle: mutable AtomicFilePosixStageHandle = AtomicFilePosixStageHandle{
+                descriptor: -1,
+                proof: AtomicFilePosixStageProof{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, stage_device: 0, stage_inode: 0, stage_descriptor_token: 0, owner_token: 0, link_count: 0}
+            }
+            catch create_atomic_file_stage(session, directory_fd, staging_name, lock.posix_lease, lock_name):
+                ok created:
+                    stage_handle <- created
+                error failure:
+                    raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+
+            catch append_atomic_file_stage(session, directory_fd, stage_handle, staging_name, bytes, lock.posix_lease, lock_name):
+                ok appended:
+                    _ = appended
+                error failure:
+                    _ = failure
+                    raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if artifact_cache_atomic_stage_cleanup(a, session, directory_fd, stage_handle, staging_name, lock)
+                    raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+
+            catch seal_atomic_file_stage(a, session, directory_fd, stage_handle, staging_name, lock.posix_lease, lock_name):
+                ok identity:
+                    _ = identity
+                error failure:
+                    _ = failure
+                    raise ArtifactCacheIoError.StagingWriteFailed(staging_name) if artifact_cache_atomic_stage_cleanup(a, session, directory_fd, stage_handle, staging_name, lock)
+                    raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+
+            catch compare_atomic_file_stage(a, session, directory_fd, staging_name, destination_name, bytes, lock.posix_lease, lock_name):
+                ok compared:
+                    _ = compared
+                error failure:
+                    _ = failure
+                    raise ArtifactCacheIoError.DestinationCheckFailed(destination_name) if artifact_cache_atomic_stage_cleanup(a, session, directory_fd, stage_handle, staging_name, lock)
+                    raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+
+            if session.state == AtomicFileState.UnchangedPendingCleanup:
+                catch cleanup_atomic_file_stage(a, session, directory_fd, staging_name, stage_handle.proof, lock.posix_lease, lock_name):
+                    ok state:
+                        raise ArtifactCacheIoError.StagingIdentityChanged(staging_name) if state != AtomicFileState.Unchanged
+                    error failure:
+                        raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
                 return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count, unchanged: true}
-            staging_identity: ArtifactCacheStagingIdentity = try artifact_cache_write_staging_at(directory_fd, staging_name, bytes, byte_limit)
-            raise ArtifactCacheIoError.StagingIdentityChanged(staging_name) if not artifact_cache_staging_name_matches_at(directory_fd, staging_name, staging_identity)
-            published: mutable bool = false
-            rename_call_rejected: mutable bool = false
-            catch elisascript_posix_renameat(directory_fd, staging_name, directory_fd, destination_name):
-                ok status:
-                    published <- status == 0
-                error failure:
-                    rename_call_rejected <- true
-            if rename_call_rejected:
-                if artifact_cache_staging_name_matches_at(directory_fd, staging_name, staging_identity):
-                    catch elisascript_posix_unlinkat_leaf(directory_fd, staging_name):
-                        ok status:
-                            pass
+
+            attempts: mutable usize = 0
+            while attempts < 2 and session.state != AtomicFileState.Committed:
+                attempts <- attempts + 1
+                commit_failed: mutable bool = false
+                catch commit_atomic_file_stage(a, session, directory_fd, staging_name, destination_name, lock.posix_lease, lock_name):
+                    ok identity:
+                        _ = identity
+                    error failure:
+                        _ = failure
+                        commit_failed <- true
+
+                if session.state == AtomicFileState.Committed:
+                    break
+                if session.state == AtomicFileState.PublishedUncertain:
+                    catch reconcile_atomic_file_publication(a, session, directory_fd, staging_name, destination_name, lock.posix_lease, lock_name):
+                        ok state:
+                            _ = state
                         error failure:
-                            pass
-                raise ArtifactCacheIoError.PublishFailed(destination_name)
-            elif not published:
-                errno: mutable i32& = elisascript_posix_errno()
-                rename_errno: i32 = errno[0]
-                raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name) if rename_errno == ArtifactCacheErrno::EIO
-                if artifact_cache_staging_name_matches_at(directory_fd, staging_name, staging_identity):
-                    catch elisascript_posix_unlinkat_leaf(directory_fd, staging_name):
-                        ok status:
-                            pass
-                        error failure:
-                            pass
-                raise ArtifactCacheIoError.PublishFailed(destination_name)
-            raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name) if not artifact_cache_staging_name_matches_at(directory_fd, destination_name, staging_identity)
-            raise ArtifactCacheIoError.DirectoryDescriptorSyncFailed(directory_fd) if elisascript_posix_fsync(directory_fd) != 0
+                            raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name)
+                    if session.state == AtomicFileState.Committed:
+                        break
+                    if session.state == AtomicFileState.Ready and attempts < 2:
+                        continue
+                    if session.state == AtomicFileState.Ready:
+                        raise ArtifactCacheIoError.PublishFailed(destination_name) if artifact_cache_atomic_stage_cleanup(a, session, directory_fd, stage_handle, staging_name, lock)
+                        raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+                    raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name)
+
+                if commit_failed:
+                    raise ArtifactCacheIoError.PublishFailed(destination_name) if artifact_cache_atomic_stage_cleanup(a, session, directory_fd, stage_handle, staging_name, lock)
+                    raise ArtifactCacheIoError.StagingIdentityChanged(staging_name)
+
+            raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name) if session.state != AtomicFileState.Committed
             return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count}
 
 
-        def artifact_cache_publish_payload_at_locked(a: mutable Arena&, lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        def artifact_cache_publish_payload_at_locked(a: mutable Arena&, lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&, byte_limit: usize) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             _ = try artifact_cache_writer_lock_acquire_at(lock, directory_fd, lock_name, owner_token)
-            catch artifact_cache_publish_payload_at(a, directory_fd, lock_name, staging_name, destination_name, bytes, byte_limit):
+            catch artifact_cache_publish_payload_at(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, byte_limit):
                 ok publication:
                     released: bool = false
                     catch artifact_cache_writer_lock_release(lock, owner_token):
@@ -694,7 +709,7 @@ module EsArtifactCache:
         def publish_build_incremental_cache_at_held(a: mutable Arena&, lock: mutable ArtifactCacheWriterLock&, directory_fd: int, lock_name: cstr, owner_token: u64, staging_name: cstr, destination_name: cstr, bytes: mutable darray[u8]&) -> ArtifactCachePayloadPublication error[ArtifactCacheIoError, BuildIncrementalCacheError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise ArtifactCacheIoError.LockFailed(lock_name) if not artifact_cache_writer_lock_matches_at(lock, directory_fd, lock_name, owner_token)
             _ = try decode_build_incremental_cache(bytes)
-            return try artifact_cache_publish_payload_at(a, directory_fd, lock_name, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)
+            return try artifact_cache_publish_payload_at(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)
 
 
     public:

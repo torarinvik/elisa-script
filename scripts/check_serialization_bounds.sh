@@ -105,31 +105,22 @@ rg -q 'PublishOutcomeUnknown\(path: cstr\)' "$artifact_cache"
 rg -q 'rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'PublishOutcomeUnknown\(destination_path\) if rename_errno == ArtifactCacheErrno::EIO' "$artifact_cache"
 rg -q 'EIO: i32 = 5' "$artifact_cache"
-rg -q 'struct ArtifactCacheStagingIdentity:' "$artifact_cache"
 rg -q 'StagingIdentityChanged\(path: cstr\)' "$artifact_cache"
-rg -q 'def artifact_cache_staging_name_matches_at\(' "$artifact_cache"
-rg -q 'elisascript_posix_fstat\(descriptor, staging_info\)' "$artifact_cache"
-rg -q 'artifact_cache_staging_name_matches_at\(directory_fd, destination_name, staging_identity\)' "$artifact_cache"
-if ! awk '
-    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
-    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
-    in_payload_publish && /StagingIdentityChanged\(staging_name\)/ { identity_guard_line = NR }
-    in_payload_publish && /catch elisascript_posix_renameat\(/ { rename_line = NR }
-    END { exit !(identity_guard_line > 0 && rename_line > identity_guard_line) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: staging identity is not revalidated before rename\n' >&2
-    exit 1
-fi
-if ! awk '
-    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
-    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
-    in_payload_publish && /if artifact_cache_staging_name_matches_at\(directory_fd, staging_name, staging_identity\)/ { cleanup_guard = 1; guards++ }
-    in_payload_publish && cleanup_guard && /catch elisascript_posix_unlinkat_leaf/ { cleanups++; cleanup_guard = 0 }
-    END { exit !(guards == 2 && cleanups == 2) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: staging cleanup lacks identity guards\n' >&2
-    exit 1
-fi
+rg -q 'using EsFileAtomicPosix' "$artifact_cache"
+rg -q 'def artifact_cache_atomic_stage_cleanup\(' "$artifact_cache"
+rg -q 'cleanup_atomic_file_stage\(a, session, parent_fd, stage_name, stage_handle\.proof, lock\.posix_lease, lock\.lock_name\)' "$artifact_cache"
+rg -q 'cleanup_unsealed_atomic_file_stage\(session, parent_fd, stage_handle, stage_name, lock\.posix_lease, lock\.lock_name\)' "$artifact_cache"
+rg -q 'def artifact_cache_publish_payload_at\(a: mutable Arena&, lock: ArtifactCacheWriterLock&' "$artifact_cache"
+rg -q 'artifact_cache_writer_lock_matches_at\(lock, directory_fd, lock_name, owner_token\)' "$artifact_cache"
+rg -q 'expected_destination: initial_destination\.destination' "$artifact_cache"
+rg -q 'create_atomic_file_stage\(session, directory_fd, staging_name, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'append_atomic_file_stage\(session, directory_fd, stage_handle, staging_name, bytes, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'seal_atomic_file_stage\(a, session, directory_fd, stage_handle, staging_name, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'compare_atomic_file_stage\(a, session, directory_fd, staging_name, destination_name, bytes, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'commit_atomic_file_stage\(a, session, directory_fd, staging_name, destination_name, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'reconcile_atomic_file_publication\(a, session, directory_fd, staging_name, destination_name, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'AtomicFileState\.PublishedUncertain' "$artifact_cache"
+rg -q 'AtomicFileState\.Committed' "$artifact_cache"
 if ! awk '
     /def artifact_cache_publish_file\(/ { in_publish_file = 1 }
     /def artifact_cache_publish_payload_at\(/ { in_publish_file = 0 }
@@ -138,18 +129,6 @@ if ! awk '
     END { exit !(unknown_line > 0 && cleanup_line > unknown_line) }
 ' "$artifact_cache"; then
     printf 'serialization bounds audit: path-based artifact publication cleans staging before classifying ambiguous rename\n' >&2
-    exit 1
-fi
-if ! awk '
-    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
-    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
-    in_payload_publish && /elif not published:/ { in_uncertain_branch = 1 }
-    in_payload_publish && in_uncertain_branch && /PublishOutcomeUnknown\(destination_name\)/ { unknown_line = NR }
-    in_payload_publish && in_uncertain_branch && /elisascript_posix_unlinkat_leaf/ { cleanup_line = NR }
-    in_payload_publish && in_uncertain_branch && /raise ArtifactCacheIoError\.PublishFailed\(destination_name\)/ { in_uncertain_branch = 0 }
-    END { exit !(unknown_line > 0 && cleanup_line > unknown_line) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: descriptor-relative artifact publication cleans staging before classifying ambiguous rename\n' >&2
     exit 1
 fi
 rg -q 'ArtifactCacheIoError\.DirectorySyncFailed' "$artifact_cache"
@@ -208,32 +187,11 @@ rg -q 'read_regular_file_at\(arena, -1, "cache.bin", 1024\)' "$incremental_cache
 rg -q 'publish_build_incremental_cache_at_locked\(arena, lock, -1, "cache.lock", 7, "cache.tmp", "cache.bin", bytes\)' "$incremental_cache_adapter_tests"
 rg -q 'artifact_cache_publish_payload_at_locked\(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES\)' "$artifact_cache"
 rg -q 'unchanged: bool = false' "$artifact_cache"
-rg -q 'artifact_cache_payload_matches_at\(a, directory_fd, destination_name, bytes, byte_limit\)' "$artifact_cache"
-if ! awk '
-    /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
-    /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
-    in_payload_publish && /unchanged: true/ { noop_line = NR }
-    in_payload_publish && /artifact_cache_write_staging_at\(/ { stage_line = NR }
-    END { exit !(noop_line > 0 && stage_line > noop_line) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: unchanged cache payload is not returned before staging\n' >&2
-    exit 1
-fi
-if ! awk '
-    /def artifact_cache_payload_matches_at\(/ { in_payload_match = 1 }
-    /def artifact_cache_write_staging_at\(/ { in_payload_match = 0 }
-    in_payload_match && /DarwinAtFlag::SYMLINK_NOFOLLOW/ { nofollow_line = NR }
-    in_payload_match && /named_info\.mode & DarwinStatMode::MASK/ { regular_file_line = NR }
-    in_payload_match && /named_info\.size\.usize\(\) > byte_limit/ { size_limit_line = NR }
-    in_payload_match && /named_info\.size\.usize\(\) != bytes\.count/ { named_length_line = NR }
-    in_payload_match && /existing\.count != bytes\.count/ { read_length_line = NR }
-    in_payload_match && /existing\[index\] != bytes\[index\]/ { byte_compare_line = NR }
-    in_payload_match && /return true/ { equal_line = NR }
-    END { exit !(nofollow_line > 0 && regular_file_line > nofollow_line && size_limit_line > regular_file_line && named_length_line > size_limit_line && read_length_line > named_length_line && byte_compare_line > read_length_line && equal_line > byte_compare_line) }
-' "$artifact_cache"; then
-    printf 'serialization bounds audit: no-op cache comparison is not bounded, no-follow, and byte-exact\n' >&2
-    exit 1
-fi
+rg -q 'observe_atomic_file_at\(a, directory_fd, destination_name, byte_limit\)' "$artifact_cache"
+rg -q 'if session.state == AtomicFileState.UnchangedPendingCleanup:' "$artifact_cache"
+rg -q 'cleanup_atomic_file_stage\(a, session, directory_fd, staging_name, stage_handle\.proof, lock\.posix_lease, lock_name\)' "$artifact_cache"
+rg -q 'return ArtifactCachePayloadPublication\{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count, unchanged: true\}' "$artifact_cache"
+rg -q 'raise ArtifactCacheIoError\.PublishOutcomeUnknown\(destination_name\) if session.state != AtomicFileState.Committed' "$artifact_cache"
 if ! awk '
     /def read_regular_file_at\(/ { in_cache_read = 1 }
     in_cache_read && /named_before:/ { named_before_line = NR }
@@ -254,24 +212,19 @@ fi
 if ! awk '
     /def artifact_cache_publish_payload_at\(/ { in_payload_publish = 1 }
     /def artifact_cache_publish_payload_at_locked\(/ { in_payload_publish = 0 }
-    in_payload_publish && /fstatat\(directory_fd, staging_name, stage_info, DarwinAtFlag::SYMLINK_NOFOLLOW\)/ { stage_check_line = NR }
-    in_payload_publish && /stage_errno\[0\] != DarwinErrno::ENOENT/ { stale_stage_reject_line = NR }
-    in_payload_publish && /catch artifact_cache_payload_matches_at/ { compare_line = NR }
-    in_payload_publish && /unchanged: true/ { unchanged_line = NR }
-    in_payload_publish && /artifact_cache_write_staging_at\(/ { staging_write_line = NR }
-    END { exit !(stage_check_line > 0 && stale_stage_reject_line > stage_check_line && compare_line > stale_stage_reject_line && unchanged_line > compare_line && staging_write_line > unchanged_line) }
+    in_payload_publish && /observe_atomic_file_at\(a, directory_fd, destination_name, byte_limit\)/ { destination_admission_line = NR }
+    in_payload_publish && /create_atomic_file_stage\(/ { stage_line = NR }
+    in_payload_publish && /compare_atomic_file_stage\(/ { compare_line = NR }
+    in_payload_publish && /commit_atomic_file_stage\(/ { commit_line = NR }
+    in_payload_publish && /reconcile_atomic_file_publication\(/ { reconcile_line = NR }
+    END { exit !(destination_admission_line > 0 && stage_line > destination_admission_line && compare_line > stage_line && commit_line > compare_line && reconcile_line > commit_line) }
 ' "$artifact_cache"; then
-    printf 'serialization bounds audit: cache no-op bypasses stale-stage admission or occurs after staging\n' >&2
+    printf 'serialization bounds audit: artifact-cache publication does not use the generic atomic publication sequence\n' >&2
     exit 1
 fi
-rg -q 'def artifact_cache_write_staging_at' "$artifact_cache"
 rg -q 'def artifact_cache_directory_descriptor_valid' "$artifact_cache"
 rg -q 'elisascript_posix_fstat\(directory_fd, info\)' "$artifact_cache"
 rg -q 'info\.mode & DarwinStatMode::MASK' "$artifact_cache"
-rg -q 'elisascript_posix_openat\(directory_fd, staging_name, flags, 384u32\)' "$artifact_cache"
-rg -q 'elisascript_posix_renameat\(directory_fd, staging_name, directory_fd, destination_name\)' "$artifact_cache"
-rg -q 'elisascript_posix_unlinkat_leaf\(directory_fd, staging_name\)' "$artifact_cache"
-rg -q 'elisascript_posix_fsync\(directory_fd\)' "$artifact_cache"
 rg -q 'DirectoryDescriptorSyncFailed\(descriptor: int\)' "$artifact_cache"
 rg -q 'def artifact_cache_writer_lock_acquire_at' "$artifact_cache"
 rg -q 'acquire_file_lock_at\(lock\.posix_lease, directory_fd, lock_name, owner_token, FileLockMode\.Exclusive\)' "$artifact_cache"

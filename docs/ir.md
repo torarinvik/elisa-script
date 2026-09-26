@@ -1989,8 +1989,14 @@ only after cleanup has been acknowledged. If sealing consumed the descriptor
 before receipt creation failed, cleanup instead requires the retained
 admission proof, repeated no-follow inode checks, and the same live lease; it
 never claims an open descriptor remains. Both cleanup APIs require and
-revalidate the caller's exclusive directory lease. Cross-platform lease
-adapters and production publication callers remain open.
+revalidate the caller's exclusive directory lease. The descriptor-relative
+incremental artifact-cache writer now consumes this generic publisher; other
+generated-file/build-output callers, cross-platform adapters, and runtime
+parity remain open.
+Unchanged cache content preserves the destination inode, but the generic flow
+still creates and seals a stage before comparison. An unresolved publication
+preserves its candidate and returns an unknown-outcome error; the cache wrapper
+does not persist the session receipt for recovery after returning or crashing.
 `Begin` and bounded
 `Append` edges build the staging result; `StageReady` requires a host-supplied
 size/digest/object-identity receipt after staging sync and close, including a

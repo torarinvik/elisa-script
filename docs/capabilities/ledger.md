@@ -1595,12 +1595,13 @@ stage-admission proof in the session, uses bounded writes and file sync/close,
 performs exact no-op comparison and one descriptor-relative rename, then
 validates the published identity and supports sealed/unsealed cleanup. The
 focused IR/model fixtures, namespace inclusion, documentation, and
-check_file_atomic.sh audit are static evidence only. Production stage-creation
+check_file_atomic.sh audit are static evidence only. Broader stage-creation
 adoption, complete descriptor-owner recovery after failures, cross-platform
-lease adapters, restore, crash recovery, production callers, and executed
-platform-race fixtures remain open. Ambiguous publication now has a
-source-only POSIX reconciliation path; runtime races and crash behavior remain
-unverified.
+lease adapters, restore, crash recovery, generated-file/build-output callers,
+and executed platform-race fixtures remain open. The descriptor-relative
+incremental artifact-cache publisher is now the first production consumer.
+Ambiguous publication has a source-only POSIX reconciliation path; runtime
+races and crash behavior remain unverified.
 The POSIX adapter now requires `FileLockPosixLease` on every mutating entrypoint
 and revalidates its exclusive host lock at staging, comparison, commit, and
 cleanup boundaries; this remains source-only and is not runtime evidence.
