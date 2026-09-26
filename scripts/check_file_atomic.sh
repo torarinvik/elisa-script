@@ -23,6 +23,10 @@ rg -q 'include "\.\./runtime/file_atomic_model\.elisa"' "$ir"
 rg -q '^module EsFileAtomicPosix:' "$adapter"
 rg -q 'include "\.\./runtime/file_atomic_posix\.elisa"' "$ir"
 rg -q 'def observe_atomic_file_at\(' "$adapter"
+rg -q 'def begin_atomic_file_stage\(' "$adapter"
+rg -q 'session.state != AtomicFileState.Planned' "$adapter"
+rg -q 'AtomicFileEvent.Begin' "$adapter"
+rg -q 'capture_atomic_file_stage_proof\(parent_fd, stage_fd, stage_leaf, session.plan.owner_token\)' "$adapter"
 rg -q 'def atomic_file_bytes_equal_at\(' "$adapter"
 rg -q 'atomic_file_posix_bytes_equal\(observed, expected\)' "$adapter"
 rg -q 'left\[index\] != right\[index\]' "$adapter"
@@ -187,4 +191,4 @@ rg -Fq 'atomic_file_cleanup_ack_is_pending_only_and_idempotence_is_rejected' "$r
 rg -Fq 'duplicate_ack_rejected' "$runtime_fixture"
 rg -Fq 'assert not partial.staged_identity.observed' "$runtime_fixture"
 
-printf 'file atomic source audit: transition, compare, commit, sealed and unsealed stage cleanup seams are present; restore, lease integration, and runtime parity remain open\n'
+printf 'file atomic source audit: stage admission, transition, compare, commit, sealed and unsealed stage cleanup seams are present; restore, lease integration, and runtime parity remain open\n'
