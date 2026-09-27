@@ -183,6 +183,16 @@ for signature_input in \
     'recipe.dependencies'; do
     rg -Fq "$signature_input" "$recipe_signature"
 done
+for signature_policy in \
+    'InheritedEnvironmentUncacheable if command.environment_mode == ProcessEnvironmentMode.Inherit' \
+    'AmbientExecutableUncacheable if not path_is_absolute(path(command.executable))' \
+    'WorkingDirectoryUncacheable if command.working_directory == "" or not path_is_absolute(path(command.working_directory))' \
+    'StdioPolicyUncacheable if command.stdin_mode != ProcessStdioMode.Null or command.stdout_mode != ProcessStdioMode.Capture or command.stderr_mode != ProcessStdioMode.Capture' \
+    'StdioPolicyUncacheable if command.stdin_path != "" or command.stdout_path != "" or command.stderr_path != ""' \
+    'FailurePolicyUncacheable if command.failure_mode != ProcessFailureMode.Check' \
+    'UnboundedExecutionUncacheable if command.timeout_micros == 0'; do
+    rg -Fq "$signature_policy" "$recipe_signature"
+done
 for recipe_signature_check in \
     'build_recipe_signature_binds_command_target_and_toolchain' \
     'AmbientExecutableUncacheable' \
