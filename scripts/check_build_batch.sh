@@ -103,6 +103,7 @@ rg -Fq 'build_batch_rejects_existing_output_before_dispatch_without_mutation' "$
 for executor_output_bound in \
     'Limits::OUTPUT_PATHS' \
     'Limits::OUTPUT_PATH_BYTES' \
+    'Limits::OUTPUT_PATH_TEXT_BYTES' \
     'Limits::OUTPUT_INDEX_SLOTS' \
     'def build_executor_output_path_hash(' \
     'slots.reserve(slot_count)'; do

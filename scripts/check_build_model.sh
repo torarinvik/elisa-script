@@ -378,6 +378,7 @@ fi
 
 for declaration in \
     'module EsBuildExecutor:' \
+    'OUTPUT_PATH_TEXT_BYTES: usize = 67108864' \
     'const enum BuildExecutionFailureKind of u8:' \
     'BuildExecutionFailureKind.Invocation' \
     'BuildExecutionFailureKind.NonzeroExit' \
@@ -423,6 +424,9 @@ rg -Fq 'for argument in command.arguments |arguments|' "$executor_model"
 rg -Fq 'build_executor_first_present_output(output_set)' "$executor_model"
 
 rg -Fq 'build_executor_preflights_supported_process_command_subset' "$executor_fixture"
+rg -Fq 'build_executor_rejects_aggregate_output_path_text_before_indexing' "$executor_fixture"
+rg -Fq 'path_count: usize = Limits::OUTPUT_PATH_TEXT_BYTES / (Limits::OUTPUT_PATH_BYTES + 1) + 1' "$executor_fixture"
+rg -Fq 'path_bytes >= Limits::OUTPUT_PATH_TEXT_BYTES - total_output_path_text_bytes' "$executor_model"
 rg -Fq 'build_executor_dispatches_exact_child_environment_modes' "$executor_fixture"
 rg -Fq 'replacement-only' "$executor_fixture"
 rg -Fq 'replaced_path_result' "$executor_fixture"
