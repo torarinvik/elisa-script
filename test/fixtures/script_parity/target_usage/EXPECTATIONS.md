@@ -36,11 +36,13 @@ to be absent, creates a private sibling stage exclusively, proves the stage's
 identity while writing and sealing, compares exact bytes, renames relative to
 the retained directory descriptor, and syncs the directory. An ambiguous
 rename is reconciled before retry or cleanup; an unresolved outcome preserves
-the stage. The launcher rejects symlink or non-regular database outputs and a
-successful candidate run that leaves the stage behind. Archive, link, and run
-actions are intentionally excluded from the translation-unit database. The
-advisory lock coordinates cooperating writers; the adapter does not claim to
-exclude arbitrary non-cooperating mutation of the same directory.
+the stage. Failed stage admission likewise leaves a possibly created or
+pre-existing stage untouched. The launcher verifies the persistent empty lock
+file, rejects symlink or non-regular database outputs, and rejects a successful
+candidate run that leaves the stage behind. Archive, link, and run actions are
+intentionally excluded from the translation-unit database. The advisory lock
+coordinates cooperating writers; the adapter does not claim to exclude
+arbitrary non-cooperating mutation of the same directory.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
