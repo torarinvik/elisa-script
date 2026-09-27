@@ -37,6 +37,7 @@ module EsBuildIncrementalPosixExecutor:
             result: BuildExecutionResult
             recipes: darray[BuildIncrementalRecipeTarget]
             pre_execution_observations: darray[BuildIncrementalObservation]
+            toolchain_stamps: darray[darray[BuildIncrementalFileStamp]]
 
 
         # A cache payload is returned only after successful execution and fresh
@@ -75,6 +76,20 @@ module EsBuildIncrementalPosixExecutor:
 
         def validate_build_recipe_toolchain_identity(path: sview, expected: BuildRecipeToolchainIdentity, observed: BuildRecipeToolchainIdentity) -> bool error[ToolchainObservationError]:
             raise ToolchainObservationError.ToolchainChanged(path) if expected != observed
+            return true
+
+
+        def validate_build_recipe_toolchain_stamp(expected: BuildIncrementalFileStamp, observed: BuildIncrementalFileStamp) -> bool error[ToolchainObservationError]:
+            same_stamp: bool = expected.path == observed.path
+                and expected.present == observed.present
+                and expected.size == observed.size
+                and expected.device == observed.device
+                and expected.inode == observed.inode
+                and expected.modify_time.seconds == observed.modify_time.seconds
+                and expected.modify_time.nanoseconds == observed.modify_time.nanoseconds
+                and expected.change_time.seconds == observed.change_time.seconds
+                and expected.change_time.nanoseconds == observed.change_time.nanoseconds
+            raise ToolchainObservationError.ToolchainChanged(expected.path) if not same_stamp
             return true
 
 
@@ -264,8 +279,10 @@ module EsBuildIncrementalPosixExecutor:
                 bytes.push((value >> (shift * 8)).u8())
 
 
-        def observe_build_recipe_toolchain_set_at(scratch: mutable Arena&, root_fd: int, resolution: BuildRecipeToolchainPath) -> BuildRecipeToolchainIdentity error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            primary: BuildRecipeToolchainIdentity = try observe_build_recipe_toolchain_identity_at(scratch, root_fd, resolution.path)
+        def observe_build_recipe_toolchain_set_at(scratch: mutable Arena&, root_fd: int, resolution: BuildRecipeToolchainPath, stamps: mutable darray[BuildIncrementalFileStamp]&) -> BuildRecipeToolchainIdentity error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            primary_observation: BuildRecipeToolchainFileObservation = try observe_build_recipe_toolchain_file_at(scratch, root_fd, resolution.path)
+            stamps[0].push(primary_observation.stamp)
+            primary: BuildRecipeToolchainIdentity = primary_observation.identity
             return primary if resolution.helper_paths.count == 0
             bytes: mutable darray[u8] = [69u8, 83u8, 84u8, 67u8, 1u8]
             toolchain_identity_mix_bytes(bytes, primary.word0)
@@ -277,7 +294,9 @@ module EsBuildIncrementalPosixExecutor:
                 toolchain_identity_mix_bytes(bytes, sview_len(helper_path).u64())
                 for byte in helper_path |bytes|:
                     bytes.push(byte)
-                helper: BuildRecipeToolchainIdentity = try observe_build_recipe_toolchain_identity_at(scratch, root_fd, helper_path)
+                helper_observation: BuildRecipeToolchainFileObservation = try observe_build_recipe_toolchain_file_at(scratch, root_fd, helper_path)
+                stamps[0].push(helper_observation.stamp)
+                helper: BuildRecipeToolchainIdentity = helper_observation.identity
                 toolchain_identity_mix_bytes(bytes, helper.word0)
                 toolchain_identity_mix_bytes(bytes, helper.word1)
                 toolchain_identity_mix_bytes(bytes, helper.word2)
@@ -290,13 +309,15 @@ module EsBuildIncrementalPosixExecutor:
             }
 
 
-        def observe_build_recipe_toolchains_at(scratch: mutable Arena&, root_fd: int, graph: BuildGraph, resolutions: darray[BuildRecipeToolchainPath]) -> darray[BuildRecipeToolchainIdentity] error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def observe_build_recipe_toolchains_at(scratch: mutable Arena&, root_fd: int, graph: BuildGraph, resolutions: darray[BuildRecipeToolchainPath], stamp_sets: mutable darray[darray[BuildIncrementalFileStamp]]&) -> darray[BuildRecipeToolchainIdentity] error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             raise ToolchainObservationError.ToolchainPathCountMismatch if resolutions.count != graph.nodes.count
             identities: mutable darray[BuildRecipeToolchainIdentity] = []
-            for index in 0..<resolutions.count |graph, resolutions, identities, scratch|:
+            for index in 0..<resolutions.count |graph, resolutions, identities, scratch, stamp_sets|:
                 resolution: BuildRecipeToolchainPath = resolutions[index]
                 raise ToolchainObservationError.ToolchainCommandMismatch(index) if resolution.command_executable != graph.nodes[index].command.executable
-                identities.push(try observe_build_recipe_toolchain_set_at(scratch, root_fd, resolution))
+                stamps: mutable darray[BuildIncrementalFileStamp] = []
+                identities.push(try observe_build_recipe_toolchain_set_at(scratch, root_fd, resolution, stamps))
+                stamp_sets[0].push(stamps)
             return identities
 
 
@@ -304,16 +325,24 @@ module EsBuildIncrementalPosixExecutor:
         # node's dispatch boundary. This catches changes after planning; the
         # final path-based process spawn still has an OS-level replacement
         # window that would require descriptor-bound execution to eliminate.
-        def validate_build_recipe_toolchain_for_dispatch_at(scratch: mutable Arena&, root_fd: int, resolution: BuildRecipeToolchainPath, expected: BuildRecipeToolchainIdentity) -> bool error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            observed: BuildRecipeToolchainIdentity = try observe_build_recipe_toolchain_set_at(scratch, root_fd, resolution)
-            _ = try validate_build_recipe_toolchain_identity(resolution.path, expected, observed)
+        def validate_build_recipe_toolchain_for_dispatch_at(root_fd: int, resolution: BuildRecipeToolchainPath, expected_stamps: darray[BuildIncrementalFileStamp]) -> bool error[OpenError, ToolchainObservationError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise ToolchainObservationError.ToolchainStampCountMismatch if expected_stamps.count != resolution.helper_paths.count + 1
+            raise ToolchainObservationError.ToolchainStampCountMismatch if expected_stamps[0].path != resolution.path
+            primary: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(root_fd, resolution.path)
+            _ = try validate_build_recipe_toolchain_stamp(expected_stamps[0], primary)
+            for helper_index in 0..<resolution.helper_paths.count |resolution, expected_stamps, root_fd|:
+                expected: BuildIncrementalFileStamp = expected_stamps[helper_index + 1]
+                helper_path: sview = resolution.helper_paths[helper_index]
+                raise ToolchainObservationError.ToolchainStampCountMismatch if expected.path != helper_path
+                observed: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(root_fd, helper_path)
+                _ = try validate_build_recipe_toolchain_stamp(expected, observed)
             return true
 
 
         # Serial incremental dispatcher with a per-node invalidation boundary.
         # A failed node therefore cannot erase outputs belonging to later dirty
         # nodes which have not started.
-        def execute_build_graph_incremental_serial_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], toolchain_resolutions: darray[BuildRecipeToolchainPath], plan: BuildIncrementalPlan) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
+        def execute_build_graph_incremental_serial_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], toolchain_resolutions: darray[BuildRecipeToolchainPath], toolchain_stamps: darray[darray[BuildIncrementalFileStamp]], plan: BuildIncrementalPlan) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
             valid_graph: mutable bool = false
             catch validate_build_graph(graph):
                 ok value:
@@ -323,7 +352,7 @@ module EsBuildIncrementalPosixExecutor:
             raise BuildExecutionError.GraphInvalid if not valid_graph
             raise BuildExecutionError.GraphNotPlanned if graph.state != BuildGraphState.Planned
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > EsBuildExecutor::Limits::NODE_RESULTS
-            raise BuildExecutionError.GraphInvalid if plan.decisions.count != graph.nodes.count or recipes.count != graph.nodes.count
+            raise BuildExecutionError.GraphInvalid if plan.decisions.count != graph.nodes.count or recipes.count != graph.nodes.count or toolchain_stamps.count != graph.nodes.count
 
             for node_index in 0..<graph.nodes.count |graph, plan|:
                 if plan.decisions[node_index] != BuildIncrementalDecision.UpToDate:
@@ -351,7 +380,7 @@ module EsBuildIncrementalPosixExecutor:
                             raise failure
                     _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
                     results[node_index].started <- true
-                    catch validate_build_recipe_toolchain_for_dispatch_at(scratch, root_fd, toolchain_resolutions[node_index], recipes[node_index].toolchain_identity):
+                    catch validate_build_recipe_toolchain_for_dispatch_at(root_fd, toolchain_resolutions[node_index], toolchain_stamps[node_index]):
                         ok:
                             pass
                         error failure:
@@ -429,13 +458,14 @@ module EsBuildIncrementalPosixExecutor:
         def execute_build_graph_incremental_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], unsigned_recipes: darray[BuildIncrementalRecipeTarget], toolchain_resolutions: darray[BuildRecipeToolchainPath]) -> BuildIncrementalPosixExecution error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, OpenError, ObserveError, OutputInvalidationError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
             _ = try validate_build_recipe_toolchain_paths(graph, toolchain_resolutions)
             observations: darray[BuildIncrementalObservation] = try observe_build_incremental_recipes_at(scratch, root_fd, unsigned_recipes)
-            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, graph, toolchain_resolutions)
+            toolchain_stamps: mutable darray[darray[BuildIncrementalFileStamp]] = []
+            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, graph, toolchain_resolutions, toolchain_stamps)
             signed: BuildRecipeSignedGraph = try sign_build_incremental_graph(graph, unsigned_recipes, toolchains)
             graph <- signed.graph
             plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, signed.recipes, observations)
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > EsBuildExecutor::Limits::NODE_RESULTS
-            result: BuildExecutionResult = try execute_build_graph_incremental_serial_at(scratch, root_fd, graph, previous_targets, signed.recipes, observations, toolchain_resolutions, plan)
-            return BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations}
+            result: BuildExecutionResult = try execute_build_graph_incremental_serial_at(scratch, root_fd, graph, previous_targets, signed.recipes, observations, toolchain_resolutions, toolchain_stamps, plan)
+            return BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations, toolchain_stamps: toolchain_stamps}
 
 
     public:
@@ -444,7 +474,8 @@ module EsBuildIncrementalPosixExecutor:
         # publication, refuse to create a reusable manifest.
         def commit_build_incremental_execution_at(scratch: mutable Arena&, root_fd: int, execution: BuildIncrementalPosixExecution, graph: BuildGraph, previous_targets: darray[BuildIncrementalTarget], toolchain_resolutions: darray[BuildRecipeToolchainPath]) -> BuildIncrementalCommit error[BuildExecutionError, BuildContractError, BuildIncrementalError, BuildRecipeSignatureError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_build_recipe_toolchain_paths(graph, toolchain_resolutions)
-            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, graph, toolchain_resolutions)
+            unused_stamps: mutable darray[darray[BuildIncrementalFileStamp]] = []
+            toolchains: darray[BuildRecipeToolchainIdentity] = try observe_build_recipe_toolchains_at(scratch, root_fd, graph, toolchain_resolutions, unused_stamps)
             for index in 0..<execution.recipes.count |execution, toolchains|:
                 raise ToolchainObservationError.ToolchainChanged(toolchain_resolutions[index].path) if execution.recipes[index].toolchain_identity != toolchains[index]
             observations: darray[BuildIncrementalObservation] = try observe_build_incremental_recipes_at(scratch, root_fd, execution.recipes)

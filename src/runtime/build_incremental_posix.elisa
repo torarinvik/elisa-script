@@ -28,6 +28,21 @@ module EsBuildIncrementalPosix:
             change_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
 
 
+        struct BuildIncrementalFileStamp:
+            path: sview
+            present: bool = false
+            size: usize = 0
+            device: u32 = 0
+            inode: u64 = 0
+            modify_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
+            change_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
+
+
+        struct BuildRecipeToolchainFileObservation:
+            identity: BuildRecipeToolchainIdentity
+            stamp: BuildIncrementalFileStamp
+
+
         error OpenError:
             InvalidDirectoryDescriptor
             InvalidPath
@@ -51,6 +66,7 @@ module EsBuildIncrementalPosix:
             ToolchainMissing(path: sview)
             ToolchainChanged(path: sview)
             ToolchainPathCountMismatch
+            ToolchainStampCountMismatch
             ToolchainCommandMismatch(node_index: usize)
             InvalidToolchainPath(node_index: usize)
             MissingEnvironmentShim(node_index: usize)
@@ -241,9 +257,11 @@ module EsBuildIncrementalPosix:
         # reopened beneath the same root capability and matched to the retained
         # descriptor. This rejects ordinary mutation and path replacement
         # rather than publishing a fingerprint for an object no longer named.
-        def observe_build_incremental_file_at(scratch: mutable Arena&, root_fd: int, path: sview) -> BuildIncrementalObservation error[OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def observe_build_incremental_file_with_stamp_at(scratch: mutable Arena&, root_fd: int, path: sview, stamp_out: mutable BuildIncrementalFileStamp&) -> BuildIncrementalObservation error[OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
-            return BuildIncrementalObservation{path: path} if not opened.present
+            if not opened.present:
+                stamp_out[0] <- BuildIncrementalFileStamp{path: path}
+                return BuildIncrementalObservation{path: path}
             mark: ArenaMark = arena_snapshot(scratch)
             bytes: mutable darray[u8] = []
             if opened.size != 0:
@@ -284,22 +302,44 @@ module EsBuildIncrementalPosix:
             raise ObserveError.ReadIncomplete(path) if bytes.count != opened.size
             raise ObserveError.HashFailed(path) if not digest_ok
             raise ObserveError.ZeroFingerprint(path) if fingerprint == 0 and fingerprint_word1 == 0 and fingerprint_word2 == 0 and fingerprint_word3 == 0
+            stamp_out[0] <- BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, modify_time: opened.modify_time, change_time: opened.change_time}
             return BuildIncrementalObservation{path: path, present: true, fingerprint: fingerprint, fingerprint_word1: fingerprint_word1, fingerprint_word2: fingerprint_word2, fingerprint_word3: fingerprint_word3}
+
+
+        def observe_build_incremental_file_at(scratch: mutable Arena&, root_fd: int, path: sview) -> BuildIncrementalObservation error[OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            stamp: mutable BuildIncrementalFileStamp = BuildIncrementalFileStamp{path: path}
+            return try observe_build_incremental_file_with_stamp_at(scratch, root_fd, path, stamp)
+
+
+        # Capture only the current descriptor-relative file identity for a
+        # cheap dispatch-time recheck. Content bytes are hashed separately
+        # during recipe admission; this snapshot compares inode, size, mtime,
+        # and ctime without rereading a large compiler for every target.
+        def observe_build_incremental_file_stamp_at(root_fd: int, path: sview) -> BuildIncrementalFileStamp error[OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+            opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
+            return BuildIncrementalFileStamp{path: path} if not opened.present
+            close_status: int = elisascript_posix_close(opened.descriptor)
+            raise OpenError.CloseFailed(path) if close_status != 0
+            return BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, modify_time: opened.modify_time, change_time: opened.change_time}
 
 
         # Derive the recipe's toolchain identity from file bytes read through
         # the same descriptor-relative, no-follow and mutation-checked path as
         # source inputs. The caller must resolve command.executable to this
         # path using its trusted execution environment before attaching it.
-        def observe_build_recipe_toolchain_identity_at(scratch: mutable Arena&, root_fd: int, resolved_toolchain_path: sview) -> BuildRecipeToolchainIdentity error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            observation: BuildIncrementalObservation = try observe_build_incremental_file_at(scratch, root_fd, resolved_toolchain_path)
+        def observe_build_recipe_toolchain_file_at(scratch: mutable Arena&, root_fd: int, resolved_toolchain_path: sview) -> BuildRecipeToolchainFileObservation error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            stamp: mutable BuildIncrementalFileStamp = BuildIncrementalFileStamp{path: resolved_toolchain_path}
+            observation: BuildIncrementalObservation = try observe_build_incremental_file_with_stamp_at(scratch, root_fd, resolved_toolchain_path, stamp)
             raise ToolchainObservationError.ToolchainMissing(resolved_toolchain_path) if not observation.present
-            return BuildRecipeToolchainIdentity{
-                word0: observation.fingerprint,
-                word1: observation.fingerprint_word1,
-                word2: observation.fingerprint_word2,
-                word3: observation.fingerprint_word3
+            return BuildRecipeToolchainFileObservation{
+                identity: BuildRecipeToolchainIdentity{word0: observation.fingerprint, word1: observation.fingerprint_word1, word2: observation.fingerprint_word2, word3: observation.fingerprint_word3},
+                stamp: stamp
             }
+
+
+        def observe_build_recipe_toolchain_identity_at(scratch: mutable Arena&, root_fd: int, resolved_toolchain_path: sview) -> BuildRecipeToolchainIdentity error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            observation: BuildRecipeToolchainFileObservation = try observe_build_recipe_toolchain_file_at(scratch, root_fd, resolved_toolchain_path)
+            return observation.identity
 
 
         # Collect precisely the validated path set for a recipe manifest. Each

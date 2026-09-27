@@ -703,14 +703,16 @@ absolute POSIX `/usr/bin/env -i` shim; the requested tool must itself be an
 absolute path. Incremental callers must associate the canonical relative
 `usr/bin/env` helper path with each such command. Its descriptor-relative file
 digest is mixed into that node's observed toolchain identity before planning
-and before cache publication. The executor also re-observes the executable and
-helper immediately before each dirty-node dispatch and aborts with
-`ToolchainChanged` if identity drifted after planning. Because the process
+and before cache publication. A file stamp (device, inode, size, mtime, and
+ctime) is captured during that content hash. Immediately before each dirty-node
+dispatch, the executor opens the executable and helper through the same
+directory capability and compares its stamp, avoiding a second full binary
+read for every target. Drift aborts with `ToolchainChanged`. Because the process
 adapter still spawns by pathname, replacement in the narrow interval between
 that last observation and `exec` remains possible; descriptor-bound execution
 is required to close that race. `Inherit` continues to use the captured-process
 overlay path and cannot be signed for cache reuse without a captured ambient
-snapshot. Source fixtures cover mode dispatch and shim identity admission, but
+snapshot. Source fixtures cover mode dispatch and identity/stamp mismatches, but
 E07 runtime behavior and cache acceptance remain unverified under the
 validation hold.
 `resolve_incremental_build_dependencies` validates that same manifest and
