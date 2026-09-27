@@ -793,6 +793,13 @@ Clang's `-ftime-trace` is modeled: the bare option derives a `.json` output
 beside the primary output. With `-ftime-trace=<path>`, the path may be a file
 or directory; exactly one interpretation must resolve to a distinct declared
 action output (the directory form uses the primary-output stem plus `.json`).
+With debug information enabled, split DWARF (`-gsplit-dwarf` or
+`-gsplit-dwarf=split`) similarly derives a `.dwo` beside the primary output;
+that sidecar must be a distinct graph-owned action output. Single-file mode
+(`-gsplit-dwarf=single`) and `-gno-split-dwarf` do not claim a DWO. The
+projector rejects path-changing `-dumpdir`, `-dumpbase`, and `-dumpbase-ext`
+overrides while split output is active, along with split-DWARF bitcode and
+precompiled-header actions whose sidecar identity is not modeled.
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
