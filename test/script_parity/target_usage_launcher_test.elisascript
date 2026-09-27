@@ -3,6 +3,9 @@
 include "../../src/testing/differential.elisa"
 
 using EsDifferential
+using EsJson
+using EsJsonLex
+using EsJsonParse
 
 
 module EsTargetUsageParity:
@@ -22,6 +25,92 @@ module EsTargetUsageParity:
             ctest: sview
             launcher: sview
             cmake_directory: sview
+
+
+        def json_text_equals(document: JsonDocument&, node_index: usize, expected: sview) -> bool:
+            return false if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            return false if node.kind != JsonNodeKind.Text or node.scalar_bytes != sview_len(expected)
+            for offset in 0..<node.scalar_bytes |document, node, expected|:
+                return false if document.scalar_data[node.scalar_start + offset] != sview_at(expected, offset)
+            return true
+
+
+        def json_object_text_member(document: JsonDocument&, object_index: usize, key: sview) -> sview error[JsonContractError]:
+            return "" if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            member_index: usize = try json_object_member_index(document, object_index, key)
+            return "" if member_index == JSON_INDEX_NONE
+            value_index: usize = document.members[member_index].value_index
+            return "" if value_index >= document.nodes.count
+            value: JsonNode = document.nodes[value_index]
+            return "" if value.kind != JsonNodeKind.Text
+            return sview(document.scalar_data.items + value.scalar_start, 0, value.scalar_bytes.i64())
+
+
+        def json_array_matches_texts(document: JsonDocument&, array_index: usize, expected: darray[sview]) -> bool:
+            return false if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            array: JsonNode = document.nodes[array_index]
+            return false if array.child_count != expected.count
+            for ordinal in 0..<array.child_count |document, array, expected|:
+                child_index: usize = document.children[array.child_start + ordinal].value_index
+                return false if not json_text_equals(document, child_index, expected[ordinal])
+            return true
+
+
+        def compilation_database_entry(document: JsonDocument&, root_index: usize, source_file: sview) -> usize error[JsonContractError]:
+            return JSON_INDEX_NONE if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Array
+            root: JsonNode = document.nodes[root_index]
+            entry_index: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<root.child_count |document, root, entry_index|:
+                candidate_index: usize = document.children[root.child_start + ordinal].value_index
+                return JSON_INDEX_NONE if candidate_index >= document.nodes.count or document.nodes[candidate_index].kind != JsonNodeKind.Object
+                candidate_file: sview = try json_object_text_member(document, candidate_index, "file")
+                if candidate_file == source_file:
+                    return JSON_INDEX_NONE if entry_index != JSON_INDEX_NONE
+                    entry_index <- candidate_index
+            return entry_index
+
+
+        def compilation_database_entry_matches(document: JsonDocument&, entry_index: usize, working_directory: sview, source_file: sview, output_file: sview, expected_arguments: darray[sview]) -> bool error[JsonContractError]:
+            return false if entry_index >= document.nodes.count or document.nodes[entry_index].kind != JsonNodeKind.Object
+            return false if document.nodes[entry_index].member_count != 4
+            directory: sview = try json_object_text_member(document, entry_index, "directory")
+            file_name: sview = try json_object_text_member(document, entry_index, "file")
+            output: sview = try json_object_text_member(document, entry_index, "output")
+            return false if directory != working_directory or file_name != source_file or output != output_file
+            arguments_member: usize = try json_object_member_index(document, entry_index, "arguments")
+            return false if arguments_member == JSON_INDEX_NONE
+            arguments_index: usize = document.members[arguments_member].value_index
+            return json_array_matches_texts(document, arguments_index, expected_arguments)
+
+
+        def candidate_compile_database_matches(encoded: sview, working_directory: sview, fixture_directory: sview, helper_object: sview, core_object: sview, app_object: sview) -> bool error[JsonLexError, JsonParseError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            lexed: JsonLexedSource = try lex_json(encoded, DataDecodeLimits{}, JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.Reject})
+            document: JsonDocument = try parse_json_document(lexed)
+            return false if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            return false if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Array or document.nodes[root_index].child_count != 3
+
+            helper_source: sview = fixture_directory + "/src/helper.c"
+            core_source: sview = fixture_directory + "/src/core.c"
+            app_source: sview = fixture_directory + "/src/main.c"
+            helper_entry: usize = try compilation_database_entry(document, root_index, helper_source)
+            core_entry: usize = try compilation_database_entry(document, root_index, core_source)
+            app_entry: usize = try compilation_database_entry(document, root_index, app_source)
+            return false if helper_entry == JSON_INDEX_NONE or core_entry == JSON_INDEX_NONE or app_entry == JSON_INDEX_NONE
+
+            api_include: sview = "-I" + fixture_directory + "/include/api"
+            core_include: sview = "-I" + fixture_directory + "/include/core"
+            internal_include: sview = "-I" + fixture_directory + "/include/internal"
+            helper_include: sview = "-I" + fixture_directory + "/include/helper"
+            helper_arguments: darray[sview] = ["/usr/bin/cc", "-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", helper_include, "-DHELPER_PRIVATE=1", "-DHELPER_PRIVATE_OPTION=1", "-c", helper_source, "-o", helper_object]
+            core_arguments: darray[sview] = ["/usr/bin/cc", "-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", internal_include, core_include, "-DCORE_PRIVATE=1", "-DCORE_ABI=5", "-DCORE_PRIVATE_OPTION=1", "-DCORE_PUBLIC_OPTION=1", api_include, "-DAPI_LEVEL=3", "-DAPI_OPTION=1", "-c", core_source, "-o", core_object]
+            app_arguments: darray[sview] = ["/usr/bin/cc", "-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", core_include, "-DCORE_ABI=5", "-DCORE_PUBLIC_OPTION=1", api_include, "-DAPI_LEVEL=3", "-DAPI_OPTION=1", "-c", app_source, "-o", app_object]
+
+            helper_matches: bool = try compilation_database_entry_matches(document, helper_entry, working_directory, helper_source, helper_object, helper_arguments)
+            core_matches: bool = try compilation_database_entry_matches(document, core_entry, working_directory, core_source, core_object, core_arguments)
+            app_matches: bool = try compilation_database_entry_matches(document, app_entry, working_directory, app_source, app_object, app_arguments)
+            return helper_matches and core_matches and app_matches
 
 
         def path_is_within(root: sview, candidate: sview) -> bool can[Memory.Allocate, Abort.Panic]:
@@ -204,20 +293,20 @@ module EsTargetUsageParity:
             helper_translation_unit: sview = fixture_text + "/src/helper.c"
             core_translation_unit: sview = fixture_text + "/src/core.c"
             app_translation_unit: sview = fixture_text + "/src/main.c"
-            candidate_database_matches: bool = candidate_database.starts_with("[") and candidate_database.ends_with("]\n")
-            candidate_database_matches <- candidate_database.contains("\"arguments\":[\"/usr/bin/cc\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"file\":\"" + helper_translation_unit + "\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"file\":\"" + core_translation_unit + "\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"file\":\"" + app_translation_unit + "\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"output\":\"" + elisa_build_text + "/helper.o\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"output\":\"" + elisa_build_text + "/core.o\"") and candidate_database_matches
-            candidate_database_matches <- candidate_database.contains("\"output\":\"" + elisa_build_text + "/app.o\"") and candidate_database_matches
+            candidate_database_matches: bool = try candidate_compile_database_matches(
+                candidate_database,
+                elisa_build_text,
+                fixture_text,
+                elisa_build_text + "/helper.o",
+                elisa_build_text + "/core.o",
+                elisa_build_text + "/app.o"
+            ) else false
             reference_database_matches: bool = reference_database.starts_with("[") and reference_database.ends_with("]\n")
             reference_database_matches <- reference_database.contains(helper_translation_unit) and reference_database_matches
             reference_database_matches <- reference_database.contains(core_translation_unit) and reference_database_matches
             reference_database_matches <- reference_database.contains(app_translation_unit) and reference_database_matches
             if not reference_database_matches or not candidate_database_matches:
-                print("target usage parity: compilation database source/output mismatch")
+                print("target usage parity: compilation database shape, argv, or target usage mismatch")
                 _ = remove_workspace(workspace)
                 return false
 
