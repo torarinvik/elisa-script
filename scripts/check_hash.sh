@@ -87,12 +87,15 @@ for fixture_pattern in \
     'using EsHash' \
     'hash_modular_arithmetic_is_explicit_and_checked_safe' \
     'hash_wrapping_multiply_u64' \
+    'hash_wrapping_multiply_u64(18446744073709551615u64, 18446744073709551615u64) == 1u64' \
+    'hash_wrapping_multiply_u64(4294967296u64, 4294967295u64) == 18446744069414584320u64' \
+    'hash_wrapping_multiply_u64(4294967295u64, 4294967297u64) == 18446744073709551615u64' \
     'typed_hash_contract_bounds_chunks_and_publishes_one_digest' \
     'HashAlgorithm.Sha256' \
     'HashError.DigestAlgorithmMismatch' \
     'HashState.Finalized' \
     'HashError.AccountingInvalid'; do
-    rg_bounded -q "$fixture_pattern" "$fixture_file"
+    rg_bounded -Fq "$fixture_pattern" "$fixture_file"
 done
 
 rg_bounded -q 'EsHash::HashContext' "$docs"
