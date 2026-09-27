@@ -1002,8 +1002,10 @@ writes remain host-adapter work.
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,
 one-way begin/update/finalize/fail transitions, canonical digest word shape,
 planned-state accounting, paired chunk/byte counters, zeroed unpublished digest payloads, and algorithm matching are checked before
-publication; the model records the contract but delegates cryptographic computation to a maintained host/library
-implementation through `error[HashError]`.
+publication. The module also exposes explicit modulo-2^64 add/multiply helpers
+for FNV/index fingerprints so hashing stays consistent with Elisa's checked
+integer operators; the model delegates cryptographic computation to a
+maintained host/library implementation through `error[HashError]`.
 
 `EsBinary::BinaryCursor` keeps binary parsing distinct from text. It bounds the
 input and read count, admits explicit little- or big-endian scalar reads with

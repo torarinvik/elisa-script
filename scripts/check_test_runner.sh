@@ -6,12 +6,14 @@ set -euo pipefail
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/test_runner_model.elisa"
+hash_model="$repo_root/src/runtime/hash_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
+execution="$repo_root/src/ir/execution.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$hash_model" "$ir" "$execution" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'test runner audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -70,15 +72,16 @@ for boundary in \
 done
 
 # Elisa integer multiplication is checked, but hash functions require modulo
-# 2^64 arithmetic. Keep the explicit limb implementation wired into both hash
-# paths and reject a regression to overflow-trapping multiplication.
+# 2^64 arithmetic. Keep the shared explicit limb implementation wired into the
+# test-runner paths and reject a regression to direct overflowing multiplication.
 for hash_invariant in \
-    'def test_runner_wrapping_multiply(left: u64, right: u64) -> u64:' \
+    'def hash_wrapping_multiply_u64(left: u64, right: u64) -> u64:' \
+    'def hash_multiply_low64(left: u64, right: u64) -> u64:' \
     'low_product: u64 = left_low * right_low' \
-    'test_runner_wrapping_multiply(mixed ^ (mixed >> 30), TestIndex::MIX_A)' \
-    'test_runner_wrapping_multiply(mixed ^ (mixed >> 27), TestIndex::MIX_B)' \
-    'test_runner_wrapping_multiply(hash ^ byte.u64(), TestIndex::FNV_PRIME)'; do
-    rg -Fq "$hash_invariant" "$model"
+    'EsHash::hash_wrapping_multiply_u64(mixed ^ (mixed >> 30), TestIndex::MIX_A)' \
+    'EsHash::hash_wrapping_multiply_u64(mixed ^ (mixed >> 27), TestIndex::MIX_B)' \
+    'EsHash::hash_wrapping_multiply_u64(hash ^ byte.u64(), TestIndex::FNV_PRIME)'; do
+    rg -Fq "$hash_invariant" "$hash_model" "$model"
 done
 for unchecked_hash in \
     'mixed <- (mixed ^ (mixed >> 30)) * TestIndex::MIX_A' \
@@ -90,6 +93,8 @@ for unchecked_hash in \
     fi
 done
 
+rg -Fq 'include "../runtime/hash_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/hash_model.elisa"' "$execution"
 rg -Fq 'include "../runtime/test_runner_model.elisa"' "$ir"
 rg -Fq 'using EsTestRunner' "$fixture"
 for fixture_pattern in \

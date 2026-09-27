@@ -53,6 +53,9 @@ for declaration in \
     'struct HashDigest:' \
     'struct HashContext:' \
     'error HashError:' \
+    'def hash_wrapping_multiply_u64\(' \
+    'def hash_wrapping_add_u64\(' \
+    'def hash_multiply_low64\(' \
     'def validate_hash_context\(' \
     'def advance_hash\('; do
     rg_bounded -q "$declaration" "$model"
@@ -70,6 +73,10 @@ for boundary in \
     'DigestAlreadyPublished if not hash_digest_unpublished_valid' \
     'HashError.InputLimitExceeded' \
     'HashError.AccountingInvalid' \
+    'left_low: u64 = left & HashArithmetic::LOW_WORD_MASK' \
+    'cross_low <- cross_low + ((left_high * right_low) & HashArithmetic::LOW_WORD_MASK)' \
+    'return (high_word << 32) | (low_product & HashArithmetic::LOW_WORD_MASK)' \
+    'return left - distance_to_max - 1u64' \
     'context.chunks_seen == 0 and context.bytes_seen != 0' \
     'context.chunks_seen != 0 and context.bytes_seen == 0' \
     'digest.word1 == 0'; do
@@ -78,6 +85,8 @@ done
 
 for fixture_pattern in \
     'using EsHash' \
+    'hash_modular_arithmetic_is_explicit_and_checked_safe' \
+    'hash_wrapping_multiply_u64' \
     'typed_hash_contract_bounds_chunks_and_publishes_one_digest' \
     'HashAlgorithm.Sha256' \
     'HashError.DigestAlgorithmMismatch' \
