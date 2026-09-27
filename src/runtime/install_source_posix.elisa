@@ -95,6 +95,7 @@ module EsInstallSourcePosix:
             StageRootOpenAfterCreateFailed(errno: i32)
             StageRootEntryChanged
             StageRootCleanupPending
+            StageRootNotEmpty
             StageRootHandleInvalid
             StageRootCloseFailed(status: int)
             StageProofCountMismatch
@@ -244,6 +245,12 @@ module EsInstallSourcePosix:
             Failed
 
 
+        const enum InstallStageEmptyState of u8:
+            Read
+            Complete
+            Failed
+
+
         const enum InstallStageCleanupFailure of u8:
             None
             EntryLimit
@@ -337,6 +344,75 @@ module EsInstallSourcePosix:
             name: u8& = (&handle.leaf[0])
             return false if not install_source_stat_entry_at(handle.parent_descriptor, name.cast[cstr], named, DarwinAtFlag::SYMLINK_NOFOLLOW)
             return install_source_stage_root_identity_matches(named, handle.proof) and (named.mode & InstallSourceMode::PERMISSION_MASK) == InstallSourceMode::PRIVATE_DIRECTORY
+
+
+        def install_source_stage_root_is_empty(handle: InstallStageRootHandle&) -> bool error[InstallSourceError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(handle)
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            retries: mutable usize = 0
+            descriptor: mutable int = -1
+            while descriptor < 0:
+                descriptor <- elisascript_posix_openat(handle.descriptor, ".", flags, 0u32)
+                if descriptor < 0:
+                    errno: mutable i32& = elisascript_posix_errno()
+                    if errno[0] == InstallSourceErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                        retries <- retries + 1
+                        continue
+                    raise InstallSourceError.StageCleanupOpenFailed(errno[0])
+            directory: mutable heap void&? = elisascript_posix_fdopendir(descriptor)
+            if directory == null:
+                errno: mutable i32& = elisascript_posix_errno()
+                open_errno: i32 = errno[0]
+                close_status: int = elisascript_posix_close(descriptor)
+                raise InstallSourceError.StageCleanupCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageCleanupOpenFailed(open_errno)
+
+            state: mutable InstallStageEmptyState = InstallStageEmptyState.Read
+            interrupted: mutable usize = 0
+            has_entry: mutable bool = false
+            failure_errno: mutable i32 = 0
+            machine over state:
+                state Read
+                start Read
+
+                Read, InstallStageEmptyState.Read:
+                    errno_pointer: mutable i32& = elisascript_posix_errno()
+                    errno_pointer[0] <- 0
+                    entry_option: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
+                    if entry_option == null:
+                        if errno_pointer[0] == InstallSourceErrno::EINTR and interrupted < Limits::EINTR_RETRIES:
+                            interrupted <- interrupted + 1
+                            -> Read
+                        if errno_pointer[0] != 0:
+                            failure_errno <- errno_pointer[0]
+                            state <- InstallStageEmptyState.Failed
+                            -> Read
+                        state <- InstallStageEmptyState.Complete
+                        -> Read
+                    entry: mutable ElisascriptDirectoryEntry& = entry_option
+                    interrupted <- 0
+                    name_length: usize = entry.name_length.usize()
+                    if entry.record_length == 0u16 or name_length == 0 or name_length >= 1024 or entry.name[name_length] != 0u8:
+                        failure_errno <- InstallSourceErrno::EIO
+                        state <- InstallStageEmptyState.Failed
+                        -> Read
+                    if (name_length == 1 and entry.name[0] == 46u8) or (name_length == 2 and entry.name[0] == 46u8 and entry.name[1] == 46u8):
+                        interrupted <- 0
+                        -> Read
+                    has_entry <- true
+                    state <- InstallStageEmptyState.Complete
+                    -> Read
+
+                Read, InstallStageEmptyState.Complete:
+                    break
+
+                Read, InstallStageEmptyState.Failed:
+                    break
+
+            close_status: int = elisascript_posix_closedir(directory)
+            raise InstallSourceError.StageCleanupDirectoryCloseFailed if close_status != 0
+            raise InstallSourceError.StageCleanupReadFailed(failure_errno) if state == InstallStageEmptyState.Failed
+            return not has_entry
 
 
         def install_source_copy_stage_segment(path: sview, start: usize, end: usize, buffer: mutable u8&) -> usize:
@@ -1161,6 +1237,7 @@ module EsInstallSourcePosix:
                 receipts.push(artifact_proof.receipt)
             _ = try install_source_validate_stage_tree(stage_root_fd, root_proof, plan, artifact_proofs)
             _ = try stage_install_plan(plan, receipts)
+            _ = try advance_install_plan(plan, InstallEvent.Verify)
             return InstallStageProof{root: root_proof, artifacts: artifact_proofs}
 
 
@@ -1422,6 +1499,51 @@ module EsInstallSourcePosix:
             cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
             _ = try install_source_require_stage_copy_cleanup(cleanup)
             return bytes_copied
+
+
+        # Stage each complete source receipt, then read back and verify the
+        # exact tree before returning a proof. Copy or verification failures
+        # discard the private root; cleanup failure takes precedence because
+        # the caller must reconcile that still-present staging name.
+        def stage_install_sources_at(a: mutable Arena&, stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: mutable InstallPlan&, receipts: darray[InstallSourceReceipt]) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
+            _ = try validate_install_source_receipts(plan, receipts)
+            stage_empty: bool = try install_source_stage_root_is_empty(stage)
+            raise InstallSourceError.StageRootNotEmpty if not stage_empty
+
+            for index in 0..<plan.artifacts.count |plan, receipts, stage, source_root_fd|:
+                catch copy_install_source_to_stage(stage, source_root_fd, plan, receipts[index]):
+                    ok copied:
+                        _ = copied
+                    error failure:
+                        catch remove_install_stage_root(stage):
+                            ok removed:
+                                _ = removed
+                            error cleanup_failure:
+                                raise cleanup_failure
+                        raise failure
+
+            catch verify_install_stage_at(a, stage.descriptor, plan):
+                ok proof:
+                    if not install_source_stage_root_handle_matches(stage) or proof.root.device != stage.proof.device or proof.root.inode != stage.proof.inode or proof.root.user != stage.proof.user:
+                        _ = try advance_install_plan(plan, InstallEvent.Fail)
+                        catch remove_install_stage_root(stage):
+                            ok removed:
+                                _ = removed
+                            error cleanup_failure:
+                                raise cleanup_failure
+                        raise InstallSourceError.StageRootEntryChanged
+                    return proof
+                error failure:
+                    if plan.state == InstallState.Staged:
+                        _ = try advance_install_plan(plan, InstallEvent.Fail)
+                    catch remove_install_stage_root(stage):
+                        ok removed:
+                            _ = removed
+                        error cleanup_failure:
+                            raise cleanup_failure
+                    raise failure
 
 
         # Remove an incomplete or rejected stage using only directory

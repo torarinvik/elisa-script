@@ -545,6 +545,12 @@ then verifies exact file modes (`0644` for data, `0755` for executables) on the
 reopened descriptor, then scans the complete tree against the manifest. It
 returns an `InstallStageProof` binding the ordered receipts to the private
 effective-user-owned stage-root device/inode and each file's stable stamp.
+After this readback succeeds it advances the plan through `Staged` to
+`Verified`. `stage_install_sources_at` is the complete population entry point:
+it consumes the ordered source receipts, requires a fresh empty root, copies
+each artifact, verifies readback, and removes the private stage on copy or
+verification failure. The caller must serialize staging against other
+same-user writers to the stage root; a private mode alone is not a lock.
 `create_install_stage_root_at` creates a caller-named exclusive sibling with
 mode `0700`, opens it without following links, binds its name to the opened
 directory, syncs the directory and parent entry, and returns an owned
@@ -577,7 +583,10 @@ file and directory entries, and rechecks descriptor/name identity. Its byte
 count is not a staging proof: the caller must still run
 `verify_install_stage_at` to hash the staged bytes and verify exact tree
 closure. A failed copy can leave partial content in the private stage, so the
-orchestrator must not publish that stage. `remove_install_stage_root` provides
+orchestrator must not publish that stage. The higher-level
+`stage_install_sources_at` invokes this copy operation for every receipt and
+then performs whole-tree verification before yielding a proof.
+`remove_install_stage_root` provides
 bounded iterative cleanup through no-follow directory capabilities, checks
 entry identity before removal, syncs directory changes, and removes the named
 private root only after its contents are gone. A cleanup failure may leave a
