@@ -776,12 +776,17 @@ file. The module performs no filesystem or process effects, so it is
 independently testable and can drive clean/no-op/incremental build comparisons.
 Cache recipe signing rejects commands with inherited host environments unless a
 future API supplies and hashes an explicit environment snapshot. Cacheable build
-actions must currently use a fully specified `Replace` or `Clear` environment;
-otherwise an ambient variable change could leave the signature unchanged while
-changing the compiler or generator output. The serial build executor now
-preserves these modes by dispatching `Replace`/`Clear` commands through the
-absolute POSIX `/usr/bin/env -i` shim; the requested tool must itself be an
-absolute path. Incremental callers must associate the canonical relative
+actions must currently use a fully specified `Replace` or `Clear` environment,
+an absolute executable and working directory, null stdin, captured stdout and
+stderr, no file redirection, checked failure semantics, and a nonzero timeout.
+These are the serial build executor's supported command policies; rejecting
+anything else at signing prevents an unsupported command from being accepted
+as a cache hit without ever reaching dispatch. In particular, relative or
+empty working directories and inherited stdin would let ambient host state
+change the action's meaning without changing its signature. The serial build
+executor preserves `Replace`/`Clear` by dispatching through the absolute POSIX
+`/usr/bin/env -i` shim; the requested tool must itself be an absolute path.
+Incremental callers must associate the canonical relative
 `usr/bin/env` helper path with each such command. Its descriptor-relative file
 digest is mixed into that node's observed toolchain identity before planning
 and before cache publication. Each observation pass hashes a unique resolved

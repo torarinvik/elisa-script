@@ -170,8 +170,11 @@ for signature_input in \
     'command.environment_mode' \
     'command.environment' \
     'command.stdin_mode' \
+    'command.stdin_path' \
     'command.stdout_mode' \
+    'command.stdout_path' \
     'command.stderr_mode' \
+    'command.stderr_path' \
     'command.timeout_micros' \
     'command.capture_output_limit_bytes' \
     'command.failure_mode' \
@@ -182,11 +185,25 @@ for signature_input in \
 done
 for recipe_signature_check in \
     'build_recipe_signature_binds_command_target_and_toolchain' \
+    'AmbientExecutableUncacheable' \
+    'InheritedEnvironmentUncacheable' \
+    'WorkingDirectoryUncacheable' \
+    'StdioPolicyUncacheable' \
+    'FailurePolicyUncacheable' \
+    'UnboundedExecutionUncacheable' \
     'sign_build_incremental_recipe' \
     'split_arguments' \
     'changed_command' \
     'changed_recipe' \
-    'changed_toolchain'; do
+    'changed_toolchain' \
+    'relative_executable_rejected' \
+    'relative_working_directory_rejected' \
+    'empty_working_directory_rejected' \
+    'inherited_stdin_rejected' \
+    'unbounded_execution_rejected' \
+    'permissive_failure_rejected' \
+    'uncaptured_output_rejected' \
+    'file_redirect_rejected'; do
     rg -Fq "$recipe_signature_check" "$recipe_signature_fixture"
 done
 
