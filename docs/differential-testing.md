@@ -1043,9 +1043,10 @@ sealed before comparison, and `compare_differential_filesystem_snapshots`
 merges the ordered streams to report the first missing path, kind, size, exact
 content-byte, mode, or executable-bit difference. Content equality is a direct
 byte-for-byte comparison, not an equality claim based on a digest. The compact
-FNV-style snapshot fingerprint is only a correlation aid; it can collide and
-must not substitute for the exact comparator. This contract performs no
-filesystem I/O. Input paths and payload arrays are copied into separate,
+FNV-style snapshot fingerprint uses explicit checked-safe modulo-2^64
+arithmetic and is only a correlation aid; it can collide and must not substitute
+for the exact comparator. This contract performs no filesystem I/O. Input
+paths and payload arrays are copied into separate,
 snapshot-owned byte arenas before an append returns; records keep checked spans,
 not caller views. After unordered sorting, both arenas are repacked in record
 order so exact span coverage remains verifiable. This needs at most 320 MiB of

@@ -7,10 +7,11 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/testing/filesystem_snapshot_model.elisa"
 consumer="$repo_root/src/testing/differential.elisa"
+ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
 
-for required_file in "$model" "$consumer" "$fixture" "$docs"; do
+for required_file in "$model" "$consumer" "$ir" "$fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'differential filesystem audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -33,6 +34,7 @@ for declaration in \
     'def seal_unordered_differential_filesystem_snapshot(' \
     'def advance_differential_filesystem_snapshot(' \
     'def differential_filesystem_snapshot_fingerprint(' \
+    'def differential_filesystem_hash_mix(' \
     'def differential_filesystem_entry_mode_valid(' \
     'def compare_differential_filesystem_snapshots(' \
     'def copy_differential_filesystem_entry_path(' \
@@ -73,6 +75,13 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+rg -Fq 'EsHash::hash_wrapping_add_u64(EsHash::hash_wrapping_multiply_u64(hash, DIFFERENTIAL_FILESYSTEM_HASH_PRIME), value)' "$model"
+rg -Fq 'differential_filesystem_hash_mix(result, snapshot.total_bytes.u64())' "$model"
+if rg -Fq 'result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME' "$model"; then
+    printf 'differential filesystem audit: fingerprint regressed to checked-overflow arithmetic\n' >&2
+    exit 1
+fi
+rg -Fq 'include "../runtime/hash_model.elisa"' "$ir"
 rg -Fq 'include "./filesystem_snapshot_model.elisa"' "$consumer"
 rg -Fq 'using EsDifferentialFilesystem' "$fixture"
 for fixture_pattern in \
@@ -81,6 +90,7 @@ for fixture_pattern in \
     'DifferentialFilesystemError.EntryOrderInvalid' \
     'DifferentialFilesystemDifferenceKind.Equal' \
     'DifferentialFilesystemDifferenceKind.Content' \
+    'assert differential_filesystem_snapshot_fingerprint(reference) == differential_filesystem_snapshot_fingerprint(candidate)' \
     'copy_differential_filesystem_entry_path' \
     'copy_differential_filesystem_entry_content' \
     'differential_filesystem_compares_binary_files_and_raw_symlink_targets' \
