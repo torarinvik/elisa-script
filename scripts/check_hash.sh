@@ -7,6 +7,7 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/hash_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
+stage1_const="$repo_root/vendor/elisa-compiler/src/backend/codegen_const.elisa"
 fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
@@ -17,14 +18,14 @@ rg_bounded() {
     command rg --max-filesize "$max_source_bytes" "$@"
 }
 
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$stage1_const" "$fixture_file" "$docs" "$ledger"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'hash audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 # Keep the shell oracle within the same per-file and aggregate source bounds as
 # the Elisascript port before ripgrep scans any content.
 total_source_bytes=0
-for required_file in "$model" "$ir" "$fixture_file" "$docs" "$ledger"; do
+for required_file in "$model" "$ir" "$stage1_const" "$fixture_file" "$docs" "$ledger"; do
     if ! source_size="$(wc -c < "$required_file" | tr -d '[:space:]')"; then
         printf 'hash audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -82,6 +83,19 @@ for boundary in \
     'digest.word1 == 0'; do
     rg_bounded -q "$boundary" "$model"
 done
+
+for stage1_boundary in \
+    'def const_dict_hash_multiply(left: u64, right: u64) -> u64:' \
+    'left_low: u64 = left & ConstDictHash::LOW_WORD_MASK' \
+    'cross_low <- cross_low + ((left_high * right_low) & ConstDictHash::LOW_WORD_MASK)' \
+    'return (high_word << 32) | (low_product & ConstDictHash::LOW_WORD_MASK)' \
+    'hash <- const_dict_hash_multiply(hash, 1099511628211.u64())'; do
+    rg_bounded -Fq "$stage1_boundary" "$stage1_const"
+done
+if rg_bounded -Fq 'hash <- hash * 1099511628211.u64()' "$stage1_const"; then
+    printf 'hash audit: stage1 const-dictionary hash regressed to checked-overflow multiplication\n' >&2
+    exit 1
+fi
 
 for fixture_pattern in \
     'using EsHash' \
