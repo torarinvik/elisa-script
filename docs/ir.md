@@ -545,9 +545,11 @@ then verifies exact file modes (`0644` for data, `0755` for executables) on the
 reopened descriptor. It returns an `InstallStageProof` binding the ordered
 receipts to the stage-root device/inode and each file's stable stamp.
 `revalidate_install_stage_at` rechecks those identities and modes before
-publication without rehashing large files; callers must invoke it immediately
-before publication because the pure plan state machine does not itself require
-the proof as a `Publish` argument. Neither operation rejects unexpected extra
+publication without rehashing large files, then advances the plan from
+`Verified` to `PublishReady`. `Publish` is rejected until that preflight state
+is acknowledged. The orchestration layer must use the POSIX revalidation result
+as the source of that acknowledgement; the value-only model cannot itself
+attest a filesystem observation. Neither operation rejects unexpected extra
 paths yet.
 `open_install_source_for_copy` reopens each receipt beneath the same root
 capability and retains the matching descriptor. `read_install_source_chunk`
@@ -558,8 +560,8 @@ and path identity again and consumes the descriptor, while
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
 remain `RollbackUncertain`. Whole-tree stage-root creation and cleanup,
 unexpected-entry rejection, directory permission mapping, multi-artifact atomic
-replacement, recovery journal, enforced pre-publication proof consumption, and
-the end-to-end installation adapter remain unimplemented.
+replacement, recovery journal, and the end-to-end installation adapter remain
+unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original
