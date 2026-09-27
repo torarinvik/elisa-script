@@ -534,9 +534,11 @@ Its receipt carries the observed device/inode/mtime/ctime stamp for later
 revalidation before copying; it rejects size mismatch before allocating the
 content buffer. `verify_install_sources_at` builds a complete receipt vector in
 plan order, and `validate_install_source_receipts` rejects omissions, reuse, or
-reordering before a caller proceeds. `advance_install_plan` separates `Publishing` from
-acknowledged `Published`, tracks `PublishUncertain`, and requires rollback to be
-acknowledged or explicitly remain `RollbackUncertain`. The whole-tree staging,
+reordering before a caller proceeds; successful batch verification advances
+the plan to `SourcesVerified`, without which `Stage` is rejected.
+`advance_install_plan` separates `Publishing` from acknowledged `Published`,
+tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
+remain `RollbackUncertain`. The whole-tree staging,
 exact POSIX permission mapping, multi-artifact atomic replacement, recovery
 journal, and end-to-end installation adapter remain unimplemented.
 
