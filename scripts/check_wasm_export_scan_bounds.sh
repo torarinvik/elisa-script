@@ -19,7 +19,10 @@ for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$
     fi
 done
 
+rg -Fq 'SOURCE_BYTES: usize = 8388608' "$candidate"
 rg -Fq 'SOURCE_LINES: usize = 131072' "$candidate"
+rg -Fq 'if len(source) > Limits::SOURCE_BYTES:' "$candidate"
+rg -Fq 'append_text(output, frame.source[line_start:line_end], Limits::SOURCE_BYTES)' "$candidate"
 rg -Fq 'def source_lines(source: sview) -> (lines: darray[sview], failure: sview)' "$candidate"
 rg -Fq 'parsed_lines.failure != ""' "$candidate"
 rg -Fq 'WASM source line count exceeds Elisascript scan limit' "$candidate"
