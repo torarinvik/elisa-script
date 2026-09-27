@@ -336,8 +336,15 @@ rg -Fq 'build_usage_graph_rejects_changed_action_fingerprint' "$usage_graph_fixt
 rg -Fq 'include "../../src/runtime/bounded_text_posix.elisa"' "$minimal_native_parity"
 rg -Fq 'EsBoundedText::read_utf8(template, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
 rg -Fq 'EsBoundedText::read_utf8(output, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
-if rg -Fq 'read_text(template)' "$minimal_native_parity" || rg -Fq 'read_text(output)' "$minimal_native_parity"; then
-    printf 'build model audit: generated-header parity comparison uses unbounded reads\n' >&2
+rg -Fq 'symlink_input_template_before: sview = try EsBoundedText::read_utf8(generated_header_template, Limits::MAX_GENERATED_HEADER_BYTES) else ""' "$minimal_native_parity"
+rg -Fq 'symlink_input_template_after: sview = try EsBoundedText::read_utf8(generated_header_template, Limits::MAX_GENERATED_HEADER_BYTES) else ""' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(directory_input_sentinel, len(directory_input_sentinel_contents))' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(sentinel_path, len(sentinel_contents))' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(dirty_symlink_target, len(dirty_symlink_contents))' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(dirty_directory_sentinel, len(dirty_directory_contents))' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(stale_symlink_target, len(stale_symlink_contents))' "$minimal_native_parity"
+if rg -Fq 'read_text(' "$minimal_native_parity"; then
+    printf 'build model audit: minimal-native parity fixture uses unbounded reads\n' >&2
     exit 1
 fi
 rg -Fq 'build_usage_compile_argv(' "$target_usage_candidate"
