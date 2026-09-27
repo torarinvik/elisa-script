@@ -780,6 +780,7 @@ replaced environments are rejected instead of silently changing meaning. The
 caller still owns atomic file publication and must decide which graph actions
 are compilation units.
 The projection rejects -c commands that switch to preprocessing, assembly,
+dependency-only (`-M`, `-MM`, `--dependencies`, `--user-dependencies`),
 syntax-only, precompile, analysis, or another non-object frontend stage rather
 than attributing an object output to them. Clang's -emit-llvm -c form derives a
 .bc primary output instead of .o, and conflicting stage-selection options are
