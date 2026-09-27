@@ -288,7 +288,9 @@ fail closed. Duplicate process identities are rejected before table insertion,
 so a later low-RSS row cannot overwrite the scanner's earlier RSS observation.
 The scanner client and the stage1 command guard share the pinned compiler's
 streaming snapshot reader, with caller-specific row ceilings, so the watchdog's
-own `ps` capture is also byte- and time-bounded before decoding.
+own `ps` capture is also byte- and time-bounded before decoding. The helper
+invokes `/bin/ps` directly with a C locale, avoiding command shadowing through
+the monitored toolchain's inherited `PATH`.
 Descendant discovery uses a visited-set queue, independent of `ps` row order,
 instead of repeated whole-table passes. Unit cases cover reverse-ordered
 descendants, exact byte/row limits, byte and row overflow, duplicate PIDs, and
