@@ -769,6 +769,9 @@ declared path as the primary-output operand. File-producing primary and
 sidecar outputs must resolve to distinct paths so one compiler option cannot
 overwrite another output that happens to share a graph declaration; `-MF -`
 is excluded because it directs dependency output to stdout.
+Clang's `-fmodule-output=<path>` BMI sidecar is graph-owned like the other
+outputs; bare `-fmodule-output` derives the source basename with `.pcm` beside
+the primary object and must also be declared.
 JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit
