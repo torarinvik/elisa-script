@@ -703,18 +703,22 @@ absolute POSIX `/usr/bin/env -i` shim; the requested tool must itself be an
 absolute path. Incremental callers must associate the canonical relative
 `usr/bin/env` helper path with each such command. Its descriptor-relative file
 digest is mixed into that node's observed toolchain identity before planning
-and before cache publication. A file stamp (device, inode, size, mtime, and
-ctime) is captured during that content hash. Immediately before each dirty-node
-dispatch, the executor opens the executable and helper through the same
-directory capability and compares its stamp, avoiding a second full binary
-read for every target. Drift aborts with `ToolchainChanged`. Because the process
-adapter still spawns by pathname, replacement in the narrow interval between
-that last observation and `exec` remains possible; descriptor-bound execution
-is required to close that race. `Inherit` continues to use the captured-process
-overlay path and cannot be signed for cache reuse without a captured ambient
-snapshot. Source fixtures cover mode dispatch and identity/stamp mismatches, but
-E07 runtime behavior and cache acceptance remain unverified under the
-validation hold.
+and before cache publication. Each observation pass hashes a unique resolved
+executable/helper path set once and shares its identity/stamps across nodes with
+the same set; an open-addressed index resolves hash collisions by exact path-set
+comparison and returns a typed error after 64 probes. A final metadata pass
+checks that no set drifted while the others were being read. A file stamp
+(device, inode, size, mtime, and ctime) is captured during the content hash.
+Immediately before each dirty-node dispatch, the executor opens the executable
+and helper through the same directory capability and compares its stamp,
+avoiding a second full binary read for every target. Drift aborts with
+`ToolchainChanged`. Because the process adapter still spawns by pathname,
+replacement in the narrow interval between that last observation and `exec`
+remains possible; descriptor-bound execution is required to close that race.
+`Inherit` continues to use the captured-process overlay path and cannot be
+signed for cache reuse without a captured ambient snapshot. Source fixtures
+cover mode dispatch and identity/stamp mismatches, but E07 runtime behavior and
+cache acceptance remain unverified under the validation hold.
 `resolve_incremental_build_dependencies` validates that same manifest and
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
