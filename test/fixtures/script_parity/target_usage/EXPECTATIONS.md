@@ -44,6 +44,15 @@ intentionally excluded from the translation-unit database. The advisory lock
 coordinates cooperating writers; the adapter does not claim to exclude
 arbitrary non-cooperating mutation of the same directory.
 
+Before rendering, the model also proves that each selected action's tokenized
+argv contains exactly one `-c`, with the declared translation-unit path
+immediately following it exactly once. When an `output` path is requested, it
+must be a declared graph output and the unique operand immediately following
+the action's sole `-o`; a
+dependency-file argument or arbitrary declared output cannot be mislabeled as
+the compilation database's object output. This initial projection therefore
+requires the GCC/Clang-style `-c` and `-o` argument conventions.
+
 After both builds, the launcher bounds each compilation database to 1 MiB.
 It parses the candidate with duplicate-key rejection and JSON limits of 32,768
 tokens, depth 8, two roots, 64 members, and 16 KiB per scalar, then requires
