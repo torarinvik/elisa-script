@@ -69,6 +69,27 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+# Elisa integer multiplication is checked, but hash functions require modulo
+# 2^64 arithmetic. Keep the explicit limb implementation wired into both hash
+# paths and reject a regression to overflow-trapping multiplication.
+for hash_invariant in \
+    'def test_runner_wrapping_multiply(left: u64, right: u64) -> u64:' \
+    'low_product: u64 = left_low * right_low' \
+    'test_runner_wrapping_multiply(mixed ^ (mixed >> 30), TestIndex::MIX_A)' \
+    'test_runner_wrapping_multiply(mixed ^ (mixed >> 27), TestIndex::MIX_B)' \
+    'test_runner_wrapping_multiply(hash ^ byte.u64(), TestIndex::FNV_PRIME)'; do
+    rg -Fq "$hash_invariant" "$model"
+done
+for unchecked_hash in \
+    'mixed <- (mixed ^ (mixed >> 30)) * TestIndex::MIX_A' \
+    'mixed <- (mixed ^ (mixed >> 27)) * TestIndex::MIX_B' \
+    'hash <- (hash ^ byte.u64()) * TestIndex::FNV_PRIME'; do
+    if rg -Fq "$unchecked_hash" "$model"; then
+        printf 'test runner audit: hash path regressed to checked-overflow multiplication\n' >&2
+        exit 1
+    fi
+done
+
 rg -Fq 'include "../runtime/test_runner_model.elisa"' "$ir"
 rg -Fq 'using EsTestRunner' "$fixture"
 for fixture_pattern in \
