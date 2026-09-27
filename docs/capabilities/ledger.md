@@ -683,8 +683,10 @@ longer conflict with accepted paths during incremental admission, matching full
 session validation; accepted duplicates still follow the overwrite policy.
 Separate bounded open-addressed ID and normalized-path indexes now retain
 original entry order while avoiding full duplicate rescans on each admission;
-full lifecycle validation audits their contents at lifecycle transitions. Collision-
-heavy throughput is not measured. The focused IR/runtime fixtures, namespace
+each index operation is capped at 64 probes and returns a typed error when it
+cannot resolve within that budget. Admission preflights ID/path placement
+before mutating the entry ledger. Full lifecycle validation audits index
+contents. The focused IR/runtime fixtures, namespace
 inclusion, documentation, and check_archive.sh audit are compiler-free static
 evidence; format decoders, filesystem writes, overwrite/permission behavior,
 atomic publication, and extraction parity remain open. Failure is admitted

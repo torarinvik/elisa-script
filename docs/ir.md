@@ -899,8 +899,10 @@ planned/extracting/committed/failed/cancelled states are bounded through
 `error[ArchiveError]`; non-link entries cannot carry hidden link targets, a
 planned session cannot contain preloaded entries or counters, failure is
 admitted only during active extraction. Aggregate byte admission proves the
-existing total before subtracting remaining capacity, and filesystem writes
-remain host-adapter work.
+existing total before subtracting remaining capacity. ID and normalized-path
+index operations stop after 64 probes and return a typed error if unresolved;
+admission preflights both indexes before mutating its entry ledger. Filesystem
+writes remain host-adapter work.
 
 `EsHash::HashContext` is the bounded integrity boundary used by package,
 archive, and artifact adapters. Algorithm identity, input/chunk ceilings,

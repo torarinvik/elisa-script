@@ -13,6 +13,7 @@ module EsArchive:
             TOTAL_BYTES: usize = 1099511627776
             INDEX_SLOTS: usize = 2097152
             INDEX_MINIMUM: usize = 8
+            INDEX_PROBES: usize = 64
 
 
         const enum ArchiveKind of u8:
@@ -112,6 +113,7 @@ module EsArchive:
             LinkRejected
             TargetInvalid
             AccountingInvalid
+            IndexProbeLimitExceeded
             InvalidTransition
 
 
@@ -237,33 +239,38 @@ module EsArchive:
         def archive_entry_id_index(session: ArchiveSession&, entry_id: u64) -> usize error[ArchiveError]:
             return session.entries.count if session.id_index_slots.count == 0
             slot: mutable usize = (archive_hash_entry_id(entry_id) % session.id_index_slots.count.u64()).usize()
-            for probe in 0..<session.id_index_slots.count |session, entry_id, slot|:
+            probe_count: usize = Limits::INDEX_PROBES if session.id_index_slots.count > Limits::INDEX_PROBES else session.id_index_slots.count
+            for _ in 0..<probe_count |session, entry_id, slot|:
                 stored: usize = session.id_index_slots[slot]
                 return session.entries.count if stored == 0
                 entry_index: usize = stored - 1
                 raise ArchiveError.AccountingInvalid if entry_index >= session.entries.count
                 return entry_index if session.entries[entry_index].entry_id == entry_id
                 slot <- 0 if slot + 1 == session.id_index_slots.count else slot + 1
-            return session.entries.count
+            raise ArchiveError.IndexProbeLimitExceeded if session.id_index_slots.count > probe_count
+            raise ArchiveError.AccountingInvalid
 
 
         def archive_path_index(entries: darray[ArchiveEntry], slots: darray[usize], path: sview) -> usize error[ArchiveError]:
             return entries.count if slots.count == 0
             slot: mutable usize = (archive_hash_path(path) % slots.count.u64()).usize()
-            for probe in 0..<slots.count |entries, slots, path, slot|:
+            probe_count: usize = Limits::INDEX_PROBES if slots.count > Limits::INDEX_PROBES else slots.count
+            for _ in 0..<probe_count |entries, slots, path, slot|:
                 stored: usize = slots[slot]
                 return entries.count if stored == 0
                 entry_index: usize = stored - 1
                 raise ArchiveError.AccountingInvalid if entry_index >= entries.count
                 return entry_index if entries[entry_index].state == ArchiveEntryState.Accepted and archive_paths_equivalent(entries[entry_index].path, path)
                 slot <- 0 if slot + 1 == slots.count else slot + 1
-            return entries.count
+            raise ArchiveError.IndexProbeLimitExceeded if slots.count > probe_count
+            raise ArchiveError.AccountingInvalid
 
 
         def archive_place_id_index(entries: darray[ArchiveEntry], slots: mutable darray[usize]&, entry_index: usize) -> void error[ArchiveError]:
             raise ArchiveError.AccountingInvalid if slots.count == 0 or entry_index >= entries.count
             slot: mutable usize = (archive_hash_entry_id(entries[entry_index].entry_id) % slots.count.u64()).usize()
-            for probe in 0..<slots.count |entries, slots, entry_index, slot|:
+            probe_count: usize = Limits::INDEX_PROBES if slots.count > Limits::INDEX_PROBES else slots.count
+            for _ in 0..<probe_count |entries, slots, entry_index, slot|:
                 if slots[slot] == 0:
                     slots[slot] <- entry_index + 1
                     return
@@ -271,13 +278,15 @@ module EsArchive:
                 raise ArchiveError.AccountingInvalid if stored_index >= entries.count
                 raise ArchiveError.DuplicateEntryId if entries[stored_index].entry_id == entries[entry_index].entry_id
                 slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise ArchiveError.IndexProbeLimitExceeded if slots.count > probe_count
             raise ArchiveError.AccountingInvalid
 
 
         def archive_place_path_index(entries: darray[ArchiveEntry], slots: mutable darray[usize]&, entry_index: usize) -> void error[ArchiveError]:
             raise ArchiveError.AccountingInvalid if slots.count == 0 or entry_index >= entries.count or entries[entry_index].state != ArchiveEntryState.Accepted
             slot: mutable usize = (archive_hash_path(entries[entry_index].path) % slots.count.u64()).usize()
-            for probe in 0..<slots.count |entries, slots, entry_index, slot|:
+            probe_count: usize = Limits::INDEX_PROBES if slots.count > Limits::INDEX_PROBES else slots.count
+            for _ in 0..<probe_count |entries, slots, entry_index, slot|:
                 stored: usize = slots[slot]
                 if stored == 0:
                     slots[slot] <- entry_index + 1
@@ -288,6 +297,7 @@ module EsArchive:
                     slots[slot] <- entry_index + 1
                     return
                 slot <- 0 if slot + 1 == slots.count else slot + 1
+            raise ArchiveError.IndexProbeLimitExceeded if slots.count > probe_count
             raise ArchiveError.AccountingInvalid
 
 
@@ -408,6 +418,8 @@ module EsArchive:
                 raise ArchiveError.DuplicatePath if existing_path_index != session.entries.count
             if entry.state == ArchiveEntryState.Skipped:
                 try archive_ensure_index_capacity(session)
+                preflight_id_index: usize = try archive_entry_id_index(session, entry.entry_id)
+                raise ArchiveError.DuplicateEntryId if preflight_id_index != session.entries.count
                 entry_index: usize = session.entries.count
                 session.skipped_entries <- session.skipped_entries + 1
                 session.entries.push(entry)
@@ -415,6 +427,10 @@ module EsArchive:
             else:
                 raise ArchiveError.TotalLimitBytesExceeded if entry.size > session.policy.max_total_bytes - session.total_bytes
                 try archive_ensure_index_capacity(session)
+                preflight_id_index: usize = try archive_entry_id_index(session, entry.entry_id)
+                raise ArchiveError.DuplicateEntryId if preflight_id_index != session.entries.count
+                preflight_path_index: usize = try archive_path_index(session.entries, session.path_index_slots, entry.path)
+                raise ArchiveError.DuplicatePath if session.policy.overwrite == ArchiveOverwritePolicy.Fail and preflight_path_index != session.entries.count
                 entry_index: usize = session.entries.count
                 session.total_bytes <- session.total_bytes + entry.size
                 session.entries.push(entry)

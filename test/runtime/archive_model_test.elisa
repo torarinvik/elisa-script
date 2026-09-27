@@ -52,3 +52,82 @@ def archive_entry_indexes_preserve_order_across_collisions_and_growth() -> void:
         assert session.id_index_slots.count == 16 and session.path_index_slots.count == 16
         assert validate_archive_session(session)
         assert advance_archive(session, ArchiveEvent.Commit) == ArchiveSessionState.Committed
+
+
+@test
+def archive_rejects_excessive_index_collisions_without_partial_admission() -> void:
+    can Memory.Allocate, Abort.Panic:
+        colliding_paths: mutable darray[sview] = []
+        path_candidate: mutable usize = 0
+        path_bucket: mutable usize = 0
+        has_path_bucket: mutable bool = false
+        while path_candidate < 100000 and colliding_paths.count < 65 |path_candidate, colliding_paths, path_bucket, has_path_bucket|:
+            value: sview = f"archive-collision/{path_candidate}"
+            hash: mutable u64 = 14695981039346656037u64
+            for byte in value |value, hash|:
+                hash <- (hash ^ byte.u64()) * 1099511628211u64
+            bucket: usize = (hash % 256u64).usize()
+            if not has_path_bucket:
+                path_bucket <- bucket
+                has_path_bucket <- true
+            if bucket == path_bucket:
+                colliding_paths.push(value)
+            path_candidate <- path_candidate + 1
+        assert colliding_paths.count == 65
+
+        unique_ids: mutable darray[u64] = []
+        used_id_buckets: mutable darray[usize] = []
+        id_candidate: mutable u64 = 1u64
+        while id_candidate < 100000u64 and unique_ids.count < 65 |id_candidate, unique_ids, used_id_buckets|:
+            hash: mutable u64 = 14695981039346656037u64
+            for shift in 0..<8 |id_candidate, hash|:
+                byte: u8 = ((id_candidate >> (shift * 8)) & 255u64).u8()
+                hash <- (hash ^ byte.u64()) * 1099511628211u64
+            bucket: usize = (hash % 256u64).usize()
+            bucket_used: mutable bool = false
+            for used_bucket in used_id_buckets |bucket, bucket_used|:
+                bucket_used <- true if used_bucket == bucket
+            if not bucket_used:
+                unique_ids.push(id_candidate)
+                used_id_buckets.push(bucket)
+            id_candidate <- id_candidate + 1u64
+        assert unique_ids.count == 65
+
+        session: mutable ArchiveSession = ArchiveSession{policy: ArchivePolicy{max_entries: 128, max_path_bytes: 64, max_entry_bytes: 16, max_total_bytes: 32}}
+        assert advance_archive(session, ArchiveEvent.Begin) == ArchiveSessionState.Extracting
+        for index in 0..<64 |session, colliding_paths, unique_ids|:
+            assert archive_admit_entry(session, ArchiveEntry{entry_id: unique_ids[index], path: colliding_paths[index], kind: ArchiveEntryKind.File})
+
+        collision_rejected: mutable bool = false
+        catch archive_admit_entry(session, ArchiveEntry{entry_id: unique_ids[64], path: colliding_paths[64], kind: ArchiveEntryKind.File}):
+            ok value:
+                _ = value
+                assert false
+            error failure:
+                collision_rejected <- failure == ArchiveError.IndexProbeLimitExceeded
+        assert collision_rejected
+        assert session.entries.count == 64 and session.total_bytes == 0 and session.skipped_entries == 0
+        assert session.id_index_slots.count == 256 and session.path_index_slots.count == 256
+        assert validate_archive_session(session)
+
+
+@test
+def archive_admission_rejects_a_full_forged_index_before_mutation() -> void:
+    can Memory.Allocate, Abort.Panic:
+        session: mutable ArchiveSession = ArchiveSession{policy: ArchivePolicy{max_entries: 4, max_path_bytes: 64, max_entry_bytes: 16, max_total_bytes: 32}}
+        assert advance_archive(session, ArchiveEvent.Begin) == ArchiveSessionState.Extracting
+        assert archive_admit_entry(session, ArchiveEntry{entry_id: 1, path: "original", kind: ArchiveEntryKind.File, size: 3})
+        for index in 0..<session.id_index_slots.count |session|:
+            session.id_index_slots[index] <- 1
+            session.path_index_slots[index] <- 1
+
+        malformed_index_rejected: mutable bool = false
+        catch archive_admit_entry(session, ArchiveEntry{entry_id: 2, path: "new", kind: ArchiveEntryKind.File, size: 5}):
+            ok value:
+                _ = value
+                assert false
+            error failure:
+                malformed_index_rejected <- failure == ArchiveError.AccountingInvalid
+        assert malformed_index_rejected
+        assert session.entries.count == 1 and session.entries[0].entry_id == 1 and session.entries[0].path == "original"
+        assert session.total_bytes == 3 and session.skipped_entries == 0
