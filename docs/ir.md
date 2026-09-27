@@ -794,7 +794,8 @@ explicit graph-owned `-o`, because GCC and Clang use different implicit PCH
 suffixes. Commands that write unmodeled compiler byproducts are also rejected:
 `-save-temps` intermediates, `-save-stats` files, `-fproc-stat-report` CSV,
 and coverage notes from `-ftest-coverage` or `--coverage`/`-coverage`.
-It also refuses Clang's unmodeled module-dependency directory, symbol-graph,
+It also refuses Clang's unmodeled module-dependency directory, module cache
+and user module-build paths, index-store and index-unit outputs, symbol-graph,
 dynamic-debugging temporary, and crash-reproducer outputs; those can produce
 directory trees or failure-path files not listed as graph outputs. Explicit
 `-gen-reproducer=off` and `-fcrash-diagnostics=off` remain projectable because
