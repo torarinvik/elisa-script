@@ -212,7 +212,17 @@ source-only and unverified.
 
 ## Evidence status
 
-The fixture source encodes both expected outcomes, but no CMake configure/build,
-CTest, ElisaScript compile/run, or cross-route process comparison has been
-executed. This contract and the unexecuted comparison test are not yet parity
-evidence or E01/E02/E06 acceptance results.
+The source currently encodes a clean build, a repeated no-op, same-path source
+and generated-input changes, missing generated-output recovery, cache/output
+preflights, partial command failures and retries, and stale-output cleanup.
+These are authored expectations only: no CMake configure/build, CTest,
+ElisaScript compile/run, or cross-route process comparison has been executed.
+
+This fixture is serial by construction (`BuildGraph.max_parallel` is 1), and
+`execute_build_graph_incremental_serial_at` dispatches one node at a time.
+Neither this fixture nor the host-neutral `EsBuildBatch` model proves parallel
+host execution. W07 still needs a bounded asynchronous process-batch adapter
+and a fixture that observes real overlap before it can claim parallel-build
+coverage. Cross-platform execution and complete CMake failure/filesystem
+equivalence also remain open. The fixture and this contract are not yet parity
+evidence or E01/E02/E06/W07 acceptance results.
