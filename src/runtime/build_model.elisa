@@ -17,6 +17,8 @@ module EsBuild:
             NAME_BYTES: usize = 4096
             UNINDEXED_NAME_SCAN_NODES: usize = 128
             LOG_BYTES: usize = 67108864
+            PLAN_VECTOR_ENTRIES: usize = 65536
+            PLAN_TEXT_BYTES: usize = EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES
 
 
         # Full-width identity used when incremental reuse must be cryptographically
@@ -151,6 +153,8 @@ module EsBuild:
             NodeNameOrderInvalid
             NodeNameIndexRequired
             InvalidCommand
+            PlanVectorLimitExceeded
+            PlanTextLimitExceeded
             FingerprintMissing
             LogLimitExceeded
             NodeIndexInvalid
@@ -179,6 +183,51 @@ module EsBuild:
 
         def build_name_valid(name: sview) -> bool:
             return sview_len(name) != 0 and sview_len(name) < Limits::NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def build_graph_plan_entry_add_fits(total: mutable usize&, amount: usize) -> bool:
+            return false if total > Limits::PLAN_VECTOR_ENTRIES
+            return false if amount > Limits::PLAN_VECTOR_ENTRIES - total
+            total <- total + amount
+            return true
+
+
+        def build_graph_plan_vectors_fit(graph: BuildGraph) -> bool:
+            total: mutable usize = graph.node_name_order.count
+            return false if total > Limits::PLAN_VECTOR_ENTRIES
+            for node in graph.nodes |graph, total|:
+                return false if not build_graph_plan_entry_add_fits(total, node.command.arguments.count)
+                return false if not build_graph_plan_entry_add_fits(total, node.command.environment.count)
+                return false if not build_graph_plan_entry_add_fits(total, node.dependencies.count)
+            return true
+
+
+        def build_graph_plan_text_add_fits(total: mutable usize&, value: sview) -> bool:
+            return false if total > Limits::PLAN_TEXT_BYTES
+            value_bytes: usize = sview_len(value)
+            # Reserve the terminating byte needed by host process strings.
+            return false if value_bytes >= Limits::PLAN_TEXT_BYTES - total
+            total <- total + value_bytes + 1
+            return true
+
+
+        def build_graph_plan_text_fits(graph: BuildGraph) -> bool:
+            total: mutable usize = 0
+            for node in graph.nodes |graph, total|:
+                return false if not build_graph_plan_text_add_fits(total, node.name)
+                return false if not build_graph_plan_text_add_fits(total, node.command.executable)
+                if node.command.working_directory != "":
+                    return false if not build_graph_plan_text_add_fits(total, node.command.working_directory)
+                for argument in node.command.arguments |node, total|:
+                    return false if not build_graph_plan_text_add_fits(total, argument)
+                for environment_entry in node.command.environment |node, total|:
+                    return false if not build_graph_plan_text_add_fits(total, environment_entry)
+                for stdio_path in [node.command.stdin_path, node.command.stdout_path, node.command.stderr_path] |node, total|:
+                    if stdio_path != "":
+                        return false if not build_graph_plan_text_add_fits(total, stdio_path)
+            for ordered_name in graph.node_name_order |graph, total|:
+                return false if not build_graph_plan_text_add_fits(total, ordered_name.name)
+            return true
 
 
         def build_name_order(left: sview, right: sview) -> BuildNameOrder:
@@ -332,6 +381,8 @@ module EsBuild:
             total_dependencies: mutable usize = 0
             raise BuildContractError.NodeNameIndexInvalid if graph.node_name_order.count != 0 and graph.node_name_order.count != graph.nodes.count
             raise BuildContractError.NodeNameIndexRequired if graph.node_name_order.count == 0 and graph.nodes.count > Limits::UNINDEXED_NAME_SCAN_NODES
+            raise BuildContractError.PlanVectorLimitExceeded if not build_graph_plan_vectors_fit(graph)
+            raise BuildContractError.PlanTextLimitExceeded if not build_graph_plan_text_fits(graph)
             for index in 0..<graph.nodes.count |graph|:
                 node: BuildNode = graph.nodes[index]
                 raise BuildContractError.InvalidNodeName if not build_name_valid(node.name)

@@ -713,6 +713,12 @@ Manual graphs without an index are accepted only up to
 `NodeNameIndexRequired` and must use the resolver/attachment path. This caps
 the legacy pairwise uniqueness check while preserving indexed linear
 validation and logarithmic cache lookup for large graphs.
+Every graph is also bounded by a shared plan ceiling of 65,536 aggregate
+argument, environment, dependency, and name-index entries, plus 64 MiB of
+terminated command, node-name, and name-index text. These limits are checked
+before per-command string validation, so direct serial-build callers receive
+the same bounded admission as usage-graph callers. Parallel batches add their
+declared output target/path vectors and text to those shared limits.
 `BuildUsageGraphPlan` also retains each action's original dependency indices
 and fingerprint; execution-boundary revalidation rejects a substituted but
 otherwise valid edge or a changed nonzero fingerprint, rather than accepting
