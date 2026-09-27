@@ -275,8 +275,11 @@ Current caller review (source-only; not adoption evidence): the pinned
 `--export-scan-script` path. It invokes the candidate with the resolved source
 path, bounds captured process output to 64 MiB and runtime to 120 seconds,
 validates the versioned payload and ordered record shapes, and passes the
-returned flattened source and exports through the existing build flow. The
-same configured caller can now request flatten-only payloads for the runtime
+returned flattened source and exports through the existing build flow. Its
+frequent RSS sampler also streams the host `ps` snapshot under an 8 MiB byte
+ceiling, the existing 65,536-row ceiling, and a one-second post-launch read
+deadline; missing, oversized, malformed, or timed-out snapshots fail closed.
+The same configured caller can now request flatten-only payloads for the runtime
 cache hash, including runtime sources that declare no exports; the façade's
 small type normalizer has been localized so it no longer imports the scanner.
 default still calls Python `read_flat_source` and `parse_exports`, preserving
