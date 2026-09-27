@@ -25,7 +25,7 @@ matrix.
 | nonexistent source root | 2 | empty | `check_namespace_manifest: source root does not exist: {SOURCE_ROOT}\n` |
 | missing parser-token source | 1 | empty | `check_namespace_manifest: parser token source is missing: {PARSER_SOURCE}\n` |
 | `missing_required_module` | 1 | empty | `check_namespace_manifest: required module is missing: EsArtifactCache\n` |
-| one extra CLI operand | 2 | empty | `usage: namespace manifest audit [source-root [parser-token-source]]\n` |
+| one extra CLI operand | 2 | empty | `usage: check_namespace_manifest.sh [source-root [parser-token-source]]\n` |
 
 These cases cover the initial A02 acceptance surface: a successful manifest,
 an omitted parser renderer variant, duplicate-module collision, undeclared
