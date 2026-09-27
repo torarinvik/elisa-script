@@ -663,8 +663,11 @@ for `compile_commands.json`. It preserves the executable and each argument as
 separate strings in the standard `arguments` array, rather than attempting to
 quote shell command text. Paths must be absolute, bounded UTF-8; action indexes
 must be unique and in graph order; the caller may select one declared object
-output even when the action also owns byproducts. JSON escaping, entry count,
-and the 64 MiB output ceiling are checked before bytes are returned. Because
+output even when the action also owns byproducts. Compile actions must contain
+one unambiguous `-c source` pair; any `-o` option must occur once and have a
+nonempty operand, and a selected output must match that operand and a declared
+output. JSON escaping, entry count, and the 64 MiB output ceiling are checked
+before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit
 the parent environment with no explicit entries; commands with cleared or
 replaced environments are rejected instead of silently changing meaning. The
