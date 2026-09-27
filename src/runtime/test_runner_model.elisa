@@ -162,6 +162,7 @@ module EsTestRunner:
             ReportInvalid
             AccountingInvalid
             CancelNotReady
+            IndexWorkLimitExceeded
 
 
     private:
@@ -400,6 +401,73 @@ module EsTestRunner:
             return active == runner.active and selected == runner.selected and terminal == runner.terminal and passed == runner.passed and flaky == runner.flaky and failed == runner.failed and skipped == runner.skipped and crashed == runner.crashed and timed_out == runner.timed_out and cancelled == runner.cancelled and errors == runner.errors and output == runner.output_bytes
 
 
+        const module TestIndex:
+            SLOTS: usize = Limits::TESTS * 2
+            PROBE_STEPS: usize = Limits::TESTS * 256
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+            MIX_A: u64 = 13787848793156543929u64
+            MIX_B: u64 = 10723151780598845931u64
+
+
+        def test_runner_mix_hash(value: u64) -> u64:
+            mixed: mutable u64 = value
+            mixed <- (mixed ^ (mixed >> 30)) * TestIndex::MIX_A
+            mixed <- (mixed ^ (mixed >> 27)) * TestIndex::MIX_B
+            return mixed ^ (mixed >> 31)
+
+
+        def test_runner_id_hash(test_id: u64) -> u64:
+            return test_runner_mix_hash(test_id)
+
+
+        def test_runner_name_hash(name: sview) -> u64:
+            hash: mutable u64 = TestIndex::FNV_OFFSET
+            for byte in name |name, hash|:
+                hash <- (hash ^ byte.u64()) * TestIndex::FNV_PRIME
+            return test_runner_mix_hash(hash ^ sview_len(name).u64())
+
+
+        # Validate uniqueness in bounded expected-linear work rather than
+        # rescanning every earlier test for every state-machine event. Exact
+        # key equality is still checked after hash collisions; an adversarial
+        # collision set is rejected after a fixed aggregate probe budget.
+        def test_runner_unique_indexes_valid(runner: TestRunner&) -> bool error[TestRunnerError]:
+            id_slots: mutable u32[TestIndex::SLOTS] = zeroed
+            name_slots: mutable u32[TestIndex::SLOTS] = zeroed
+            probe_steps: mutable usize = 0
+            for index in 0..<runner.cases.count |runner, id_slots, name_slots, probe_steps|:
+                test_case: TestCase = runner.cases[index]
+                id_slot: mutable usize = (test_runner_id_hash(test_case.spec.test_id) % TestIndex::SLOTS.u64()).usize()
+                id_inserted: mutable bool = false
+                while not id_inserted:
+                    raise TestRunnerError.IndexWorkLimitExceeded if probe_steps >= TestIndex::PROBE_STEPS
+                    probe_steps <- probe_steps + 1
+                    occupant: u32 = id_slots[id_slot]
+                    if occupant == 0u32:
+                        id_slots[id_slot] <- index.u32() + 1u32
+                        id_inserted <- true
+                    else:
+                        earlier_index: usize = (occupant - 1u32).usize()
+                        raise TestRunnerError.DuplicateTestId if runner.cases[earlier_index].spec.test_id == test_case.spec.test_id
+                        id_slot <- 0 if id_slot + 1 == TestIndex::SLOTS else id_slot + 1
+
+                name_slot: mutable usize = (test_runner_name_hash(test_case.spec.name) % TestIndex::SLOTS.u64()).usize()
+                name_inserted: mutable bool = false
+                while not name_inserted:
+                    raise TestRunnerError.IndexWorkLimitExceeded if probe_steps >= TestIndex::PROBE_STEPS
+                    probe_steps <- probe_steps + 1
+                    occupant: u32 = name_slots[name_slot]
+                    if occupant == 0u32:
+                        name_slots[name_slot] <- index.u32() + 1u32
+                        name_inserted <- true
+                    else:
+                        earlier_index: usize = (occupant - 1u32).usize()
+                        raise TestRunnerError.DuplicateTestName if runner.cases[earlier_index].spec.name == test_case.spec.name
+                        name_slot <- 0 if name_slot + 1 == TestIndex::SLOTS else name_slot + 1
+            return true
+
+
         def test_runner_all_terminal(runner: TestRunner&) -> bool:
             return runner.terminal == runner.cases.count
 
@@ -552,11 +620,7 @@ module EsTestRunner:
                     raise TestRunnerError.InvalidOutcome if case.state != TestCaseState.Skipped and case.state != TestCaseState.Cancelled and not case.selected
                     raise TestRunnerError.InvalidOutcome if case.state == TestCaseState.Skipped and case.selected
                     try test_result_matches_state(case.result, case.state, case.attempts, case.attempt_token, runner.cancellation_requested)
-            for earlier_index in 0..<runner.cases.count |runner|:
-                earlier: TestCase = runner.cases[earlier_index]
-                for later_index in (earlier_index + 1)..<runner.cases.count |runner, earlier|:
-                    raise TestRunnerError.DuplicateTestId if earlier.spec.test_id == runner.cases[later_index].spec.test_id
-                    raise TestRunnerError.DuplicateTestName if earlier.spec.name == runner.cases[later_index].spec.name
+            _ = try test_runner_unique_indexes_valid(runner)
             accounting_ok: bool = try test_runner_accounting_matches(runner)
             raise TestRunnerError.AccountingInvalid if not accounting_ok
             return true
