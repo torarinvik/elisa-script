@@ -268,8 +268,14 @@ validation_process_group_rss_from_snapshot() {
                 }
             }
             for (pid in present) {
+                if (tree_pid[pid] && process_group[pid] != group) escaped_group = 1
                 if (process_group[pid] == group || tree_pid[pid]) total += rss[pid]
             }
+            # A descendant that has left the private validation process group
+            # can outlive the compiler root after reparenting, at which point
+            # neither the group nor a fresh parent/child walk can account for
+            # it. Fail closed while it is still observable as a descendant.
+            if (escaped_group) exit 2
             print total + 0
         }
     '

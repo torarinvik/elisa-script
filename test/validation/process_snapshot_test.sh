@@ -220,6 +220,11 @@ __ELISASCRIPT_PS_STATUS__ 0'
 orphaned_group_rss="$(printf '%s\n' "$orphaned_group_snapshot" | validation_process_group_rss_from_snapshot 10 10 2)"
 assert_equal 20 "$orphaned_group_rss" 'reparented process retained in the owned process group'
 
+escaped_group_snapshot='10 1 10 30
+11 10 11 40
+__ELISASCRIPT_PS_STATUS__ 0'
+assert_parser_failure "$escaped_group_snapshot" rss 'descendant escaping the isolated process group is rejected'
+
 assert_parser_failure '10 1 10 bad
 __ELISASCRIPT_PS_STATUS__ 0' rss 'malformed RSS row'
 assert_parser_failure '10 1 10 30 extra
@@ -246,4 +251,4 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, reparenting, escaped-group rejection, malformed/failed/truncated snapshots covered'

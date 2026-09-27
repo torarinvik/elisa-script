@@ -166,12 +166,10 @@ signal_process_tree_identities() {
 process_group_rss_kb() {
     process_group_id="$1"
     process_root_pid="$2"
-    # Count the union of the isolated process group and descendants of the
-    # compiler root. The group catches reparented children that retain their
-    # group; the tree catches descendants that start a private session. The OR
-    # predicate prevents counting ordinary same-group children twice. This is
-    # still best-effort observation, not containment: a double-forked process
-    # reparented after leaving this group can evade both snapshots.
+    # Count the isolated process group and attached compiler descendants. A
+    # descendant that escapes the group makes the parser fail closed while it
+    # remains attached; a process already reparented after escape can evade
+    # snapshots, so this remains best-effort observation, not containment.
     process_table="$( { ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
     printf '%s\n' "$process_table" | validation_process_group_rss_from_snapshot "$process_group_id" "$process_root_pid" "$process_snapshot_row_limit"
 }
@@ -582,7 +580,7 @@ for source_file in "$@"; do
                 break
             fi
             rss_guard=1
-            if ! latch_validation_disabled "run_bounded_test rss_measurement_failed pid=$compiler_pid pgid=$compiler_pgid"; then
+            if ! latch_validation_disabled "run_bounded_test rss_snapshot_or_containment_failed pid=$compiler_pid pgid=$compiler_pgid"; then
                 kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
                 exit 125
             fi
