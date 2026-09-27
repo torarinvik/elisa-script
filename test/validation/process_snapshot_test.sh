@@ -228,6 +228,13 @@ assert_parser_failure '10 1 10 1000000001
 __ELISASCRIPT_PS_STATUS__ 0' rss 'RSS above the decimal-safe ceiling'
 assert_parser_failure '10 1 10 99999999999
 __ELISASCRIPT_PS_STATUS__ 0' rss 'RSS integer wider than ten decimal digits'
+assert_parser_failure '2147483648 1 10 30
+__ELISASCRIPT_PS_STATUS__ 0' rss 'PID exceeds portable signed process-ID range'
+assert_parser_failure '10 1 2147483648 30
+__ELISASCRIPT_PS_STATUS__ 0' rss 'PGID exceeds portable signed process-ID range'
+assert_parser_failure '10 1 10 30
+10 1 99 1
+__ELISASCRIPT_PS_STATUS__ 0' rss 'duplicate PID in RSS snapshot'
 assert_parser_failure '10 1 10 30
 11 10 10 40
 12 11 12 50
@@ -239,4 +246,4 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ceiling, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, reparenting, malformed/failed/truncated snapshots covered'

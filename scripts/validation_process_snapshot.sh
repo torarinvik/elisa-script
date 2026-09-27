@@ -215,6 +215,12 @@ validation_process_tree_identities_from_snapshot() {
 
 validation_process_group_rss_from_snapshot() {
     awk -v group="$1" -v root="$2" -v row_limit="$3" '
+        function process_id_valid(value) {
+            return value ~ /^[0-9]+$/ && length(value) <= 10 && value + 0 <= 2147483647
+        }
+        BEGIN {
+            if (!process_id_valid(group) || !process_id_valid(root)) malformed = 1
+        }
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
             if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
@@ -228,9 +234,13 @@ validation_process_group_rss_from_snapshot() {
         # implausibly large per-process readings before AWK aggregation; with
         # at most 16,384 rows at 1,000,000,000 KiB each, the sum stays within
         # IEEE-754's exact-integer range and the shell's signed integer range.
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || length($4) > 10 || ($4 + 0) > 1000000000 || NF != 4 { malformed = 1; exit }
+        !process_id_valid($1) || !process_id_valid($2) || !process_id_valid($3) || $4 !~ /^[0-9]+$/ || length($4) > 10 || ($4 + 0) > 1000000000 || NF != 4 { malformed = 1; exit }
         {
             pid = $1
+            if (pid in present) {
+                malformed = 1
+                exit
+            }
             process_group[$1] = $3
             rss[$1] = $4
             present[$1] = 1
