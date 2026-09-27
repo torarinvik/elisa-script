@@ -538,10 +538,13 @@ reordering before a caller proceeds; successful batch verification advances
 the plan to `SourcesVerified`, without which `Stage` is rejected.
 `stage_install_plan` requires one `InstallStageReceipt` per planned artifact in
 canonical order, with the exact destination, size, SHA-256 words, and declared
-data/executable mode, before the plan can enter `Staged`. This is a pure
-manifest-consistency gate, not filesystem proof: the eventual POSIX adapter
-must derive receipts from no-follow staged-file readback and verified
-permissions rather than trust caller-authored values.
+data/executable mode, before the plan can enter `Staged`. The POSIX
+`verify_install_stage_at` adapter requires a stage-root directory with mode
+`0700`, derives receipts by no-follow readback, checks byte count and SHA-256,
+then verifies exact file modes (`0644` for data, `0755` for executables) on the
+reopened descriptor. This checks each planned entry, but does not yet reject
+unexpected extra paths or preserve object stamps for revalidation at
+publication.
 `open_install_source_for_copy` reopens each receipt beneath the same root
 capability and retains the matching descriptor. `read_install_source_chunk`
 streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor
@@ -549,9 +552,10 @@ and path identity again and consumes the descriptor, while
 `cancel_install_source_copy` closes an abandoned stream.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
-remain `RollbackUncertain`. The whole-tree staging,
-exact POSIX permission mapping, multi-artifact atomic replacement, recovery
-journal, and end-to-end installation adapter remain unimplemented.
+remain `RollbackUncertain`. Whole-tree stage-root creation and cleanup,
+unexpected-entry rejection, directory permission mapping, multi-artifact atomic
+replacement, recovery journal, and the end-to-end installation adapter remain
+unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original
