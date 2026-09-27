@@ -536,6 +536,11 @@ content buffer. `verify_install_sources_at` builds a complete receipt vector in
 plan order, and `validate_install_source_receipts` rejects omissions, reuse, or
 reordering before a caller proceeds; successful batch verification advances
 the plan to `SourcesVerified`, without which `Stage` is rejected.
+`open_install_source_for_copy` reopens each receipt beneath the same root
+capability and retains the matching descriptor. `read_install_source_chunk`
+streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor
+and path identity again and consumes the descriptor, while
+`cancel_install_source_copy` closes an abandoned stream.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
 remain `RollbackUncertain`. The whole-tree staging,

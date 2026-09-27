@@ -9,8 +9,15 @@ module EsInstallSourcePosix:
     using EsBuildIncremental
     using EsBuildIncrementalPosix
     using EsInstall
+    using EsRuntime
 
     public:
+        const module Limits:
+            STREAM_CHUNK_BYTES: usize = 65536
+            STREAM_READ_CALLS: usize = 1048576
+            EINTR_RETRIES: usize = 8
+
+
         struct InstallSourceReceipt:
             artifact_index: usize
             source_path: sview
@@ -22,9 +29,20 @@ module EsInstallSourcePosix:
             digest_3: u64
 
 
+        struct InstallSourceCopyHandle:
+            root_descriptor: int
+            source_descriptor: int
+            receipt: InstallSourceReceipt
+            bytes_read: usize = 0
+            read_calls: usize = 0
+            interrupted: usize = 0
+            failed: bool = false
+
+
         error InstallSourceError:
             ArtifactIndexOutOfRange
             PlanNotPlanned
+            PlanNotSourcesVerified
             SourceMissing
             SourceChanged
             ByteCountMismatch
@@ -32,11 +50,50 @@ module EsInstallSourcePosix:
             ReceiptPathMismatch
             ReceiptCountMismatch
             ReceiptOrderMismatch
+            CopyHandleInvalid
+            CopyHandleFailed
+            CopyBufferInvalid
+            CopyReadFailed(errno: i32)
+            CopyReadLimitExceeded
+            CopyReadIncomplete
+            CopySourceCloseFailed(status: int)
 
 
     private:
+        const module InstallSourceErrno:
+            EINTR: i32 = 4
+            EIO: i32 = 5
+
+
+        const enum InstallSourceReadState of u8:
+            Read
+            Done
+
+
         def install_source_stamp_equal(left: BuildIncrementalFileStamp, right: BuildIncrementalFileStamp) -> bool:
             return left.path == right.path and left.present and right.present and left.size == right.size and left.device == right.device and left.inode == right.inode and left.modify_time.seconds == right.modify_time.seconds and left.modify_time.nanoseconds == right.modify_time.nanoseconds and left.change_time.seconds == right.change_time.seconds and left.change_time.nanoseconds == right.change_time.nanoseconds
+
+
+        def install_source_stat_matches_stamp(stat: ElisascriptStat, stamp: BuildIncrementalFileStamp) -> bool:
+            return (stat.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR and stat.device == stamp.device and stat.inode == stamp.inode and stat.size >= 0 and stat.size.usize().i64() == stat.size and stat.size.usize() == stamp.size and stat.modify_time.seconds == stamp.modify_time.seconds and stat.modify_time.nanoseconds == stamp.modify_time.nanoseconds and stat.change_time.seconds == stamp.change_time.seconds and stat.change_time.nanoseconds == stamp.change_time.nanoseconds
+
+
+        def install_source_stat_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == InstallSourceErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def install_source_close_descriptor(handle: mutable InstallSourceCopyHandle&) -> int can[Blocking.IO]:
+            return -1 if handle.source_descriptor < 0
+            descriptor: int = handle.source_descriptor
+            handle.source_descriptor <- -1
+            return elisascript_posix_close(descriptor)
 
 
         def install_source_receipt_matches_artifact(artifact: InstallArtifact, index: usize, receipt: InstallSourceReceipt) -> bool error[InstallSourceError]:
@@ -119,3 +176,103 @@ module EsInstallSourcePosix:
             _ = try validate_install_source_receipts(plan, receipts)
             _ = try advance_install_plan(plan, InstallEvent.VerifySources)
             return receipts
+
+
+        # Open the exact source snapshot admitted by the complete source batch.
+        # The retained no-follow descriptor lets the caller stream it into the
+        # private install tree without reading the entire artifact into memory.
+        def open_install_source_for_copy(root_fd: int, plan: InstallPlan&, receipt: InstallSourceReceipt) -> InstallSourceCopyHandle error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
+            raise InstallSourceError.ArtifactIndexOutOfRange if receipt.artifact_index >= plan.artifacts.count
+            _ = try install_source_receipt_matches_artifact(plan.artifacts[receipt.artifact_index], receipt.artifact_index, receipt)
+            opened: OpenedFile = try open_build_incremental_file_at(root_fd, receipt.source_path)
+            raise InstallSourceError.SourceChanged if not opened.present
+            if not install_source_stamp_equal(receipt.source_stamp, BuildIncrementalFileStamp{path: receipt.source_path, present: opened.present, size: opened.size, device: opened.device, inode: opened.inode, modify_time: opened.modify_time, change_time: opened.change_time}):
+                close_status: int = elisascript_posix_close(opened.descriptor)
+                raise OpenError.CloseFailed(receipt.source_path) if close_status != 0
+                raise InstallSourceError.SourceChanged
+            return InstallSourceCopyHandle{root_descriptor: root_fd, source_descriptor: opened.descriptor, receipt: receipt}
+
+
+        # Read at most one 64 KiB chunk. Call until this returns zero, then
+        # finish_install_source_copy; on any read error, cancel the handle to
+        # close the retained descriptor before abandoning the staging attempt.
+        def read_install_source_chunk(handle: mutable InstallSourceCopyHandle&, buffer: mutable u8&, capacity: usize) -> usize error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.CopyHandleInvalid if handle.root_descriptor < 0 or handle.source_descriptor < 0
+            raise InstallSourceError.CopyHandleFailed if handle.failed
+            raise InstallSourceError.CopyBufferInvalid if buffer == null or capacity == 0 or capacity > Limits::STREAM_CHUNK_BYTES
+            raise InstallSourceError.CopyHandleInvalid if handle.bytes_read > handle.receipt.byte_count or handle.read_calls > Limits::STREAM_READ_CALLS
+            return 0 if handle.bytes_read == handle.receipt.byte_count
+            state: mutable InstallSourceReadState = InstallSourceReadState.Read
+            amount: mutable usize = 0
+            machine over state:
+                state Read
+                start Read
+
+                Read, InstallSourceReadState.Read:
+                    if handle.read_calls >= Limits::STREAM_READ_CALLS:
+                        handle.failed <- true
+                        raise InstallSourceError.CopyReadLimitExceeded
+                    remaining: usize = handle.receipt.byte_count - handle.bytes_read
+                    requested: usize = capacity if capacity < remaining else remaining
+                    read_amount: isize = elisascript_posix_read(handle.source_descriptor, buffer.cast[mutable void&], requested)
+                    handle.read_calls <- handle.read_calls + 1
+                    if read_amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == InstallSourceErrno::EINTR and handle.interrupted < Limits::EINTR_RETRIES:
+                            handle.interrupted <- handle.interrupted + 1
+                            -> Read
+                        handle.failed <- true
+                        raise InstallSourceError.CopyReadFailed(errno[0])
+                    if read_amount == 0:
+                        handle.failed <- true
+                        raise InstallSourceError.CopyReadIncomplete
+                    if read_amount.usize() > requested:
+                        handle.failed <- true
+                        raise InstallSourceError.CopyReadFailed(InstallSourceErrno::EIO)
+                    amount <- read_amount.usize()
+                    handle.bytes_read <- handle.bytes_read + amount
+                    handle.interrupted <- 0
+                    state <- InstallSourceReadState.Done
+                    -> Read
+
+                Read, InstallSourceReadState.Done:
+                    break
+
+            return amount
+
+
+        # The caller may discard a partially streamed source after any failed
+        # staging write. Closing consumes the descriptor exactly once and does
+        # not claim that the copy was complete or stable.
+        def cancel_install_source_copy(handle: mutable InstallSourceCopyHandle&) -> bool error[InstallSourceError] can[Blocking.IO]:
+            raise InstallSourceError.CopyHandleInvalid if handle.root_descriptor < 0 or handle.source_descriptor < 0
+            close_status: int = install_source_close_descriptor(handle)
+            raise InstallSourceError.CopySourceCloseFailed(close_status) if close_status != 0
+            return true
+
+
+        # Complete the streaming receipt only after every expected byte was
+        # consumed, the open descriptor still matches its admission stamp, and
+        # the source path still names that same snapshot. A successful return
+        # is safe input for staging; it is not a publication receipt.
+        def finish_install_source_copy(handle: mutable InstallSourceCopyHandle&) -> bool error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.CopyHandleInvalid if handle.root_descriptor < 0 or handle.source_descriptor < 0
+            if handle.failed:
+                close_status: int = install_source_close_descriptor(handle)
+                raise InstallSourceError.CopySourceCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.CopyHandleFailed
+            descriptor_info: mutable ElisascriptStat = ElisascriptStat{}
+            descriptor_matches: bool = install_source_stat_descriptor(handle.source_descriptor, descriptor_info) and install_source_stat_matches_stamp(descriptor_info, handle.receipt.source_stamp)
+            named_matches: mutable bool = false
+            catch observe_build_incremental_file_stamp_at(handle.root_descriptor, handle.receipt.source_path):
+                ok observed:
+                    named_matches <- install_source_stamp_equal(handle.receipt.source_stamp, observed)
+                error failure:
+                    named_matches <- false
+            close_status: int = install_source_close_descriptor(handle)
+            raise InstallSourceError.CopySourceCloseFailed(close_status) if close_status != 0
+            raise InstallSourceError.CopyReadIncomplete if handle.bytes_read != handle.receipt.byte_count
+            raise InstallSourceError.SourceChanged if not descriptor_matches or not named_matches
+            return true
