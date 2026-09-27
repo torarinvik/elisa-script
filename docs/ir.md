@@ -2266,8 +2266,10 @@ output limits, spans that rewind before the consumed cursor, malformed spans,
 cancellation, and premature end use
 `error[RegexCallbackError]`; validation also rejects forged planned counters and
 impossible pre-match cursor/ledger state, pending callbacks outside matching,
-and a complete session must have consumed the entire input cursor. Callback
-invocation and capture materialization remain host/interpreter work.
+and a complete session must have consumed the entire input cursor. A pending
+match also retains the output count before its unmatched prefix; validation
+rejects forged pending spans whose prefix bytes were omitted or over-counted.
+Callback invocation and capture materialization remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
 materialization. It bounds total input, per-record bytes, record count, and

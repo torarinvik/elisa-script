@@ -36,6 +36,11 @@ for boundary in \
     'REGEX_CALLBACK_MAX_OUTPUT_BYTES' \
     'regex_callback_add_fits' \
     'pending' \
+    'pending_output_before' \
+    'session.pending_output_before <- session.output_bytes' \
+    'session.pending_output_before <- 0' \
+    'pending_prefix_bytes' \
+    'expected_pending_output' \
     'has_last_zero' \
     'RegexCallbackError.NonProgress' \
     'RegexCallbackError.ReplacementNotReady' \
@@ -59,6 +64,7 @@ for boundary in \
     rg -q "$boundary" "$model"
 done
 rg -Fq 'regex_callback_rejects_match_count_without_span_progress' "$runtime_fixture"
+rg -Fq 'regex_callback_rejects_forged_pending_prefix_accounting' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_zero_width_marker_ahead_of_cursor' "$runtime_fixture"
 rg -Fq 'regex_callback_accepts_empty_input_zero_width_match_at_eof' "$runtime_fixture"
 rg -Fq 'regex_callback_uses_matcher_supplied_zero_width_advance' "$runtime_fixture"
