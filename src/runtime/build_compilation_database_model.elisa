@@ -60,6 +60,14 @@ module EsBuildCompilationDatabase:
             DOT: sview = "-dependency-dot"
 
 
+        const module OptimizationRecord:
+            SAVE: sview = "-fsave-optimization-record"
+            SAVE_EQUALS: sview = "-fsave-optimization-record="
+            DISABLE: sview = "-fno-save-optimization-record"
+            FILE_EQUALS: sview = "-foptimization-record-file="
+            PASSES_EQUALS: sview = "-foptimization-record-passes="
+
+
         const module Json:
             HEX: sview = "0123456789abcdef"
 
@@ -333,6 +341,72 @@ module EsBuildCompilationDatabase:
             return path_normalize(path_join(directory, path_name(default_trace_path)))
 
 
+        def database_optimization_record_enabled(arguments: darray[sview]) -> bool:
+            enabled: mutable bool = false
+            for argument in arguments |enabled|:
+                if argument == OptimizationRecord::SAVE or database_text_starts_with(argument, OptimizationRecord::SAVE_EQUALS) or database_text_starts_with(argument, OptimizationRecord::FILE_EQUALS) or database_text_starts_with(argument, OptimizationRecord::PASSES_EQUALS):
+                    enabled <- true
+                elif argument == OptimizationRecord::DISABLE:
+                    enabled <- false
+            return enabled
+
+
+        def database_optimization_record_format(arguments: darray[sview]) -> sview:
+            format: mutable sview = "yaml"
+            for argument in arguments |format|:
+                if database_text_starts_with(argument, OptimizationRecord::SAVE_EQUALS):
+                    format <- string_view_slice(argument, sview_len(OptimizationRecord::SAVE_EQUALS).i64(), sview_len(argument).i64())
+            return format
+
+
+        def database_optimization_record_file_option_count(arguments: darray[sview]) -> usize:
+            count: mutable usize = 0
+            for argument in arguments |count|:
+                count <- count + 1 if database_text_starts_with(argument, OptimizationRecord::FILE_EQUALS)
+            return count
+
+
+        def database_optimization_record_file_option_operand(arguments: darray[sview]) -> sview:
+            for argument in arguments:
+                if database_text_starts_with(argument, OptimizationRecord::FILE_EQUALS):
+                    return string_view_slice(argument, sview_len(OptimizationRecord::FILE_EQUALS).i64(), sview_len(argument).i64())
+            return ""
+
+
+        def database_optimization_record_format_option_count(arguments: darray[sview]) -> usize:
+            count: mutable usize = 0
+            for argument in arguments |count|:
+                count <- count + 1 if database_text_starts_with(argument, OptimizationRecord::SAVE_EQUALS)
+            return count
+
+
+        def database_optimization_record_option_shape_valid(arguments: darray[sview]) -> bool:
+            file_option_count: usize = database_optimization_record_file_option_count(arguments)
+            return false if file_option_count > 1
+            format_option_count: usize = database_optimization_record_format_option_count(arguments)
+            return false if format_option_count > 1
+            format: sview = database_optimization_record_format(arguments)
+            return false if format != "yaml" and format != "bitstream"
+            return true if file_option_count == 0
+            return database_optimization_record_file_option_operand(arguments) != ""
+
+
+        def database_optimization_record_output_path(primary_output_path: Path, format: sview) -> Path can[Memory.Allocate, Abort.Panic]:
+            record_name: sview = path_stem(primary_output_path) + ".opt." + format
+            return path_normalize(path_join(path_parent(primary_output_path), record_name))
+
+
+        def database_optimization_record_path_is_modelable(arguments: darray[sview]) -> bool:
+            # Darwin's per-architecture optimization-record naming is not
+            # represented by this single-output projection.
+            return false if database_argument_count(arguments, "-arch") > 0
+            for argument in arguments:
+                # LTO can emit per-backend records whose names are not
+                # derivable from the frontend's primary output.
+                return false if database_text_starts_with(argument, "-flto")
+            return true
+
+
         def database_split_dwarf_option_shape_valid(arguments: darray[sview]) -> bool:
             for argument in arguments:
                 if database_text_starts_with(argument, Dwarf::SPLIT_EQUALS):
@@ -549,7 +623,9 @@ module EsBuildCompilationDatabase:
             raise BuildCompilationDatabaseError.InvalidSourceFile if database_argument_count(command.arguments, entry.source_file) != 1 or not database_option_has_unique_operand(command.arguments, "-c", entry.source_file)
             raise BuildCompilationDatabaseError.InvalidCompileAction if not database_supported_compile_mode(command.arguments)
             # These GCC/Clang options create auxiliary files (intermediates,
-            # statistics, or coverage notes) not yet bound to outputs.
+            # statistics, or coverage notes) not yet bound to outputs. The
+            # recognized Clang time-trace and optimization-record sidecars
+            # are validated separately below.
             raise BuildCompilationDatabaseError.InvalidOutputPath if database_has_unmodeled_auxiliary_outputs(command.arguments)
             # Even without the optional JSON `output` field, every primary
             # output spelling must have one unambiguous, graph-owned operand.
@@ -560,10 +636,14 @@ module EsBuildCompilationDatabase:
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_serialized_diagnostics_option_shape_valid(command.arguments)
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_module_output_option_shape_valid(command.arguments)
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_time_trace_option_shape_valid(command.arguments)
+            raise BuildCompilationDatabaseError.InvalidOutputPath if not database_optimization_record_option_shape_valid(command.arguments)
             raise BuildCompilationDatabaseError.InvalidCompileAction if not database_split_dwarf_option_shape_valid(command.arguments)
             if database_split_dwarf_sidecar_required(command.arguments):
                 raise BuildCompilationDatabaseError.InvalidOutputPath if not database_split_dwarf_sidecar_path_is_modelable(command.arguments)
                 raise BuildCompilationDatabaseError.InvalidCompileAction if database_argument_count(command.arguments, "-emit-llvm") > 0 or database_uses_precompiled_header_language(command.arguments)
+            if database_optimization_record_enabled(command.arguments):
+                raise BuildCompilationDatabaseError.InvalidCompileAction if not database_optimization_record_path_is_modelable(command.arguments)
+                raise BuildCompilationDatabaseError.InvalidCompileAction if database_uses_precompiled_header_language(command.arguments)
             # Without an explicit dependency-file option, GCC/Clang choose a
             # depfile path implicitly from -o or the input name. The graph has
             # no portable way to prove ownership of that compiler-specific
@@ -597,6 +677,13 @@ module EsBuildCompilationDatabase:
                     time_trace_output_path <- directory_trace_path if directory_trace_is_declared
                     time_trace_output_path <- explicit_trace_path if explicit_file_is_declared
                 try database_record_unique_output_path(owned_output_paths, time_trace_output_path, output_set)
+            if database_optimization_record_enabled(command.arguments):
+                optimization_record_path: mutable Path = database_optimization_record_output_path(primary_output_path, database_optimization_record_format(command.arguments))
+                if database_optimization_record_file_option_count(command.arguments) == 1:
+                    optimization_record_operand: sview = database_optimization_record_file_option_operand(command.arguments)
+                    raise BuildCompilationDatabaseError.InvalidOutputPath if not database_output_path_is_declared(optimization_record_operand, command.working_directory, output_set)
+                    optimization_record_path <- database_resolved_output_path(optimization_record_operand, command.working_directory)
+                try database_record_unique_output_path(owned_output_paths, optimization_record_path, output_set)
             if database_split_dwarf_sidecar_required(command.arguments):
                 split_dwarf_output_path: Path = database_split_dwarf_output_path(primary_output_path)
                 try database_record_unique_output_path(owned_output_paths, split_dwarf_output_path, output_set)

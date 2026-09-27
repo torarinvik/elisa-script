@@ -810,6 +810,19 @@ that sidecar must be a distinct graph-owned action output. Single-file mode
 projector rejects path-changing `-dumpdir`, `-dumpbase`, and `-dumpbase-ext`
 overrides while split output is active, along with split-DWARF bitcode and
 precompiled-header actions whose sidecar identity is not modeled.
+Clang's `-fsave-optimization-record` and `-foptimization-record-passes=<filter>`
+are modeled as producing an optimization-record sidecar. The default YAML
+record is derived as `<primary-stem>.opt.yaml`. Supported formats are YAML and
+bitstream; the explicit
+`-fsave-optimization-record=bitstream` format uses
+`<primary-stem>.opt.bitstream`. `-foptimization-record-file=<path>` instead
+names the record directly, and that path must be a distinct declared action
+output. Repeated record-file or format options, unsupported formats,
+undeclared outputs, and collisions are rejected. LTO, Darwin `-arch`, and
+precompiled-header actions are rejected while record output is active because
+this projection does not model their alternate sidecar naming.
+`-fno-save-optimization-record` disables the implicit sidecar when it is the
+final save/disable option.
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
