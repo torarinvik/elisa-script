@@ -786,7 +786,8 @@ than attributing an object output to them. Clang's -emit-llvm -c form derives a
 .bc primary output instead of .o, and conflicting stage-selection options are
 rejected. Header-language `-x` modes that create precompiled headers require an
 explicit graph-owned `-o`, because GCC and Clang use different implicit PCH
-suffixes.
+suffixes. `-save-temps` modes are rejected until their `.i` and `.s`
+intermediates can be bound to declared action outputs.
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
