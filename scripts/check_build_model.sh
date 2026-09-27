@@ -333,6 +333,13 @@ rg -Fq 'build_usage_graph_rejects_relative_declared_outputs' "$usage_graph_fixtu
 rg -Fq 'build_usage_graph_rejects_forged_metadata_total' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_replaced_valid_dependency_edge' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_changed_action_fingerprint' "$usage_graph_fixture"
+rg -Fq 'include "../../src/runtime/bounded_text_posix.elisa"' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(template, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
+rg -Fq 'EsBoundedText::read_utf8(output, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
+if rg -Fq 'read_text(template)' "$minimal_native_parity" || rg -Fq 'read_text(output)' "$minimal_native_parity"; then
+    printf 'build model audit: generated-header parity comparison uses unbounded reads\n' >&2
+    exit 1
+fi
 rg -Fq 'build_usage_compile_argv(' "$target_usage_candidate"
 rg -Fq 'build_usage_link_argv(' "$target_usage_candidate"
 rg -Fq 'build_usage_raw_argv(' "$target_usage_candidate"
