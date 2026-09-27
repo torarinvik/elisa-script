@@ -11,6 +11,7 @@ coding_projects_root="${1:-$(CDPATH= cd -- "$script_dir/../../.." && pwd)}"
 roots_file="${2:-$repo_root/docs/migration-project-roots.tsv}"
 candidate_file="$script_dir/check_migration_roots.elisascript"
 bounded_text_file="$script_dir/../src/runtime/bounded_text_posix.elisa"
+parity_launcher="$repo_root/test/script_parity/migration_roots_launcher_test.elisascript"
 
 if [[ ! -d "$coding_projects_root" ]]; then
     printf 'migration roots audit: coding-projects root does not exist: %s\n' "$coding_projects_root" >&2
@@ -82,6 +83,19 @@ if grep -F 'read_text(' "$bounded_text_file" >/dev/null 2>&1; then
 fi
 if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
     printf 'migration roots audit: candidate source read uses unbounded read_text\n' >&2
+    exit 1
+fi
+for launcher_invariant in \
+    'include "../../src/runtime/bounded_text_posix.elisa"' \
+    'MAX_SOURCE_MANIFEST_BYTES: usize = 1048576' \
+    'EsBoundedText::read_utf8(path(Commands::MANIFEST), Commands::MAX_SOURCE_MANIFEST_BYTES)'; do
+    if ! grep -F "$launcher_invariant" "$parity_launcher" >/dev/null 2>&1; then
+        printf 'migration roots audit: parity fixture omits bounded source-read invariant: %s\n' "$launcher_invariant" >&2
+        exit 1
+    fi
+done
+if grep -F 'read_text(' "$parity_launcher" >/dev/null 2>&1; then
+    printf 'migration roots audit: parity fixture uses unbounded read_text\n' >&2
     exit 1
 fi
 if grep -F 'arguments.count > 2' "$candidate_file" >/dev/null 2>&1; then

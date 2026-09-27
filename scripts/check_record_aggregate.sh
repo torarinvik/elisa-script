@@ -103,6 +103,15 @@ rg -Fq 'REFERENCE_BYTES: usize = 65536' "$launcher_parity"
 rg -Fq 'reference_script_in_root: Path = path_join(path(test_case.repository_root), Commands::REFERENCE_SCRIPT)' "$launcher_parity"
 rg -Fq 'write_fixture_text(path_join(root, Commands::REFERENCE_SCRIPT), reference)' "$launcher_parity"
 rg -Fq 'candidate_script_in_root: Path = path_join(path(test_case.repository_root), Commands::CANDIDATE_SCRIPT)' "$launcher_parity"
+rg -Fq 'include "../../src/runtime/bounded_text_posix.elisa"' "$launcher_parity"
+rg -Fq 'EsBoundedText::read_utf8(path(relative), source_sizes[source_index])' "$launcher_parity"
+rg -Fq 'EsBoundedText::read_utf8(source_path, source_size)' "$launcher_parity"
+rg -Fq 'EsBoundedText::read_utf8(candidate_path, Limits::CANDIDATE_BYTES)' "$launcher_parity"
+rg -Fq 'EsBoundedText::read_utf8(reference_path, Limits::REFERENCE_BYTES)' "$launcher_parity"
+if rg -Fq 'read_text(' "$launcher_parity"; then
+    printf 'record aggregate audit: parity fixture has an unbounded text read\n' >&2
+    exit 1
+fi
 rg -Fq 'padded_docs.push(195u8)' "$launcher_parity"
 rg -Fq 'padded_docs.push(169u8)' "$launcher_parity"
 rg -Fq 'file_root_case' "$launcher_parity"

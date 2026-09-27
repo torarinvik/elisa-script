@@ -17,8 +17,9 @@ walker_test="$repo_root/test/script_parity/inventory_walk_test.elisascript"
 candidate_file="$repo_root/scripts/inventory_candidates.elisascript"
 candidate_fixture="$repo_root/test/fixtures/script_parity/inventory_candidates/EXPECTATIONS.md"
 signals_elisascript="$repo_root/scripts/inventory_signals.elisascript"
+signals_launcher_test="$repo_root/test/script_parity/inventory_signals_launcher_test.elisascript"
 
-for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$candidate_file" "$candidate_fixture" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh" "$signals_elisascript"; do
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$candidate_file" "$candidate_fixture" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh" "$signals_elisascript" "$signals_launcher_test"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -150,6 +151,19 @@ for walker_case in 'RegularFileLimitExceeded' 'DirectoryLimitExceeded' 'EntryLim
 done
 if ! rg -q 'required_mode_bits' "$repo_root/scripts/inventory_signals.elisascript" || ! rg -q 'suffixes: \[' "$repo_root/scripts/inventory_candidates.elisascript"; then
     printf 'migration inventory audit: scanners do not configure the shared walker's typed selectors\n' >&2
+    exit 1
+fi
+for launcher_invariant in \
+    'include "../../src/runtime/bounded_text_posix.elisa"' \
+    'MAX_CANDIDATE_SOURCE_BYTES: usize = 16777216' \
+    'EsBoundedText::read_utf8(path(Commands::CANDIDATE_SCRIPT), Commands::MAX_CANDIDATE_SOURCE_BYTES)'; do
+    if ! rg -Fq "$launcher_invariant" "$signals_launcher_test"; then
+        printf 'migration inventory audit: signal parity fixture omits bounded source-read invariant: %s\n' "$launcher_invariant" >&2
+        exit 1
+    fi
+done
+if rg -Fq 'read_text(' "$signals_launcher_test"; then
+    printf 'migration inventory audit: signal parity fixture uses unbounded read_text\n' >&2
     exit 1
 fi
 
