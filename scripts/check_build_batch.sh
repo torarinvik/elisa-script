@@ -152,6 +152,7 @@ for fixture_case in \
     'launches[1].command.capture_output_limit_bytes == 0' \
     'session.results[1].reserved_output_bytes == 0' \
     'build_batch_missing_output_fails_before_dispatching_dependents' \
+    'build_batch_rejects_output_created_before_later_dispatch' \
     'build_batch_maps_recipe_outputs_under_absolute_root' \
     'incremental_build_batch_skips_verified_cache_hits_before_dispatch' \
     'incremental_build_batch_completes_without_launches_when_all_targets_are_cached' \
