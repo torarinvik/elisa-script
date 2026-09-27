@@ -33,9 +33,10 @@ minimal_native_cmake="$minimal_native_root/CMakeLists.txt"
 minimal_native_main="$minimal_native_root/src/main.c"
 minimal_native_main_variant="$minimal_native_root/src/main_variant.c"
 minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
+bounded_bytes_reader="$repo_root/src/runtime/bounded_bytes_posix.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$usage_argv_model" "$usage_argv_fixture" "$usage_graph_model" "$usage_graph_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$usage_argv_model" "$usage_argv_fixture" "$usage_graph_model" "$usage_graph_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$bounded_bytes_reader" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -334,6 +335,14 @@ rg -Fq 'build_usage_graph_rejects_forged_metadata_total' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_replaced_valid_dependency_edge' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_changed_action_fingerprint' "$usage_graph_fixture"
 rg -Fq 'include "../../src/runtime/bounded_text_posix.elisa"' "$minimal_native_parity"
+rg -Fq 'include "../../src/runtime/bounded_bytes_posix.elisa"' "$minimal_native_parity"
+rg -Fq 'MAX_BINARY_SNAPSHOT_BYTES: usize = 16777216' "$minimal_native_parity"
+rg -Fq 'EsBoundedBytes::read_bounded_bytes(candidate_cache, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
+rg -Fq 'EsBoundedBytes::read_bounded_bytes(main_object_seed, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
+rg -Fq 'EsBoundedBytes::read_bounded_bytes(candidate_main_object, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
+for bounded_bytes_invariant in 'MAX_BYTES: usize = 16777216' 'probe_capacity: usize = remaining + 1' 'stable_file(opened, final_opened)'; do
+    rg -Fq "$bounded_bytes_invariant" "$bounded_bytes_reader"
+done
 rg -Fq 'EsBoundedText::read_utf8(template, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
 rg -Fq 'EsBoundedText::read_utf8(output, Limits::MAX_GENERATED_HEADER_BYTES)' "$minimal_native_parity"
 rg -Fq 'symlink_input_template_before: sview = try EsBoundedText::read_utf8(generated_header_template, Limits::MAX_GENERATED_HEADER_BYTES) else ""' "$minimal_native_parity"
@@ -345,6 +354,10 @@ rg -Fq 'EsBoundedText::read_utf8(dirty_directory_sentinel, len(dirty_directory_c
 rg -Fq 'EsBoundedText::read_utf8(stale_symlink_target, len(stale_symlink_contents))' "$minimal_native_parity"
 if rg -Fq 'read_text(' "$minimal_native_parity"; then
     printf 'build model audit: minimal-native parity fixture uses unbounded reads\n' >&2
+    exit 1
+fi
+if rg -Fq 'read_bytes(' "$minimal_native_parity"; then
+    printf 'build model audit: minimal-native parity fixture uses unbounded binary reads\n' >&2
     exit 1
 fi
 rg -Fq 'build_usage_compile_argv(' "$target_usage_candidate"
