@@ -1,20 +1,23 @@
 # Lua frontend differential-driver contract
 
 This fixture binds W05 to the real developer-facing Python driver
-`compiler/scripts/run_lua_frontend_differential.py` in the pinned reference
-checkout. The source pin currently observed in `Go projects/effect-worktree/`
-is commit `5284109ca5805560a488c3b0a5d8cd4a1a45e317`, blob
-`0c520694c81537e333b8204ab110155ce2c6d133`. The driver source, its C harnesses,
-and the corpus are inspected as source only; this contract has launched no
-Python, Go, C, compiler, or benchmark process. A launcher must verify the
-commit and blob before treating the checkout as the reference.
+`compiler/scripts/run_lua_frontend_differential.py` in the `Go projects/Elisa-core`
+reference checkout. The currently observed root commit is
+`a891c07857536c0f8b3c2ede3bf97385ba12f7c5`; the tracked driver blob remains
+`0c520694c81537e333b8204ab110155ce2c6d133`. The driver source and tracked C
+harnesses are inspected as source only; this contract has launched no Python,
+Go, C, compiler, or benchmark process. A launcher must verify the root commit
+and relevant tracked blobs before treating the checkout as the reference.
 
-The current pinned checkout does not contain the driver's expected
-`Code/elisacore_lua/src/lua_frontend.elisa` path. That is an input-integrity
-failure, not an empty corpus: the replacement must report the missing source
-root and stop before creating a compiler or C child. The pin and path check are
-therefore part of the acceptance boundary, and this fixture must not be marked
-executed until a checkout containing the pinned workflow is supplied.
+The expected frontend source and 27-case corpus are present in the current
+checkout's ignored `Code/elisacore_lua/` directory, not in that commit's tree.
+Their observed SHA-256 values are pinned in
+`REFERENCE_INPUTS.sha256`. This detects content drift but does not establish
+upstream history or authenticity; the launcher must require an exact manifest
+match, a regular-file/no-symlink policy, and bounded corpus admission. A
+missing path or any digest mismatch is an input-integrity failure, not an empty
+corpus, and must stop before creating a compiler or C child. No fixture,
+compiler, or parity execution has occurred.
 
 ## Public command surface
 
