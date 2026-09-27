@@ -761,7 +761,11 @@ dependency-file output (`-MF file`, `-MFfile`, or Clang's `-dependency-file`
 alias) is limited to one nonempty operand and must name a declared action
 output; directing it to `-` is accepted as stdout rather than a sidecar. `-MD`
 and `-MMD` require one of these explicit paths so the compiler's implicit
-depfile destination cannot escape graph ownership.
+depfile destination cannot escape graph ownership. Clang's separate-operand
+`-dependency-dot` output is likewise limited to one nonempty, distinct,
+graph-owned path. Joined spellings of the `-dependency-file` and
+`-dependency-dot` options are rejected because Clang declares both as
+separate-operand options.
 Clang's `-MJ` compilation-database fragment output is likewise limited to one
 declared action output. Clang's `-serialize-diagnostics` and
 `--serialize-diagnostics` options must likewise have one separate output
