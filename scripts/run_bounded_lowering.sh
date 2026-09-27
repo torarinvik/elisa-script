@@ -66,6 +66,10 @@ if [ -z "$setsid_path" ]; then
     echo "run_bounded_lowering: refusing to launch without an absolute executable setsid helper" >&2
     exit 125
 fi
+if [ ! -x /bin/ps ]; then
+    echo "run_bounded_lowering: refusing to launch without the pinned /bin/ps process sampler" >&2
+    exit 125
+fi
 
 if [ "$#" -ne 1 ]; then
     echo "usage: run_bounded_lowering.sh SOURCE.elisascript" >&2
@@ -134,7 +138,7 @@ fi
 
 process_tree_identities() {
     process_tree_root="$1"
-    process_snapshot="$( { LC_ALL=C ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    process_snapshot="$( { LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
     printf '%s\n' "$process_snapshot" | validation_process_tree_identities_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
 }
 
@@ -142,7 +146,7 @@ process_identity_matches() {
     process_identity_pid="$1"
     process_identity_group="$2"
     process_identity_start="$3"
-    process_identity_table="$( { LC_ALL=C ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_identity_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_identity_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 2
+    process_identity_table="$( { LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_identity_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_identity_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 2
     printf '%s\n' "$process_identity_table" | validation_process_identity_matches_from_snapshot "$process_identity_pid" "$process_identity_group" "$process_identity_start" "$validation_wrapper_pgid" "$process_snapshot_row_limit"
 }
 
@@ -170,23 +174,23 @@ process_group_rss_kb() {
     # descendant that escapes the group makes the parser fail closed while it
     # remains attached; a process already reparented after escape can evade
     # snapshots, so this remains best-effort observation, not containment.
-    process_table="$( { ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    process_table="$( { LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,rss= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
     printf '%s\n' "$process_table" | validation_process_group_rss_from_snapshot "$process_group_id" "$process_root_pid" "$process_snapshot_row_limit"
 }
 
 process_group_for_pid() {
-    ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
+    LC_ALL=C /bin/ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]'
 }
 
 process_group_has_processes() {
     process_group_id="$1"
-    process_table="$( { ps -axo pgid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 0
+    process_table="$( { LC_ALL=C /bin/ps -axo pgid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 0
     printf '%s\n' "$process_table" | validation_process_group_has_live_members_from_snapshot "$process_group_id" "$process_snapshot_row_limit"
 }
 
 compiler_process_state() {
     process_id="$1"
-    process_table="$( { ps -axo pid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || { printf 'unknown\n'; return 0; }
+    process_table="$( { LC_ALL=C /bin/ps -axo pid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || { printf 'unknown\n'; return 0; }
     printf '%s\n' "$process_table" | validation_process_state_from_snapshot "$process_id" "$process_snapshot_row_limit"
 }
 
@@ -295,7 +299,7 @@ latch_validation_disabled() {
 }
 
 acquire_validation_lease() {
-    validation_lease_start="$(ps -o lstart= -p "$validation_lease_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+    validation_lease_start="$(LC_ALL=C /bin/ps -o lstart= -p "$validation_lease_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
     if [ -z "$validation_lease_start" ]; then
         echo "run_bounded_lowering: unable to identify this process for the validation lease" >&2
         exit 125
@@ -315,8 +319,8 @@ acquire_validation_lease() {
                 ;;
         esac
         if kill -0 "$lease_owner_pid" 2>/dev/null; then
-            lease_live_start="$(ps -o lstart= -p "$lease_owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
-            lease_live_command="$(ps -o command= -p "$lease_owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+            lease_live_start="$(LC_ALL=C /bin/ps -o lstart= -p "$lease_owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+            lease_live_command="$(LC_ALL=C /bin/ps -o command= -p "$lease_owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
             case "$lease_live_command" in
                 *run_bounded_lowering.sh*|*run_bounded_test.sh*) ;;
                 *)
@@ -353,7 +357,7 @@ release_validation_lease() {
     if [ "$validation_lease_acquired" -ne 1 ]; then
         return
     fi
-    lease_current_start="$(ps -o lstart= -p "$validation_lease_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+    lease_current_start="$(LC_ALL=C /bin/ps -o lstart= -p "$validation_lease_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
     if [ "$lease_current_start" = "$validation_lease_start" ]; then
         rm -f -- "$validation_lease_dir/owner.ready" "$validation_lease_dir/owner.pid" "$validation_lease_dir/owner.start"
         rmdir "$validation_lease_dir" 2>/dev/null || true

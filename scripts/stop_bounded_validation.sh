@@ -31,6 +31,10 @@ fi
 if [ ! -e "$validation_disabled_file/reason" ]; then
     (set -C; printf '%s\n' "emergency-stop requested by stop_bounded_validation.sh" >"$validation_disabled_file/reason") 2>/dev/null || true
 fi
+if [ ! -x /bin/ps ]; then
+    echo "stop_bounded_validation: pinned /bin/ps process sampler is unavailable; refusing to signal" >&2
+    exit 125
+fi
 
 if [ ! -d "$validation_lease_dir" ]; then
     echo "stop_bounded_validation: latch set; no validation lease was present"
@@ -56,8 +60,8 @@ if ! kill -0 "$owner_pid" 2>/dev/null; then
     exit 0
 fi
 
-owner_live_start="$(LC_ALL=C ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
-owner_live_command="$(ps -o command= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+owner_live_start="$(LC_ALL=C /bin/ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+owner_live_command="$(LC_ALL=C /bin/ps -o command= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
 case "$owner_live_command" in
     *run_bounded_lowering.sh*|*run_bounded_test.sh*) ;;
     *)
@@ -72,7 +76,7 @@ fi
 
 process_tree_identities() {
     process_tree_root="$1"
-    process_snapshot="$( { LC_ALL=C ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
+    process_snapshot="$( { LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_snapshot_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 1
     printf '%s\n' "$process_snapshot" | validation_process_tree_identities_from_snapshot "$process_tree_root" "$process_snapshot_row_limit"
 }
 
@@ -103,12 +107,12 @@ process_snapshot_group_for_pid() {
 process_identity_matches() {
     process_identity_pid="$1"
     process_identity_expected_start="$2"
-    process_identity_current_start="$(LC_ALL=C ps -o lstart= -p "$process_identity_pid" 2>/dev/null | awk '{ $1 = $1; gsub(/[[:space:]]+/, "-"); print }')"
+    process_identity_current_start="$(LC_ALL=C /bin/ps -o lstart= -p "$process_identity_pid" 2>/dev/null | awk '{ $1 = $1; gsub(/[[:space:]]+/, "-"); print }')"
     validation_process_start_token_matches "$process_identity_expected_start" "$process_identity_current_start"
 }
 
 owner_start_matches() {
-    owner_live_start="$(LC_ALL=C ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
+    owner_live_start="$(LC_ALL=C /bin/ps -o lstart= -p "$owner_pid" 2>/dev/null | sed 's/^[[:space:]]*//')"
     [ -n "$owner_live_start" ] && [ "$owner_start" = "$owner_live_start" ] && kill -0 "$owner_pid" 2>/dev/null
 }
 
