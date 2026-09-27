@@ -38,6 +38,17 @@ module EsInstallSourcePosix:
             user: u32
 
 
+        # The stage descriptor is owned by this handle; the parent descriptor
+        # is borrowed and must remain open through cleanup/publication. The
+        # fixed NUL-terminated leaf lets the owner identify this sibling.
+        struct InstallStageRootHandle:
+            parent_descriptor: int
+            descriptor: int
+            leaf_length: usize
+            leaf: u8[256]
+            proof: InstallStageRootProof
+
+
         struct InstallStageArtifactProof:
             receipt: InstallStageReceipt
             stage_stamp: BuildIncrementalFileStamp
@@ -73,6 +84,17 @@ module EsInstallSourcePosix:
             StageModeMismatch
             StageRootInvalid
             StageRootNotPrivate
+            StageParentInvalid
+            StageParentNotTrusted
+            StageRootNameInvalid
+            StageRootNameCollision
+            StageRootCreateFailed(errno: i32)
+            StageRootCreateOutcomeUnknown(errno: i32)
+            StageRootOpenAfterCreateFailed(errno: i32)
+            StageRootEntryChanged
+            StageRootCleanupPending
+            StageRootHandleInvalid
+            StageRootCloseFailed(status: int)
             StageProofCountMismatch
             StageProofReceiptMismatch
             StageProofRootChanged
@@ -108,12 +130,14 @@ module EsInstallSourcePosix:
         const module InstallSourceErrno:
             EINTR: i32 = 4
             EIO: i32 = 5
+            EEXIST: i32 = 17
 
 
         const module InstallSourceMode:
             PERMISSION_MASK: u16 = 4095
             PRIVATE_DIRECTORY: u16 = 448
             DIRECTORY: u16 = 493
+            STICKY: u16 = 512
             DATA: u16 = 420
             EXECUTABLE: u16 = 493
 
@@ -168,6 +192,17 @@ module EsInstallSourcePosix:
                 return false
 
 
+        def install_source_stat_entry_at(parent_fd: int, leaf: cstr, result: mutable ElisascriptStat&, flags: int) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstatat(parent_fd, leaf, result, flags) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == InstallSourceErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
         def install_source_expected_mode(mode: InstallFileMode) -> u16:
             return InstallSourceMode::DATA if mode == InstallFileMode.Data
             return InstallSourceMode::EXECUTABLE
@@ -193,6 +228,22 @@ module EsInstallSourcePosix:
             raise InstallSourceError.StageRootInvalid if (observed.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
             raise InstallSourceError.StageRootNotPrivate if observed.user != install_source_effective_user() or (observed.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY
             return InstallStageRootProof{device: observed.device, inode: observed.inode, user: observed.user}
+
+
+        def install_source_stage_root_identity_matches(observed: ElisascriptStat, expected: InstallStageRootProof) -> bool:
+            return (observed.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY and observed.device == expected.device and observed.inode == expected.inode and observed.user == expected.user
+
+
+        def install_source_copy_stage_root_leaf(leaf: sview, buffer: mutable u8&) -> usize:
+            length: usize = sview_len(leaf)
+            return 0 if length == 0 or length >= 256
+            return 0 if (length == 1 and sview_at(leaf, 0) == 46u8) or (length == 2 and sview_at(leaf, 0) == 46u8 and sview_at(leaf, 1) == 46u8)
+            for offset in 0..<length |leaf, buffer|:
+                byte: u8 = sview_at(leaf, offset)
+                return 0 if byte == 0u8 or byte == 47u8 or byte < 32u8 or byte == 127u8
+                buffer[offset] <- byte
+            buffer[length] <- 0u8
+            return length
 
 
         def install_source_close_descriptor(handle: mutable InstallSourceCopyHandle&) -> int can[Blocking.IO]:
@@ -568,6 +619,90 @@ module EsInstallSourcePosix:
 
 
     public:
+        # Create an exclusively named private sibling beneath a caller-owned
+        # directory capability. The caller supplies a unique leaf and can
+        # recover the name if a post-mkdir operation has an uncertain outcome.
+        # The returned descriptor is owned by the handle; parent_fd is borrowed.
+        def create_install_stage_root_at(parent_fd: int, leaf: sview) -> InstallStageRootHandle error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.StageParentInvalid if parent_fd < 0
+            parent_info: mutable ElisascriptStat = ElisascriptStat{}
+            raise InstallSourceError.StageMetadataFailed if not install_source_stat_descriptor(parent_fd, parent_info)
+            raise InstallSourceError.StageParentInvalid if (parent_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY
+            parent_permissions: u16 = parent_info.mode & InstallSourceMode::PERMISSION_MASK
+            effective_user: u32 = install_source_effective_user()
+            raise InstallSourceError.StageParentNotTrusted if parent_info.user != effective_user and parent_info.user != 0u32
+            raise InstallSourceError.StageParentNotTrusted if (parent_permissions & 18u16) != 0u16 and (parent_permissions & InstallSourceMode::STICKY) == 0u16
+
+            leaf_storage: mutable u8[256] = zeroed
+            leaf_buffer: mutable u8& = (&leaf_storage[0])
+            leaf_length: usize = install_source_copy_stage_root_leaf(leaf, leaf_buffer)
+            raise InstallSourceError.StageRootNameInvalid if leaf_length == 0
+            create_status: int = elisascript_posix_mkdirat(parent_fd, leaf_buffer.cast[cstr], InstallSourceMode::PRIVATE_DIRECTORY.i32())
+            if create_status != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                create_errno: i32 = errno[0]
+                raise InstallSourceError.StageRootNameCollision if create_errno == InstallSourceErrno::EEXIST
+                raise InstallSourceError.StageRootCreateOutcomeUnknown(create_errno) if create_errno == InstallSourceErrno::EINTR
+                raise InstallSourceError.StageRootCreateFailed(create_errno)
+
+            open_retries: mutable usize = 0
+            stage_fd: mutable int = -1
+            open_errno: mutable i32 = 0
+            open_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            while stage_fd < 0 and open_retries <= Limits::EINTR_RETRIES:
+                stage_fd <- elisascript_posix_openat(parent_fd, leaf_buffer.cast[cstr], open_flags, 0u32)
+                if stage_fd < 0:
+                    errno: mutable i32& = elisascript_posix_errno()
+                    open_errno <- errno[0]
+                    if open_errno == InstallSourceErrno::EINTR:
+                        open_retries <- open_retries + 1
+                        continue
+                    break
+            raise InstallSourceError.StageRootOpenAfterCreateFailed(open_errno) if stage_fd < 0
+
+            opened_info: mutable ElisascriptStat = ElisascriptStat{}
+            if not install_source_stat_descriptor(stage_fd, opened_info):
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootCleanupPending
+            if opened_info.device != parent_info.device or opened_info.user != install_source_effective_user():
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootEntryChanged
+            root_proof: InstallStageRootProof = InstallStageRootProof{device: opened_info.device, inode: opened_info.inode, user: opened_info.user}
+            named_info: mutable ElisascriptStat = ElisascriptStat{}
+            named_ok: bool = install_source_stat_entry_at(parent_fd, leaf_buffer.cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+            if not named_ok or not install_source_stage_root_identity_matches(named_info, root_proof):
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootEntryChanged
+
+            if elisascript_posix_fchmod(stage_fd, InstallSourceMode::PRIVATE_DIRECTORY.u32()) != 0:
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootCleanupPending
+            opened_info <- ElisascriptStat{}
+            if not install_source_stat_descriptor(stage_fd, opened_info):
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootCleanupPending
+            named_info <- ElisascriptStat{}
+            named_ok <- install_source_stat_entry_at(parent_fd, leaf_buffer.cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+            if not named_ok or not install_source_stage_root_identity_matches(opened_info, root_proof) or not install_source_stage_root_identity_matches(named_info, root_proof) or (opened_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY or (named_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY:
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageRootEntryChanged
+            return InstallStageRootHandle{parent_descriptor: parent_fd, descriptor: stage_fd, leaf_length: leaf_length, leaf: leaf_storage, proof: root_proof}
+
+
+        def close_install_stage_root(handle: mutable InstallStageRootHandle&) -> void error[InstallSourceError] can[Blocking.IO]:
+            raise InstallSourceError.StageRootHandleInvalid if handle.descriptor < 0 or handle.parent_descriptor < 0 or handle.leaf_length == 0
+            descriptor: int = handle.descriptor
+            handle.descriptor <- -1
+            close_status: int = elisascript_posix_close(descriptor)
+            raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+
+
         # Purely validate one receipt against its plan entry. Filesystem
         # provenance comes from verify_install_source_at; callers must retain
         # the returned stamp and re-observe it before copying if any time has

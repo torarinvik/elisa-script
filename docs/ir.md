@@ -545,6 +545,12 @@ then verifies exact file modes (`0644` for data, `0755` for executables) on the
 reopened descriptor, then scans the complete tree against the manifest. It
 returns an `InstallStageProof` binding the ordered receipts to the private
 effective-user-owned stage-root device/inode and each file's stable stamp.
+`create_install_stage_root_at` creates a caller-named exclusive sibling with
+mode `0700`, opens it without following links, binds its name to the opened
+directory, and returns an owned descriptor plus borrowed parent capability.
+It accepts only effective-user-owned or root-owned parents, and rejects
+group/world-writable non-sticky parents. Name collisions fail closed; the
+caller retains its candidate leaf for reconciling a post-create error.
 `revalidate_install_stage_at` rechecks those identities and modes before
 publication without rehashing large files, then repeats the bounded,
 descriptor-relative whole-tree walk performed during initial stage admission.
@@ -564,10 +570,10 @@ and path identity again and consumes the descriptor, while
 `cancel_install_source_copy` closes an abandoned stream.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
-remain `RollbackUncertain`. The tree scan is only a verifier: stage-root
-creation and cleanup, destination directory permission mapping, multi-artifact
-atomic replacement, recovery journal, and the end-to-end installation adapter
-remain unimplemented.
+remain `RollbackUncertain`. The tree scan is only a verifier: nested stage-tree
+population and cleanup, destination directory permission mapping,
+multi-artifact atomic replacement, recovery journal, and the end-to-end
+installation adapter remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original
