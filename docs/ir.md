@@ -748,8 +748,9 @@ quote shell command text. Paths must be absolute, bounded UTF-8; action indexes
 must be unique and in graph order; the caller may select one declared object
 output even when the action also owns byproducts. Compile actions must contain
 one unambiguous `-c source` pair; any `-o` option must occur once and have a
-nonempty operand, and a selected output must match that operand and a declared
-output. JSON escaping, entry count, and the 64 MiB output ceiling are checked
+nonempty operand declared in that action's output set, even when the optional
+JSON `output` field is omitted. A selected output must also match that operand.
+JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit
 the parent environment with no explicit entries; commands with cleared or
