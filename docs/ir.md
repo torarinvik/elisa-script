@@ -765,7 +765,10 @@ Clang's `-MJ` compilation-database fragment output is likewise limited to one
 declared action output. Clang's `-serialize-diagnostics` and
 `--serialize-diagnostics` options must likewise have one separate output
 operand declared by the action. A selected output must resolve to the same
-declared path as the primary-output operand.
+declared path as the primary-output operand. File-producing primary and
+sidecar outputs must resolve to distinct paths so one compiler option cannot
+overwrite another output that happens to share a graph declaration; `-MF -`
+is excluded because it directs dependency output to stdout.
 JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit
