@@ -755,8 +755,11 @@ JSON `output` field is omitted. Relative output operands resolve against the
 command working directory before graph ownership is checked. An explicit
 dependency-file output (`-MF file` or `-MFfile`) is also limited to one
 nonempty operand and must name a declared action output; `-MF -` is accepted as
-stdout rather than a sidecar. A selected output must resolve to the same
-declared path as the primary-output operand.
+stdout rather than a sidecar. `-MD` and `-MMD` require an explicit `-MF` path
+so the compiler's implicit depfile destination cannot escape graph ownership.
+Clang's `-MJ` compilation-database fragment output is likewise limited to one
+declared action output. A selected output must resolve to the same declared
+path as the primary-output operand.
 JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit

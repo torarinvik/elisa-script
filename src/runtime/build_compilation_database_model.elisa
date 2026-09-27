@@ -143,29 +143,36 @@ module EsBuildCompilationDatabase:
             return database_output_option_operand(arguments) != ""
 
 
-        def database_depfile_option_count(arguments: darray[sview]) -> usize:
+        def database_file_output_option_count(arguments: darray[sview], option: sview) -> usize:
             count: mutable usize = 0
             for argument in arguments |count|:
-                count <- count + 1 if argument == "-MF" or (sview_len(argument) > 3 and database_text_starts_with(argument, "-MF"))
+                count <- count + 1 if argument == option or (sview_len(argument) > sview_len(option) and database_text_starts_with(argument, option))
             return count
 
 
-        def database_depfile_option_operand(arguments: darray[sview]) -> sview:
+        def database_file_output_option_operand(arguments: darray[sview], option: sview) -> sview:
             operand: mutable sview = ""
             for index in 0..<arguments.count |arguments, operand|:
                 argument: sview = arguments[index]
-                if argument == "-MF":
+                if argument == option:
                     operand <- arguments[index + 1] if index + 1 < arguments.count
-                elif sview_len(argument) > 3 and database_text_starts_with(argument, "-MF"):
-                    operand <- string_view_slice(argument, 3i64, sview_len(argument).i64())
+                elif sview_len(argument) > sview_len(option) and database_text_starts_with(argument, option):
+                    operand <- string_view_slice(argument, sview_len(option).i64(), sview_len(argument).i64())
             return operand
 
 
-        def database_depfile_option_shape_valid(arguments: darray[sview]) -> bool:
-            count: usize = database_depfile_option_count(arguments)
+        def database_file_output_option_shape_valid(arguments: darray[sview], option: sview) -> bool:
+            count: usize = database_file_output_option_count(arguments, option)
             return false if count > 1
             return true if count == 0
-            return database_depfile_option_operand(arguments) != ""
+            return database_file_output_option_operand(arguments, option) != ""
+
+
+        def database_generates_implicit_depfile(arguments: darray[sview]) -> bool:
+            dependency_mode: mutable bool = false
+            for argument in arguments |dependency_mode|:
+                dependency_mode <- true if argument == "-MD" or argument == "-MMD"
+            return dependency_mode and database_file_output_option_count(arguments, "-MF") == 0
 
 
         # Compiler output operands are interpreted relative to the command's
@@ -214,6 +221,11 @@ module EsBuildCompilationDatabase:
             raise BuildCompilationDatabaseError.InvalidSourceFile if entry.source_file == "" or sview_len(entry.source_file) > Limits::PATH_BYTES or sview_contains_byte(entry.source_file, 0)
             raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(entry.source_file)
             raise BuildCompilationDatabaseError.InvalidSourceFile if not path_is_absolute(path(entry.source_file))
+            raise BuildCompilationDatabaseError.InvalidArgument if command.executable == "" or sview_len(command.executable) > Limits::PATH_BYTES or sview_contains_byte(command.executable, 0)
+            raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(command.executable)
+            for argument in command.arguments:
+                raise BuildCompilationDatabaseError.InvalidArgument if sview_len(argument) > EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES or sview_contains_byte(argument, 0)
+                raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(argument)
             # Do not let caller-selected metadata claim that an arbitrary
             # process action compiled this file. The projected action must be
             # a compile-mode invocation containing this source in its argv.
@@ -222,28 +234,32 @@ module EsBuildCompilationDatabase:
             # Even without the optional JSON `output` field, every primary
             # output spelling must have one unambiguous, graph-owned operand.
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_output_option_shape_valid(command.arguments)
-            raise BuildCompilationDatabaseError.InvalidOutputPath if not database_depfile_option_shape_valid(command.arguments)
+            raise BuildCompilationDatabaseError.InvalidOutputPath if not database_file_output_option_shape_valid(command.arguments, "-MF")
+            raise BuildCompilationDatabaseError.InvalidOutputPath if not database_file_output_option_shape_valid(command.arguments, "-MJ")
+            # Without -MF, GCC/Clang choose a dependency-file path implicitly
+            # from -o or the input name. The graph has no portable way to
+            # prove ownership of that compiler-specific side effect.
+            raise BuildCompilationDatabaseError.InvalidOutputPath if database_generates_implicit_depfile(command.arguments)
             output_option_count: usize = database_output_option_count(command.arguments)
             if output_option_count == 1:
                 output_operand: sview = database_output_option_operand(command.arguments)
                 raise BuildCompilationDatabaseError.InvalidOutputPath if not database_output_path_is_declared(output_operand, command.working_directory, output_set)
-            depfile_option_count: usize = database_depfile_option_count(command.arguments)
+            depfile_option_count: usize = database_file_output_option_count(command.arguments, "-MF")
             if depfile_option_count == 1:
-                depfile_operand: sview = database_depfile_option_operand(command.arguments)
+                depfile_operand: sview = database_file_output_option_operand(command.arguments, "-MF")
                 # GCC and Clang permit `-MF -` to send dependency data to
                 # stdout; it creates no sidecar path to bind to this action.
                 raise BuildCompilationDatabaseError.InvalidOutputPath if depfile_operand != "-" and not database_output_path_is_declared(depfile_operand, command.working_directory, output_set)
+            database_json_option_count: usize = database_file_output_option_count(command.arguments, "-MJ")
+            if database_json_option_count == 1:
+                database_json_operand: sview = database_file_output_option_operand(command.arguments, "-MJ")
+                raise BuildCompilationDatabaseError.InvalidOutputPath if not database_output_path_is_declared(database_json_operand, command.working_directory, output_set)
             if entry.output_file != "":
                 output_path: sview = entry.output_file
                 raise BuildCompilationDatabaseError.InvalidOutputPath if output_path == "" or sview_len(output_path) > Limits::PATH_BYTES or sview_contains_byte(output_path, 0)
                 raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(output_path)
                 raise BuildCompilationDatabaseError.InvalidOutputPath if not build_executor_output_path_valid(output_path)
                 raise BuildCompilationDatabaseError.InvalidOutputPath if output_option_count != 1 or not database_output_path_matches(database_output_option_operand(command.arguments), output_path, command.working_directory)
-            raise BuildCompilationDatabaseError.InvalidArgument if command.executable == "" or sview_len(command.executable) > Limits::PATH_BYTES or sview_contains_byte(command.executable, 0)
-            raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(command.executable)
-            for argument in command.arguments:
-                raise BuildCompilationDatabaseError.InvalidArgument if sview_len(argument) > EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES or sview_contains_byte(argument, 0)
-                raise BuildCompilationDatabaseError.InvalidUtf8 if not database_utf8_valid(argument)
             return true
 
 
