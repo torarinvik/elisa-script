@@ -794,6 +794,11 @@ explicit graph-owned `-o`, because GCC and Clang use different implicit PCH
 suffixes. Commands that write unmodeled compiler byproducts are also rejected:
 `-save-temps` intermediates, `-save-stats` files, `-fproc-stat-report` CSV,
 and coverage notes from `-ftest-coverage` or `--coverage`/`-coverage`.
+It also refuses Clang's unmodeled module-dependency directory, symbol-graph,
+dynamic-debugging temporary, and crash-reproducer outputs; those can produce
+directory trees or failure-path files not listed as graph outputs. Explicit
+`-gen-reproducer=off` and `-fcrash-diagnostics=off` remain projectable because
+they disable those failure-path outputs.
 Clang's `-ftime-trace` is modeled: the bare option derives a `.json` output
 beside the primary output. With `-ftime-trace=<path>`, the path may be a file
 or directory; exactly one interpretation must resolve to a distinct declared
