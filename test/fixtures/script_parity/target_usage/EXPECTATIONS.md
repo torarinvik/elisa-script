@@ -34,8 +34,9 @@ records, writes them to a same-directory staging path, verifies the complete
 byte count and regular-file shape, then publishes the database with an atomic
 rename. Short-write and rename failures attempt to clean the stage only if it
 still appears as a regular non-symlink file; the launcher also rejects a
-successful candidate run that leaves the stage behind. Archive, link, and run
-actions are intentionally excluded from the translation-unit database.
+successful candidate run that leaves the stage behind, and both routes must
+publish `compile_commands.json` as a regular non-symlink file. Archive, link,
+and run actions are intentionally excluded from the translation-unit database.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
