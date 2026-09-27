@@ -267,7 +267,7 @@ only unless they are valid Elisa programs.
 | `main` | implicit position and fields, repeated definitions, explicit-before/after behavior, duplicate line diagnostic |
 | Invalid source | ignored malformed export forms and exact no-export failure; colon forms admitted by the pinned target regex are preserved |
 | Include graph | nested/absolute/relative, duplicate and diamond include order, cycle chain, missing file, relative/absolute dangling symlink targets, nested links, target and post-link `..` resolution, no-newline splice, CRLF/bare-CR normalization, empty file |
-| Bounds and failure | bounded file/aggregate bytes, materialized source line count, per-export and aggregate parameter counts, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, unreadable and invalid UTF-8 input, no partial success output |
+| Bounds and failure | bounded file/aggregate bytes, materialized source line count, per-export and aggregate parameter counts, include depth/count, aggregate path-component and symlink-expansion work, explicit and implicit header-suffix scan work, aggregate duplicate-name comparison work, structured-output overflow, unreadable and invalid UTF-8 input, no partial success output |
 | Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` / `{version, flattened_source}` payloads; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller and runtime-cache hashing; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): the pinned
@@ -392,9 +392,12 @@ opened as a no-follow regular file, read to a 1 MiB + 1 byte sentinel, and rejec
 128 nested containers before `json.loads`; focused oversized/deep/symlink
 fixtures pin those bounds and the stable rejection in source. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not yet cover
-aggregate include-graph bytes, structured-output overflow, unreadable input
-under a non-root user, or caller integration. The unique-file rejection is
-covered only by the candidate-only generated source case; it has not been
+unreadable input under a non-root user or caller integration. A candidate-only
+structured-output case now flattens 11 MiB of valid control-byte source whose
+JSON escaping must exceed the caller payload ceiling; it expects a stable
+failure frame rather than partial output. The fixture is source-only and has
+not been executed. Aggregate include-graph bytes and unique-file rejection are
+also covered only by candidate-only generated source cases and have not been
 executed.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
