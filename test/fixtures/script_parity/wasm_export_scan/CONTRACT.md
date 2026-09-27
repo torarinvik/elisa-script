@@ -286,6 +286,9 @@ frequent RSS sampler also streams the host `ps` snapshot under incremental
 deadline; missing, oversized, malformed, duplicate-PID, or timed-out snapshots
 fail closed. Duplicate process identities are rejected before table insertion,
 so a later low-RSS row cannot overwrite the scanner's earlier RSS observation.
+The scanner client and the stage1 command guard share the pinned compiler's
+streaming snapshot reader, with caller-specific row ceilings, so the watchdog's
+own `ps` capture is also byte- and time-bounded before decoding.
 Descendant discovery uses a visited-set queue, independent of `ps` row order,
 instead of repeated whole-table passes. Unit cases cover reverse-ordered
 descendants, exact byte/row limits, byte and row overflow, duplicate PIDs, and
