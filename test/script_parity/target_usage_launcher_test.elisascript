@@ -6,6 +6,7 @@ using EsDifferential
 using EsJson
 using EsJsonLex
 using EsJsonParse
+using EsPkgConfigWords
 
 
 module EsTargetUsageParity:
@@ -121,6 +122,89 @@ module EsTargetUsageParity:
             helper_matches: bool = try compilation_database_entry_matches(document, helper_entry, working_directory, helper_source, helper_object, helper_arguments)
             core_matches: bool = try compilation_database_entry_matches(document, core_entry, working_directory, core_source, core_object, core_arguments)
             app_matches: bool = try compilation_database_entry_matches(document, app_entry, working_directory, app_source, app_object, app_arguments)
+            return helper_matches and core_matches and app_matches
+
+
+        def reference_command_words_safe(words: PkgConfigWords) -> bool:
+            # These are generated compiler argv strings, never general shell
+            # programs. Reject operators and expansion/glob syntax because the
+            # tokenizer deliberately does not implement shell execution rules.
+            for word_index in 0..<words.values.count |words|:
+                word: darray[u8] = words.values[word_index]
+                for byte in word |word|:
+                    return false if byte == 0 or byte == 10 or byte == 13 or byte == 35 or byte == 36 or byte == 38 or byte == 40 or byte == 41 or byte == 42 or byte == 59 or byte == 60 or byte == 62 or byte == 63 or byte == 91 or byte == 93 or byte == 96 or byte == 124 or byte == 126
+            return true
+
+
+        def reference_command_word_count(words: PkgConfigWords, expected: sview) -> usize:
+            count: mutable usize = 0
+            for word_index in 0..<words.values.count |words, count|:
+                count <- count + 1 if pkg_config_word_matches(words, word_index, expected)
+            return count
+
+
+        def reference_compilation_database_entry_matches(document: JsonDocument&, entry_index: usize, working_directory: sview, source_file: sview, relative_object: sview, required: darray[sview], forbidden: darray[sview]) -> bool error[JsonContractError, PkgConfigWordsError] can[Memory.Allocate, Abort.Panic]:
+            return false if entry_index >= document.nodes.count or document.nodes[entry_index].kind != JsonNodeKind.Object
+            directory: sview = try json_object_text_member(document, entry_index, "directory")
+            file_name: sview = try json_object_text_member(document, entry_index, "file")
+            command: sview = try json_object_text_member(document, entry_index, "command")
+            return false if directory != working_directory or file_name != source_file or command == ""
+            words: PkgConfigWords = try pkg_config_parse_words(command)
+            return false if words.values.count < 2 or not pkg_config_word_matches(words, 0, "/usr/bin/cc") or not reference_command_words_safe(words)
+            return false if reference_command_word_count(words, source_file) != 1 or reference_command_word_count(words, "-c") != 1
+            output_option: mutable usize = JSON_INDEX_NONE
+            for word_index in 0..<words.values.count |words, output_option|:
+                if pkg_config_word_matches(words, word_index, "-o"):
+                    return false if output_option != JSON_INDEX_NONE or word_index + 1 >= words.values.count
+                    output_option <- word_index
+            return false if output_option == JSON_INDEX_NONE
+            relative_output_index: usize = output_option + 1
+            absolute_object: sview = working_directory + "/" + relative_object
+            return false if not pkg_config_word_matches(words, relative_output_index, relative_object) and not pkg_config_word_matches(words, relative_output_index, absolute_object)
+            for argument in required |words|:
+                return false if reference_command_word_count(words, argument) != 1
+            for argument in forbidden |words|:
+                return false if reference_command_word_count(words, argument) != 0
+            return true
+
+
+        def reference_compile_database_matches(encoded: sview, working_directory: sview, fixture_directory: sview) -> bool error[JsonLexError, JsonParseError, JsonContractError, PkgConfigWordsError] can[Memory.Allocate, Abort.Panic]:
+            limits: DataDecodeLimits = DataDecodeLimits{
+                input_bytes: Limits::MAX_COMPILE_DATABASE_BYTES,
+                tokens: 32768,
+                depth: 8,
+                records: 2,
+                fields: 64,
+                field_bytes: 16384
+            }
+            lexed: JsonLexedSource = try lex_json(encoded, limits, JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.Reject})
+            document: JsonDocument = try parse_json_document(lexed)
+            return false if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            return false if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Array or document.nodes[root_index].child_count != 3
+
+            helper_source: sview = fixture_directory + "/src/helper.c"
+            core_source: sview = fixture_directory + "/src/core.c"
+            app_source: sview = fixture_directory + "/src/main.c"
+            helper_entry: usize = try compilation_database_entry(document, root_index, helper_source)
+            core_entry: usize = try compilation_database_entry(document, root_index, core_source)
+            app_entry: usize = try compilation_database_entry(document, root_index, app_source)
+            return false if helper_entry == JSON_INDEX_NONE or core_entry == JSON_INDEX_NONE or app_entry == JSON_INDEX_NONE
+
+            api_include: sview = "-I" + fixture_directory + "/include/api"
+            core_include: sview = "-I" + fixture_directory + "/include/core"
+            internal_include: sview = "-I" + fixture_directory + "/include/internal"
+            helper_include: sview = "-I" + fixture_directory + "/include/helper"
+            helper_required: darray[sview] = ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", helper_include, "-DHELPER_PRIVATE=1", "-DHELPER_PRIVATE_OPTION=1"]
+            helper_forbidden: darray[sview] = [api_include, core_include, internal_include, "-DAPI_LEVEL=3", "-DAPI_OPTION=1", "-DCORE_ABI=5", "-DCORE_PRIVATE=1", "-DCORE_PRIVATE_OPTION=1", "-DCORE_PUBLIC_OPTION=1"]
+            core_required: darray[sview] = ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", api_include, core_include, internal_include, "-DAPI_LEVEL=3", "-DAPI_OPTION=1", "-DCORE_ABI=5", "-DCORE_PRIVATE=1", "-DCORE_PRIVATE_OPTION=1", "-DCORE_PUBLIC_OPTION=1"]
+            core_forbidden: darray[sview] = [helper_include, "-DHELPER_PRIVATE=1", "-DHELPER_PRIVATE_OPTION=1"]
+            app_required: darray[sview] = ["-std=c11", "-pedantic", "-Wall", "-Wextra", "-Werror", api_include, core_include, "-DAPI_LEVEL=3", "-DAPI_OPTION=1", "-DCORE_ABI=5", "-DCORE_PUBLIC_OPTION=1"]
+            app_forbidden: darray[sview] = [internal_include, helper_include, "-DCORE_PRIVATE=1", "-DCORE_PRIVATE_OPTION=1", "-DHELPER_PRIVATE=1", "-DHELPER_PRIVATE_OPTION=1"]
+
+            helper_matches: bool = try reference_compilation_database_entry_matches(document, helper_entry, working_directory, helper_source, "CMakeFiles/helper.dir/src/helper.c.o", helper_required, helper_forbidden)
+            core_matches: bool = try reference_compilation_database_entry_matches(document, core_entry, working_directory, core_source, "CMakeFiles/core.dir/src/core.c.o", core_required, core_forbidden)
+            app_matches: bool = try reference_compilation_database_entry_matches(document, app_entry, working_directory, app_source, "CMakeFiles/app.dir/src/main.c.o", app_required, app_forbidden)
             return helper_matches and core_matches and app_matches
 
 
@@ -301,9 +385,6 @@ module EsTargetUsageParity:
             candidate_database: sview = try read_text(candidate_database_path) else err:
                 _ = remove_workspace(workspace)
                 return false
-            helper_translation_unit: sview = fixture_text + "/src/helper.c"
-            core_translation_unit: sview = fixture_text + "/src/core.c"
-            app_translation_unit: sview = fixture_text + "/src/main.c"
             candidate_database_matches: bool = try candidate_compile_database_matches(
                 candidate_database,
                 elisa_build_text,
@@ -312,10 +393,7 @@ module EsTargetUsageParity:
                 elisa_build_text + "/core.o",
                 elisa_build_text + "/app.o"
             ) else false
-            reference_database_matches: bool = reference_database.starts_with("[") and reference_database.ends_with("]\n")
-            reference_database_matches <- reference_database.contains(helper_translation_unit) and reference_database_matches
-            reference_database_matches <- reference_database.contains(core_translation_unit) and reference_database_matches
-            reference_database_matches <- reference_database.contains(app_translation_unit) and reference_database_matches
+            reference_database_matches: bool = try reference_compile_database_matches(reference_database, cmake_build_text, fixture_text) else false
             if not reference_database_matches or not candidate_database_matches:
                 print("target usage parity: compilation database shape, argv, or target usage mismatch")
                 _ = remove_workspace(workspace)

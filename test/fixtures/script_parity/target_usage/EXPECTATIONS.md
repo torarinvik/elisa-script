@@ -50,10 +50,15 @@ tokens, depth 8, two roots, 64 members, and 16 KiB per scalar, then requires
 exactly three entries with the expected directory, source, object output, and
 complete ordered compiler argv for helper, core, and app.
 This catches missing/duplicate source records, unexpected or reordered
-arguments, and target-usage leakage in the candidate database. The CMake
-reference database currently receives only outer-framing and source-path
-sanity checks; per-file CMake argv equivalence is not yet established by this
-fixture.
+arguments, and target-usage leakage in the candidate database. For the CMake
+reference database, the launcher tokenizes each bounded `command` field with
+the non-executing pkg-config word parser, rejects shell control/expansion
+characters, and checks the compiler, working directory, source, object output,
+and exactly-once required/forbidden target usage arguments for all three
+translation units. This independently checks the selected public/private
+propagation contract on both routes; it does not claim byte-for-byte equality
+of the entire CMake and candidate argv because platform/toolchain flags may
+differ.
 
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
