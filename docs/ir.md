@@ -749,10 +749,14 @@ must be absolute bounded UTF-8; action indexes must be unique and in graph
 order; the caller may select one declared object output even when the action
 also owns byproducts. Compile actions must contain
 one unambiguous `-c source` pair; each primary-output spelling (`-o file`,
-`-ofile`, `--output file`, or `--output=file`) must occur at most once and have
-a nonempty operand declared in that action's output set, even when the optional
-JSON `output` field is omitted. Relative output operands resolve against the
-command working directory before graph ownership is checked. An explicit
+`-ofile`, `--output file`, or `--output=file`) may occur at most once and, when
+present, must have a nonempty operand declared in that action's output set,
+even when the optional JSON `output` field is omitted. With no explicit
+primary-output option, the GCC/Clang default object path (source basename with
+`.o` under the command working directory) must be declared by the action. If
+the optional JSON `output` field is supplied for such a command, it must match
+that derived object path. Relative output operands resolve against the command
+working directory before graph ownership is checked. An explicit
 dependency-file output (`-MF file` or `-MFfile`) is also limited to one
 nonempty operand and must name a declared action output; `-MF -` is accepted as
 stdout rather than a sidecar. `-MD` and `-MMD` require an explicit `-MF` path
