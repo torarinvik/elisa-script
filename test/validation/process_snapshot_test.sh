@@ -224,6 +224,10 @@ assert_parser_failure '10 1 10 bad
 __ELISASCRIPT_PS_STATUS__ 0' rss 'malformed RSS row'
 assert_parser_failure '10 1 10 30 extra
 __ELISASCRIPT_PS_STATUS__ 0' rss 'extra RSS fields'
+assert_parser_failure '10 1 10 1000000001
+__ELISASCRIPT_PS_STATUS__ 0' rss 'RSS above the decimal-safe ceiling'
+assert_parser_failure '10 1 10 99999999999
+__ELISASCRIPT_PS_STATUS__ 0' rss 'RSS integer wider than ten decimal digits'
 assert_parser_failure '10 1 10 30
 11 10 10 40
 12 11 12 50
@@ -235,4 +239,4 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union, reparenting, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ceiling, reparenting, malformed/failed/truncated snapshots covered'

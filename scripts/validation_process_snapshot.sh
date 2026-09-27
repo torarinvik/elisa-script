@@ -224,7 +224,11 @@ validation_process_group_rss_from_snapshot() {
         }
         status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
-        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || NF != 4 { malformed = 1; exit }
+        # The wrapper's accepted RSS ceiling is 512 MiB. Reject malformed or
+        # implausibly large per-process readings before AWK aggregation; with
+        # at most 16,384 rows at 1,000,000,000 KiB each, the sum stays within
+        # IEEE-754's exact-integer range and the shell's signed integer range.
+        $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/ || length($4) > 10 || ($4 + 0) > 1000000000 || NF != 4 { malformed = 1; exit }
         {
             pid = $1
             process_group[$1] = $3
