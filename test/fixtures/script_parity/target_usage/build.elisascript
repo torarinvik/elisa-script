@@ -1,4 +1,16 @@
 # E03 candidate: resolve and apply public/private/interface target requirements.
+include "../../../../src/ir/ir_model.elisa"
+include "../../../../src/runtime/runtime.elisa"
+include "../../../../src/runtime/encoding.elisa"
+include "../../../../src/ir/serialize.elisa"
+include "../../../../src/runtime/hash_model.elisa"
+include "../../../../src/runtime/file_atomic_model.elisa"
+include "../../../../src/runtime/file_lock_model.elisa"
+include "../../../../src/runtime/file_posix.elisa"
+include "../../../../src/runtime/directory_posix.elisa"
+include "../../../../src/runtime/file_read_at_posix.elisa"
+include "../../../../src/runtime/file_lock_posix.elisa"
+include "../../../../src/runtime/file_atomic_posix.elisa"
 include "../../../../src/runtime/build_executor_model.elisa"
 include "../../../../src/runtime/build_usage_model.elisa"
 include "../../../../src/runtime/build_usage_argv_model.elisa"
@@ -11,7 +23,12 @@ using EsBuildUsage
 using EsBuildUsageArgv
 using EsBuildUsageGraph
 using EsBuildCompilationDatabase
+using EsFileAtomic
+using EsFileAtomicPosix
+using EsFileLock
+using EsFileLockPosix
 using EsProcess
+using EsRuntime
 
 
 module EsTargetUsageBuild:
@@ -23,17 +40,18 @@ module EsTargetUsageBuild:
             HELPER_LIBRARY: sview = "libusage_helper.a"
             CORE_LIBRARY: sview = "libusage_core.a"
             COMPILATION_DATABASE: sview = "compile_commands.json"
+            COMPILATION_DATABASE_LEAF: cstr = "compile_commands.json"
             COMPILATION_DATABASE_STAGE: sview = ".compile_commands.json.stage"
+            COMPILATION_DATABASE_STAGE_LEAF: cstr = ".compile_commands.json.stage"
+            COMPILATION_DATABASE_LOCK_LEAF: cstr = ".compile_commands.json.lock"
+            COMPILATION_DATABASE_OWNER: u64 = 1u64
+            COMPILATION_DATABASE_LIMIT: usize = 67108864
             TIMEOUT_MICROS: u64 = 60000000u64
             OUTPUT_LIMIT_BYTES: usize = 262144
 
 
-        const enum CompilationDatabasePhase of u8:
-            CheckPaths
-            WriteStage
-            VerifyStage
-            RenameStage
-            CleanupStage
+        const enum AtomicPublicationPhase of u8:
+            Publish
             Done
 
 
@@ -107,83 +125,215 @@ module EsTargetUsageBuild:
             return try prepare_command(executable_text, argv, working_directory_text)
 
 
-        def cleanup_compilation_database_stage(stage_path: Path) -> bool can[File.Read, File.Write]:
-            if not path_exists(stage_path) and not is_symlink(stage_path):
+        def open_directory_capability(path_text: sview) -> int can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return -1 if path_text == ""
+            bytes: darray[u8] = []
+            for byte in path_text |bytes|:
+                bytes.push(byte)
+            bytes.push(0u8)
+            return elisascript_posix_open((&bytes[0]).cast[cstr], DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC, 0u32)
+
+
+        def cleanup_compilation_database_atomic_stage(a: mutable Arena&, session: mutable AtomicFileSession&, parent_fd: int, stage_handle: mutable AtomicFilePosixStageHandle&, lease: FileLockPosixLease&) -> bool can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            if session.state == AtomicFileState.Planned or session.state == AtomicFileState.Failed or session.state == AtomicFileState.Cancelled or session.state == AtomicFileState.Unchanged:
                 return true
-            if is_symlink(stage_path) or not is_file(stage_path):
+
+            if session.state == AtomicFileState.Staging or session.state == AtomicFileState.Ready:
+                catch advance_atomic_file(session, AtomicFileEvent.Fail):
+                    ok state:
+                        _ = state
+                    error failure:
+                        return false
+
+            if session.state == AtomicFileState.PublishedUncertain or session.state == AtomicFileState.Committed or session.state == AtomicFileState.Restoring or session.state == AtomicFileState.RolledBack or session.state == AtomicFileState.RolledBackPendingCleanup:
                 return false
-            return try remove_path(stage_path) else false
 
+            if session.staged_identity.observed:
+                catch cleanup_atomic_file_stage(a, session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, stage_handle.proof, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                    ok state:
+                        return state == AtomicFileState.Failed or state == AtomicFileState.Cancelled or state == AtomicFileState.Unchanged
+                    error failure:
+                        return false
 
-        def publish_compilation_database(build_directory: Path, contents: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, File.Read, File.Write]:
-            destination: Path = build_directory.joinpath(Toolchain::COMPILATION_DATABASE)
-            stage: Path = build_directory.joinpath(Toolchain::COMPILATION_DATABASE_STAGE)
-            phase: mutable CompilationDatabasePhase = CompilationDatabasePhase.CheckPaths
-            written: mutable usize = 0
-            write_failed: mutable bool = false
-            published: mutable bool = false
-            failure_message: mutable sview = ""
-
-            machine over phase while phase != CompilationDatabasePhase.Done:
-                state Publish
-                start Publish
-
-                Publish, CompilationDatabasePhase.CheckPaths if path_exists(destination) or is_symlink(destination) or path_exists(stage) or is_symlink(stage):
-                    print("target usage build: refusing pre-existing compilation database path")
+            catch cleanup_unsealed_atomic_file_stage(session, parent_fd, stage_handle, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                ok state:
+                    return state == AtomicFileState.Failed or state == AtomicFileState.Cancelled
+                error failure:
                     return false
 
-                Publish, CompilationDatabasePhase.CheckPaths:
-                    phase <- CompilationDatabasePhase.WriteStage
-                    -> Publish
 
-                Publish, CompilationDatabasePhase.WriteStage:
-                    catch write_bytes(stage, contents):
-                        ok byte_count:
-                            written <- byte_count
+        def publish_compilation_database(build_directory: Path, contents: darray[u8]) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Unsafe.PointerCast]:
+            directory_text: sview = f"{build_directory}"
+            parent_fd: int = open_directory_capability(directory_text)
+            if parent_fd < 0:
+                print("target usage build: unable to open build directory capability")
+                return false
+
+            lease: mutable FileLockPosixLease = FileLockPosixLease{}
+            lock_acquired: mutable bool = false
+            catch acquire_file_lock_at(lease, parent_fd, Toolchain::COMPILATION_DATABASE_LOCK_LEAF, Toolchain::COMPILATION_DATABASE_OWNER, FileLockMode.Exclusive):
+                ok acquired:
+                    lock_acquired <- acquired
+                error failure:
+                    _ = failure
+
+            if not lock_acquired:
+                _ = elisascript_posix_close(parent_fd)
+                print("target usage build: unable to acquire compilation database publication lease")
+                return false
+
+            arena: mutable Arena = zeroed
+            destination_before: mutable AtomicFilePosixObservation = AtomicFilePosixObservation{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, destination: AtomicFileIdentity{}, link_count: 0, private_mode: false}
+            destination_observed: mutable bool = false
+            catch observe_atomic_file_at(arena, parent_fd, Toolchain::COMPILATION_DATABASE_LEAF, Toolchain::COMPILATION_DATABASE_LIMIT):
+                ok observed:
+                    destination_before <- observed
+                    destination_observed <- true
+                error failure:
+                    _ = failure
+
+            if not destination_observed or destination_before.destination.present or contents.count == 0 or contents.count > Toolchain::COMPILATION_DATABASE_LIMIT:
+                released: bool = try release_file_lock_at(lease, parent_fd, Toolchain::COMPILATION_DATABASE_LOCK_LEAF, Toolchain::COMPILATION_DATABASE_OWNER, FileLockMode.Exclusive) else false
+                _ = elisascript_posix_close(parent_fd)
+                arena_free(arena)
+                print("target usage build: refusing invalid or pre-existing compilation database destination") if destination_observed
+                print("target usage build: unable to inspect compilation database destination") if not destination_observed
+                _ = released
+                return false
+
+            plan: AtomicFilePlan = AtomicFilePlan{
+                destination_path: Toolchain::COMPILATION_DATABASE,
+                staging_path: Toolchain::COMPILATION_DATABASE_STAGE,
+                owner_token: Toolchain::COMPILATION_DATABASE_OWNER,
+                parent_identity: parent_fd.u64() + 1u64,
+                expected_destination: destination_before.destination,
+                max_content_bytes: Toolchain::COMPILATION_DATABASE_LIMIT
+            }
+            session: mutable AtomicFileSession = AtomicFileSession{plan: plan}
+            stage_handle: mutable AtomicFilePosixStageHandle = AtomicFilePosixStageHandle{
+                descriptor: -1,
+                proof: AtomicFilePosixStageProof{parent_device: 0, parent_inode: 0, parent_descriptor_token: 0, stage_device: 0, stage_inode: 0, stage_descriptor_token: 0, owner_token: 0, link_count: 0}
+            }
+            stage_created: mutable bool = false
+            publication_ok: mutable bool = false
+            publication_uncertain: mutable bool = false
+
+            catch create_atomic_file_stage(session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                ok created:
+                    stage_handle <- created
+                    stage_created <- true
+                error failure:
+                    _ = failure
+
+            if stage_created:
+                appended: mutable bool = false
+                catch append_atomic_file_stage(session, parent_fd, stage_handle, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, contents, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                    ok byte_count:
+                        appended <- byte_count == contents.count
+                    error failure:
+                        _ = failure
+
+                if appended:
+                    sealed: mutable bool = false
+                    catch seal_atomic_file_stage(arena, session, parent_fd, stage_handle, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                        ok identity:
+                            sealed <- identity.present and identity.size == contents.count
                         error failure:
                             _ = failure
-                            write_failed <- true
 
-                    if write_failed or written != contents.count:
-                        failure_message <- "target usage build: incomplete compilation database staging write"
-                        phase <- CompilationDatabasePhase.CleanupStage
-                    else:
-                        phase <- CompilationDatabasePhase.VerifyStage
-                    -> Publish
+                    if sealed:
+                        compared: mutable bool = false
+                        catch compare_atomic_file_stage(arena, session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, Toolchain::COMPILATION_DATABASE_LEAF, contents, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                            ok identity:
+                                compared <- identity.observed
+                            error failure:
+                                _ = failure
 
-                Publish, CompilationDatabasePhase.VerifyStage:
-                    stage_size: usize = try file_size(stage) else err:
-                        0u64
-                    if not is_file(stage) or is_symlink(stage) or stage_size != contents.count:
-                        failure_message <- "target usage build: staged compilation database is incomplete"
-                        phase <- CompilationDatabasePhase.CleanupStage
-                    elif path_exists(destination) or is_symlink(destination):
-                        failure_message <- "target usage build: compilation database destination changed before publish"
-                        phase <- CompilationDatabasePhase.CleanupStage
-                    else:
-                        phase <- CompilationDatabasePhase.RenameStage
-                    -> Publish
+                        if compared and session.state == AtomicFileState.UnchangedPendingCleanup:
+                            catch cleanup_atomic_file_stage(arena, session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, stage_handle.proof, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                                ok state:
+                                    publication_ok <- state == AtomicFileState.Unchanged
+                                error failure:
+                                    _ = failure
+                        elif compared and session.state == AtomicFileState.Ready:
+                            attempts: mutable usize = 0
+                            phase: mutable AtomicPublicationPhase = AtomicPublicationPhase.Publish
+                            machine over phase while phase != AtomicPublicationPhase.Done:
+                                state Publish
+                                start Publish
 
-                Publish, CompilationDatabasePhase.RenameStage:
-                    renamed: bool = try move_path(stage, destination) else false
-                    if renamed:
-                        published <- true
-                        phase <- CompilationDatabasePhase.Done
-                    else:
-                        failure_message <- "target usage build: unable to publish compilation database"
-                        phase <- CompilationDatabasePhase.CleanupStage
-                    -> Publish
+                                Publish, AtomicPublicationPhase.Publish if attempts >= 2 or publication_ok or publication_uncertain:
+                                    phase <- AtomicPublicationPhase.Done
+                                    -> Publish
 
-                Publish, CompilationDatabasePhase.CleanupStage:
-                    if not cleanup_compilation_database_stage(stage):
-                        print(f"target usage build: unable to clean compilation database stage: {stage}")
-                    print(failure_message)
-                    return false
+                                Publish, AtomicPublicationPhase.Publish if session.state == AtomicFileState.Committed:
+                                    publication_ok <- true
+                                    phase <- AtomicPublicationPhase.Done
+                                    -> Publish
 
-                Publish, CompilationDatabasePhase.Done:
-                    break
+                                Publish, AtomicPublicationPhase.Publish:
+                                    attempts <- attempts + 1
+                                    catch commit_atomic_file_stage(arena, session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, Toolchain::COMPILATION_DATABASE_LEAF, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                                        ok identity:
+                                            _ = identity
+                                        error failure:
+                                            _ = failure
 
-            return published
+                                    if session.state == AtomicFileState.Committed:
+                                        publication_ok <- true
+                                        phase <- AtomicPublicationPhase.Done
+                                    elif session.state == AtomicFileState.PublishedUncertain:
+                                        catch reconcile_atomic_file_publication(arena, session, parent_fd, Toolchain::COMPILATION_DATABASE_STAGE_LEAF, Toolchain::COMPILATION_DATABASE_LEAF, lease, Toolchain::COMPILATION_DATABASE_LOCK_LEAF):
+                                            ok state:
+                                                _ = state
+                                            error failure:
+                                                _ = failure
+                                                publication_uncertain <- true
+                                        if session.state == AtomicFileState.Committed:
+                                            publication_ok <- true
+                                            phase <- AtomicPublicationPhase.Done
+                                        elif session.state == AtomicFileState.Ready and attempts < 2:
+                                            -> Publish
+                                        elif session.state == AtomicFileState.Ready:
+                                            phase <- AtomicPublicationPhase.Done
+                                        else:
+                                            publication_uncertain <- true
+                                            phase <- AtomicPublicationPhase.Done
+                                    elif session.state == AtomicFileState.Ready and attempts < 2:
+                                        -> Publish
+                                    elif session.state == AtomicFileState.Ready:
+                                        phase <- AtomicPublicationPhase.Done
+                                    else:
+                                        publication_uncertain <- true
+                                        phase <- AtomicPublicationPhase.Done
+                                    -> Publish
+
+                                Publish, AtomicPublicationPhase.Done:
+                                    break
+
+            if not publication_ok and not publication_uncertain:
+                if not cleanup_compilation_database_atomic_stage(arena, session, parent_fd, stage_handle, lease):
+                    print("target usage build: unable to safely clean compilation database stage")
+
+            lock_released: mutable bool = false
+            catch release_file_lock_at(lease, parent_fd, Toolchain::COMPILATION_DATABASE_LOCK_LEAF, Toolchain::COMPILATION_DATABASE_OWNER, FileLockMode.Exclusive):
+                ok status:
+                    lock_released <- status
+                error failure:
+                    _ = failure
+            directory_closed: bool = elisascript_posix_close(parent_fd) == 0
+            arena_free(arena)
+
+            if publication_uncertain:
+                print("target usage build: compilation database publication outcome remains uncertain; preserving stage")
+                return false
+            if not lock_released or not directory_closed:
+                print("target usage build: unable to confirm compilation database publication resources were released")
+                return false
+            if not publication_ok:
+                print("target usage build: unable to publish compilation database")
+                return false
+            return true
 
 
     public:

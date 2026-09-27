@@ -30,13 +30,17 @@ existing absolute empty non-symlink build directory outside the repository.
 No command is passed through a shell.
 Before execution it selects the three compiler actions from that same validated
 plan, renders their exact tokenized argv into bounded `compile_commands.json`
-records, writes them to a same-directory staging path, verifies the complete
-byte count and regular-file shape, then publishes the database with an atomic
-rename. Short-write and rename failures attempt to clean the stage only if it
-still appears as a regular non-symlink file; the launcher also rejects a
-successful candidate run that leaves the stage behind, and both routes must
-publish `compile_commands.json` as a regular non-symlink file. Archive, link,
-and run actions are intentionally excluded from the translation-unit database.
+records, then publishes them through the shared descriptor-relative atomic-file
+adapter. It holds a persistent private exclusive lock, requires the destination
+to be absent, creates a private sibling stage exclusively, proves the stage's
+identity while writing and sealing, compares exact bytes, renames relative to
+the retained directory descriptor, and syncs the directory. An ambiguous
+rename is reconciled before retry or cleanup; an unresolved outcome preserves
+the stage. The launcher rejects symlink or non-regular database outputs and a
+successful candidate run that leaves the stage behind. Archive, link, and run
+actions are intentionally excluded from the translation-unit database. The
+advisory lock coordinates cooperating writers; the adapter does not claim to
+exclude arbitrary non-cooperating mutation of the same directory.
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
