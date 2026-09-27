@@ -10,6 +10,7 @@ repo_dir=$(cd "$script_dir/.." && pwd -P)
 runner="${1:-$repo_dir/src/ir/runner.elisa}"
 candidate="$script_dir/check_diagnostic_snapshot.elisascript"
 bounded_reader="$repo_dir/src/runtime/bounded_text_posix.elisa"
+parity_launcher="$repo_dir/test/script_parity/diagnostic_snapshot_launcher_test.elisascript"
 
 if (( $# > 1 )); then
     echo "usage: diagnostic snapshot audit [runner-source]" >&2
@@ -18,6 +19,7 @@ fi
 
 [[ -f "$candidate" ]] || { echo "diagnostic snapshot audit: missing Elisascript candidate" >&2; exit 1; }
 [[ -f "$bounded_reader" ]] || { echo "diagnostic snapshot audit: missing shared bounded text reader" >&2; exit 1; }
+[[ -f "$parity_launcher" ]] || { echo "diagnostic snapshot audit: missing process parity launcher" >&2; exit 1; }
 rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use shared bounded text reader" >&2; exit 1; }
 rg -Fq 'EsBoundedText::read_utf8(input_path, Limits::SOURCE_BYTES)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use bounded UTF-8 read" >&2; exit 1; }
 rg -Fq 'if fields.count >= Limits::FIELDS:' "$candidate" || { echo "diagnostic snapshot audit: candidate does not bound field admission" >&2; exit 1; }
@@ -27,6 +29,12 @@ for required in 'MAX_BYTES: usize = 16777216' 'maximum_bytes - bytes.count' 'pro
 done
 if rg -Fq 'read_text(' "$candidate" "$bounded_reader"; then
     echo "diagnostic snapshot audit: unbounded read_text API is forbidden" >&2
+    exit 1
+fi
+rg -Fq 'include "../../src/runtime/bounded_text_posix.elisa"' "$parity_launcher" || { echo "diagnostic snapshot audit: parity launcher does not import shared bounded reader" >&2; exit 1; }
+rg -Fq 'EsBoundedText::read_utf8(source_path, Commands::FIXTURE_SOURCE_BYTES)' "$parity_launcher" || { echo "diagnostic snapshot audit: generated-boundary fixture source is not read within its ceiling" >&2; exit 1; }
+if rg -Fq 'read_text(source_path)' "$parity_launcher"; then
+    echo "diagnostic snapshot audit: parity launcher reads fixture source without a bound" >&2
     exit 1
 fi
 
