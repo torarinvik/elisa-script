@@ -798,6 +798,10 @@ dumps from `-fdump-*`, `--dump=...`, or `-da`, explicit `-fprofile-note`
 `.gcno` output, file-targeted `-fopt-info`, and coverage notes from
 `-ftest-coverage` or `--coverage`/`-coverage`. GCC `-fopt-info` forms directed
 to `stderr`, `stdout`, or `-` remain projectable.
+Compiler plugin loading is also rejected: GCC `-fplugin`/`-fplugin-arg-*`,
+Clang `-fplugin`/`-fpass-plugin`, and cc1 plugin loading forwarded through
+`-Xclang`. Since such dynamically loaded code can emit opaque extra files, its
+outputs cannot be proven graph-owned by this projection.
 It also refuses Clang's unmodeled module-dependency directory, module cache
 and user module-build paths, index-store and index-unit outputs, symbol-graph,
 dynamic-debugging temporary, and crash-reproducer outputs; those can produce
