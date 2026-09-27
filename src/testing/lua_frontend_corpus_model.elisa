@@ -1,0 +1,488 @@
+# Bounded, host-neutral index for the Lua frontend differential corpus.
+#
+# The filesystem adapter supplies canonical absolute paths, bounded source
+# views, and lstat facts. This model validates and orders those facts before a
+# build plan can be created. Returned path/name/family views borrow the
+# caller's path storage, which must remain alive and unchanged; source views
+# are consumed during admission and are not retained in the index.
+
+module EsLuaFrontendCorpus:
+    public:
+        const module Limits:
+            CASES: usize = 65536
+            PATH_BYTES: usize = 4096
+            TOTAL_PATH_BYTES: usize = 16777216
+            SOURCE_BYTES: usize = 16777216
+            TOTAL_SOURCE_BYTES: usize = 67108864
+            FINGERPRINTS_PER_CASE: usize = 4
+            FINGERPRINT_VALUE_BYTES: usize = 128
+
+
+        const enum LuaFrontendFingerprintMode of u8:
+            Environment
+            Closure
+            Label
+            Analysis
+
+
+        struct LuaFrontendFingerprint:
+            mode: LuaFrontendFingerprintMode = LuaFrontendFingerprintMode.Environment
+            value: mutable i64 = 0
+
+
+        struct LuaFrontendCorpusFileInput:
+            path: sview = ""
+            source: sview = ""
+            regular_file: bool = false
+            symbolic_link: bool = false
+
+
+        struct LuaFrontendCorpusCase:
+            path: sview = ""
+            family: sview = ""
+            name: sview = ""
+            expected_accept: bool = false
+            expected_fingerprints: darray[LuaFrontendFingerprint] = []
+
+
+        struct LuaFrontendCorpusIndex:
+            cases: darray[LuaFrontendCorpusCase] = []
+            total_path_bytes: usize = 0
+            total_source_bytes: usize = 0
+
+
+        error LuaFrontendCorpusError:
+            CaseLimitExceeded
+            PathTooLong
+            TotalPathBytesExceeded
+            InvalidPath
+            PathOutsideRoot
+            PathTypeInvalid
+            SourceTooLarge
+            TotalSourceBytesExceeded
+            InvalidUtf8
+            InvalidCaseName
+            InvalidFingerprintAnnotation
+            UnsupportedFingerprintMode
+            InvalidFingerprintInteger
+            FingerprintIntegerOverflow
+            FingerprintValueTooLong
+            FingerprintCountExceeded
+            MissingRequiredFingerprint
+            DuplicatePath
+
+
+    private:
+        const module Names:
+            ANNOTATION_PREFIX: sview = "-- elisacore-"
+            FINGERPRINT_SUFFIX: sview = "-fp"
+            ACCEPT_PREFIX: sview = "accept_"
+            REJECT_PREFIX: sview = "reject_"
+            LUA_SUFFIX: sview = ".lua"
+            ENVIRONMENT: sview = "env"
+            CLOSURE: sview = "closure"
+            LABEL: sview = "label"
+            ANALYSIS: sview = "analysis"
+
+
+        const enum PathOrder of u8:
+            Before
+            Equal
+            After
+
+
+        const enum IntegerParseState of u8:
+            Start
+            Sign
+            Digits
+            Separator
+
+
+        struct ByteRange:
+            start: usize = 0
+            end: usize = 0
+
+
+        def lua_frontend_utf8_decode(value: sview, cursor: mutable usize&, codepoint: mutable u32&) -> void error[LuaFrontendCorpusError]:
+            raise LuaFrontendCorpusError.InvalidUtf8 if cursor >= sview_len(value)
+            first: u8 = sview_at(value, cursor)
+            width: mutable usize = 1
+            if first <= 127u8:
+                codepoint <- first.u32()
+            elif first >= 194u8 and first <= 223u8 and sview_len(value) - cursor >= 2:
+                second: u8 = sview_at(value, cursor + 1)
+                raise LuaFrontendCorpusError.InvalidUtf8 if second < 128u8 or second > 191u8
+                codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                width <- 2
+            elif first >= 224u8 and first <= 239u8 and sview_len(value) - cursor >= 3:
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                raise LuaFrontendCorpusError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8
+                codepoint <- ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                raise LuaFrontendCorpusError.InvalidUtf8 if codepoint < 2048u32 or codepoint >= 55296u32 and codepoint <= 57343u32
+                width <- 3
+            elif first >= 240u8 and first <= 244u8 and sview_len(value) - cursor >= 4:
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                fourth: u8 = sview_at(value, cursor + 3)
+                raise LuaFrontendCorpusError.InvalidUtf8 if second < 128u8 or second > 191u8 or third < 128u8 or third > 191u8 or fourth < 128u8 or fourth > 191u8
+                codepoint <- ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+                raise LuaFrontendCorpusError.InvalidUtf8 if codepoint < 65536u32 or codepoint > 1114111u32
+                width <- 4
+            else:
+                raise LuaFrontendCorpusError.InvalidUtf8
+            cursor <- cursor + width
+
+
+        def lua_frontend_utf8_valid(value: sview) -> bool error[LuaFrontendCorpusError]:
+            cursor: mutable usize = 0
+            while cursor < sview_len(value) |value, cursor|:
+                codepoint: mutable u32 = 0
+                try lua_frontend_utf8_decode(value, cursor, codepoint)
+            return true
+
+
+        def lua_frontend_unicode_whitespace(codepoint: u32) -> bool:
+            return true if codepoint >= 9u32 and codepoint <= 13u32
+            return true if codepoint >= 28u32 and codepoint <= 32u32
+            return true if codepoint == 133u32 or codepoint == 160u32 or codepoint == 5760u32
+            return true if codepoint >= 8192u32 and codepoint <= 8202u32
+            return true if codepoint == 8232u32 or codepoint == 8233u32 or codepoint == 8239u32 or codepoint == 8287u32 or codepoint == 12288u32
+            return false
+
+
+        def lua_frontend_trim_range(value: sview, start: usize, end: usize) -> ByteRange error[LuaFrontendCorpusError]:
+            cursor: mutable usize = start
+            first_nonspace: mutable usize = end
+            last_nonspace_end: mutable usize = start
+            found: mutable bool = false
+            while cursor < end |value, cursor, first_nonspace, last_nonspace_end, found|:
+                character_start: usize = cursor
+                codepoint: mutable u32 = 0
+                try lua_frontend_utf8_decode(value, cursor, codepoint)
+                if not lua_frontend_unicode_whitespace(codepoint):
+                    first_nonspace <- character_start if not found
+                    last_nonspace_end <- cursor
+                    found <- true
+            return ByteRange{start: end, end: end} if not found
+            return ByteRange{start: first_nonspace, end: last_nonspace_end}
+
+
+        def lua_frontend_starts_with(value: sview, prefix: sview) -> bool:
+            return false if sview_len(prefix) > sview_len(value)
+            return string_view_slice(value, 0, sview_len(prefix).i64()) == prefix
+
+
+        def lua_frontend_line_break(codepoint: u32) -> bool:
+            return codepoint == 10u32 or codepoint == 13u32 or codepoint == 11u32 or codepoint == 12u32 or codepoint >= 28u32 and codepoint <= 30u32 or codepoint == 133u32 or codepoint == 8232u32 or codepoint == 8233u32
+
+
+        def lua_frontend_fingerprint_mode(name: sview) -> LuaFrontendFingerprintMode error[LuaFrontendCorpusError]:
+            return LuaFrontendFingerprintMode.Environment if name == Names::ENVIRONMENT
+            return LuaFrontendFingerprintMode.Closure if name == Names::CLOSURE
+            return LuaFrontendFingerprintMode.Label if name == Names::LABEL
+            return LuaFrontendFingerprintMode.Analysis if name == Names::ANALYSIS
+            raise LuaFrontendCorpusError.UnsupportedFingerprintMode
+
+
+        # The executable replacement profile deliberately stores fingerprints
+        # as signed i64 and accepts ASCII decimal digits with Python-compatible
+        # sign/underscore placement. Python int() is arbitrary-precision and
+        # accepts Unicode decimal digits; those wider forms are typed input
+        # errors here rather than silently truncated values.
+        def lua_frontend_parse_fingerprint_integer(value: sview) -> i64 error[LuaFrontendCorpusError]:
+            raise LuaFrontendCorpusError.FingerprintValueTooLong if sview_len(value) > Limits::FINGERPRINT_VALUE_BYTES
+            raise LuaFrontendCorpusError.InvalidFingerprintInteger if sview_len(value) == 0
+            cursor: mutable usize = 0
+            negative: mutable bool = false
+            state: mutable IntegerParseState = IntegerParseState.Start
+            if sview_at(value, 0) == 43u8 or sview_at(value, 0) == 45u8:
+                negative <- sview_at(value, 0) == 45u8
+                state <- IntegerParseState.Sign
+                cursor <- 1
+            magnitude: mutable u64 = 0
+            digit_limit: u64 = 9223372036854775807u64 if not negative else 9223372036854775808u64
+            saw_digit: mutable bool = false
+            while cursor < sview_len(value) |value, cursor, negative, state, magnitude, digit_limit, saw_digit|:
+                byte: u8 = sview_at(value, cursor)
+                if byte >= 48u8 and byte <= 57u8:
+                    digit: u64 = (byte - 48u8).u64()
+                    raise LuaFrontendCorpusError.FingerprintIntegerOverflow if magnitude > (digit_limit - digit) / 10u64
+                    magnitude <- magnitude * 10u64 + digit
+                    saw_digit <- true
+                    state <- IntegerParseState.Digits
+                elif byte == 95u8 and state == IntegerParseState.Digits:
+                    state <- IntegerParseState.Separator
+                else:
+                    raise LuaFrontendCorpusError.InvalidFingerprintInteger
+                cursor <- cursor + 1
+            raise LuaFrontendCorpusError.InvalidFingerprintInteger if not saw_digit or state == IntegerParseState.Sign or state == IntegerParseState.Separator
+            if negative and magnitude == 9223372036854775808u64:
+                return -9223372036854775807i64 - 1i64
+            return 0i64 - magnitude.i64() if negative
+            return magnitude.i64()
+
+
+        def lua_frontend_fingerprint_upsert(values: mutable darray[LuaFrontendFingerprint]&, fingerprint: LuaFrontendFingerprint) -> void error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<values.count |values, fingerprint|:
+                if values[index].mode == fingerprint.mode:
+                    values[index].value <- fingerprint.value
+                    return
+            raise LuaFrontendCorpusError.FingerprintCountExceeded if values.count >= Limits::FINGERPRINTS_PER_CASE
+            values.push(fingerprint)
+
+
+        def lua_frontend_parse_annotation_line(source: sview, start: usize, end: usize, fingerprints: mutable darray[LuaFrontendFingerprint]&, leading: mutable bool&) -> void error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
+            return if not leading
+            trimmed: ByteRange = try lua_frontend_trim_range(source, start, end)
+            return if trimmed.start == trimmed.end
+            line: sview = string_view_slice(source, trimmed.start.i64(), trimmed.end.i64())
+            if not lua_frontend_starts_with(line, "--"):
+                leading <- false
+                return
+            return if not lua_frontend_starts_with(line, Names::ANNOTATION_PREFIX)
+
+            payload_start: usize = trimmed.start + sview_len(Names::ANNOTATION_PREFIX)
+            separator: mutable usize = trimmed.end
+            for offset in payload_start..<trimmed.end |source, separator|:
+                if sview_at(source, offset) == 58u8:
+                    separator <- offset
+                    break
+            raise LuaFrontendCorpusError.InvalidFingerprintAnnotation if separator == trimmed.end
+
+            mode_range: ByteRange = try lua_frontend_trim_range(source, payload_start, separator)
+            mode_name: mutable sview = string_view_slice(source, mode_range.start.i64(), mode_range.end.i64())
+            if sview_len(mode_name) >= sview_len(Names::FINGERPRINT_SUFFIX) and string_view_slice(mode_name, (sview_len(mode_name) - sview_len(Names::FINGERPRINT_SUFFIX)).i64(), sview_len(mode_name).i64()) == Names::FINGERPRINT_SUFFIX:
+                mode_name <- string_view_slice(mode_name, 0, (sview_len(mode_name) - sview_len(Names::FINGERPRINT_SUFFIX)).i64())
+            mode: LuaFrontendFingerprintMode = try lua_frontend_fingerprint_mode(mode_name)
+            value_range: ByteRange = try lua_frontend_trim_range(source, separator + 1, trimmed.end)
+            value_text: sview = string_view_slice(source, value_range.start.i64(), value_range.end.i64())
+            fingerprint: LuaFrontendFingerprint = LuaFrontendFingerprint{mode: mode, value: try lua_frontend_parse_fingerprint_integer(value_text)}
+            try lua_frontend_fingerprint_upsert(fingerprints, fingerprint)
+
+
+        def lua_frontend_parse_fingerprints(source: sview) -> darray[LuaFrontendFingerprint] error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
+            try lua_frontend_utf8_valid(source)
+            fingerprints: mutable darray[LuaFrontendFingerprint] = []
+            leading: mutable bool = true
+            line_start: mutable usize = 0
+            cursor: mutable usize = 0
+            while cursor < sview_len(source) |source, fingerprints, leading, line_start, cursor|:
+                line_end: usize = cursor
+                codepoint: mutable u32 = 0
+                try lua_frontend_utf8_decode(source, cursor, codepoint)
+                if lua_frontend_line_break(codepoint):
+                    try lua_frontend_parse_annotation_line(source, line_start, line_end, fingerprints, leading)
+                    cursor <- cursor + 1 if codepoint == 13u32 and cursor < sview_len(source) and sview_at(source, cursor) == 10u8
+                    line_start <- cursor
+            if line_start < sview_len(source):
+                try lua_frontend_parse_annotation_line(source, line_start, sview_len(source), fingerprints, leading)
+            return fingerprints
+
+
+        def lua_frontend_required_fingerprints(family: sview, expected_accept: bool) -> darray[LuaFrontendFingerprintMode] can[Memory.Allocate, Abort.Panic]:
+            required: mutable darray[LuaFrontendFingerprintMode] = []
+            return required if not expected_accept
+            if family == "labels_gotos":
+                required.push(LuaFrontendFingerprintMode.Label)
+                required.push(LuaFrontendFingerprintMode.Analysis)
+            elif family == "functions_closures" or family == "globals":
+                required.push(LuaFrontendFingerprintMode.Environment)
+                required.push(LuaFrontendFingerprintMode.Closure)
+                required.push(LuaFrontendFingerprintMode.Analysis)
+            elif family == "control_flow" or family == "numerics" or family == "operators" or family == "strings_comments" or family == "tables_calls":
+                required.push(LuaFrontendFingerprintMode.Analysis)
+            return required
+
+
+        def lua_frontend_has_fingerprint(values: darray[LuaFrontendFingerprint], mode: LuaFrontendFingerprintMode) -> bool:
+            for fingerprint in values |mode|:
+                return true if fingerprint.mode == mode
+            return false
+
+
+        def lua_frontend_component_order(left: sview, right: sview) -> PathOrder:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for offset in 0..<common |left, right|:
+                return PathOrder.Before if sview_at(left, offset) < sview_at(right, offset)
+                return PathOrder.After if sview_at(left, offset) > sview_at(right, offset)
+            return PathOrder.Before if left_length < right_length
+            return PathOrder.After if left_length > right_length
+            return PathOrder.Equal
+
+
+        def lua_frontend_path_order(left: sview, right: sview) -> PathOrder:
+            left_cursor: mutable usize = 0
+            right_cursor: mutable usize = 0
+            while left_cursor < sview_len(left) and right_cursor < sview_len(right) |left, right, left_cursor, right_cursor|:
+                left_end: mutable usize = left_cursor
+                right_end: mutable usize = right_cursor
+                while left_end < sview_len(left) and sview_at(left, left_end) != 47u8 |left, left_end|:
+                    left_end <- left_end + 1
+                while right_end < sview_len(right) and sview_at(right, right_end) != 47u8 |right, right_end|:
+                    right_end <- right_end + 1
+                left_component: sview = string_view_slice(left, left_cursor.i64(), left_end.i64())
+                right_component: sview = string_view_slice(right, right_cursor.i64(), right_end.i64())
+                component_order: PathOrder = lua_frontend_component_order(left_component, right_component)
+                return component_order if component_order != PathOrder.Equal
+                left_cursor <- left_end + 1 if left_end < sview_len(left)
+                left_cursor <- sview_len(left) if left_end == sview_len(left)
+                right_cursor <- right_end + 1 if right_end < sview_len(right)
+                right_cursor <- sview_len(right) if right_end == sview_len(right)
+            return PathOrder.Before if left_cursor == sview_len(left) and right_cursor != sview_len(right)
+            return PathOrder.After if right_cursor == sview_len(right) and left_cursor != sview_len(left)
+            return PathOrder.Equal
+
+
+        def lua_frontend_case_order(left: LuaFrontendCorpusCase, right: LuaFrontendCorpusCase) -> PathOrder:
+            return lua_frontend_path_order(left.path, right.path)
+
+
+        def lua_frontend_sort_cases(cases: mutable darray[LuaFrontendCorpusCase]&, scratch: mutable darray[LuaFrontendCorpusCase]&) -> void:
+            width: mutable usize = 1
+            while width < cases.count |cases, scratch, width|:
+                start: mutable usize = 0
+                while start < cases.count |cases, scratch, width, start|:
+                    middle: usize = start + width if width < cases.count - start else cases.count
+                    end: usize = middle + width if width < cases.count - middle else cases.count
+                    left: mutable usize = start
+                    right: mutable usize = middle
+                    destination: mutable usize = start
+                    while left < middle or right < end |cases, scratch, width, start, middle, end, left, right, destination|:
+                        if right >= end:
+                            scratch[destination] <- cases[left]
+                            left <- left + 1
+                        elif left >= middle:
+                            scratch[destination] <- cases[right]
+                            right <- right + 1
+                        elif lua_frontend_case_order(cases[left], cases[right]) != PathOrder.After:
+                            scratch[destination] <- cases[left]
+                            left <- left + 1
+                        else:
+                            scratch[destination] <- cases[right]
+                            right <- right + 1
+                        destination <- destination + 1
+                    start <- end
+                for index in 0..<cases.count |cases, scratch|:
+                    cases[index] <- scratch[index]
+                width <- cases.count if width > cases.count / 2 else width * 2
+
+
+        def lua_frontend_path_component_sequence_valid(path: sview, start: usize) -> bool:
+            segment_start: mutable usize = start
+            index: mutable usize = start
+            while index <= sview_len(path) |path, segment_start, index|:
+                at_end: bool = index == sview_len(path)
+                separator: bool = not at_end and sview_at(path, index) == 47u8
+                if at_end or separator:
+                    return false if index == segment_start
+                    segment: sview = string_view_slice(path, segment_start.i64(), index.i64())
+                    return false if segment == "." or segment == ".."
+                    segment_start <- index + 1
+                index <- index + 1
+            return true
+
+
+        def lua_frontend_path_controls_valid(path: sview) -> bool:
+            for index in 0..<sview_len(path) |path|:
+                byte: u8 = sview_at(path, index)
+                return false if byte < 32u8 or byte == 92u8 or byte == 127u8
+            return true
+
+
+        def lua_frontend_absolute_path_valid(path: sview) -> bool error[LuaFrontendCorpusError]:
+            return false if sview_len(path) == 0 or sview_len(path) > Limits::PATH_BYTES
+            return false if sview_at(path, 0) != 47u8 or not lua_frontend_path_controls_valid(path)
+            try lua_frontend_utf8_valid(path)
+            return true if path == "/"
+            return false if sview_at(path, sview_len(path) - 1) == 47u8
+            return lua_frontend_path_component_sequence_valid(path, 1)
+
+
+        def lua_frontend_path_within_root(root: sview, path: sview) -> bool:
+            return false if path == root
+            return false if not lua_frontend_starts_with(path, root)
+            return sview_len(path) > 1 if root == "/"
+            return false if sview_len(path) <= sview_len(root) + 1
+            return sview_at(path, sview_len(root)) == 47u8
+
+
+        def lua_frontend_root_name(root: sview) -> sview:
+            return "" if root == "/"
+            separator: mutable usize = 0
+            for index in 1..<sview_len(root) |root, separator|:
+                separator <- index if sview_at(root, index) == 47u8
+            return string_view_slice(root, (separator + 1).i64(), sview_len(root).i64())
+
+
+        def lua_frontend_case_from_input(root: sview, input: LuaFrontendCorpusFileInput) -> LuaFrontendCorpusCase error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendCorpusError.PathTypeInvalid if not input.regular_file or input.symbolic_link
+            raise LuaFrontendCorpusError.PathTooLong if sview_len(input.path) > Limits::PATH_BYTES
+            raise LuaFrontendCorpusError.PathOutsideRoot if not lua_frontend_path_within_root(root, input.path)
+            raise LuaFrontendCorpusError.InvalidPath if not lua_frontend_absolute_path_valid(input.path)
+            relative_start: usize = 1 if root == "/" else sview_len(root) + 1
+            raise LuaFrontendCorpusError.InvalidPath if not lua_frontend_path_component_sequence_valid(input.path, relative_start)
+            raise LuaFrontendCorpusError.InvalidPath if sview_len(input.path) < 4
+            raise LuaFrontendCorpusError.InvalidPath if string_view_slice(input.path, (sview_len(input.path) - 4).i64(), sview_len(input.path).i64()) != Names::LUA_SUFFIX
+            raise LuaFrontendCorpusError.SourceTooLarge if sview_len(input.source) > Limits::SOURCE_BYTES
+
+            basename_start: mutable usize = relative_start
+            parent_separator: mutable usize = sview_len(input.path)
+            for index in relative_start..<sview_len(input.path) |input, basename_start, parent_separator|:
+                if sview_at(input.path, index) == 47u8:
+                    parent_separator <- index
+                    basename_start <- index + 1
+            basename: sview = string_view_slice(input.path, basename_start.i64(), sview_len(input.path).i64())
+            stem: sview = string_view_slice(basename, 0, (sview_len(basename) - sview_len(Names::LUA_SUFFIX)).i64())
+            expected_accept: mutable bool = false
+            if lua_frontend_starts_with(stem, Names::ACCEPT_PREFIX):
+                expected_accept <- true
+            elif not lua_frontend_starts_with(stem, Names::REJECT_PREFIX):
+                raise LuaFrontendCorpusError.InvalidCaseName
+
+            family: mutable sview = lua_frontend_root_name(root)
+            if parent_separator < sview_len(input.path):
+                family_start: mutable usize = relative_start
+                for index in relative_start..<parent_separator |input, family_start|:
+                    family_start <- index + 1 if sview_at(input.path, index) == 47u8
+                family <- string_view_slice(input.path, family_start.i64(), parent_separator.i64())
+
+            fingerprints: darray[LuaFrontendFingerprint] = try lua_frontend_parse_fingerprints(input.source)
+            required: darray[LuaFrontendFingerprintMode] = lua_frontend_required_fingerprints(family, expected_accept)
+            for mode in required |fingerprints|:
+                raise LuaFrontendCorpusError.MissingRequiredFingerprint if not lua_frontend_has_fingerprint(fingerprints, mode)
+            return LuaFrontendCorpusCase{path: input.path, family: family, name: basename, expected_accept: expected_accept, expected_fingerprints: fingerprints}
+
+
+    public:
+        # `root` and each path are canonical POSIX absolute paths from PathFacts.
+        # Each input also carries lstat facts; symlinks are never followed as
+        # corpus entries. The result borrows paths from the input vector.
+        def index_lua_frontend_corpus(root: sview, files: darray[LuaFrontendCorpusFileInput]) -> LuaFrontendCorpusIndex error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendCorpusError.CaseLimitExceeded if files.count > Limits::CASES
+            raise LuaFrontendCorpusError.PathTooLong if sview_len(root) > Limits::PATH_BYTES
+            raise LuaFrontendCorpusError.InvalidPath if not lua_frontend_absolute_path_valid(root)
+            cases: mutable darray[LuaFrontendCorpusCase] = []
+            scratch: mutable darray[LuaFrontendCorpusCase] = []
+            total_path_bytes: mutable usize = 0
+            total_source_bytes: mutable usize = 0
+            for input in files |root, cases, scratch, total_path_bytes, total_source_bytes|:
+                path_bytes: usize = sview_len(input.path)
+                source_bytes: usize = sview_len(input.source)
+                raise LuaFrontendCorpusError.PathTooLong if path_bytes > Limits::PATH_BYTES
+                raise LuaFrontendCorpusError.TotalPathBytesExceeded if path_bytes > Limits::TOTAL_PATH_BYTES - total_path_bytes
+                raise LuaFrontendCorpusError.SourceTooLarge if source_bytes > Limits::SOURCE_BYTES
+                raise LuaFrontendCorpusError.TotalSourceBytesExceeded if source_bytes > Limits::TOTAL_SOURCE_BYTES - total_source_bytes
+                total_path_bytes <- total_path_bytes + path_bytes
+                total_source_bytes <- total_source_bytes + source_bytes
+                cases.push(try lua_frontend_case_from_input(root, input))
+
+            for index in 0..<cases.count |cases, scratch|:
+                scratch.push(cases[index])
+            lua_frontend_sort_cases(cases, scratch)
+            if cases.count > 1:
+                for index in 1..<cases.count |cases|:
+                    raise LuaFrontendCorpusError.DuplicatePath if cases[index - 1].path == cases[index].path
+            return LuaFrontendCorpusIndex{cases: cases, total_path_bytes: total_path_bytes, total_source_bytes: total_source_bytes}

@@ -48,6 +48,25 @@ test source is `test/runtime/lua_frontend_arguments_test.elisa`. This parser is
 not yet connected to a launcher or the W05 workflow, and its tests have not
 been compiled or run; it is implementation source, not parity evidence.
 
+`EsLuaFrontendCorpus` now supplies the host-neutral index seam. Its inputs are
+canonical absolute file paths, bounded source views, and injected regular-file
+and symlink facts from a future `lstat` adapter. It validates containment under
+the corpus root, `.lua` case prefixes, UTF-8 source, leading annotations,
+family-required modes, duplicate paths, and Python `Path` component ordering
+before producing any index. The current profile caps the index at 65,536
+cases, 4,096 bytes per path, 16 MiB aggregate path text, 16 MiB per source,
+and 64 MiB aggregate source text. The source test is
+`test/runtime/lua_frontend_corpus_model_test.elisa`; neither model's runtime
+tests have been compiled or run.
+
+For annotation values, the Elisascript profile accepts signed ASCII decimal
+`i64` values (including Python-compatible single underscores between digits)
+with a 128-byte ceiling. Python `int()` accepts arbitrary precision and
+Unicode decimal digits, so those wider forms are explicit typed corpus-input
+errors rather than truncated values. The pinned 27-case corpus uses values
+inside this profile. Whitespace trimming and line splitting cover Python's
+Unicode whitespace and `splitlines()` boundaries.
+
 The four process inputs are typed values, not a shell command:
 
 ```text
@@ -58,11 +77,12 @@ keep_temp: boolean
 json_out: optional bounded path
 ```
 
-The initial replacement profile admits at most 4,096 bytes per path, 64 bytes
-for `opt_level`, one million corpus cases, 64 MiB of retained report text, and
-64 MiB per captured child stream. It rejects embedded NULs and arithmetic
-overflow before host conversion. A finite deadline, process-group ownership,
-RSS ceiling, and output ceiling are mandatory launcher inputs; they are not
+The replacement profile admits at most 4,096 bytes per path, 64 bytes for
+`opt_level`, 65,536 corpus cases, 16 MiB aggregate path text, 16 MiB per
+source, 64 MiB aggregate source text, 64 MiB retained report text, and 64 MiB
+per captured child stream. It rejects embedded NULs and arithmetic overflow
+before host conversion. A finite deadline, process-group ownership, RSS
+ceiling, and output ceiling are mandatory launcher inputs; they are not
 delegated to an unbounded Python `subprocess.run` call.
 
 ## Reference build graph and child argv
@@ -98,7 +118,7 @@ typed infrastructure failure and is never converted into a parser rejection.
 
 ## Corpus and per-case behavior
 
-`iter_cases` walks `*.lua` in lexical path order. A file must begin with
+`iter_cases` walks `*.lua` in `pathlib.Path` component-lexical order. A file must begin with
 `accept_` or `reject_`; any other name is an input error. The parent directory
 is the family. Leading comment lines may carry integer annotations of the form
 `-- elisacore-<mode>-fp: <integer>`, where `<mode>` is `env`, `closure`,
