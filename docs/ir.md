@@ -777,10 +777,15 @@ distinguish an up-to-date manifest from one that was newly replaced.
 
 `EsBuildExecutor::execute_build_graph_serial_with_outputs` is the fresh-build
 host route. It requires every declared absolute output path to be absent before
-the first command, then verifies that each output path resolves to a file
-before admitting the producer's success transition. A pre-existing filesystem
-entry, including a symlink, is rejected as `OutputAlreadyPresent` while the
-graph remains planned; callers must clean prior outputs explicitly.
+the first command, rechecks the current node's outputs immediately before
+launch, and verifies the node's outputs resolve to files before admitting its
+success transition. A later node whose output appeared before its producer's
+dispatch is rejected as `PrematureOutput`, rather than receiving false output
+credit from an earlier action.
+A pre-existing filesystem entry, including a symlink, is rejected as
+`OutputAlreadyPresent` while the graph remains planned; callers must clean
+prior outputs explicitly. These checks are observations, not an atomic
+filesystem reservation, so they do not exclude arbitrary concurrent mutation.
 Incremental execution has a separate observation/cache contract and does not
 inherit this fresh-output precondition.
 

@@ -344,6 +344,7 @@ for declaration in \
     'const enum BuildExecutionFailureKind of u8:' \
     'BuildExecutionFailureKind.Invocation' \
     'BuildExecutionFailureKind.NonzeroExit' \
+    'BuildExecutionFailureKind.PrematureOutput' \
     'struct BuildExecutionNodeResult:' \
     'struct BuildExecutionResult:' \
     'error BuildExecutionError:' \
@@ -372,6 +373,8 @@ for boundary in \
     'build_executor_incremental_execution_result_matches(' \
     'BuildGraphEvent.CacheHit' \
     'BuildGraphEvent.NodeFailure' \
+    'premature_output' \
+    'build_executor_first_present_output(output_sets[node_index])' \
     'LOG_BYTES - graph.log_bytes'; do
     rg -Fq "$boundary" "$executor_model"
 done
@@ -408,6 +411,9 @@ rg -Fq 'failure == BuildExecutionError.UnsupportedCommand' "$executor_fixture"
 rg -Fq 'marker_absent: bool = not is_file(marker)' "$executor_fixture"
 rg -Fq 'graph.state == BuildGraphState.Planned' "$executor_fixture"
 rg -Fq 'build_executor_rejects_preexisting_declared_output_before_launch' "$executor_fixture"
+rg -Fq 'build_executor_rejects_output_created_by_an_earlier_node' "$executor_fixture"
+rg -Fq 'BuildExecutionFailureKind.PrematureOutput' "$executor_fixture"
+rg -Fq 'execution.nodes[1].premature_output == future_output_text' "$executor_fixture"
 rg -Fq 'failure == BuildExecutionError.OutputAlreadyPresent' "$executor_fixture"
 rg -Fq 'stale_bytes_preserved' "$executor_fixture"
 rg -Fq 'build_executor_nonzero_exit_cancels_dependent_launches' "$executor_fixture"
