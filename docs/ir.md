@@ -747,8 +747,9 @@ separate strings in the standard `arguments` array, rather than attempting to
 quote shell command text. Paths must be absolute, bounded UTF-8; action indexes
 must be unique and in graph order; the caller may select one declared object
 output even when the action also owns byproducts. Compile actions must contain
-one unambiguous `-c source` pair; any `-o` option must occur once and have a
-nonempty operand declared in that action's output set, even when the optional
+one unambiguous `-c source` pair; each primary-output spelling (`-o file`,
+`-ofile`, `--output file`, or `--output=file`) must occur at most once and have
+a nonempty operand declared in that action's output set, even when the optional
 JSON `output` field is omitted. A selected output must also match that operand.
 JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
