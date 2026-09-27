@@ -547,7 +547,8 @@ returns an `InstallStageProof` binding the ordered receipts to the private
 effective-user-owned stage-root device/inode and each file's stable stamp.
 `create_install_stage_root_at` creates a caller-named exclusive sibling with
 mode `0700`, opens it without following links, binds its name to the opened
-directory, and returns an owned descriptor plus borrowed parent capability.
+directory, syncs the directory and parent entry, and returns an owned
+descriptor plus borrowed parent capability.
 It accepts only effective-user-owned or root-owned parents, and rejects
 group/world-writable non-sticky parents. Name collisions fail closed; the
 caller retains its candidate leaf for reconciling a post-create error.
@@ -575,14 +576,24 @@ bounded byte count, revalidates the source, applies the manifest mode, syncs the
 file and directory entries, and rechecks descriptor/name identity. Its byte
 count is not a staging proof: the caller must still run
 `verify_install_stage_at` to hash the staged bytes and verify exact tree
-closure. A failed copy can leave partial content in the private stage; safe
-recursive cleanup is not implemented yet, so the orchestration layer must not
-publish that stage.
+closure. A failed copy can leave partial content in the private stage, so the
+orchestrator must not publish that stage. `remove_install_stage_root` provides
+bounded iterative cleanup through no-follow directory capabilities, checks
+entry identity before removal, syncs directory changes, and removes the named
+private root only after its contents are gone. A cleanup failure may leave a
+partially emptied stage for retry; an interrupted unlink is reported as
+outcome-unknown and requires reconciling the retained root name before retry.
+Successful removal consumes the owned stage descriptor.
+The identity checks are point-in-time: portable `unlinkat` has no
+inode-conditional removal operation, so a same-user process that can mutate
+the relevant parent concurrently can still race a name replacement. The
+installer must serialize cleanup/publication with its directory lease when it
+needs that stronger guarantee.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
 remain `RollbackUncertain`. The tree scan is only a verifier: nested stage-tree
-cleanup, destination directory permission mapping, multi-artifact atomic
-replacement, recovery journal, and the end-to-end
+destination directory permission mapping, multi-artifact atomic replacement,
+recovery journal, and the end-to-end
 installation adapter remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across

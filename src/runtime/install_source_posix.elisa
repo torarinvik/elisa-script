@@ -1,9 +1,10 @@
-# Descriptor-relative verification of installation sources.
+# Descriptor-relative verification and staging of installation sources.
 #
 # This adapter binds an install manifest entry to bytes observed beneath an
 # already-open build-root capability. It rejects symlinked path components,
 # bounds the read, hashes the exact file contents, and returns the stable file
-# stamp needed by a later staging step to detect source replacement.
+# stamp needed by staging to detect source replacement. Staging and cleanup
+# likewise remain rooted in directory capabilities rather than ambient paths.
 
 module EsInstallSourcePosix:
     using EsBuildIncremental
@@ -129,6 +130,16 @@ module EsInstallSourcePosix:
             StageFileChanged
             StageFileSyncFailed(errno: i32)
             StageFileCloseFailed(status: int)
+            StageCleanupEntryLimitExceeded
+            StageCleanupDepthLimitExceeded
+            StageCleanupChanged
+            StageCleanupNameInvalid
+            StageCleanupReadFailed(errno: i32)
+            StageCleanupOpenFailed(errno: i32)
+            StageCleanupFailed(errno: i32)
+            StageCleanupOutcomeUnknown(errno: i32)
+            StageCleanupDirectoryCloseFailed
+            StageCleanupCloseFailed(status: int)
             ReceiptPathMismatch
             ReceiptCountMismatch
             ReceiptOrderMismatch
@@ -169,6 +180,14 @@ module EsInstallSourcePosix:
         struct InstallStageDirectoryFrame:
             directory: mutable heap void&?
             path_length: usize
+            interrupted: usize = 0
+
+
+        struct InstallStageCleanupFrame:
+            directory: mutable heap void&?
+            proof: InstallStageRootProof
+            parent_leaf_length: usize
+            parent_leaf: u8[256]
             interrupted: usize = 0
 
 
@@ -217,6 +236,27 @@ module EsInstallSourcePosix:
             Open
             Metadata
             Close
+
+
+        const enum InstallStageCleanupState of u8:
+            Walk
+            Complete
+            Failed
+
+
+        const enum InstallStageCleanupFailure of u8:
+            None
+            EntryLimit
+            DepthLimit
+            Changed
+            NameInvalid
+            Read
+            Open
+            Unlink
+            UnlinkUnknown
+            Sync
+            DirectoryClose
+            Metadata
 
 
         def install_source_stamp_equal(left: BuildIncrementalFileStamp, right: BuildIncrementalFileStamp) -> bool:
@@ -306,6 +346,17 @@ module EsInstallSourcePosix:
             for offset in 0..<length |path, buffer|:
                 byte: u8 = sview_at(path, start + offset)
                 return 0 if byte == 0u8 or byte == 47u8 or byte < 32u8 or byte == 127u8
+                buffer[offset] <- byte
+            buffer[length] <- 0u8
+            return length
+
+
+        def install_source_copy_cleanup_name(name: u8&, length: usize, buffer: mutable u8&) -> usize:
+            return 0 if length == 0 or length >= 256
+            return 0 if (length == 1 and name[0] == 46u8) or (length == 2 and name[0] == 46u8 and name[1] == 46u8)
+            for offset in 0..<length |name, buffer|:
+                byte: u8 = name[offset]
+                return 0 if byte == 0u8 or byte == 47u8
                 buffer[offset] <- byte
             buffer[length] <- 0u8
             return length
@@ -1371,3 +1422,290 @@ module EsInstallSourcePosix:
             cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
             _ = try install_source_require_stage_copy_cleanup(cleanup)
             return bytes_copied
+
+
+        # Remove an incomplete or rejected stage using only directory
+        # capabilities. A failure may leave a partially emptied private tree;
+        # the root handle remains available for an explicit retry unless the
+        # root name itself was successfully removed.
+        def remove_install_stage_root(handle: mutable InstallStageRootHandle&) -> bool error[InstallSourceError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(handle)
+            duplicate_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            duplicate_retries: mutable usize = 0
+            root_duplicate: mutable int = -1
+            while root_duplicate < 0:
+                root_duplicate <- elisascript_posix_openat(handle.descriptor, ".", duplicate_flags, 0u32)
+                if root_duplicate < 0:
+                    errno: mutable i32& = elisascript_posix_errno()
+                    if errno[0] == InstallSourceErrno::EINTR and duplicate_retries < Limits::EINTR_RETRIES:
+                        duplicate_retries <- duplicate_retries + 1
+                        continue
+                    raise InstallSourceError.StageCleanupOpenFailed(errno[0])
+
+            root_info: mutable ElisascriptStat = ElisascriptStat{}
+            if not install_source_stat_descriptor(root_duplicate, root_info):
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageCleanupCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageTreeMetadataFailed
+            if not install_source_stage_root_identity_matches(root_info, handle.proof) or root_info.user != install_source_effective_user() or (root_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY:
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageCleanupCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageCleanupChanged
+            root_stream: mutable heap void&? = elisascript_posix_fdopendir(root_duplicate)
+            if root_stream == null:
+                errno: mutable i32& = elisascript_posix_errno()
+                open_errno: i32 = errno[0]
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageCleanupCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageCleanupOpenFailed(open_errno)
+
+            frames: mutable InstallStageCleanupFrame[Limits::STAGE_WALK_DEPTH] = zeroed
+            root_leaf_storage: mutable u8[256] = zeroed
+            frames[0] <- InstallStageCleanupFrame{directory: root_stream, proof: handle.proof, parent_leaf_length: 0, parent_leaf: root_leaf_storage}
+            frame_count: mutable usize = 1
+            entries_seen: mutable usize = 0
+            failure: mutable InstallStageCleanupFailure = InstallStageCleanupFailure.None
+            failure_errno: mutable i32 = 0
+            cleanup_directory_close_failed: mutable bool = false
+            cleanup_close_status: mutable int = 0
+            state: mutable InstallStageCleanupState = InstallStageCleanupState.Walk
+
+            machine over state:
+                state Walk
+                start Walk
+
+                Walk, InstallStageCleanupState.Walk:
+                    if frame_count == 0:
+                        state <- InstallStageCleanupState.Complete
+                        -> Walk
+                    top: usize = frame_count - 1
+                    frame: InstallStageCleanupFrame = frames[top]
+                    if frame.directory == null:
+                        failure <- InstallStageCleanupFailure.Metadata
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    directory: mutable heap void& = frame.directory
+                    errno_pointer: mutable i32& = elisascript_posix_errno()
+                    errno_pointer[0] <- 0
+                    entry_option: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
+                    if entry_option == null:
+                        if errno_pointer[0] == InstallSourceErrno::EINTR and frame.interrupted < Limits::EINTR_RETRIES:
+                            frames[top].interrupted <- frame.interrupted + 1
+                            -> Walk
+                        if errno_pointer[0] != 0:
+                            failure <- InstallStageCleanupFailure.Read
+                            failure_errno <- errno_pointer[0]
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+
+                        closing: InstallStageCleanupFrame = frames[top]
+                        directory_fd: int = elisascript_posix_dirfd(directory)
+                        directory_info: mutable ElisascriptStat = ElisascriptStat{}
+                        if directory_fd < 0 or not install_source_stat_descriptor(directory_fd, directory_info):
+                            failure <- InstallStageCleanupFailure.Metadata
+                            state <- InstallStageCleanupState.Failed
+                        else:
+                            if not install_source_stage_root_identity_matches(directory_info, closing.proof):
+                                failure <- InstallStageCleanupFailure.Changed
+                                state <- InstallStageCleanupState.Failed
+                            else:
+                                sync_errno: i32 = install_source_sync_stage_descriptor(directory_fd)
+                                if sync_errno != 0:
+                                    failure <- InstallStageCleanupFailure.Sync
+                                    failure_errno <- sync_errno
+                                    state <- InstallStageCleanupState.Failed
+
+                        frames[top].directory <- null
+                        frame_count <- frame_count - 1
+                        close_status: int = elisascript_posix_closedir(closing.directory)
+                        if close_status != 0:
+                            failure <- InstallStageCleanupFailure.DirectoryClose
+                            state <- InstallStageCleanupState.Failed
+                        if state == InstallStageCleanupState.Failed:
+                            -> Walk
+
+                        if frame_count == 0:
+                            state <- InstallStageCleanupState.Complete
+                            -> Walk
+
+                        parent_frame: InstallStageCleanupFrame = frames[frame_count - 1]
+                        parent_directory: mutable heap void& = parent_frame.directory
+                        parent_fd: int = elisascript_posix_dirfd(parent_directory)
+                        if parent_fd < 0:
+                            failure <- InstallStageCleanupFailure.Metadata
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        child_name: u8& = (&closing.parent_leaf[0])
+                        if closing.parent_leaf_length == 0 or closing.parent_leaf_length >= 256 or closing.parent_leaf[closing.parent_leaf_length] != 0u8:
+                            failure <- InstallStageCleanupFailure.NameInvalid
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        named_info: mutable ElisascriptStat = ElisascriptStat{}
+                        if not install_source_stat_entry_at(parent_fd, child_name.cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW):
+                            failure <- InstallStageCleanupFailure.Changed
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        if not install_source_stage_root_identity_matches(named_info, closing.proof):
+                            failure <- InstallStageCleanupFailure.Changed
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        unlink_status: int = elisascript_posix_unlinkat(parent_fd, child_name.cast[cstr], DarwinAtFlag::REMOVE_DIRECTORY)
+                        if unlink_status != 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            failure_errno <- errno[0]
+                            failure <- InstallStageCleanupFailure.UnlinkUnknown if failure_errno == InstallSourceErrno::EINTR else InstallStageCleanupFailure.Unlink
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        parent_sync_errno: i32 = install_source_sync_stage_descriptor(parent_fd)
+                        if parent_sync_errno != 0:
+                            failure <- InstallStageCleanupFailure.Sync
+                            failure_errno <- parent_sync_errno
+                            state <- InstallStageCleanupState.Failed
+                        -> Walk
+
+                    frames[top].interrupted <- 0
+                    entry: mutable ElisascriptDirectoryEntry& = entry_option
+                    name_length: usize = entry.name_length.usize()
+                    if entry.record_length == 0u16 or name_length == 0 or name_length >= 1024 or entry.name[name_length] != 0u8:
+                        failure <- InstallStageCleanupFailure.Metadata
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    if (name_length == 1 and entry.name[0] == 46u8) or (name_length == 2 and entry.name[0] == 46u8 and entry.name[1] == 46u8):
+                        -> Walk
+                    if entries_seen >= Limits::STAGE_WALK_ENTRIES:
+                        failure <- InstallStageCleanupFailure.EntryLimit
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    entries_seen <- entries_seen + 1
+                    name_storage: mutable u8[256] = zeroed
+                    name_buffer: mutable u8& = (&name_storage[0])
+                    copied_name_length: usize = install_source_copy_cleanup_name((&entry.name[0]), name_length, name_buffer)
+                    if copied_name_length == 0:
+                        failure <- InstallStageCleanupFailure.NameInvalid
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+
+                    parent_fd: int = elisascript_posix_dirfd(directory)
+                    if parent_fd < 0:
+                        failure <- InstallStageCleanupFailure.Metadata
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    entry_info: mutable ElisascriptStat = ElisascriptStat{}
+                    if not install_source_stat_entry_at(parent_fd, name_buffer.cast[cstr], entry_info, DarwinAtFlag::SYMLINK_NOFOLLOW):
+                        failure <- InstallStageCleanupFailure.Metadata
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    if entry_info.device != handle.proof.device or entry_info.user != handle.proof.user:
+                        failure <- InstallStageCleanupFailure.Changed
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    entry_kind: u16 = entry_info.mode & DarwinStatMode::MASK
+                    if entry_kind == DarwinStatMode::DIRECTORY:
+                        if frame_count >= Limits::STAGE_WALK_DEPTH:
+                            failure <- InstallStageCleanupFailure.DepthLimit
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        child_retries: mutable usize = 0
+                        child_fd: mutable int = -1
+                        child_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+                        while child_fd < 0:
+                            child_fd <- elisascript_posix_openat(parent_fd, name_buffer.cast[cstr], child_flags, 0u32)
+                            if child_fd < 0:
+                                errno: mutable i32& = elisascript_posix_errno()
+                                if errno[0] == InstallSourceErrno::EINTR and child_retries < Limits::EINTR_RETRIES:
+                                    child_retries <- child_retries + 1
+                                    continue
+                                failure_errno <- errno[0]
+                                failure <- InstallStageCleanupFailure.Open
+                                state <- InstallStageCleanupState.Failed
+                                break
+                        if state == InstallStageCleanupState.Failed:
+                            -> Walk
+                        child_info: mutable ElisascriptStat = ElisascriptStat{}
+                        if not install_source_stat_descriptor(child_fd, child_info):
+                            close_status: int = elisascript_posix_close(child_fd)
+                            cleanup_close_status <- close_status if close_status != 0
+                            failure <- InstallStageCleanupFailure.Metadata
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        if not install_source_stage_root_identity_matches(child_info, InstallStageRootProof{device: entry_info.device, inode: entry_info.inode, user: entry_info.user}):
+                            close_status: int = elisascript_posix_close(child_fd)
+                            cleanup_close_status <- close_status if close_status != 0
+                            failure <- InstallStageCleanupFailure.Changed
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        named_child: mutable ElisascriptStat = ElisascriptStat{}
+                        if not install_source_stat_entry_at(parent_fd, name_buffer.cast[cstr], named_child, DarwinAtFlag::SYMLINK_NOFOLLOW) or not install_source_stage_root_identity_matches(named_child, InstallStageRootProof{device: child_info.device, inode: child_info.inode, user: child_info.user}):
+                            close_status: int = elisascript_posix_close(child_fd)
+                            cleanup_close_status <- close_status if close_status != 0
+                            failure <- InstallStageCleanupFailure.Changed
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        child_stream: mutable heap void&? = elisascript_posix_fdopendir(child_fd)
+                        if child_stream == null:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            failure_errno <- errno[0]
+                            close_status: int = elisascript_posix_close(child_fd)
+                            cleanup_close_status <- close_status if close_status != 0
+                            failure <- InstallStageCleanupFailure.Open
+                            state <- InstallStageCleanupState.Failed
+                            -> Walk
+                        frames[frame_count] <- InstallStageCleanupFrame{directory: child_stream, proof: InstallStageRootProof{device: child_info.device, inode: child_info.inode, user: child_info.user}, parent_leaf_length: copied_name_length, parent_leaf: name_storage}
+                        frame_count <- frame_count + 1
+                        -> Walk
+
+                    named_leaf: mutable ElisascriptStat = ElisascriptStat{}
+                    if not install_source_stat_entry_at(parent_fd, name_buffer.cast[cstr], named_leaf, DarwinAtFlag::SYMLINK_NOFOLLOW) or named_leaf.device != entry_info.device or named_leaf.inode != entry_info.inode or named_leaf.user != entry_info.user or (named_leaf.mode & DarwinStatMode::MASK) != entry_kind:
+                        failure <- InstallStageCleanupFailure.Changed
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    unlink_status: int = elisascript_posix_unlinkat(parent_fd, name_buffer.cast[cstr], 0)
+                    if unlink_status != 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        failure_errno <- errno[0]
+                        failure <- InstallStageCleanupFailure.UnlinkUnknown if failure_errno == InstallSourceErrno::EINTR else InstallStageCleanupFailure.Unlink
+                        state <- InstallStageCleanupState.Failed
+                        -> Walk
+                    -> Walk
+
+                Walk, InstallStageCleanupState.Complete:
+                    break
+
+                Walk, InstallStageCleanupState.Failed:
+                    break
+
+            while frame_count != 0:
+                frame_count <- frame_count - 1
+                abandoned: InstallStageCleanupFrame = frames[frame_count]
+                frames[frame_count].directory <- null
+                if abandoned.directory != null and elisascript_posix_closedir(abandoned.directory) != 0:
+                    cleanup_directory_close_failed <- true
+
+            raise InstallSourceError.StageCleanupCloseFailed(cleanup_close_status) if cleanup_close_status != 0
+            raise InstallSourceError.StageCleanupDirectoryCloseFailed if cleanup_directory_close_failed or failure == InstallStageCleanupFailure.DirectoryClose
+            raise InstallSourceError.StageCleanupEntryLimitExceeded if failure == InstallStageCleanupFailure.EntryLimit
+            raise InstallSourceError.StageCleanupDepthLimitExceeded if failure == InstallStageCleanupFailure.DepthLimit
+            raise InstallSourceError.StageCleanupNameInvalid if failure == InstallStageCleanupFailure.NameInvalid
+            raise InstallSourceError.StageCleanupChanged if failure == InstallStageCleanupFailure.Changed
+            raise InstallSourceError.StageCleanupReadFailed(failure_errno) if failure == InstallStageCleanupFailure.Read
+            raise InstallSourceError.StageCleanupOpenFailed(failure_errno) if failure == InstallStageCleanupFailure.Open
+            raise InstallSourceError.StageCleanupOutcomeUnknown(failure_errno) if failure == InstallStageCleanupFailure.UnlinkUnknown
+            raise InstallSourceError.StageCleanupFailed(failure_errno) if failure == InstallStageCleanupFailure.Unlink
+            raise InstallSourceError.StageDirectorySyncFailed(failure_errno) if failure == InstallStageCleanupFailure.Sync
+            raise InstallSourceError.StageTreeMetadataFailed if failure == InstallStageCleanupFailure.Metadata
+
+            raise InstallSourceError.StageCleanupChanged if not install_source_stage_root_handle_matches(handle)
+            root_leaf: u8& = (&handle.leaf[0])
+            root_unlink_status: int = elisascript_posix_unlinkat(handle.parent_descriptor, root_leaf.cast[cstr], DarwinAtFlag::REMOVE_DIRECTORY)
+            if root_unlink_status != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                raise InstallSourceError.StageCleanupOutcomeUnknown(errno[0]) if errno[0] == InstallSourceErrno::EINTR
+                raise InstallSourceError.StageCleanupFailed(errno[0])
+
+            root_descriptor: int = handle.descriptor
+            handle.descriptor <- -1
+            parent_sync_errno: i32 = install_source_sync_stage_descriptor(handle.parent_descriptor)
+            close_status: int = elisascript_posix_close(root_descriptor)
+            raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+            raise InstallSourceError.StageDirectorySyncFailed(parent_sync_errno) if parent_sync_errno != 0
+            return true
