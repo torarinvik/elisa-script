@@ -757,10 +757,11 @@ primary-output option, the GCC/Clang default object path (source basename with
 the optional JSON `output` field is supplied for such a command, it must match
 that derived object path. Relative output operands resolve against the command
 working directory before graph ownership is checked. An explicit
-dependency-file output (`-MF file` or `-MFfile`) is also limited to one
-nonempty operand and must name a declared action output; `-MF -` is accepted as
-stdout rather than a sidecar. `-MD` and `-MMD` require an explicit `-MF` path
-so the compiler's implicit depfile destination cannot escape graph ownership.
+dependency-file output (`-MF file`, `-MFfile`, or Clang's `-dependency-file`
+alias) is limited to one nonempty operand and must name a declared action
+output; directing it to `-` is accepted as stdout rather than a sidecar. `-MD`
+and `-MMD` require one of these explicit paths so the compiler's implicit
+depfile destination cannot escape graph ownership.
 Clang's `-MJ` compilation-database fragment output is likewise limited to one
 declared action output. Clang's `-serialize-diagnostics` and
 `--serialize-diagnostics` options must likewise have one separate output
