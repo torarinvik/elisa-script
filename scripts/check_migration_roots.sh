@@ -84,6 +84,10 @@ if grep -F 'read_text(' "$candidate_file" >/dev/null 2>&1; then
     printf 'migration roots audit: candidate source read uses unbounded read_text\n' >&2
     exit 1
 fi
+if grep -F 'arguments.count > 2' "$candidate_file" >/dev/null 2>&1; then
+    printf 'migration roots audit: candidate rejects surplus arguments ignored by the Bash reference\n' >&2
+    exit 1
+fi
 
 if ! LC_ALL=C awk -F '\t' -v max_rows="$MAX_MANIFEST_ROWS" -v max_field_bytes="$MAX_FIELD_BYTES" -v max_path_bytes="$MAX_PATH_BYTES" '
     NR == 1 {
