@@ -43,6 +43,18 @@ candidate run that leaves the stage behind. Archive, link, and run actions are
 intentionally excluded from the translation-unit database. The advisory lock
 coordinates cooperating writers; the adapter does not claim to exclude
 arbitrary non-cooperating mutation of the same directory.
+
+After both builds, the launcher bounds each compilation database to 1 MiB.
+It parses the candidate with duplicate-key rejection and JSON limits of 32,768
+tokens, depth 8, two roots, 64 members, and 16 KiB per scalar, then requires
+exactly three entries with the expected directory, source, object output, and
+complete ordered compiler argv for helper, core, and app.
+This catches missing/duplicate source records, unexpected or reordered
+arguments, and target-usage leakage in the candidate database. The CMake
+reference database currently receives only outer-framing and source-path
+sanity checks; per-file CMake argv equivalence is not yet established by this
+fixture.
+
 The usage-dependency edges propagate compile/link interfaces and contribute
 concrete static/shared library artifacts to the link closure. `core` exports
 its private static dependency `helper` as a link-only entry, which the final
