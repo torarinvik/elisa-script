@@ -15,7 +15,6 @@ module EsLuaFrontendCorpus:
             SOURCE_BYTES: usize = 16777216
             TOTAL_SOURCE_BYTES: usize = 67108864
             FINGERPRINTS_PER_CASE: usize = 4
-            FINGERPRINT_VALUE_BYTES: usize = 128
 
 
         const enum LuaFrontendFingerprintMode of u8:
@@ -25,9 +24,14 @@ module EsLuaFrontendCorpus:
             Analysis
 
 
+        struct LuaFrontendInteger:
+            negative: bool = false
+            digits: darray[u8] = []
+
+
         struct LuaFrontendFingerprint:
             mode: LuaFrontendFingerprintMode = LuaFrontendFingerprintMode.Environment
-            value: mutable i64 = 0
+            value: mutable LuaFrontendInteger = LuaFrontendInteger{}
 
 
         struct LuaFrontendCorpusFileInput:
@@ -65,8 +69,6 @@ module EsLuaFrontendCorpus:
             InvalidFingerprintAnnotation
             UnsupportedFingerprintMode
             InvalidFingerprintInteger
-            FingerprintIntegerOverflow
-            FingerprintValueTooLong
             FingerprintCountExceeded
             MissingRequiredFingerprint
             DuplicatePath
@@ -185,13 +187,11 @@ module EsLuaFrontendCorpus:
             raise LuaFrontendCorpusError.UnsupportedFingerprintMode
 
 
-        # The executable replacement profile deliberately stores fingerprints
-        # as signed i64 and accepts ASCII decimal digits with Python-compatible
-        # sign/underscore placement. Python int() is arbitrary-precision and
-        # accepts Unicode decimal digits; those wider forms are typed input
-        # errors here rather than silently truncated values.
-        def lua_frontend_parse_fingerprint_integer(value: sview) -> i64 error[LuaFrontendCorpusError]:
-            raise LuaFrontendCorpusError.FingerprintValueTooLong if sview_len(value) > Limits::FINGERPRINT_VALUE_BYTES
+        # Keep arbitrary precision without a numeric overflow path: digits are
+        # stored most-significant first and bounded by the already-admitted
+        # source/corpus byte budgets. This matches Python int() magnitude and
+        # underscore behavior for ASCII decimal input while remaining typed.
+        def lua_frontend_parse_fingerprint_integer(value: sview) -> LuaFrontendInteger error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:
             raise LuaFrontendCorpusError.InvalidFingerprintInteger if sview_len(value) == 0
             cursor: mutable usize = 0
             negative: mutable bool = false
@@ -200,27 +200,27 @@ module EsLuaFrontendCorpus:
                 negative <- sview_at(value, 0) == 45u8
                 state <- IntegerParseState.Sign
                 cursor <- 1
-            magnitude: mutable u64 = 0
-            digit_limit: u64 = 9223372036854775807u64 if not negative else 9223372036854775808u64
+            digits: mutable darray[u8] = []
+            saw_nonzero: mutable bool = false
             saw_digit: mutable bool = false
-            while cursor < sview_len(value) |value, cursor, negative, state, magnitude, digit_limit, saw_digit|:
+            while cursor < sview_len(value) |value, cursor, negative, state, digits, saw_nonzero, saw_digit|:
                 byte: u8 = sview_at(value, cursor)
                 if byte >= 48u8 and byte <= 57u8:
-                    digit: u64 = (byte - 48u8).u64()
-                    raise LuaFrontendCorpusError.FingerprintIntegerOverflow if magnitude > (digit_limit - digit) / 10u64
-                    magnitude <- magnitude * 10u64 + digit
+                    digit: u8 = byte - 48u8
                     saw_digit <- true
                     state <- IntegerParseState.Digits
+                    if digit != 0u8 or saw_nonzero:
+                        digits.push(digit)
+                        saw_nonzero <- true
                 elif byte == 95u8 and state == IntegerParseState.Digits:
                     state <- IntegerParseState.Separator
                 else:
                     raise LuaFrontendCorpusError.InvalidFingerprintInteger
                 cursor <- cursor + 1
             raise LuaFrontendCorpusError.InvalidFingerprintInteger if not saw_digit or state == IntegerParseState.Sign or state == IntegerParseState.Separator
-            if negative and magnitude == 9223372036854775808u64:
-                return -9223372036854775807i64 - 1i64
-            return 0i64 - magnitude.i64() if negative
-            return magnitude.i64()
+            is_zero: bool = digits.count == 0
+            digits.push(0u8) if is_zero
+            return LuaFrontendInteger{negative: negative and not is_zero, digits: digits}
 
 
         def lua_frontend_fingerprint_upsert(values: mutable darray[LuaFrontendFingerprint]&, fingerprint: LuaFrontendFingerprint) -> void error[LuaFrontendCorpusError] can[Memory.Allocate, Abort.Panic]:

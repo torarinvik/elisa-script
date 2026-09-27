@@ -59,13 +59,16 @@ and 64 MiB aggregate source text. The source test is
 `test/runtime/lua_frontend_corpus_model_test.elisa`; neither model's runtime
 tests have been compiled or run.
 
-For annotation values, the Elisascript profile accepts signed ASCII decimal
-`i64` values (including Python-compatible single underscores between digits)
-with a 128-byte ceiling. Python `int()` accepts arbitrary precision and
-Unicode decimal digits, so those wider forms are explicit typed corpus-input
-errors rather than truncated values. The pinned 27-case corpus uses values
-inside this profile. Whitespace trimming and line splitting cover Python's
-Unicode whitespace and `splitlines()` boundaries.
+For annotation values, the Elisascript profile stores a sign and an
+arbitrary-precision decimal digit vector, bounded by the already-enforced
+source and corpus byte budgets. It accepts ASCII decimal digits with an
+optional sign and Python-compatible single underscores between digits; leading
+zeroes are normalized, and negative zero becomes zero. This avoids fixed-width
+overflow while keeping the value strongly typed. Python `int()` also accepts
+Unicode decimal digits; this model currently rejects those spellings as
+`InvalidFingerprintInteger`, an explicit remaining parity gap. The pinned
+27-case corpus uses ASCII values. Whitespace trimming and line splitting cover
+Python's Unicode whitespace and `splitlines()` boundaries.
 
 The four process inputs are typed values, not a shell command:
 
