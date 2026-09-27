@@ -279,7 +279,9 @@ returned flattened source and exports through the existing build flow. Its
 frequent RSS sampler also streams the host `ps` snapshot under incremental
 8 MiB byte and 65,536-row ceilings, plus a one-second post-launch read
 deadline; missing, oversized, malformed, or timed-out snapshots fail closed.
-Unit cases cover byte and row overflow and a stalled read.
+Descendant discovery uses a visited-set queue, independent of `ps` row order,
+instead of repeated whole-table passes. Unit cases cover reverse-ordered
+descendants, byte and row overflow, and a stalled read.
 The same configured caller can now request flatten-only payloads for the runtime
 cache hash, including runtime sources that declare no exports; the façade's
 small type normalizer has been localized so it no longer imports the scanner.
