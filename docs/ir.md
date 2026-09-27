@@ -758,8 +758,10 @@ nonempty operand and must name a declared action output; `-MF -` is accepted as
 stdout rather than a sidecar. `-MD` and `-MMD` require an explicit `-MF` path
 so the compiler's implicit depfile destination cannot escape graph ownership.
 Clang's `-MJ` compilation-database fragment output is likewise limited to one
-declared action output. A selected output must resolve to the same declared
-path as the primary-output operand.
+declared action output. Clang's `-serialize-diagnostics` and
+`--serialize-diagnostics` options must likewise have one separate output
+operand declared by the action. A selected output must resolve to the same
+declared path as the primary-output operand.
 JSON escaping, entry count, and the 64 MiB output ceiling are checked
 before bytes are returned. Because
 the standard format has no process-environment field, commands must inherit
