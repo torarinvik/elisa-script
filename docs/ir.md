@@ -542,9 +542,13 @@ data/executable mode, before the plan can enter `Staged`. The POSIX
 `verify_install_stage_at` adapter requires a stage-root directory with mode
 `0700`, derives receipts by no-follow readback, checks byte count and SHA-256,
 then verifies exact file modes (`0644` for data, `0755` for executables) on the
-reopened descriptor. This checks each planned entry, but does not yet reject
-unexpected extra paths or preserve object stamps for revalidation at
-publication.
+reopened descriptor. It returns an `InstallStageProof` binding the ordered
+receipts to the stage-root device/inode and each file's stable stamp.
+`revalidate_install_stage_at` rechecks those identities and modes before
+publication without rehashing large files; callers must invoke it immediately
+before publication because the pure plan state machine does not itself require
+the proof as a `Publish` argument. Neither operation rejects unexpected extra
+paths yet.
 `open_install_source_for_copy` reopens each receipt beneath the same root
 capability and retains the matching descriptor. `read_install_source_chunk`
 streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor
@@ -554,8 +558,8 @@ and path identity again and consumes the descriptor, while
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
 remain `RollbackUncertain`. Whole-tree stage-root creation and cleanup,
 unexpected-entry rejection, directory permission mapping, multi-artifact atomic
-replacement, recovery journal, and the end-to-end installation adapter remain
-unimplemented.
+replacement, recovery journal, enforced pre-publication proof consumption, and
+the end-to-end installation adapter remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original

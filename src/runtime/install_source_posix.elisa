@@ -29,6 +29,21 @@ module EsInstallSourcePosix:
             digest_3: u64
 
 
+        struct InstallStageRootProof:
+            device: u32
+            inode: u64
+
+
+        struct InstallStageArtifactProof:
+            receipt: InstallStageReceipt
+            stage_stamp: BuildIncrementalFileStamp
+
+
+        struct InstallStageProof:
+            root: InstallStageRootProof
+            artifacts: darray[InstallStageArtifactProof]
+
+
         struct InstallSourceCopyHandle:
             root_descriptor: int
             source_descriptor: int
@@ -54,6 +69,10 @@ module EsInstallSourcePosix:
             StageModeMismatch
             StageRootInvalid
             StageRootNotPrivate
+            StageProofCountMismatch
+            StageProofReceiptMismatch
+            StageProofRootChanged
+            StageRevalidationNotReady
             ReceiptPathMismatch
             ReceiptCountMismatch
             ReceiptOrderMismatch
@@ -120,13 +139,13 @@ module EsInstallSourcePosix:
             return (observed.mode & InstallSourceMode::PERMISSION_MASK) == install_source_expected_mode(mode)
 
 
-        def install_source_require_private_stage_root(root_fd: int) -> bool error[InstallSourceError] can[Blocking.IO]:
+        def install_source_require_private_stage_root(root_fd: int) -> InstallStageRootProof error[InstallSourceError] can[Blocking.IO]:
             raise InstallSourceError.StageRootInvalid if root_fd < 0
             observed: mutable ElisascriptStat = ElisascriptStat{}
             raise InstallSourceError.StageMetadataFailed if not install_source_stat_descriptor(root_fd, observed)
             raise InstallSourceError.StageRootInvalid if (observed.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
             raise InstallSourceError.StageRootNotPrivate if (observed.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY
-            return true
+            return InstallStageRootProof{device: observed.device, inode: observed.inode}
 
 
         def install_source_close_descriptor(handle: mutable InstallSourceCopyHandle&) -> int can[Blocking.IO]:
@@ -222,7 +241,7 @@ module EsInstallSourcePosix:
         # hashed with the shared no-follow observer; permissions are inspected
         # on a separately opened descriptor and must match the fixed install
         # mapping (Data=0644, Executable=0755).
-        def verify_install_stage_artifact_at(a: mutable Arena&, stage_root_fd: int, plan: InstallPlan&, artifact_index: usize) -> InstallStageReceipt error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def verify_install_stage_artifact_at(a: mutable Arena&, stage_root_fd: int, plan: InstallPlan&, artifact_index: usize) -> InstallStageArtifactProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
             _ = try install_source_require_private_stage_root(stage_root_fd)
@@ -237,30 +256,63 @@ module EsInstallSourcePosix:
             raise InstallSourceError.StageDigestMismatch if observed.fingerprint != artifact.digest_0 or observed.fingerprint_word1 != artifact.digest_1 or observed.fingerprint_word2 != artifact.digest_2 or observed.fingerprint_word3 != artifact.digest_3
             mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, artifact.destination_path, stamp[0], artifact.mode)
             raise InstallSourceError.StageModeMismatch if not mode_matches
-            return InstallStageReceipt{
-                artifact_index: artifact_index,
-                destination_path: artifact.destination_path,
-                byte_count: stamp[0].size,
-                digest_0: observed.fingerprint,
-                digest_1: observed.fingerprint_word1,
-                digest_2: observed.fingerprint_word2,
-                digest_3: observed.fingerprint_word3,
-                mode: artifact.mode
+            return InstallStageArtifactProof{
+                receipt: InstallStageReceipt{
+                    artifact_index: artifact_index,
+                    destination_path: artifact.destination_path,
+                    byte_count: stamp[0].size,
+                    digest_0: observed.fingerprint,
+                    digest_1: observed.fingerprint_word1,
+                    digest_2: observed.fingerprint_word2,
+                    digest_3: observed.fingerprint_word3,
+                    mode: artifact.mode
+                },
+                stage_stamp: stamp[0]
             }
 
 
         # Admit staging only after every planned output has passed descriptor-
         # relative content and exact-mode verification. Unexpected extra paths
         # still require the whole-tree closure scan before publication.
-        def verify_install_stage_at(a: mutable Arena&, stage_root_fd: int, plan: mutable InstallPlan&) -> darray[InstallStageReceipt] error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def verify_install_stage_at(a: mutable Arena&, stage_root_fd: int, plan: mutable InstallPlan&) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
-            _ = try install_source_require_private_stage_root(stage_root_fd)
+            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
+            artifact_proofs: mutable darray[InstallStageArtifactProof] = []
             receipts: mutable darray[InstallStageReceipt] = []
-            for index in 0..<plan.artifacts.count |plan, receipts, a, stage_root_fd|:
-                receipts.push(try verify_install_stage_artifact_at(a, stage_root_fd, plan, index))
+            for index in 0..<plan.artifacts.count |plan, artifact_proofs, receipts, a, stage_root_fd|:
+                artifact_proof: InstallStageArtifactProof = try verify_install_stage_artifact_at(a, stage_root_fd, plan, index)
+                artifact_proofs.push(artifact_proof)
+                receipts.push(artifact_proof.receipt)
             _ = try stage_install_plan(plan, receipts)
-            return receipts
+            return InstallStageProof{root: root_proof, artifacts: artifact_proofs}
+
+
+        # Recheck the retained point-in-time proof immediately before publish.
+        # This avoids rehashing large outputs while detecting replacement,
+        # ordinary content mutation, mode changes, and stage-root substitution.
+        def revalidate_install_stage_at(stage_root_fd: int, plan: InstallPlan&, proof: InstallStageProof&) -> bool error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.StageRevalidationNotReady if plan.state != InstallState.Verified
+            root_now: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
+            raise InstallSourceError.StageProofRootChanged if root_now.device != proof.root.device or root_now.inode != proof.root.inode
+            raise InstallSourceError.StageProofCountMismatch if proof.artifacts.count != plan.artifacts.count
+            for index in 0..<plan.artifacts.count |plan, proof|:
+                artifact: InstallArtifact = plan.artifacts[index]
+                entry: InstallStageArtifactProof = proof.artifacts[index]
+                receipt: InstallStageReceipt = entry.receipt
+                stored: InstallStageReceipt = plan.staged_receipts[index]
+                raise InstallSourceError.ReceiptOrderMismatch if receipt.artifact_index != index or stored.artifact_index != index
+                raise InstallSourceError.ReceiptPathMismatch if receipt.destination_path != artifact.destination_path or stored.destination_path != artifact.destination_path or entry.stage_stamp.path != artifact.destination_path
+                raise InstallSourceError.ByteCountMismatch if receipt.byte_count != artifact.byte_count or stored.byte_count != artifact.byte_count or entry.stage_stamp.size != artifact.byte_count
+                raise InstallSourceError.DigestMismatch if receipt.digest_0 != artifact.digest_0 or receipt.digest_1 != artifact.digest_1 or receipt.digest_2 != artifact.digest_2 or receipt.digest_3 != artifact.digest_3
+                raise InstallSourceError.StageProofReceiptMismatch if receipt.digest_0 != stored.digest_0 or receipt.digest_1 != stored.digest_1 or receipt.digest_2 != stored.digest_2 or receipt.digest_3 != stored.digest_3 or receipt.mode != stored.mode or receipt.byte_count != stored.byte_count
+                raise InstallSourceError.StageArtifactChanged if not entry.stage_stamp.present
+                current_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage_root_fd, artifact.destination_path)
+                raise InstallSourceError.StageArtifactChanged if not install_source_stamp_equal(entry.stage_stamp, current_stamp)
+                mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, artifact.destination_path, current_stamp, artifact.mode)
+                raise InstallSourceError.StageModeMismatch if not mode_matches
+            return true
 
 
         # Open the exact source snapshot admitted by the complete source batch.
