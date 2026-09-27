@@ -271,11 +271,16 @@ only unless they are valid Elisa programs.
 | Integration (future acceptance; not covered by this launcher test) | resolved absolute source path; ordered JSON-array mode and versioned `{version, flattened_source, exports}` / `{version, flattened_source}` payloads; exact scan-failure and wrong-arity process tuples; consumption by the pinned `wasm_build.py` caller and runtime-cache hashing; no Python scanner on the accepted replacement path |
 
 Current caller review (source-only; not adoption evidence): the pinned
-`wasm_build.py` now has an opt-in `--export-scan-launcher` plus
-`--export-scan-script` path. It invokes the candidate with the resolved source
-path, bounds captured process output to 64 MiB and runtime to 120 seconds,
-validates the versioned payload and ordered record shapes, and passes the
-returned flattened source and exports through the existing build flow. Its
+`wasm_build.py` uses `--export-scan-launcher` plus `--export-scan-script` (or
+their environment defaults) for normal invocations. Missing configuration now
+fails before output-directory creation or compiler launch instead of silently
+using Python. The explicit `--python-reference-scanner` flag retains the pinned
+Python implementation for parity-oracle runs; the stage0 comparison scripts
+select it deliberately. The candidate path invokes the scanner with the
+resolved source path, bounds captured process output to 64 MiB and runtime to
+120 seconds, validates the versioned payload and ordered record shapes, and
+passes the returned flattened source and exports through the existing build
+flow. Its
 frequent RSS sampler also streams the host `ps` snapshot under incremental
 8 MiB byte and 65,536-row ceilings, plus a one-second post-launch read
 deadline; missing, oversized, malformed, or timed-out snapshots fail closed.
@@ -285,13 +290,13 @@ descendants, exact byte/row limits, byte and row overflow, and a stalled read.
 The same configured caller can now request flatten-only payloads for the runtime
 cache hash, including runtime sources that declare no exports; the façade's
 small type normalizer has been localized so it no longer imports the scanner.
-default still calls Python `read_flat_source` and `parse_exports`, preserving
-the packager's role as the parity oracle; Python imports/re-exports remain
-available. The source contains unit cases for payload validation and default
-selection, flatten-payload validation, runtime-cache selection, and facade
-normalization, but neither the unit cases nor an actual caller invocation have
-run. This remains an opt-in integration seam, not accepted replacement or
-adoption evidence.
+The Python `read_flat_source` and `parse_exports` functions remain available
+only for explicit oracle mode and compatibility imports. Source unit cases
+cover payload validation, required scanner selection, explicit oracle
+selection, flatten-payload validation, runtime-cache selection, and façade
+normalization, but neither the unit cases nor a candidate-backed caller
+invocation has run. Requiring the candidate removes silent fallback; it is not
+yet accepted replacement or runtime adoption evidence.
 
 The first parity slice is represented by
 `test/script_parity/wasm_export_scan_test.elisascript` and its pinned-process
