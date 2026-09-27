@@ -536,6 +536,12 @@ content buffer. `verify_install_sources_at` builds a complete receipt vector in
 plan order, and `validate_install_source_receipts` rejects omissions, reuse, or
 reordering before a caller proceeds; successful batch verification advances
 the plan to `SourcesVerified`, without which `Stage` is rejected.
+`stage_install_plan` requires one `InstallStageReceipt` per planned artifact in
+canonical order, with the exact destination, size, SHA-256 words, and declared
+data/executable mode, before the plan can enter `Staged`. This is a pure
+manifest-consistency gate, not filesystem proof: the eventual POSIX adapter
+must derive receipts from no-follow staged-file readback and verified
+permissions rather than trust caller-authored values.
 `open_install_source_for_copy` reopens each receipt beneath the same root
 capability and retains the matching descriptor. `read_install_source_chunk`
 streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor

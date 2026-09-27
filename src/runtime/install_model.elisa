@@ -75,12 +75,28 @@ module EsInstall:
             mode: InstallFileMode = InstallFileMode.Data
 
 
+        # A manifest-shaped summary of one artifact after it has been copied
+        # into the private stage. The POSIX adapter must produce this only
+        # after descriptor-relative readback and permission verification; this
+        # pure model validates completeness and agreement with the plan.
+        struct InstallStageReceipt:
+            artifact_index: usize
+            destination_path: sview
+            byte_count: usize
+            digest_0: u64
+            digest_1: u64
+            digest_2: u64
+            digest_3: u64
+            mode: InstallFileMode
+
+
         struct InstallPlan:
             format_version: u8 = INSTALL_FORMAT_VERSION
             package_name: sview
             package_version: PackageVersion
             scope: InstallScope = InstallScope.User
             artifacts: darray[InstallArtifact] = []
+            staged_receipts: darray[InstallStageReceipt] = []
             offline_only: bool = false
             state: InstallState = InstallState.Planned
 
@@ -102,6 +118,12 @@ module EsInstall:
             DuplicateDestination
             DestinationPathOverlap
             InvalidFileMode
+            StageReceiptCountMismatch
+            StageReceiptOrderMismatch
+            StageReceiptPathMismatch
+            StageReceiptBytesMismatch
+            StageReceiptDigestMismatch
+            StageReceiptModeMismatch
             RollbackNotReady
             PublishAckNotReady
             PublishOutcomeNotReady
@@ -180,6 +202,19 @@ module EsInstall:
             return true
 
 
+        def install_stage_receipts_match_artifacts(artifacts: darray[InstallArtifact], receipts: darray[InstallStageReceipt]) -> bool error[InstallContractError]:
+            raise InstallContractError.StageReceiptCountMismatch if receipts.count != artifacts.count
+            for index in 0..<artifacts.count |artifacts, receipts|:
+                artifact: InstallArtifact = artifacts[index]
+                receipt: InstallStageReceipt = receipts[index]
+                raise InstallContractError.StageReceiptOrderMismatch if receipt.artifact_index != index
+                raise InstallContractError.StageReceiptPathMismatch if receipt.destination_path != artifact.destination_path
+                raise InstallContractError.StageReceiptBytesMismatch if receipt.byte_count != artifact.byte_count
+                raise InstallContractError.StageReceiptDigestMismatch if receipt.digest_0 != artifact.digest_0 or receipt.digest_1 != artifact.digest_1 or receipt.digest_2 != artifact.digest_2 or receipt.digest_3 != artifact.digest_3
+                raise InstallContractError.StageReceiptModeMismatch if receipt.mode != artifact.mode
+            return true
+
+
     public:
         def validate_install_plan(plan: InstallPlan&) -> bool error[InstallContractError]:
             raise InstallContractError.EmptyPlan if plan.artifacts.count == 0
@@ -201,7 +236,27 @@ module EsInstall:
                     earlier_destination: sview = plan.artifacts[earlier].destination_path
                     raise InstallContractError.DuplicateDestination if earlier_destination == artifact.destination_path
                     raise InstallContractError.DestinationPathOverlap if install_destination_paths_overlap(earlier_destination, artifact.destination_path)
+
+            if plan.state in {InstallState.Staged, InstallState.Verified, InstallState.Publishing, InstallState.Published, InstallState.PublishUncertain, InstallState.RollingBack, InstallState.RolledBack, InstallState.RollbackUncertain}:
+                _ = try install_stage_receipts_match_artifacts(plan.artifacts, plan.staged_receipts)
+            elif plan.state == InstallState.SourcesVerified or plan.state == InstallState.Failed:
+                if plan.staged_receipts.count != 0:
+                    _ = try install_stage_receipts_match_artifacts(plan.artifacts, plan.staged_receipts)
+            else:
+                raise InstallContractError.StageReceiptCountMismatch if plan.staged_receipts.count != 0
             return true
+
+
+        # Save the complete staged manifest before admitting the Stage event.
+        # Receipt validation is deliberately separate from POSIX provenance:
+        # only the descriptor-based adapter can attest actual staged bytes,
+        # object identity, and permissions.
+        def stage_install_plan(plan: mutable InstallPlan&, receipts: darray[InstallStageReceipt]) -> InstallState error[InstallContractError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_install_plan(plan)
+            raise InstallContractError.InvalidState if plan.state != InstallState.SourcesVerified
+            _ = try install_stage_receipts_match_artifacts(plan.artifacts, receipts)
+            plan.staged_receipts <- receipts
+            return try advance_install_plan(plan, InstallEvent.Stage)
 
 
         def advance_install_plan(plan: mutable InstallPlan&, event: InstallEvent) -> InstallState error[InstallContractError]:
@@ -212,6 +267,7 @@ module EsInstall:
                 plan.state <- InstallState.SourcesVerified
             elif event == InstallEvent.Stage:
                 raise InstallContractError.InvalidState if plan.state != InstallState.SourcesVerified
+                _ = try install_stage_receipts_match_artifacts(plan.artifacts, plan.staged_receipts)
                 plan.state <- InstallState.Staged
             elif event == InstallEvent.Verify:
                 raise InstallContractError.InvalidState if plan.state != InstallState.Staged
