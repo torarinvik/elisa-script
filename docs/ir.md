@@ -1631,8 +1631,9 @@ boundaries (`\b`/`\B`) detect ASCII word/non-word transitions, and bounded
 repetitions (`{m}`, `{m,n}`, `{m,}`) use decimal, non-decreasing limits. Top-level
 alternation is split only at unescaped pipes outside character classes, and each
 branch runs through the same bounded matcher states. Parenthesized groups are
-matched recursively, including nested alternation and quantifiers. Perl-style
-named group markers (`(?<name>...)`) are accepted for matching; replacement
+matched recursively, including nested alternation and quantifiers. Character
+classes accept a leading `]` (after an optional `^`) as a literal member.
+Perl-style named group markers (`(?<name>...)`) are accepted for matching; replacement
 captures use their positional `$1` through `$9` references, plus `${name}` and
 `$<name>` when a flat group has one unique name.
 `RegexReplace` has signature `Text × Named(Regex) × Text -> Text`. It reuses the
