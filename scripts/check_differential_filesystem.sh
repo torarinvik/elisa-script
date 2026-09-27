@@ -10,9 +10,39 @@ consumer="$repo_root/src/testing/differential.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/differential/elisascript_differential_test.elisa"
 docs="$repo_root/docs/differential-testing.md"
+max_source_bytes=16777216
+max_total_source_bytes=33554432
+
+rg_bounded() {
+    command rg --max-filesize "$max_source_bytes" "$@"
+}
 
 for required_file in "$model" "$consumer" "$ir" "$fixture" "$docs"; do
-    [[ -f "$required_file" ]] || { printf 'differential filesystem audit: missing %s\n' "$required_file" >&2; exit 1; }
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'differential filesystem audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+total_source_bytes=0
+for required_file in "$model" "$consumer" "$ir" "$fixture" "$docs"; do
+    if ! source_size_text="$(wc -c < "$required_file" | tr -d '[:space:]')"; then
+        printf 'differential filesystem audit: missing %s\n' "$required_file" >&2
+        exit 1
+    fi
+    case "$source_size_text" in
+        ''|*[!0-9]*)
+            printf 'differential filesystem audit: missing %s\n' "$required_file" >&2
+            exit 1
+            ;;
+    esac
+    if (( ${#source_size_text} > 8 )); then
+        source_size=$((max_source_bytes + 1))
+    else
+        source_size=$((10#$source_size_text))
+    fi
+    if (( source_size > max_source_bytes || source_size > max_total_source_bytes - total_source_bytes )); then
+        printf 'differential filesystem audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    total_source_bytes=$((total_source_bytes + source_size))
 done
 
 for declaration in \
@@ -39,7 +69,7 @@ for declaration in \
     'def compare_differential_filesystem_snapshots(' \
     'def copy_differential_filesystem_entry_path(' \
     'def copy_differential_filesystem_entry_content('; do
-    rg -Fq "$declaration" "$model"
+    rg_bounded -Fq "$declaration" "$model"
 done
 
 for boundary in \
@@ -72,18 +102,18 @@ for boundary in \
     'content_start: usize' \
     'content_bytes: usize' \
     'filesystem entry bytes differ'; do
-    rg -Fq "$boundary" "$model"
+    rg_bounded -Fq "$boundary" "$model"
 done
 
-rg -Fq 'EsHash::hash_wrapping_add_u64(EsHash::hash_wrapping_multiply_u64(hash, DIFFERENTIAL_FILESYSTEM_HASH_PRIME), value)' "$model"
-rg -Fq 'differential_filesystem_hash_mix(result, snapshot.total_bytes.u64())' "$model"
-if rg -Fq 'result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME' "$model"; then
+rg_bounded -Fq 'EsHash::hash_wrapping_add_u64(EsHash::hash_wrapping_multiply_u64(hash, DIFFERENTIAL_FILESYSTEM_HASH_PRIME), value)' "$model"
+rg_bounded -Fq 'differential_filesystem_hash_mix(result, snapshot.total_bytes.u64())' "$model"
+if rg_bounded -Fq 'result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME' "$model"; then
     printf 'differential filesystem audit: fingerprint regressed to checked-overflow arithmetic\n' >&2
     exit 1
 fi
-rg -Fq 'include "../runtime/hash_model.elisa"' "$ir"
-rg -Fq 'include "./filesystem_snapshot_model.elisa"' "$consumer"
-rg -Fq 'using EsDifferentialFilesystem' "$fixture"
+rg_bounded -Fq 'include "../runtime/hash_model.elisa"' "$ir"
+rg_bounded -Fq 'include "./filesystem_snapshot_model.elisa"' "$consumer"
+rg_bounded -Fq 'using EsDifferentialFilesystem' "$fixture"
 for fixture_pattern in \
     'differential_filesystem_snapshot_contract_orders_entries_and_reports_first_difference' \
     'DifferentialFilesystemEntryKind.Directory' \
@@ -106,13 +136,13 @@ for fixture_pattern in \
     'DifferentialFilesystemError.AncestorNotDirectory' \
     'DifferentialFilesystemError.PathStorageLimitExceeded' \
     'DifferentialFilesystemState.Cancelled'; do
-    rg -Fq "$fixture_pattern" "$fixture"
+    rg_bounded -Fq "$fixture_pattern" "$fixture"
 done
 
-rg -Fq 'EsDifferentialFilesystem::DifferentialFilesystemSnapshot' "$docs"
-rg -Fq 'Exact-payload snapshot contract' "$docs"
-rg -Fq 'ordinary permission bits (`0000` through `0777`)' "$docs"
-rg -Fq 'executable marker must match those bits' "$docs"
-rg -Fq 'backslash is an' "$docs"
+rg_bounded -Fq 'EsDifferentialFilesystem::DifferentialFilesystemSnapshot' "$docs"
+rg_bounded -Fq 'Exact-payload snapshot contract' "$docs"
+rg_bounded -Fq 'ordinary permission bits (`0000` through `0777`)' "$docs"
+rg_bounded -Fq 'executable marker must match those bits' "$docs"
+rg_bounded -Fq 'backslash is an' "$docs"
 
 printf 'differential filesystem audit: bounded exact payload snapshots, valid tree ancestors, fingerprints, and first-difference comparison are present\n'
