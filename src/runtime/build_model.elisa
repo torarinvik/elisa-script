@@ -211,22 +211,48 @@ module EsBuild:
             return true
 
 
+        def build_graph_plan_command_text_fits(command: ProcessCommand, total: mutable usize&) -> bool:
+            return false if not build_graph_plan_text_add_fits(total, command.executable)
+            if command.working_directory != "":
+                return false if not build_graph_plan_text_add_fits(total, command.working_directory)
+            for argument in command.arguments |command, total|:
+                return false if not build_graph_plan_text_add_fits(total, argument)
+            for environment_entry in command.environment |command, total|:
+                return false if not build_graph_plan_text_add_fits(total, environment_entry)
+            for stdio_path in [command.stdin_path, command.stdout_path, command.stderr_path] |command, total|:
+                if stdio_path != "":
+                    return false if not build_graph_plan_text_add_fits(total, stdio_path)
+            return true
+
+
         def build_graph_plan_text_fits(graph: BuildGraph) -> bool:
             total: mutable usize = 0
             for node in graph.nodes |graph, total|:
                 return false if not build_graph_plan_text_add_fits(total, node.name)
-                return false if not build_graph_plan_text_add_fits(total, node.command.executable)
-                if node.command.working_directory != "":
-                    return false if not build_graph_plan_text_add_fits(total, node.command.working_directory)
-                for argument in node.command.arguments |node, total|:
-                    return false if not build_graph_plan_text_add_fits(total, argument)
-                for environment_entry in node.command.environment |node, total|:
-                    return false if not build_graph_plan_text_add_fits(total, environment_entry)
-                for stdio_path in [node.command.stdin_path, node.command.stdout_path, node.command.stderr_path] |node, total|:
-                    if stdio_path != "":
-                        return false if not build_graph_plan_text_add_fits(total, stdio_path)
+                return false if not build_graph_plan_command_text_fits(node.command, total)
             for ordered_name in graph.node_name_order |graph, total|:
                 return false if not build_graph_plan_text_add_fits(total, ordered_name.name)
+            return true
+
+
+        def build_graph_resolution_vectors_fit(graph: BuildGraph, resolution: BuildDependencyResolution) -> bool:
+            total: mutable usize = resolution.node_name_order.count
+            return false if total > Limits::PLAN_VECTOR_ENTRIES
+            for index in 0..<graph.nodes.count |graph, resolution, total|:
+                node: BuildNode = graph.nodes[index]
+                return false if not build_graph_plan_entry_add_fits(total, node.command.arguments.count)
+                return false if not build_graph_plan_entry_add_fits(total, node.command.environment.count)
+                return false if not build_graph_plan_entry_add_fits(total, resolution.dependencies[index].count)
+            return true
+
+
+        def build_graph_resolution_text_fits(graph: BuildGraph, resolution: BuildDependencyResolution) -> bool:
+            total: mutable usize = 0
+            for node in graph.nodes |graph, total|:
+                return false if not build_graph_plan_text_add_fits(total, node.name)
+                return false if not build_graph_plan_command_text_fits(node.command, total)
+            for entry in resolution.node_name_order |resolution, total|:
+                return false if not build_graph_plan_text_add_fits(total, entry.name)
             return true
 
 
@@ -328,10 +354,27 @@ module EsBuild:
             raise BuildContractError.EmptyGraph if node_names.count == 0
             raise BuildContractError.NodeLimitExceeded if node_names.count > Limits::NODES
             raise BuildContractError.DependencyShapeInvalid if dependency_names.count != node_names.count
+            total_entries: mutable usize = node_names.count
+            total_dependencies: mutable usize = 0
+            for node_index in 0..<node_names.count |dependency_names, total_entries, total_dependencies|:
+                named: BuildDependencyNames = dependency_names[node_index]
+                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::DEPENDENCIES
+                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::TOTAL_DEPENDENCIES - total_dependencies
+                total_dependencies <- total_dependencies + named.names.count
+                raise BuildContractError.PlanVectorLimitExceeded if not build_graph_plan_entry_add_fits(total_entries, named.names.count)
+            total_text: mutable usize = 0
+            for node_name in node_names |node_names, total_text|:
+                raise BuildContractError.InvalidNodeName if not build_name_valid(node_name)
+                raise BuildContractError.PlanTextLimitExceeded if not build_graph_plan_text_add_fits(total_text, node_name)
+                # The resolver also returns a name-index entry for every node.
+                raise BuildContractError.PlanTextLimitExceeded if not build_graph_plan_text_add_fits(total_text, node_name)
+            for named in dependency_names |dependency_names, total_text|:
+                for dependency_name in named.names |named, total_text|:
+                    raise BuildContractError.PlanTextLimitExceeded if not build_graph_plan_text_add_fits(total_text, dependency_name)
+                    raise BuildContractError.InvalidNodeName if not build_name_valid(dependency_name)
             order: mutable darray[usize] = []
             scratch: mutable darray[usize] = []
-            for index in 0..<node_names.count |node_names, order, scratch|:
-                raise BuildContractError.InvalidNodeName if not build_name_valid(node_names[index])
+            for index in 0..<node_names.count |order, scratch|:
                 order.push(index)
                 scratch.push(0)
             build_sort_name_indices(node_names, order, scratch)
@@ -339,15 +382,10 @@ module EsBuild:
                 raise BuildContractError.DuplicateNode if build_name_order(node_names[order[index - 1]], node_names[order[index]]) == BuildNameOrder.Equal
 
             resolved: mutable darray[darray[usize]] = []
-            total_dependencies: mutable usize = 0
-            for node_index in 0..<node_names.count |node_names, dependency_names, order, resolved, total_dependencies|:
+            for node_index in 0..<node_names.count |node_names, dependency_names, order, resolved|:
                 named: BuildDependencyNames = dependency_names[node_index]
-                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::DEPENDENCIES
-                raise BuildContractError.DependencyLimitExceeded if named.names.count > Limits::TOTAL_DEPENDENCIES - total_dependencies
-                total_dependencies <- total_dependencies + named.names.count
                 node_dependencies: mutable darray[usize] = []
                 for dependency_name in named.names |node_names, order, node_index, node_dependencies|:
-                    raise BuildContractError.InvalidNodeName if not build_name_valid(dependency_name)
                     dependency_index: usize = build_find_node_index(node_names, order, dependency_name)
                     raise BuildContractError.MissingDependency if dependency_index == node_names.count
                     raise BuildContractError.DependencyOrderInvalid if dependency_index >= node_index
@@ -468,6 +506,8 @@ module EsBuild:
             raise BuildContractError.NodeNameIndexInvalid if graph.node_name_order.count != 0
             raise BuildContractError.DependencyShapeInvalid if resolution.dependencies.count != graph.nodes.count
             raise BuildContractError.NodeNameIndexInvalid if resolution.node_name_order.count != graph.nodes.count
+            raise BuildContractError.PlanVectorLimitExceeded if not build_graph_resolution_vectors_fit(graph, resolution)
+            raise BuildContractError.PlanTextLimitExceeded if not build_graph_resolution_text_fits(graph, resolution)
             for node_index in 0..<graph.nodes.count |graph, resolution|:
                 node: BuildNode = graph.nodes[node_index]
                 raise BuildContractError.InvalidNodeName if not build_name_valid(node.name)
