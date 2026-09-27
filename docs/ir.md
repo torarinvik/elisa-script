@@ -549,7 +549,9 @@ After this readback succeeds it advances the plan through `Staged` to
 `Verified`. `stage_install_sources_at` is the complete population entry point:
 it consumes the ordered source receipts, requires a fresh empty root, copies
 each artifact, verifies readback, and removes the private stage on copy or
-verification failure. The caller must serialize staging against other
+verification failure. Either failure also moves the plan to terminal `Failed`
+state, even when stage cleanup succeeds; a retry starts with a new plan and new
+source receipts. The caller must serialize staging against other
 same-user writers to the stage root; a private mode alone is not a lock.
 `create_install_stage_root_at` creates a caller-named exclusive sibling with
 mode `0700`, opens it without following links, binds its name to the opened
