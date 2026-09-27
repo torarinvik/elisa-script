@@ -808,6 +808,13 @@ dynamic-debugging temporary, and crash-reproducer outputs; those can produce
 directory trees or failure-path files not listed as graph outputs. Explicit
 `-gen-reproducer=off` and `-fcrash-diagnostics=off` remain projectable because
 they disable those failure-path outputs.
+Clang commands that enable implicit module compilation are rejected as well:
+`-fmodules` uses a system-selected cache directory by default, an explicit
+`-fimplicit-modules` enables implicit module construction, and
+`-fmodules-driver` may schedule module builds whose cache outputs are outside
+the selected action. The ordered combination `-fmodules -fno-implicit-modules`
+remains projectable for commands that consume prebuilt modules without
+creating implicit cache entries.
 Clang's `-gen-cdb-fragment-path <directory>` is rejected because it emits
 uniquely named fragments that cannot be derived as a deterministic action
 output. If `-MJ <file>` is also present, Clang gives `-MJ` precedence, so the
