@@ -393,12 +393,13 @@ opened as a no-follow regular file, read to a 1 MiB + 1 byte sentinel, and rejec
 fixtures pin those bounds and the stable rejection in source. This test source has not been run: it
 remains behind the disabled bounded compiler wrapper and does not yet cover
 unreadable input under a non-root user or caller integration. A candidate-only
-structured-output case now flattens 11 MiB of valid control-byte source whose
-JSON escaping must exceed the caller payload ceiling; it expects a stable
-failure frame rather than partial output. The fixture is source-only and has
-not been executed. Aggregate include-graph bytes and unique-file rejection are
-also covered only by candidate-only generated source cases and have not been
-executed.
+structured-output case now uses a 6 MiB opaque component type: the admitted
+source and the duplicated parameter metadata each JSON-escape that value,
+exceeding the payload ceiling while staying below the flattened-source cap.
+It expects a stable failure frame rather than partial output. The fixture is
+source-only and has not been executed. Aggregate include-graph bytes and
+unique-file rejection are also covered only by candidate-only generated source
+cases and have not been executed.
 
 The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
 source compares the configured launcher executable process against the pinned
