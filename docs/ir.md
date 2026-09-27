@@ -793,7 +793,11 @@ rejected. Header-language `-x` modes that create precompiled headers require an
 explicit graph-owned `-o`, because GCC and Clang use different implicit PCH
 suffixes. Commands that write unmodeled compiler byproducts are also rejected:
 `-save-temps` intermediates, `-save-stats` files, `-fproc-stat-report` CSV,
-and coverage notes from `-ftest-coverage` or `--coverage`/`-coverage`.
+GCC's `-fstack-usage` `.su` and `-fcallgraph-info` `.ci` sidecars, GCC pass
+dumps from `-fdump-*`, `--dump=...`, or `-da`, explicit `-fprofile-note`
+`.gcno` output, file-targeted `-fopt-info`, and coverage notes from
+`-ftest-coverage` or `--coverage`/`-coverage`. GCC `-fopt-info` forms directed
+to `stderr`, `stdout`, or `-` remain projectable.
 It also refuses Clang's unmodeled module-dependency directory, module cache
 and user module-build paths, index-store and index-unit outputs, symbol-graph,
 dynamic-debugging temporary, and crash-reproducer outputs; those can produce
