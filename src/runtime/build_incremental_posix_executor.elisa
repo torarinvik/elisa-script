@@ -73,6 +73,11 @@ module EsBuildIncrementalPosixExecutor:
             return true
 
 
+        def validate_build_recipe_toolchain_identity(path: sview, expected: BuildRecipeToolchainIdentity, observed: BuildRecipeToolchainIdentity) -> bool error[ToolchainObservationError]:
+            raise ToolchainObservationError.ToolchainChanged(path) if expected != observed
+            return true
+
+
     private:
         const module OutputInvalidationLimits:
             OPEN_EINTR_RETRIES: usize = 8
@@ -295,10 +300,20 @@ module EsBuildIncrementalPosixExecutor:
             return identities
 
 
+        # Re-observe the executable and any exact-environment shim at the
+        # node's dispatch boundary. This catches changes after planning; the
+        # final path-based process spawn still has an OS-level replacement
+        # window that would require descriptor-bound execution to eliminate.
+        def validate_build_recipe_toolchain_for_dispatch_at(scratch: mutable Arena&, root_fd: int, resolution: BuildRecipeToolchainPath, expected: BuildRecipeToolchainIdentity) -> bool error[OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            observed: BuildRecipeToolchainIdentity = try observe_build_recipe_toolchain_set_at(scratch, root_fd, resolution)
+            _ = try validate_build_recipe_toolchain_identity(resolution.path, expected, observed)
+            return true
+
+
         # Serial incremental dispatcher with a per-node invalidation boundary.
         # A failed node therefore cannot erase outputs belonging to later dirty
         # nodes which have not started.
-        def execute_build_graph_incremental_serial_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], plan: BuildIncrementalPlan) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
+        def execute_build_graph_incremental_serial_at(scratch: mutable Arena&, root_fd: int, graph: mutable BuildGraph&, previous_targets: darray[BuildIncrementalTarget], recipes: darray[BuildIncrementalRecipeTarget], observations: darray[BuildIncrementalObservation], toolchain_resolutions: darray[BuildRecipeToolchainPath], plan: BuildIncrementalPlan) -> BuildExecutionResult error[BuildExecutionError, BuildContractError, BuildIncrementalError, OutputInvalidationError, OpenError, ObserveError, ToolchainObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Process.Run]:
             valid_graph: mutable bool = false
             catch validate_build_graph(graph):
                 ok value:
@@ -336,6 +351,14 @@ module EsBuildIncrementalPosixExecutor:
                             raise failure
                     _ = try advance_build_graph(graph, BuildGraphEvent.NodeStart, node_index)
                     results[node_index].started <- true
+                    catch validate_build_recipe_toolchain_for_dispatch_at(scratch, root_fd, toolchain_resolutions[node_index], recipes[node_index].toolchain_identity):
+                        ok:
+                            pass
+                        error failure:
+                            _ = try cleanup_failed_build_graph_outputs_at(scratch, root_fd, results, recipes)
+                            _ = try advance_build_graph(graph, BuildGraphEvent.Cancel)
+                            _ = try advance_build_graph(graph, BuildGraphEvent.CancelAck)
+                            raise failure
                     remaining_log_bytes: usize = EsBuild::Limits::LOG_BYTES - graph.log_bytes
                     command_limit: usize = graph.nodes[node_index].command.capture_output_limit_bytes
                     effective_limit: usize = command_limit if command_limit < remaining_log_bytes else remaining_log_bytes
@@ -411,7 +434,7 @@ module EsBuildIncrementalPosixExecutor:
             graph <- signed.graph
             plan: BuildIncrementalPlan = try plan_build_incremental_graph_transition(previous_targets, graph, signed.recipes, observations)
             raise BuildExecutionError.NodeResultLimitExceeded if graph.nodes.count > EsBuildExecutor::Limits::NODE_RESULTS
-            result: BuildExecutionResult = try execute_build_graph_incremental_serial_at(scratch, root_fd, graph, previous_targets, signed.recipes, observations, plan)
+            result: BuildExecutionResult = try execute_build_graph_incremental_serial_at(scratch, root_fd, graph, previous_targets, signed.recipes, observations, toolchain_resolutions, plan)
             return BuildIncrementalPosixExecution{result: result, recipes: signed.recipes, pre_execution_observations: observations}
 
 

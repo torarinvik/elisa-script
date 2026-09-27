@@ -702,12 +702,17 @@ preserves these modes by dispatching `Replace`/`Clear` commands through the
 absolute POSIX `/usr/bin/env -i` shim; the requested tool must itself be an
 absolute path. Incremental callers must associate the canonical relative
 `usr/bin/env` helper path with each such command. Its descriptor-relative file
-digest is mixed into that node's observed toolchain identity both before
-dispatch and before cache publication, so changing the shim invalidates reuse.
-`Inherit` continues to use the captured-process overlay path and cannot be
-signed for cache reuse without a captured ambient snapshot. Source fixtures
-cover mode dispatch and shim identity admission, but E07 runtime behavior and
-cache acceptance remain unverified under the validation hold.
+digest is mixed into that node's observed toolchain identity before planning
+and before cache publication. The executor also re-observes the executable and
+helper immediately before each dirty-node dispatch and aborts with
+`ToolchainChanged` if identity drifted after planning. Because the process
+adapter still spawns by pathname, replacement in the narrow interval between
+that last observation and `exec` remains possible; descriptor-bound execution
+is required to close that race. `Inherit` continues to use the captured-process
+overlay path and cannot be signed for cache reuse without a captured ambient
+snapshot. Source fixtures cover mode dispatch and shim identity admission, but
+E07 runtime behavior and cache acceptance remain unverified under the
+validation hold.
 `resolve_incremental_build_dependencies` validates that same manifest and
 converts its target/dependency names into the canonical node indices and bound
 name-order index expected by `BuildGraph`; callers no longer need to maintain
