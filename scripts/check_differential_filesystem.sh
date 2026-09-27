@@ -113,6 +113,8 @@ if rg_bounded -Fq 'result <- result * DIFFERENTIAL_FILESYSTEM_HASH_PRIME' "$mode
 fi
 rg_bounded -Fq 'include "../runtime/hash_model.elisa"' "$ir"
 rg_bounded -Fq 'include "./filesystem_snapshot_model.elisa"' "$consumer"
+rg_bounded -Fq 'EsBoundedText::ReadError.LimitExceeded' "$repo_root/scripts/check_differential_filesystem.elisascript"
+rg_bounded -Fq 'raise AuditReadError.LimitExceeded' "$repo_root/scripts/check_differential_filesystem.elisascript"
 rg_bounded -Fq 'using EsDifferentialFilesystem' "$fixture"
 for fixture_pattern in \
     'differential_filesystem_snapshot_contract_orders_entries_and_reports_first_difference' \
