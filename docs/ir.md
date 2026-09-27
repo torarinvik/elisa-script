@@ -808,6 +808,9 @@ dynamic-debugging temporary, and crash-reproducer outputs; those can produce
 directory trees or failure-path files not listed as graph outputs. Explicit
 `-gen-reproducer=off` and `-fcrash-diagnostics=off` remain projectable because
 they disable those failure-path outputs.
+The dependency-scanner timing log option (`-fdepscan-log-path=<file>`) is
+rejected because scanner consumers may write that separate file, which is not
+represented among the compile action's declared outputs.
 Clang commands that enable implicit module compilation are rejected as well:
 `-fmodules` uses a system-selected cache directory by default, an explicit
 `-fimplicit-modules` enables implicit module construction, and
