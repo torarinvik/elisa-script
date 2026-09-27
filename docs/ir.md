@@ -542,15 +542,21 @@ data/executable mode, before the plan can enter `Staged`. The POSIX
 `verify_install_stage_at` adapter requires a stage-root directory with mode
 `0700`, derives receipts by no-follow readback, checks byte count and SHA-256,
 then verifies exact file modes (`0644` for data, `0755` for executables) on the
-reopened descriptor. It returns an `InstallStageProof` binding the ordered
-receipts to the stage-root device/inode and each file's stable stamp.
+reopened descriptor, then scans the complete tree against the manifest. It
+returns an `InstallStageProof` binding the ordered receipts to the private
+effective-user-owned stage-root device/inode and each file's stable stamp.
 `revalidate_install_stage_at` rechecks those identities and modes before
-publication without rehashing large files, then advances the plan from
-`Verified` to `PublishReady`. `Publish` is rejected until that preflight state
-is acknowledged. The orchestration layer must use the POSIX revalidation result
-as the source of that acknowledgement; the value-only model cannot itself
-attest a filesystem observation. Neither operation rejects unexpected extra
-paths yet.
+publication without rehashing large files, then repeats the bounded,
+descriptor-relative whole-tree walk performed during initial stage admission.
+The walk admits only the manifest files and their required parent directories,
+rejects symlinks and other entries, requires directory mode `0755`, and checks
+file identity, owner, device, link count, and mode. It enforces explicit path,
+depth, and entry limits, then advances the plan from `Verified` to
+`PublishReady`. `Publish` is rejected until that preflight state is
+acknowledged. The orchestration layer must use the POSIX revalidation result as
+the source of that acknowledgement; the value-only model cannot itself attest
+a filesystem observation. This is a point-in-time check, not protection
+against a same-user concurrent mutation during or after preflight.
 `open_install_source_for_copy` reopens each receipt beneath the same root
 capability and retains the matching descriptor. `read_install_source_chunk`
 streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor
@@ -558,10 +564,10 @@ and path identity again and consumes the descriptor, while
 `cancel_install_source_copy` closes an abandoned stream.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
-remain `RollbackUncertain`. Whole-tree stage-root creation and cleanup,
-unexpected-entry rejection, directory permission mapping, multi-artifact atomic
-replacement, recovery journal, and the end-to-end installation adapter remain
-unimplemented.
+remain `RollbackUncertain`. The tree scan is only a verifier: stage-root
+creation and cleanup, destination directory permission mapping, multi-artifact
+atomic replacement, recovery journal, and the end-to-end installation adapter
+remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original

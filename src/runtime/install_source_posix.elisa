@@ -16,6 +16,9 @@ module EsInstallSourcePosix:
             STREAM_CHUNK_BYTES: usize = 65536
             STREAM_READ_CALLS: usize = 1048576
             EINTR_RETRIES: usize = 8
+            STAGE_PATH_BYTES: usize = 4096
+            STAGE_WALK_DEPTH: usize = 2048
+            STAGE_WALK_ENTRIES: usize = 524288
 
 
         struct InstallSourceReceipt:
@@ -32,6 +35,7 @@ module EsInstallSourcePosix:
         struct InstallStageRootProof:
             device: u32
             inode: u64
+            user: u32
 
 
         struct InstallStageArtifactProof:
@@ -73,6 +77,17 @@ module EsInstallSourcePosix:
             StageProofReceiptMismatch
             StageProofRootChanged
             StageRevalidationNotReady
+            StageTreeEntryLimitExceeded
+            StageTreeDepthLimitExceeded
+            StageTreePathLimitExceeded
+            StageTreeUnexpectedEntry
+            StageTreeArtifactChanged
+            StageTreeMissingArtifact
+            StageTreeMissingDirectory
+            StageTreeReadFailed(errno: i32)
+            StageTreeOpenFailed(errno: i32)
+            StageTreeMetadataFailed
+            StageTreeDirectoryCloseFailed
             ReceiptPathMismatch
             ReceiptCountMismatch
             ReceiptOrderMismatch
@@ -86,6 +101,10 @@ module EsInstallSourcePosix:
 
 
     private:
+        @link_name(geteuid)
+        extern install_source_effective_user() -> u32
+
+
         const module InstallSourceErrno:
             EINTR: i32 = 4
             EIO: i32 = 5
@@ -94,6 +113,7 @@ module EsInstallSourcePosix:
         const module InstallSourceMode:
             PERMISSION_MASK: u16 = 4095
             PRIVATE_DIRECTORY: u16 = 448
+            DIRECTORY: u16 = 493
             DATA: u16 = 420
             EXECUTABLE: u16 = 493
 
@@ -101,6 +121,32 @@ module EsInstallSourcePosix:
         const enum InstallSourceReadState of u8:
             Read
             Done
+
+
+        struct InstallStageDirectoryFrame:
+            directory: mutable heap void&?
+            path_length: usize
+            interrupted: usize = 0
+
+
+        const enum InstallStageWalkState of u8:
+            Walk
+            Complete
+            Failed
+
+
+        const enum InstallStageWalkFailure of u8:
+            None
+            EntryLimit
+            DepthLimit
+            PathLimit
+            UnexpectedEntry
+            ArtifactChanged
+            ModeMismatch
+            Read
+            Open
+            Metadata
+            Close
 
 
         def install_source_stamp_equal(left: BuildIncrementalFileStamp, right: BuildIncrementalFileStamp) -> bool:
@@ -127,7 +173,7 @@ module EsInstallSourcePosix:
             return InstallSourceMode::EXECUTABLE
 
 
-        def install_source_stage_mode_matches(root_fd: int, path: sview, stamp: BuildIncrementalFileStamp, mode: InstallFileMode) -> bool error[InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+        def install_source_stage_mode_matches(root_fd: int, root: InstallStageRootProof, path: sview, stamp: BuildIncrementalFileStamp, mode: InstallFileMode) -> bool error[InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
             opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
             raise InstallSourceError.StageArtifactChanged if not opened.present
             observed: mutable ElisascriptStat = ElisascriptStat{}
@@ -136,6 +182,7 @@ module EsInstallSourcePosix:
             raise OpenError.CloseFailed(path) if close_status != 0
             raise InstallSourceError.StageMetadataFailed if not metadata_ok
             raise InstallSourceError.StageArtifactChanged if not install_source_stat_matches_stamp(observed, stamp)
+            raise InstallSourceError.StageArtifactChanged if observed.device != root.device or observed.user != root.user or observed.link_count != 1u16
             return (observed.mode & InstallSourceMode::PERMISSION_MASK) == install_source_expected_mode(mode)
 
 
@@ -144,8 +191,8 @@ module EsInstallSourcePosix:
             observed: mutable ElisascriptStat = ElisascriptStat{}
             raise InstallSourceError.StageMetadataFailed if not install_source_stat_descriptor(root_fd, observed)
             raise InstallSourceError.StageRootInvalid if (observed.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY
-            raise InstallSourceError.StageRootNotPrivate if (observed.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY
-            return InstallStageRootProof{device: observed.device, inode: observed.inode}
+            raise InstallSourceError.StageRootNotPrivate if observed.user != install_source_effective_user() or (observed.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY
+            return InstallStageRootProof{device: observed.device, inode: observed.inode, user: observed.user}
 
 
         def install_source_close_descriptor(handle: mutable InstallSourceCopyHandle&) -> int can[Blocking.IO]:
@@ -162,6 +209,34 @@ module EsInstallSourcePosix:
             raise InstallSourceError.ByteCountMismatch if receipt.byte_count != artifact.byte_count or receipt.source_stamp.size != artifact.byte_count
             raise InstallSourceError.DigestMismatch if receipt.digest_0 != artifact.digest_0 or receipt.digest_1 != artifact.digest_1 or receipt.digest_2 != artifact.digest_2 or receipt.digest_3 != artifact.digest_3
             return true
+
+
+        def install_source_stage_path_matches(path_buffer: mutable u8&, path_length: usize, expected: sview) -> bool:
+            return false if sview_len(expected) != path_length
+            for offset in 0..<path_length |path_buffer, expected|:
+                return false if path_buffer[offset] != sview_at(expected, offset)
+            return true
+
+
+        def install_source_stage_path_is_parent(path_buffer: mutable u8&, path_length: usize, child: sview) -> bool:
+            child_length: usize = sview_len(child)
+            return false if path_length >= child_length or sview_at(child, path_length) != 47
+            for offset in 0..<path_length |path_buffer, child|:
+                return false if path_buffer[offset] != sview_at(child, offset)
+            return true
+
+
+        def install_source_stage_artifact_index(plan: InstallPlan&, path_buffer: mutable u8&, path_length: usize) -> usize:
+            for index in 0..<plan.artifacts.count |plan, path_buffer|:
+                return index if install_source_stage_path_matches(path_buffer, path_length, plan.artifacts[index].destination_path)
+            return plan.artifacts.count
+
+
+        def install_source_stage_parent_count(path: sview) -> usize:
+            count: mutable usize = 0
+            for offset in 0..<sview_len(path) |path, count|:
+                count <- count + 1 if sview_at(path, offset) == 47
+            return count
 
 
         def observe_install_source_entry_at(a: mutable Arena&, root_fd: int, artifact: InstallArtifact, artifact_index: usize) -> InstallSourceReceipt error[InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
@@ -186,6 +261,310 @@ module EsInstallSourcePosix:
                 digest_2: observed.fingerprint_word2,
                 digest_3: observed.fingerprint_word3
             }
+
+
+        # Enumerate the private stage through directory capabilities. Every
+        # regular file must bind to one manifest receipt, every directory must
+        # be a required parent of a planned destination, and symlinks/other
+        # entries are rejected. The walk is iterative so depth and cleanup are
+        # explicit rather than delegated to the host call stack.
+        def install_source_validate_stage_tree(root_fd: int, root: InstallStageRootProof, plan: InstallPlan&, artifacts: darray[InstallStageArtifactProof]) -> bool error[InstallSourceError] can[Blocking.IO, Abort.Panic, Unsafe.PointerCast]:
+            raise InstallSourceError.StageProofCountMismatch if artifacts.count != plan.artifacts.count
+            duplicate_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            root_open_retries: mutable usize = 0
+            root_duplicate: mutable int = -1
+            while root_duplicate < 0:
+                root_duplicate <- elisascript_posix_openat(root_fd, ".", duplicate_flags, 0u32)
+                if root_duplicate < 0:
+                    errno: mutable i32& = elisascript_posix_errno()
+                    if errno[0] == InstallSourceErrno::EINTR and root_open_retries < Limits::EINTR_RETRIES:
+                        root_open_retries <- root_open_retries + 1
+                        continue
+                    raise InstallSourceError.StageTreeOpenFailed(errno[0])
+            duplicate_info: mutable ElisascriptStat = ElisascriptStat{}
+            if not install_source_stat_descriptor(root_duplicate, duplicate_info):
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageTreeDirectoryCloseFailed if close_status != 0
+                raise InstallSourceError.StageMetadataFailed
+            if duplicate_info.device != root.device or duplicate_info.inode != root.inode or duplicate_info.user != root.user:
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageTreeDirectoryCloseFailed if close_status != 0
+                raise InstallSourceError.StageProofRootChanged
+            if (duplicate_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageTreeDirectoryCloseFailed if close_status != 0
+                raise InstallSourceError.StageRootInvalid
+            if (duplicate_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY:
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageTreeDirectoryCloseFailed if close_status != 0
+                raise InstallSourceError.StageRootNotPrivate
+            root_stream: mutable heap void&? = elisascript_posix_fdopendir(root_duplicate)
+            if root_stream == null:
+                errno: mutable i32& = elisascript_posix_errno()
+                open_errno: i32 = errno[0]
+                close_status: int = elisascript_posix_close(root_duplicate)
+                raise InstallSourceError.StageTreeDirectoryCloseFailed if close_status != 0
+                raise InstallSourceError.StageTreeOpenFailed(open_errno)
+
+            frames: mutable InstallStageDirectoryFrame[Limits::STAGE_WALK_DEPTH] = zeroed
+            frames[0] <- InstallStageDirectoryFrame{directory: root_stream, path_length: 0}
+            frame_count: mutable usize = 1
+            path_storage: mutable u8[Limits::STAGE_PATH_BYTES] = zeroed
+            path_buffer: mutable u8& = (&path_storage[0])
+            seen_files: mutable bool[INSTALL_MAX_ARTIFACTS] = zeroed
+            seen_parent_directories: mutable usize[INSTALL_MAX_ARTIFACTS] = zeroed
+            entries_seen: mutable usize = 0
+            path_length: mutable usize = 0
+            failure: mutable InstallStageWalkFailure = InstallStageWalkFailure.None
+            failure_errno: mutable i32 = 0
+            close_failed: mutable bool = false
+            cleanup_close_failed: mutable bool = false
+            state: mutable InstallStageWalkState = InstallStageWalkState.Walk
+
+            machine over state:
+                state Walk
+                start Walk
+
+                Walk, InstallStageWalkState.Walk:
+                    if frame_count == 0:
+                        state <- InstallStageWalkState.Complete
+                        -> Walk
+                    top: usize = frame_count - 1
+                    frame: InstallStageDirectoryFrame = frames[top]
+                    if frame.directory == null:
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    directory: mutable heap void& = frame.directory
+                    errno_pointer: mutable i32& = elisascript_posix_errno()
+                    errno_pointer[0] <- 0
+                    entry_option: mutable ElisascriptDirectoryEntry&? = elisascript_posix_readdir(directory)
+                    if entry_option == null:
+                        if errno_pointer[0] == InstallSourceErrno::EINTR and frame.interrupted < Limits::EINTR_RETRIES:
+                            frames[top].interrupted <- frame.interrupted + 1
+                            -> Walk
+                        if errno_pointer[0] != 0:
+                            failure <- InstallStageWalkFailure.Read
+                            failure_errno <- errno_pointer[0]
+                            state <- InstallStageWalkState.Failed
+                            -> Walk
+                        closed_frame: InstallStageDirectoryFrame = frames[top]
+                        frame_count <- frame_count - 1
+                        if closed_frame.directory == null or elisascript_posix_closedir(closed_frame.directory) != 0:
+                            failure <- InstallStageWalkFailure.Close
+                            state <- InstallStageWalkState.Failed
+                            -> Walk
+                        path_length <- frames[frame_count - 1].path_length if frame_count != 0 else 0
+                        -> Walk
+
+                    frames[top].interrupted <- 0
+                    entry: mutable ElisascriptDirectoryEntry& = entry_option
+                    name_length: usize = entry.name_length.usize()
+                    if entry.record_length == 0u16 or name_length == 0 or name_length >= 1024:
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    if (name_length == 1 and entry.name[0] == 46u8) or (name_length == 2 and entry.name[0] == 46u8 and entry.name[1] == 46u8):
+                        -> Walk
+                    if entries_seen >= Limits::STAGE_WALK_ENTRIES:
+                        failure <- InstallStageWalkFailure.EntryLimit
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    entries_seen <- entries_seen + 1
+                    parent_path_length: usize = frame.path_length
+                    separator_bytes: usize = 1 if parent_path_length != 0 else 0
+                    if parent_path_length + separator_bytes + name_length > Limits::STAGE_PATH_BYTES:
+                        failure <- InstallStageWalkFailure.PathLimit
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    path_length <- parent_path_length
+                    if separator_bytes != 0:
+                        path_buffer[path_length] <- 47u8
+                        path_length <- path_length + 1
+                    for offset in 0..<name_length |entry, path_buffer, path_length|:
+                        byte: u8 = entry.name[offset]
+                        if byte == 0u8 or byte == 47u8:
+                            failure <- InstallStageWalkFailure.Metadata
+                            state <- InstallStageWalkState.Failed
+                        path_buffer[path_length] <- byte
+                        path_length <- path_length + 1
+                    if state == InstallStageWalkState.Failed:
+                        -> Walk
+                    if entry.name[name_length] != 0u8:
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+
+                    parent_fd: int = elisascript_posix_dirfd(directory)
+                    if parent_fd < 0:
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    entry_info: mutable ElisascriptStat = ElisascriptStat{}
+                    stat_retries: mutable usize = 0
+                    stat_status: mutable int = -1
+                    while stat_status != 0:
+                        stat_status <- elisascript_posix_fstatat(parent_fd, (&entry.name[0]).cast[cstr], entry_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+                        if stat_status != 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            if errno[0] == InstallSourceErrno::EINTR and stat_retries < Limits::EINTR_RETRIES:
+                                stat_retries <- stat_retries + 1
+                                continue
+                            failure <- InstallStageWalkFailure.Metadata
+                            failure_errno <- errno[0]
+                            state <- InstallStageWalkState.Failed
+                            break
+                    if state == InstallStageWalkState.Failed:
+                        -> Walk
+                    if entry_info.device != root.device or entry_info.user != root.user:
+                        failure <- InstallStageWalkFailure.UnexpectedEntry
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+
+                    kind: u16 = entry_info.mode & DarwinStatMode::MASK
+                    if kind == DarwinStatMode::REGULAR:
+                        artifact_index: usize = install_source_stage_artifact_index(plan, path_buffer, path_length)
+                        if artifact_index == plan.artifacts.count:
+                            failure <- InstallStageWalkFailure.UnexpectedEntry
+                            state <- InstallStageWalkState.Failed
+                            -> Walk
+                        proof: InstallStageArtifactProof = artifacts[artifact_index]
+                        if seen_files[artifact_index] or not install_source_stat_matches_stamp(entry_info, proof.stage_stamp) or entry_info.user != root.user or entry_info.device != root.device or entry_info.link_count != 1u16:
+                            failure <- InstallStageWalkFailure.ArtifactChanged
+                            state <- InstallStageWalkState.Failed
+                            -> Walk
+                        if (entry_info.mode & InstallSourceMode::PERMISSION_MASK) != install_source_expected_mode(plan.artifacts[artifact_index].mode):
+                            failure <- InstallStageWalkFailure.ModeMismatch
+                            state <- InstallStageWalkState.Failed
+                            -> Walk
+                        seen_files[artifact_index] <- true
+                        path_length <- parent_path_length
+                        -> Walk
+
+                    if kind != DarwinStatMode::DIRECTORY or (entry_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::DIRECTORY:
+                        failure <- InstallStageWalkFailure.UnexpectedEntry
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    directory_is_expected: mutable bool = false
+                    for artifact_index in 0..<plan.artifacts.count |plan, path_buffer, path_length, seen_parent_directories, directory_is_expected|:
+                        if install_source_stage_path_is_parent(path_buffer, path_length, plan.artifacts[artifact_index].destination_path):
+                            directory_is_expected <- true
+                            seen_parent_directories[artifact_index] <- seen_parent_directories[artifact_index] + 1
+                    if not directory_is_expected:
+                        failure <- InstallStageWalkFailure.UnexpectedEntry
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+                    if frame_count >= Limits::STAGE_WALK_DEPTH:
+                        failure <- InstallStageWalkFailure.DepthLimit
+                        state <- InstallStageWalkState.Failed
+                        -> Walk
+
+                    child_open_retries: mutable usize = 0
+                    child_fd: mutable int = -1
+                    child_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+                    while child_fd < 0:
+                        child_fd <- elisascript_posix_openat(parent_fd, (&entry.name[0]).cast[cstr], child_flags, 0u32)
+                        if child_fd < 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            if errno[0] == InstallSourceErrno::EINTR and child_open_retries < Limits::EINTR_RETRIES:
+                                child_open_retries <- child_open_retries + 1
+                                continue
+                            failure <- InstallStageWalkFailure.Open
+                            failure_errno <- errno[0]
+                            state <- InstallStageWalkState.Failed
+                            break
+                    if state == InstallStageWalkState.Failed:
+                        path_length <- parent_path_length
+                        -> Walk
+                    child_info: mutable ElisascriptStat = ElisascriptStat{}
+                    child_metadata_ok: bool = install_source_stat_descriptor(child_fd, child_info)
+                    if child_metadata_ok and (child_info.device != entry_info.device or child_info.inode != entry_info.inode or child_info.user != root.user or (child_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY):
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.ArtifactChanged
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    if not child_metadata_ok:
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    if (child_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::DIRECTORY:
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.ModeMismatch
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    named_info: mutable ElisascriptStat = ElisascriptStat{}
+                    named_retries: mutable usize = 0
+                    named_status: mutable int = -1
+                    while named_status != 0:
+                        named_status <- elisascript_posix_fstatat(parent_fd, (&entry.name[0]).cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+                        if named_status != 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            if errno[0] == InstallSourceErrno::EINTR and named_retries < Limits::EINTR_RETRIES:
+                                named_retries <- named_retries + 1
+                                continue
+                            failure_errno <- errno[0]
+                            break
+                    if named_status != 0:
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.Metadata
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    if named_info.device != child_info.device or named_info.inode != child_info.inode or named_info.user != child_info.user or (named_info.mode & DarwinStatMode::MASK) != DarwinStatMode.DIRECTORY or (named_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode.DIRECTORY:
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.ArtifactChanged
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    child_stream: mutable heap void&? = elisascript_posix_fdopendir(child_fd)
+                    if child_stream == null:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        open_errno: i32 = errno[0]
+                        close_status: int = elisascript_posix_close(child_fd)
+                        close_failed <- true if close_status != 0
+                        failure <- InstallStageWalkFailure.Open
+                        failure_errno <- open_errno
+                        state <- InstallStageWalkState.Failed
+                        path_length <- parent_path_length
+                        -> Walk
+                    frames[frame_count] <- InstallStageDirectoryFrame{directory: child_stream, path_length: path_length}
+                    frame_count <- frame_count + 1
+                    -> Walk
+
+                Walk, InstallStageWalkState.Complete:
+                    break
+
+                Walk, InstallStageWalkState.Failed:
+                    break
+
+            while frame_count != 0:
+                frame_count <- frame_count - 1
+                abandoned: InstallStageDirectoryFrame = frames[frame_count]
+                if abandoned.directory != null and elisascript_posix_closedir(abandoned.directory) != 0:
+                    cleanup_close_failed <- true
+            raise InstallSourceError.StageTreeDirectoryCloseFailed if close_failed or cleanup_close_failed or failure == InstallStageWalkFailure.Close
+            raise InstallSourceError.StageTreeEntryLimitExceeded if failure == InstallStageWalkFailure.EntryLimit
+            raise InstallSourceError.StageTreeDepthLimitExceeded if failure == InstallStageWalkFailure.DepthLimit
+            raise InstallSourceError.StageTreePathLimitExceeded if failure == InstallStageWalkFailure.PathLimit
+            raise InstallSourceError.StageTreeUnexpectedEntry if failure == InstallStageWalkFailure.UnexpectedEntry
+            raise InstallSourceError.StageTreeArtifactChanged if failure == InstallStageWalkFailure.ArtifactChanged
+            raise InstallSourceError.StageModeMismatch if failure == InstallStageWalkFailure.ModeMismatch
+            raise InstallSourceError.StageTreeReadFailed(failure_errno) if failure == InstallStageWalkFailure.Read
+            raise InstallSourceError.StageTreeOpenFailed(failure_errno) if failure == InstallStageWalkFailure.Open
+            raise InstallSourceError.StageTreeMetadataFailed if failure == InstallStageWalkFailure.Metadata
+            for artifact_index in 0..<plan.artifacts.count |plan, seen_files, seen_parent_directories|:
+                raise InstallSourceError.StageTreeMissingArtifact if not seen_files[artifact_index]
+                raise InstallSourceError.StageTreeMissingDirectory if seen_parent_directories[artifact_index] != install_source_stage_parent_count(plan.artifacts[artifact_index].destination_path)
+            return true
 
 
     public:
@@ -244,7 +623,7 @@ module EsInstallSourcePosix:
         def verify_install_stage_artifact_at(a: mutable Arena&, stage_root_fd: int, plan: InstallPlan&, artifact_index: usize) -> InstallStageArtifactProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
-            _ = try install_source_require_private_stage_root(stage_root_fd)
+            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
             raise InstallSourceError.ArtifactIndexOutOfRange if artifact_index >= plan.artifacts.count
             artifact: InstallArtifact = plan.artifacts[artifact_index]
             initial_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage_root_fd, artifact.destination_path)
@@ -254,7 +633,7 @@ module EsInstallSourcePosix:
             observed: BuildIncrementalObservation = try observe_build_incremental_file_with_stamp_at(a, stage_root_fd, artifact.destination_path, stamp)
             raise InstallSourceError.StageArtifactChanged if not observed.present or not install_source_stamp_equal(initial_stamp, stamp[0])
             raise InstallSourceError.StageDigestMismatch if observed.fingerprint != artifact.digest_0 or observed.fingerprint_word1 != artifact.digest_1 or observed.fingerprint_word2 != artifact.digest_2 or observed.fingerprint_word3 != artifact.digest_3
-            mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, artifact.destination_path, stamp[0], artifact.mode)
+            mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, root_proof, artifact.destination_path, stamp[0], artifact.mode)
             raise InstallSourceError.StageModeMismatch if not mode_matches
             return InstallStageArtifactProof{
                 receipt: InstallStageReceipt{
@@ -271,9 +650,9 @@ module EsInstallSourcePosix:
             }
 
 
-        # Admit staging only after every planned output has passed descriptor-
-        # relative content and exact-mode verification. Unexpected extra paths
-        # still require the whole-tree closure scan before publication.
+        # Admit staging only after every planned output passes content/mode
+        # verification and a bounded whole-tree scan proves exact manifest
+        # closure: no extras, links, unsupported entries, or missing parents.
         def verify_install_stage_at(a: mutable Arena&, stage_root_fd: int, plan: mutable InstallPlan&) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
@@ -284,6 +663,7 @@ module EsInstallSourcePosix:
                 artifact_proof: InstallStageArtifactProof = try verify_install_stage_artifact_at(a, stage_root_fd, plan, index)
                 artifact_proofs.push(artifact_proof)
                 receipts.push(artifact_proof.receipt)
+            _ = try install_source_validate_stage_tree(stage_root_fd, root_proof, plan, artifact_proofs)
             _ = try stage_install_plan(plan, receipts)
             return InstallStageProof{root: root_proof, artifacts: artifact_proofs}
 
@@ -292,11 +672,11 @@ module EsInstallSourcePosix:
         # This avoids rehashing large outputs while detecting replacement,
         # ordinary content mutation, mode changes, and stage-root substitution.
         # Success consumes the proof by moving the plan to PublishReady.
-        def revalidate_install_stage_at(stage_root_fd: int, plan: mutable InstallPlan&, proof: InstallStageProof&) -> InstallState error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+        def revalidate_install_stage_at(stage_root_fd: int, plan: mutable InstallPlan&, proof: InstallStageProof&) -> InstallState error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.StageRevalidationNotReady if plan.state != InstallState.Verified
             root_now: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
-            raise InstallSourceError.StageProofRootChanged if root_now.device != proof.root.device or root_now.inode != proof.root.inode
+            raise InstallSourceError.StageProofRootChanged if root_now.device != proof.root.device or root_now.inode != proof.root.inode or root_now.user != proof.root.user
             raise InstallSourceError.StageProofCountMismatch if proof.artifacts.count != plan.artifacts.count
             for index in 0..<plan.artifacts.count |plan, proof|:
                 artifact: InstallArtifact = plan.artifacts[index]
@@ -311,8 +691,9 @@ module EsInstallSourcePosix:
                 raise InstallSourceError.StageArtifactChanged if not entry.stage_stamp.present
                 current_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage_root_fd, artifact.destination_path)
                 raise InstallSourceError.StageArtifactChanged if not install_source_stamp_equal(entry.stage_stamp, current_stamp)
-                mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, artifact.destination_path, current_stamp, artifact.mode)
+                mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, root_now, artifact.destination_path, current_stamp, artifact.mode)
                 raise InstallSourceError.StageModeMismatch if not mode_matches
+            _ = try install_source_validate_stage_tree(stage_root_fd, root_now, plan, proof.artifacts)
             return try advance_install_plan(plan, InstallEvent.Preflight)
 
 
