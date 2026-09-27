@@ -30,6 +30,8 @@ module EsBuildUsageGraph:
             output_sets: darray[BuildExecutionNodeOutputs] = []
             command_owners: darray[BuildUsageProcessCommand] = []
             owned_node_names: darray[darray[u8]] = []
+            owned_dependency_indices: darray[darray[usize]] = []
+            action_fingerprints: darray[u64] = []
             owned_output_paths: darray[darray[u8]] = []
             metadata_bytes: mutable usize = 0
 
@@ -118,8 +120,9 @@ module EsBuildUsageGraph:
 
     public:
         # Every action's dependencies use the same canonical earlier-index
-        # form as BuildGraph. Command buffers, names, and declared output paths
-        # are retained by the returned plan for the graph's entire lifetime.
+        # form as BuildGraph. Command buffers, names, dependency edges,
+        # fingerprints, and declared output paths are retained by the returned
+        # plan for the graph's entire lifetime.
         def build_usage_graph_plan(actions: darray[BuildUsageActionSpec]) -> BuildUsageGraphPlan error[BuildUsageGraphError, BuildUsageArgvError, ProcessCommandError, BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
             raise BuildUsageGraphError.EmptyActions if actions.count == 0
             raise BuildUsageGraphError.ActionLimitExceeded if actions.count > Limits::ACTIONS
@@ -131,6 +134,7 @@ module EsBuildUsageGraph:
                 # Fingerprints are required by BuildGraph and must be rejected
                 # before retaining command buffers or declared-output paths.
                 raise BuildContractError.FingerprintMissing if action.fingerprint == 0
+                plan.action_fingerprints.push(action.fingerprint)
                 command_valid: bool = try validate_build_usage_process_command(action.command)
                 raise BuildUsageGraphError.InvalidPreparedCommand if not command_valid
                 raise BuildUsageGraphError.UnsupportedCommand if not build_executor_command_supported(action.command.command)
@@ -150,6 +154,10 @@ module EsBuildUsageGraph:
                 }
                 plan.graph.nodes.push(node)
                 plan.command_owners.push(action.command)
+                owned_dependencies: mutable darray[usize] = []
+                for dependency_index in action.dependencies |owned_dependencies|:
+                    owned_dependencies.push(dependency_index)
+                plan.owned_dependency_indices.push(owned_dependencies)
 
                 raise BuildUsageGraphError.OutputLimitExceeded if action.outputs.count > Limits::OUTPUTS - total_outputs
                 total_outputs <- total_outputs + action.outputs.count
@@ -175,14 +183,19 @@ module EsBuildUsageGraph:
         # reconstructed or changed any public plan fields after creation.
         def validate_build_usage_graph_plan(plan: mutable BuildUsageGraphPlan&) -> bool error[BuildUsageGraphError, BuildUsageArgvError, ProcessCommandError, BuildExecutionError, BuildContractError] can[Memory.Allocate, Abort.Panic]:
             raise BuildUsageGraphError.GraphNotPlanned if plan.graph.state != BuildGraphState.Planned
-            raise BuildUsageGraphError.PlanOwnershipInvalid if plan.graph.nodes.count == 0 or plan.graph.nodes.count != plan.command_owners.count or plan.graph.nodes.count != plan.output_sets.count or plan.graph.nodes.count != plan.owned_node_names.count
+            raise BuildUsageGraphError.PlanOwnershipInvalid if plan.graph.nodes.count == 0 or plan.graph.nodes.count != plan.command_owners.count or plan.graph.nodes.count != plan.output_sets.count or plan.graph.nodes.count != plan.owned_node_names.count or plan.graph.nodes.count != plan.owned_dependency_indices.count or plan.graph.nodes.count != plan.action_fingerprints.count
             raise BuildUsageGraphError.PlanOwnershipInvalid if plan.metadata_bytes > Limits::METADATA_BYTES
             owned_output_index: mutable usize = 0
             measured_metadata_bytes: mutable usize = 0
             for index in 0..<plan.graph.nodes.count |plan, owned_output_index, measured_metadata_bytes|:
                 node: BuildNode = plan.graph.nodes[index]
                 raise BuildContractError.FingerprintMissing if node.fingerprint == 0
+                raise BuildUsageGraphError.PlanOwnershipInvalid if node.fingerprint != plan.action_fingerprints[index]
                 raise BuildUsageGraphError.PlanOwnershipInvalid if node.state != BuildNodeState.Planned or node.name != bytes_view(plan.owned_node_names[index]) or plan.output_sets[index].target_name != node.name
+                owner_dependencies: darray[usize] = plan.owned_dependency_indices[index]
+                raise BuildUsageGraphError.PlanOwnershipInvalid if node.dependencies.count != owner_dependencies.count
+                for dependency_position in 0..<owner_dependencies.count |node, owner_dependencies, dependency_position|:
+                    raise BuildUsageGraphError.PlanOwnershipInvalid if node.dependencies[dependency_position] != owner_dependencies[dependency_position]
                 command_valid: bool = try validate_build_usage_process_command(plan.command_owners[index])
                 raise BuildUsageGraphError.InvalidPreparedCommand if not command_valid
                 raise BuildUsageGraphError.UnsupportedCommand if not build_executor_command_supported(plan.command_owners[index].command)

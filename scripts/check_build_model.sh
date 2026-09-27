@@ -303,6 +303,10 @@ done
 for boundary in \
     'BuildUsageGraphError.UnsupportedCommand' \
     'BuildUsageGraphError.PlanOwnershipInvalid' \
+    'owned_dependency_indices: darray[darray[usize]]' \
+    'action_fingerprints: darray[u64]' \
+    'node.fingerprint != plan.action_fingerprints[index]' \
+    'node.dependencies[dependency_position] != owner_dependencies[dependency_position]' \
     'raise BuildContractError.FingerprintMissing if action.fingerprint == 0' \
     'raise BuildContractError.FingerprintMissing if node.fingerprint == 0' \
     'def build_usage_graph_dependencies_preflight(' \
@@ -323,6 +327,8 @@ rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usa
 rg -Fq 'build_usage_graph_rejects_missing_fingerprint_during_action_preflight' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_relative_declared_outputs' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_forged_metadata_total' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_rejects_replaced_valid_dependency_edge' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_rejects_changed_action_fingerprint' "$usage_graph_fixture"
 rg -Fq 'build_usage_compile_argv(' "$target_usage_candidate"
 rg -Fq 'build_usage_link_argv(' "$target_usage_candidate"
 rg -Fq 'build_usage_raw_argv(' "$target_usage_candidate"

@@ -713,6 +713,10 @@ Manual graphs without an index are accepted only up to
 `NodeNameIndexRequired` and must use the resolver/attachment path. This caps
 the legacy pairwise uniqueness check while preserving indexed linear
 validation and logarithmic cache lookup for large graphs.
+`BuildUsageGraphPlan` also retains each action's original dependency indices
+and fingerprint; execution-boundary revalidation rejects a substituted but
+otherwise valid edge or a changed nonzero fingerprint, rather than accepting
+any graph that merely remains a valid DAG.
 Validation rejects missing, duplicate, unordered, and cyclic dependencies and
 preserves process-command errors. `advance_build_graph` limits active nodes and
 records per-node completion or failure. It exposes cancellation acknowledgement
