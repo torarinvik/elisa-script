@@ -309,8 +309,10 @@ for boundary in \
     'node.dependencies[dependency_position] != owner_dependencies[dependency_position]' \
     'raise BuildContractError.FingerprintMissing if action.fingerprint == 0' \
     'raise BuildContractError.FingerprintMissing if node.fingerprint == 0' \
-    'def build_usage_graph_dependencies_preflight(' \
-    'try build_usage_graph_dependencies_preflight(actions)' \
+    'def build_usage_graph_plan_preflight(' \
+    'try build_usage_graph_plan_preflight(actions)' \
+    'action.outputs.count > Limits::OUTPUTS - total_outputs' \
+    'action.outputs.count > EsBuild::Limits::PLAN_VECTOR_ENTRIES - total_entries' \
     'def build_usage_graph_dependency_resolution(' \
     'attach_build_dependency_resolution(plan.graph, resolution)' \
     'build_usage_graph_account_command_text' \
@@ -322,6 +324,8 @@ for boundary in \
 done
 rg -Fq 'build_usage_actions_become_owned_ordered_output_checked_graph' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_plans_large_graph_with_canonical_name_index' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_preflights_aggregate_plan_vectors' "$usage_graph_fixture"
+rg -Fq 'build_usage_graph_preflights_output_paths_with_shared_vector_budget' "$usage_graph_fixture"
 rg -Fq 'expected_metadata_bytes' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_unordered_dependencies_before_execution' "$usage_graph_fixture"
 rg -Fq 'build_usage_graph_rejects_missing_fingerprint_during_action_preflight' "$usage_graph_fixture"
