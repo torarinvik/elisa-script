@@ -16,6 +16,7 @@ module EsBuildBatch:
             NODES: usize = EsProcessBatch::Limits::JOBS
             PARALLEL: usize = EsProcessBatch::Limits::PARALLEL
             PLAN_VECTOR_ENTRIES: usize = 65536
+            PLAN_TEXT_BYTES: usize = EsProcess::PROCESS_COMMAND_MAX_TEXT_BYTES
 
 
         struct BuildBatchLaunch:
@@ -137,24 +138,51 @@ module EsBuildBatch:
             return left.target_name == right.target_name and build_batch_text_vectors_equal(left.paths, right.paths)
 
 
-        def build_batch_plan_vector_entries_fit(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool:
+        def build_batch_plan_text_add_fits(total: mutable usize&, value: sview) -> bool:
+            return false if total > Limits::PLAN_TEXT_BYTES
+            value_bytes: usize = sview_len(value)
+            # Every retained host string needs a terminator in addition to
+            # its view bytes; reserve it in the shared batch metadata budget.
+            return false if value_bytes >= Limits::PLAN_TEXT_BYTES - total
+            total <- total + value_bytes + 1
+            return true
+
+
+        def build_batch_plan_fits(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> bool:
             total: mutable usize = graph.node_name_order.count
+            total_text: mutable usize = 0
             return false if total > Limits::PLAN_VECTOR_ENTRIES
-            for index in 0..<graph.nodes.count |graph, output_sets, total|:
+            for index in 0..<graph.nodes.count |graph, output_sets, total, total_text|:
                 node: BuildNode = graph.nodes[index]
+                return false if not build_batch_plan_text_add_fits(total_text, node.name)
+                return false if not build_batch_plan_text_add_fits(total_text, node.command.executable)
+                if node.command.working_directory != "":
+                    return false if not build_batch_plan_text_add_fits(total_text, node.command.working_directory)
                 argument_entries: usize = node.command.arguments.count
                 return false if argument_entries > Limits::PLAN_VECTOR_ENTRIES - total
                 total <- total + argument_entries
+                for argument in node.command.arguments |node, total_text|:
+                    return false if not build_batch_plan_text_add_fits(total_text, argument)
                 environment_entries: usize = node.command.environment.count
                 return false if environment_entries > Limits::PLAN_VECTOR_ENTRIES - total
                 total <- total + environment_entries
+                for environment_entry in node.command.environment |node, total_text|:
+                    return false if not build_batch_plan_text_add_fits(total_text, environment_entry)
+                for stdio_path in [node.command.stdin_path, node.command.stdout_path, node.command.stderr_path] |node, total_text|:
+                    if stdio_path != "":
+                        return false if not build_batch_plan_text_add_fits(total_text, stdio_path)
                 dependency_entries: usize = node.dependencies.count
                 return false if dependency_entries > Limits::PLAN_VECTOR_ENTRIES - total
                 total <- total + dependency_entries
                 if output_sets.count != 0:
+                    return false if not build_batch_plan_text_add_fits(total_text, output_sets[index].target_name)
                     output_entries: usize = output_sets[index].paths.count
                     return false if output_entries > Limits::PLAN_VECTOR_ENTRIES - total
                     total <- total + output_entries
+                    for output_path in output_sets[index].paths |output_sets, index, total_text|:
+                        return false if not build_batch_plan_text_add_fits(total_text, output_path)
+            for ordered_name in graph.node_name_order |graph, total_text|:
+                return false if not build_batch_plan_text_add_fits(total_text, ordered_name.name)
             return true
 
 
@@ -246,11 +274,11 @@ module EsBuildBatch:
 
 
         def build_batch_session_for_graph_with_outputs(graph: BuildGraph, output_sets: darray[BuildExecutionNodeOutputs]) -> BuildBatchSession error[BuildContractError, BuildExecutionError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
-            valid: bool = try validate_build_graph(graph)
-            raise BuildBatchError.InvalidSession if not valid or graph.state != BuildGraphState.Planned
             raise BuildBatchError.JobLimitExceeded if graph.nodes.count > Limits::NODES
             raise BuildBatchError.OutputListMismatch if output_sets.count != 0 and output_sets.count != graph.nodes.count
-            raise BuildBatchError.PlanLimitExceeded if not build_batch_plan_vector_entries_fit(graph, output_sets)
+            raise BuildBatchError.PlanLimitExceeded if not build_batch_plan_fits(graph, output_sets)
+            valid: bool = try validate_build_graph(graph)
+            raise BuildBatchError.InvalidSession if not valid or graph.state != BuildGraphState.Planned
             if output_sets.count != 0:
                 for index in 0..<output_sets.count |graph, output_sets|:
                     raise BuildBatchError.OutputListMismatch if output_sets[index].target_name != graph.nodes[index].name
@@ -292,10 +320,12 @@ module EsBuildBatch:
 
 
         def validate_build_batch_session(session: BuildBatchSession) -> bool error[BuildContractError, BuildSchedulerError, ProcessBatchError, BuildBatchError] can[Memory.Allocate, Abort.Panic]:
-            _ = try validate_build_scheduler(session.scheduler)
-            _ = try validate_process_batch(session.processes)
             graph: BuildGraph = session.scheduler.graph
             raise BuildBatchError.InvalidSession if graph.nodes.count == 0 or graph.nodes.count > Limits::NODES
+            raise BuildBatchError.OutputListMismatch if session.output_sets.count != 0 and session.output_sets.count != graph.nodes.count
+            raise BuildBatchError.PlanLimitExceeded if not build_batch_plan_fits(graph, session.output_sets)
+            _ = try validate_build_scheduler(session.scheduler)
+            _ = try validate_process_batch(session.processes)
             raise BuildBatchError.InvalidSession if session.results.count != graph.nodes.count or session.processes.jobs.count != graph.nodes.count
             raise BuildBatchError.JobMappingInvalid if session.plan_nodes.count != graph.nodes.count
             raise BuildBatchError.JobMappingInvalid if session.plan_max_parallel != graph.max_parallel
@@ -308,8 +338,6 @@ module EsBuildBatch:
                 raise BuildBatchError.JobMappingInvalid if not build_batch_index_vectors_equal(node.dependencies, plan.dependencies)
                 raise BuildBatchError.JobMappingInvalid if not build_batch_recipe_signatures_equal(node.recipe_signature, plan.recipe_signature)
             raise BuildBatchError.JobMappingInvalid if session.output_sets.count != session.declared_output_sets.count
-            raise BuildBatchError.OutputListMismatch if session.output_sets.count != 0 and session.output_sets.count != graph.nodes.count
-            raise BuildBatchError.PlanLimitExceeded if not build_batch_plan_vector_entries_fit(graph, session.output_sets)
             for index in 0..<session.output_sets.count |session|:
                 raise BuildBatchError.JobMappingInvalid if not build_batch_execution_outputs_equal(session.output_sets[index], session.declared_output_sets[index])
             if session.output_sets.count != 0:
