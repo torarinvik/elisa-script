@@ -16,8 +16,9 @@ walker_file="$repo_root/scripts/inventory_walk.elisascript"
 walker_test="$repo_root/test/script_parity/inventory_walk_test.elisascript"
 candidate_file="$repo_root/scripts/inventory_candidates.elisascript"
 candidate_fixture="$repo_root/test/fixtures/script_parity/inventory_candidates/EXPECTATIONS.md"
+signals_elisascript="$repo_root/scripts/inventory_signals.elisascript"
 
-for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$candidate_file" "$candidate_fixture" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh"; do
+for required_file in "$roots_file" "$schema_file" "$review_file" "$review_audit" "$roots_audit" "$coordinator" "$walker_file" "$walker_test" "$candidate_file" "$candidate_fixture" "$repo_root/scripts/inventory_candidates.sh" "$repo_root/scripts/inventory_signals.sh" "$signals_elisascript"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'migration inventory audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -107,7 +108,7 @@ fi
 
 # Both Elisascript inventories share the descriptor-relative walker. Do not
 # quietly reintroduce a buffered `find` path stream into either candidate.
-for candidate in "$repo_root/scripts/inventory_candidates.elisascript" "$repo_root/scripts/inventory_signals.elisascript"; do
+for candidate in "$candidate_file" "$signals_elisascript"; do
     if ! rg -Fq 'include "./inventory_walk.elisascript"' "$candidate"; then
         printf 'migration inventory audit: %s does not include the shared native walker\n' "$candidate" >&2
         exit 1
