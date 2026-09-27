@@ -786,8 +786,13 @@ than attributing an object output to them. Clang's -emit-llvm -c form derives a
 .bc primary output instead of .o, and conflicting stage-selection options are
 rejected. Header-language `-x` modes that create precompiled headers require an
 explicit graph-owned `-o`, because GCC and Clang use different implicit PCH
-suffixes. `-save-temps` modes are rejected until their `.i` and `.s`
-intermediates can be bound to declared action outputs.
+suffixes. Commands that write unmodeled compiler byproducts are also rejected:
+`-save-temps` intermediates, `-save-stats` files, `-fproc-stat-report` CSV,
+and coverage notes from `-ftest-coverage` or `--coverage`/`-coverage`.
+Clang's `-ftime-trace` is modeled: the bare option derives a `.json` output
+beside the primary output. With `-ftime-trace=<path>`, the path may be a file
+or directory; exactly one interpretation must resolve to a distinct declared
+action output (the directory form uses the primary-output stem plus `.json`).
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,

@@ -43,6 +43,8 @@ module EsBuildCompilationDatabase:
         const module Clang:
             MODULE_OUTPUT: sview = "-fmodule-output"
             MODULE_OUTPUT_EQUALS: sview = "-fmodule-output="
+            TIME_TRACE: sview = "-ftime-trace"
+            TIME_TRACE_EQUALS: sview = "-ftime-trace="
 
 
         const module Json:
@@ -180,13 +182,48 @@ module EsBuildCompilationDatabase:
             return dependency_mode and database_file_output_option_count(arguments, "-MF") == 0
 
 
-        def database_saves_intermediate_outputs(arguments: darray[sview]) -> bool:
+        def database_has_unmodeled_auxiliary_outputs(arguments: darray[sview]) -> bool:
             for argument in arguments:
-                if argument == "-save-temps" or argument == "--save-temps":
+                if argument == "-save-temps" or argument == "--save-temps" or argument == "-save-stats" or argument == "--save-stats":
                     return true
-                if database_text_starts_with(argument, "-save-temps=") or database_text_starts_with(argument, "--save-temps="):
+                if database_text_starts_with(argument, "-save-temps=") or database_text_starts_with(argument, "--save-temps=") or database_text_starts_with(argument, "-save-stats=") or database_text_starts_with(argument, "--save-stats="):
+                    return true
+                if database_text_starts_with(argument, "-fproc-stat-report="):
+                    return true
+                if argument == "-ftest-coverage" or argument == "--coverage" or argument == "-coverage":
                     return true
             return false
+
+
+        def database_time_trace_option_count(arguments: darray[sview]) -> usize:
+            count: mutable usize = 0
+            for argument in arguments |count|:
+                count <- count + 1 if argument == Clang::TIME_TRACE or database_text_starts_with(argument, Clang::TIME_TRACE_EQUALS)
+            return count
+
+
+        def database_time_trace_option_operand(arguments: darray[sview]) -> sview:
+            for argument in arguments:
+                if database_text_starts_with(argument, Clang::TIME_TRACE_EQUALS):
+                    return string_view_slice(argument, sview_len(Clang::TIME_TRACE_EQUALS).i64(), sview_len(argument).i64())
+            return ""
+
+
+        def database_time_trace_option_shape_valid(arguments: darray[sview]) -> bool:
+            count: usize = database_time_trace_option_count(arguments)
+            return false if count > 1
+            return true if count == 0 or database_argument_count(arguments, Clang::TIME_TRACE) == 1
+            return database_time_trace_option_operand(arguments) != ""
+
+
+        def database_default_time_trace_output_path(primary_output_path: Path) -> Path can[Memory.Allocate, Abort.Panic]:
+            trace_name: sview = path_stem(primary_output_path) + ".json"
+            return path_normalize(path_join(path_parent(primary_output_path), trace_name))
+
+
+        def database_time_trace_output_path_in_directory(directory: Path, primary_output_path: Path) -> Path can[Memory.Allocate, Abort.Panic]:
+            default_trace_path: Path = database_default_time_trace_output_path(primary_output_path)
+            return path_normalize(path_join(directory, path_name(default_trace_path)))
 
 
         def database_serialized_diagnostics_option_count(arguments: darray[sview]) -> usize:
@@ -360,9 +397,9 @@ module EsBuildCompilationDatabase:
             raise BuildCompilationDatabaseError.InvalidCompileAction if database_argument_count(command.arguments, "-c") != 1
             raise BuildCompilationDatabaseError.InvalidSourceFile if database_argument_count(command.arguments, entry.source_file) != 1 or not database_option_has_unique_operand(command.arguments, "-c", entry.source_file)
             raise BuildCompilationDatabaseError.InvalidCompileAction if not database_supported_compile_mode(command.arguments)
-            # Both GCC and Clang retain `.i`/`.s` intermediates under
-            # `-save-temps`; this projector does not yet bind those sidecars.
-            raise BuildCompilationDatabaseError.InvalidOutputPath if database_saves_intermediate_outputs(command.arguments)
+            # These GCC/Clang options create auxiliary files (intermediates,
+            # statistics, or coverage notes) not yet bound to outputs.
+            raise BuildCompilationDatabaseError.InvalidOutputPath if database_has_unmodeled_auxiliary_outputs(command.arguments)
             # Even without the optional JSON `output` field, every primary
             # output spelling must have one unambiguous, graph-owned operand.
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_output_option_shape_valid(command.arguments)
@@ -370,6 +407,7 @@ module EsBuildCompilationDatabase:
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_file_output_option_shape_valid(command.arguments, "-MJ")
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_serialized_diagnostics_option_shape_valid(command.arguments)
             raise BuildCompilationDatabaseError.InvalidOutputPath if not database_module_output_option_shape_valid(command.arguments)
+            raise BuildCompilationDatabaseError.InvalidOutputPath if not database_time_trace_option_shape_valid(command.arguments)
             # Without -MF, GCC/Clang choose a dependency-file path implicitly
             # from -o or the input name. The graph has no portable way to
             # prove ownership of that compiler-specific side effect.
@@ -389,6 +427,19 @@ module EsBuildCompilationDatabase:
                 raise BuildCompilationDatabaseError.InvalidCompileAction if database_uses_precompiled_header_language(command.arguments)
                 primary_output_path <- database_default_primary_output_path(entry.source_file, command.working_directory, command.arguments)
                 try database_record_unique_output_path(owned_output_paths, primary_output_path, output_set)
+            time_trace_option_count: usize = database_time_trace_option_count(command.arguments)
+            if time_trace_option_count == 1:
+                time_trace_operand: sview = database_time_trace_option_operand(command.arguments)
+                time_trace_output_path: mutable Path = database_default_time_trace_output_path(primary_output_path)
+                if time_trace_operand != "":
+                    explicit_trace_path: Path = database_resolved_output_path(time_trace_operand, command.working_directory)
+                    explicit_file_is_declared: bool = database_resolved_path_is_declared(explicit_trace_path, output_set)
+                    directory_trace_path: Path = database_time_trace_output_path_in_directory(explicit_trace_path, primary_output_path)
+                    directory_trace_is_declared: bool = database_resolved_path_is_declared(directory_trace_path, output_set)
+                    raise BuildCompilationDatabaseError.InvalidOutputPath if explicit_file_is_declared == directory_trace_is_declared
+                    time_trace_output_path <- directory_trace_path if directory_trace_is_declared
+                    time_trace_output_path <- explicit_trace_path if explicit_file_is_declared
+                try database_record_unique_output_path(owned_output_paths, time_trace_output_path, output_set)
             module_output_option_count: usize = database_module_output_option_count(command.arguments)
             if module_output_option_count == 1:
                 module_output_path: mutable Path = primary_output_path
