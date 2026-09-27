@@ -279,6 +279,7 @@ returned flattened source and exports through the existing build flow. Its
 frequent RSS sampler also streams the host `ps` snapshot under an 8 MiB byte
 ceiling, the existing 65,536-row ceiling, and a one-second post-launch read
 deadline; missing, oversized, malformed, or timed-out snapshots fail closed.
+Unit cases cover both byte overflow and a stalled read.
 The same configured caller can now request flatten-only payloads for the runtime
 cache hash, including runtime sources that declare no exports; the façade's
 small type normalizer has been localized so it no longer imports the scanner.
