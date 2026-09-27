@@ -551,12 +551,16 @@ it consumes the ordered source receipts, requires a fresh empty root, copies
 each artifact, verifies readback, and removes the private stage on copy or
 verification failure. Either failure also moves the plan to terminal `Failed`
 state, even when stage cleanup succeeds; a retry starts with a new plan and new
-source receipts. The caller must serialize staging against other
-same-user writers to the stage root; a private mode alone is not a lock.
+source receipts. Stage creation, population, readback, preflight revalidation,
+and cleanup require an active exclusive `FileLockPosixLease` on the parent
+directory. The stage handle binds that lease by parent/lock identity, owner,
+and exact lock name, and each operation rejects a missing or substituted lease.
+The caller must retain it through publication or rollback; advisory locking
+coordinates cooperating writers, not a malicious same-user process.
 `create_install_stage_root_at` creates a caller-named exclusive sibling with
 mode `0700`, opens it without following links, binds its name to the opened
-directory, syncs the directory and parent entry, and returns an owned
-descriptor plus borrowed parent capability.
+directory and the active mutation lease, syncs the directory and parent entry,
+and returns an owned descriptor plus borrowed parent capability.
 It accepts only effective-user-owned or root-owned parents, and rejects
 group/world-writable non-sticky parents. Name collisions fail closed; the
 caller retains its candidate leaf for reconciling a post-create error.

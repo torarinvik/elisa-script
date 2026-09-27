@@ -9,6 +9,8 @@
 module EsInstallSourcePosix:
     using EsBuildIncremental
     using EsBuildIncrementalPosix
+    using EsFileLock
+    using EsFileLockPosix
     using EsInstall
     using EsRuntime
 
@@ -42,13 +44,22 @@ module EsInstallSourcePosix:
 
         # The stage descriptor is owned by this handle; the parent descriptor
         # is borrowed and must remain open through cleanup/publication. The
-        # fixed NUL-terminated leaf lets the owner identify this sibling.
+        # fixed NUL-terminated leaves and lease identity bind this root to the
+        # exclusive parent-directory mutation lease used at creation.
         struct InstallStageRootHandle:
             parent_descriptor: int
             descriptor: int
             leaf_length: usize
             leaf: u8[256]
             proof: InstallStageRootProof
+            lease_directory_token: u64
+            lease_directory_device: u64
+            lease_directory_inode: u64
+            lease_file_device: u64
+            lease_file_inode: u64
+            lease_owner_token: u64
+            lease_leaf_length: usize
+            lease_leaf: u8[256]
 
 
         struct InstallStageArtifactProof:
@@ -88,6 +99,7 @@ module EsInstallSourcePosix:
             StageRootNotPrivate
             StageParentInvalid
             StageParentNotTrusted
+            StageDirectoryLeaseRequired
             StageRootNameInvalid
             StageRootNameCollision
             StageRootCreateFailed(errno: i32)
@@ -154,6 +166,22 @@ module EsInstallSourcePosix:
 
 
     private:
+        def install_source_require_stage_directory_lease(directory_fd: int, lease: FileLockPosixLease&, lock_leaf: cstr) -> bool error[InstallSourceError] can[Blocking.IO]:
+            raise InstallSourceError.StageDirectoryLeaseRequired if directory_fd < 0 or lease.owner_token == 0 or not elisascript_posix_leaf_name_valid(lock_leaf)
+            raise InstallSourceError.StageDirectoryLeaseRequired if not file_lock_posix_lease_matches_at(lease, directory_fd, lock_leaf, lease.owner_token, FileLockMode.Exclusive)
+            return true
+
+
+        def install_source_require_bound_stage_directory_lease(stage: InstallStageRootHandle&, lease: FileLockPosixLease&, lock_leaf: cstr) -> bool error[InstallSourceError] can[Blocking.IO]:
+            raise InstallSourceError.StageDirectoryLeaseRequired if lease.directory_descriptor_token != stage.lease_directory_token or lease.directory_device != stage.lease_directory_device or lease.directory_inode != stage.lease_directory_inode or lease.lock_device != stage.lease_file_device or lease.lock_inode != stage.lease_file_inode or lease.owner_token != stage.lease_owner_token
+            raise InstallSourceError.StageDirectoryLeaseRequired if stage.lease_leaf_length == 0 or stage.lease_leaf_length >= 256 or stage.lease_leaf[stage.lease_leaf_length] != 0u8 or not elisascript_posix_leaf_name_valid(lock_leaf)
+            supplied_leaf: u8& = lock_leaf.cast[u8&]
+            for index in 0..<stage.lease_leaf_length |stage, supplied_leaf|:
+                raise InstallSourceError.StageDirectoryLeaseRequired if stage.lease_leaf[index] != supplied_leaf[index]
+            raise InstallSourceError.StageDirectoryLeaseRequired if supplied_leaf[stage.lease_leaf_length] != 0u8
+            return try install_source_require_stage_directory_lease(stage.parent_descriptor, lease, lock_leaf)
+
+
         @link_name(geteuid)
         extern install_source_effective_user() -> u32
 
@@ -1047,10 +1075,20 @@ module EsInstallSourcePosix:
 
     public:
         # Create an exclusively named private sibling beneath a caller-owned
-        # directory capability. The caller supplies a unique leaf and can
-        # recover the name if a post-mkdir operation has an uncertain outcome.
-        # The returned descriptor is owned by the handle; parent_fd is borrowed.
-        def create_install_stage_root_at(parent_fd: int, leaf: sview) -> InstallStageRootHandle error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+        # directory capability while holding its exclusive mutation lease. The
+        # caller supplies a unique leaf and can recover the name if a post-mkdir
+        # operation has an uncertain outcome. The returned descriptor is owned
+        # by the handle; parent_fd is borrowed.
+        def create_install_stage_root_at(parent_fd: int, leaf: sview, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> InstallStageRootHandle error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.StageDirectoryLeaseRequired if not elisascript_posix_leaf_name_valid(lock_leaf)
+            lock_leaf_length: usize = runtime_strlen(lock_leaf)
+            raise InstallSourceError.StageDirectoryLeaseRequired if lock_leaf_length == 0 or lock_leaf_length >= 256
+            lock_leaf_storage: mutable u8[256] = zeroed
+            lock_leaf_bytes: u8& = lock_leaf.cast[u8&]
+            for index in 0..<lock_leaf_length |lock_leaf_bytes, lock_leaf_storage|:
+                lock_leaf_storage[index] <- lock_leaf_bytes[index]
+            lock_leaf_storage[lock_leaf_length] <- 0u8
+            _ = try install_source_require_stage_directory_lease(parent_fd, directory_lease, lock_leaf)
             raise InstallSourceError.StageParentInvalid if parent_fd < 0
             parent_info: mutable ElisascriptStat = ElisascriptStat{}
             raise InstallSourceError.StageMetadataFailed if not install_source_stat_descriptor(parent_fd, parent_info)
@@ -1129,7 +1167,21 @@ module EsInstallSourcePosix:
                 close_status: int = elisascript_posix_close(stage_fd)
                 raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
                 raise InstallSourceError.StageDirectorySyncFailed(parent_sync_errno)
-            return InstallStageRootHandle{parent_descriptor: parent_fd, descriptor: stage_fd, leaf_length: leaf_length, leaf: leaf_storage, proof: root_proof}
+            return InstallStageRootHandle{
+                parent_descriptor: parent_fd,
+                descriptor: stage_fd,
+                leaf_length: leaf_length,
+                leaf: leaf_storage,
+                proof: root_proof,
+                lease_directory_token: directory_lease.directory_descriptor_token,
+                lease_directory_device: directory_lease.directory_device,
+                lease_directory_inode: directory_lease.directory_inode,
+                lease_file_device: directory_lease.lock_device,
+                lease_file_inode: directory_lease.lock_inode,
+                lease_owner_token: directory_lease.owner_token,
+                lease_leaf_length: lock_leaf_length,
+                lease_leaf: lock_leaf_storage
+            }
 
 
         def close_install_stage_root(handle: mutable InstallStageRootHandle&) -> void error[InstallSourceError] can[Blocking.IO]:
@@ -1192,20 +1244,22 @@ module EsInstallSourcePosix:
         # hashed with the shared no-follow observer; permissions are inspected
         # on a separately opened descriptor and must match the fixed install
         # mapping (Data=0644, Executable=0755).
-        def verify_install_stage_artifact_at(a: mutable Arena&, stage_root_fd: int, plan: InstallPlan&, artifact_index: usize) -> InstallStageArtifactProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def verify_install_stage_artifact_at(a: mutable Arena&, stage: InstallStageRootHandle&, plan: InstallPlan&, artifact_index: usize, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> InstallStageArtifactProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
-            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
+            _ = try install_source_require_bound_stage_directory_lease(stage, directory_lease, lock_leaf)
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage.descriptor)
             raise InstallSourceError.ArtifactIndexOutOfRange if artifact_index >= plan.artifacts.count
             artifact: InstallArtifact = plan.artifacts[artifact_index]
-            initial_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage_root_fd, artifact.destination_path)
+            initial_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage.descriptor, artifact.destination_path)
             raise InstallSourceError.StageArtifactMissing if not initial_stamp.present
             raise InstallSourceError.ByteCountMismatch if initial_stamp.size != artifact.byte_count
             stamp: mutable BuildIncrementalFileStamp = BuildIncrementalFileStamp{path: artifact.destination_path}
-            observed: BuildIncrementalObservation = try observe_build_incremental_file_with_stamp_at(a, stage_root_fd, artifact.destination_path, stamp)
+            observed: BuildIncrementalObservation = try observe_build_incremental_file_with_stamp_at(a, stage.descriptor, artifact.destination_path, stamp)
             raise InstallSourceError.StageArtifactChanged if not observed.present or not install_source_stamp_equal(initial_stamp, stamp[0])
             raise InstallSourceError.StageDigestMismatch if observed.fingerprint != artifact.digest_0 or observed.fingerprint_word1 != artifact.digest_1 or observed.fingerprint_word2 != artifact.digest_2 or observed.fingerprint_word3 != artifact.digest_3
-            mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, root_proof, artifact.destination_path, stamp[0], artifact.mode)
+            mode_matches: bool = try install_source_stage_mode_matches(stage.descriptor, root_proof, artifact.destination_path, stamp[0], artifact.mode)
             raise InstallSourceError.StageModeMismatch if not mode_matches
             return InstallStageArtifactProof{
                 receipt: InstallStageReceipt{
@@ -1225,17 +1279,19 @@ module EsInstallSourcePosix:
         # Admit staging only after every planned output passes content/mode
         # verification and a bounded whole-tree scan proves exact manifest
         # closure: no extras, links, unsupported entries, or missing parents.
-        def verify_install_stage_at(a: mutable Arena&, stage_root_fd: int, plan: mutable InstallPlan&) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        def verify_install_stage_at(a: mutable Arena&, stage: InstallStageRootHandle&, plan: mutable InstallPlan&, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
-            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
+            _ = try install_source_require_bound_stage_directory_lease(stage, directory_lease, lock_leaf)
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            root_proof: InstallStageRootProof = try install_source_require_private_stage_root(stage.descriptor)
             artifact_proofs: mutable darray[InstallStageArtifactProof] = []
             receipts: mutable darray[InstallStageReceipt] = []
-            for index in 0..<plan.artifacts.count |plan, artifact_proofs, receipts, a, stage_root_fd|:
-                artifact_proof: InstallStageArtifactProof = try verify_install_stage_artifact_at(a, stage_root_fd, plan, index)
+            for index in 0..<plan.artifacts.count |plan, artifact_proofs, receipts, a, stage, directory_lease, lock_leaf|:
+                artifact_proof: InstallStageArtifactProof = try verify_install_stage_artifact_at(a, stage, plan, index, directory_lease, lock_leaf)
                 artifact_proofs.push(artifact_proof)
                 receipts.push(artifact_proof.receipt)
-            _ = try install_source_validate_stage_tree(stage_root_fd, root_proof, plan, artifact_proofs)
+            _ = try install_source_validate_stage_tree(stage.descriptor, root_proof, plan, artifact_proofs)
             _ = try stage_install_plan(plan, receipts)
             _ = try advance_install_plan(plan, InstallEvent.Verify)
             return InstallStageProof{root: root_proof, artifacts: artifact_proofs}
@@ -1245,10 +1301,12 @@ module EsInstallSourcePosix:
         # This avoids rehashing large outputs while detecting replacement,
         # ordinary content mutation, mode changes, and stage-root substitution.
         # Success consumes the proof by moving the plan to PublishReady.
-        def revalidate_install_stage_at(stage_root_fd: int, plan: mutable InstallPlan&, proof: InstallStageProof&) -> InstallState error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Abort.Panic, Unsafe.PointerCast]:
+        def revalidate_install_stage_at(stage: InstallStageRootHandle&, plan: mutable InstallPlan&, proof: InstallStageProof&, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> InstallState error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.StageRevalidationNotReady if plan.state != InstallState.Verified
-            root_now: InstallStageRootProof = try install_source_require_private_stage_root(stage_root_fd)
+            _ = try install_source_require_bound_stage_directory_lease(stage, directory_lease, lock_leaf)
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            root_now: InstallStageRootProof = try install_source_require_private_stage_root(stage.descriptor)
             raise InstallSourceError.StageProofRootChanged if root_now.device != proof.root.device or root_now.inode != proof.root.inode or root_now.user != proof.root.user
             raise InstallSourceError.StageProofCountMismatch if proof.artifacts.count != plan.artifacts.count
             for index in 0..<plan.artifacts.count |plan, proof|:
@@ -1262,11 +1320,11 @@ module EsInstallSourcePosix:
                 raise InstallSourceError.DigestMismatch if receipt.digest_0 != artifact.digest_0 or receipt.digest_1 != artifact.digest_1 or receipt.digest_2 != artifact.digest_2 or receipt.digest_3 != artifact.digest_3
                 raise InstallSourceError.StageProofReceiptMismatch if receipt.digest_0 != stored.digest_0 or receipt.digest_1 != stored.digest_1 or receipt.digest_2 != stored.digest_2 or receipt.digest_3 != stored.digest_3 or receipt.mode != stored.mode or receipt.byte_count != stored.byte_count
                 raise InstallSourceError.StageArtifactChanged if not entry.stage_stamp.present
-                current_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage_root_fd, artifact.destination_path)
+                current_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(stage.descriptor, artifact.destination_path)
                 raise InstallSourceError.StageArtifactChanged if not install_source_stamp_equal(entry.stage_stamp, current_stamp)
-                mode_matches: bool = try install_source_stage_mode_matches(stage_root_fd, root_now, artifact.destination_path, current_stamp, artifact.mode)
+                mode_matches: bool = try install_source_stage_mode_matches(stage.descriptor, root_now, artifact.destination_path, current_stamp, artifact.mode)
                 raise InstallSourceError.StageModeMismatch if not mode_matches
-            _ = try install_source_validate_stage_tree(stage_root_fd, root_now, plan, proof.artifacts)
+            _ = try install_source_validate_stage_tree(stage.descriptor, root_now, plan, proof.artifacts)
             return try advance_install_plan(plan, InstallEvent.Preflight)
 
 
@@ -1376,10 +1434,11 @@ module EsInstallSourcePosix:
         # then receives its manifest mode and is synced before the caller's
         # later readback/closure verification. A failure aborts the stage; it
         # never returns a receipt that could be mistaken for readback proof.
-        def copy_install_source_to_stage(stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: InstallPlan&, receipt: InstallSourceReceipt) -> usize error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+        def copy_install_source_to_stage(stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: InstallPlan&, receipt: InstallSourceReceipt, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> usize error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
             raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            _ = try install_source_require_bound_stage_directory_lease(stage, directory_lease, lock_leaf)
             raise InstallSourceError.ArtifactIndexOutOfRange if receipt.artifact_index >= plan.artifacts.count
             _ = try install_source_receipt_matches_artifact(plan.artifacts[receipt.artifact_index], receipt.artifact_index, receipt)
             artifact: InstallArtifact = plan.artifacts[receipt.artifact_index]
@@ -1502,18 +1561,21 @@ module EsInstallSourcePosix:
 
 
         # Stage each complete source receipt, then read back and verify the
-        # exact tree before returning a proof. Copy or verification failures
-        # discard the private root; cleanup failure takes precedence because
-        # the caller must reconcile that still-present staging name.
-        def stage_install_sources_at(a: mutable Arena&, stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: mutable InstallPlan&, receipts: darray[InstallSourceReceipt]) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        # exact tree before returning a proof. The creation-bound exclusive
+        # lease must remain held for this operation and later publication or
+        # cleanup. Copy or verification failures discard the private root;
+        # cleanup failure takes precedence because the caller must reconcile
+        # that still-present staging name.
+        def stage_install_sources_at(a: mutable Arena&, stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: mutable InstallPlan&, receipts: darray[InstallSourceReceipt], directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> InstallStageProof error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             _ = try validate_install_plan(plan)
             raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
+            _ = try install_source_require_bound_stage_directory_lease(stage, directory_lease, lock_leaf)
             _ = try validate_install_source_receipts(plan, receipts)
             stage_empty: bool = try install_source_stage_root_is_empty(stage)
             raise InstallSourceError.StageRootNotEmpty if not stage_empty
 
-            for index in 0..<plan.artifacts.count |plan, receipts, stage, source_root_fd|:
-                catch copy_install_source_to_stage(stage, source_root_fd, plan, receipts[index]):
+            for index in 0..<plan.artifacts.count |plan, receipts, stage, source_root_fd, directory_lease, lock_leaf|:
+                catch copy_install_source_to_stage(stage, source_root_fd, plan, receipts[index], directory_lease, lock_leaf):
                     ok copied:
                         _ = copied
                     error failure:
@@ -1521,18 +1583,18 @@ module EsInstallSourcePosix:
                         # when cleanup succeeds. Retrying requires a fresh plan
                         # and fresh source receipts, not reuse of stale state.
                         _ = try advance_install_plan(plan, InstallEvent.Fail)
-                        catch remove_install_stage_root(stage):
+                        catch remove_install_stage_root(stage, directory_lease, lock_leaf):
                             ok removed:
                                 _ = removed
                             error cleanup_failure:
                                 raise cleanup_failure
                         raise failure
 
-            catch verify_install_stage_at(a, stage.descriptor, plan):
+            catch verify_install_stage_at(a, stage, plan, directory_lease, lock_leaf):
                 ok proof:
                     if not install_source_stage_root_handle_matches(stage) or proof.root.device != stage.proof.device or proof.root.inode != stage.proof.inode or proof.root.user != stage.proof.user:
                         _ = try advance_install_plan(plan, InstallEvent.Fail)
-                        catch remove_install_stage_root(stage):
+                        catch remove_install_stage_root(stage, directory_lease, lock_leaf):
                             ok removed:
                                 _ = removed
                             error cleanup_failure:
@@ -1543,7 +1605,7 @@ module EsInstallSourcePosix:
                     # Verification errors happen before the verifier admits
                     # Staged, so the plan is still SourcesVerified here.
                     _ = try advance_install_plan(plan, InstallEvent.Fail)
-                    catch remove_install_stage_root(stage):
+                    catch remove_install_stage_root(stage, directory_lease, lock_leaf):
                         ok removed:
                             _ = removed
                         error cleanup_failure:
@@ -1555,8 +1617,9 @@ module EsInstallSourcePosix:
         # capabilities. A failure may leave a partially emptied private tree;
         # the root handle remains available for an explicit retry unless the
         # root name itself was successfully removed.
-        def remove_install_stage_root(handle: mutable InstallStageRootHandle&) -> bool error[InstallSourceError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
+        def remove_install_stage_root(handle: mutable InstallStageRootHandle&, directory_lease: FileLockPosixLease&, lock_leaf: cstr) -> bool error[InstallSourceError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
             raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(handle)
+            _ = try install_source_require_bound_stage_directory_lease(handle, directory_lease, lock_leaf)
             duplicate_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
             duplicate_retries: mutable usize = 0
             root_duplicate: mutable int = -1
@@ -1822,6 +1885,7 @@ module EsInstallSourcePosix:
             raise InstallSourceError.StageTreeMetadataFailed if failure == InstallStageCleanupFailure.Metadata
 
             raise InstallSourceError.StageCleanupChanged if not install_source_stage_root_handle_matches(handle)
+            _ = try install_source_require_bound_stage_directory_lease(handle, directory_lease, lock_leaf)
             root_leaf: u8& = (&handle.leaf[0])
             root_unlink_status: int = elisascript_posix_unlinkat(handle.parent_descriptor, root_leaf.cast[cstr], DarwinAtFlag::REMOVE_DIRECTORY)
             if root_unlink_status != 0:
