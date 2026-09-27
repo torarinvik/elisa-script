@@ -800,6 +800,11 @@ dynamic-debugging temporary, and crash-reproducer outputs; those can produce
 directory trees or failure-path files not listed as graph outputs. Explicit
 `-gen-reproducer=off` and `-fcrash-diagnostics=off` remain projectable because
 they disable those failure-path outputs.
+Clang's `-gen-cdb-fragment-path <directory>` is rejected because it emits
+uniquely named fragments that cannot be derived as a deterministic action
+output. If `-MJ <file>` is also present, Clang gives `-MJ` precedence, so the
+projector accepts the command only when that `-MJ` file is itself a distinct,
+declared output.
 Clang's `-ftime-trace` is modeled: the bare option derives a `.json` output
 beside the primary output. With `-ftime-trace=<path>`, the path may be a file
 or directory; exactly one interpretation must resolve to a distinct declared
