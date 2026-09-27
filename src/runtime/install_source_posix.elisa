@@ -19,6 +19,7 @@ module EsInstallSourcePosix:
             STAGE_PATH_BYTES: usize = 4096
             STAGE_WALK_DEPTH: usize = 2048
             STAGE_WALK_ENTRIES: usize = 524288
+            STAGE_WRITE_CALLS: usize = 1048576
 
 
         struct InstallSourceReceipt:
@@ -110,6 +111,24 @@ module EsInstallSourcePosix:
             StageTreeOpenFailed(errno: i32)
             StageTreeMetadataFailed
             StageTreeDirectoryCloseFailed
+            StageDirectoryCreateFailed(errno: i32)
+            StageDirectoryCreateOutcomeUnknown(errno: i32)
+            StageDirectoryOpenFailed(errno: i32)
+            StageDirectoryChanged
+            StageDirectoryCloseFailed(status: int)
+            StageDirectoryModeFailed(errno: i32)
+            StageDirectorySyncFailed(errno: i32)
+            StageFileCreateFailed(errno: i32)
+            StageFileDescriptorInvalid
+            StageFileBufferInvalid
+            StageFileWriteFailed(errno: i32)
+            StageFileWriteLimitExceeded
+            StageFileWriteIncomplete
+            StageFileMetadataFailed
+            StageFileModeFailed(errno: i32)
+            StageFileChanged
+            StageFileSyncFailed(errno: i32)
+            StageFileCloseFailed(status: int)
             ReceiptPathMismatch
             ReceiptCountMismatch
             ReceiptOrderMismatch
@@ -151,6 +170,33 @@ module EsInstallSourcePosix:
             directory: mutable heap void&?
             path_length: usize
             interrupted: usize = 0
+
+
+        struct InstallStageDestinationParent:
+            descriptor: int
+            owned: bool
+            leaf_length: usize
+            leaf: u8[256]
+
+
+        const enum InstallStageWriteState of u8:
+            Write
+            Complete
+            Failed
+
+
+        struct InstallStageWriteCursor:
+            state: mutable InstallStageWriteState = InstallStageWriteState.Write
+            offset: mutable usize = 0
+            calls: mutable usize = 0
+            interrupted: mutable usize = 0
+            failure_errno: mutable i32 = 0
+
+
+        struct InstallStageCopyCloseStatus:
+            source: int = 0
+            destination: int = 0
+            parent: int = 0
 
 
         const enum InstallStageWalkState of u8:
@@ -208,6 +254,12 @@ module EsInstallSourcePosix:
             return InstallSourceMode::EXECUTABLE
 
 
+        def install_source_stage_file_matches(stat: ElisascriptStat, root: InstallStageRootProof, device: u32, inode: u64, byte_count: usize, mode: InstallFileMode) -> bool:
+            return false if (stat.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or stat.device != device or stat.user != root.user or stat.inode != inode or stat.link_count != 1u16
+            return false if stat.size < 0 or stat.size.usize().i64() != stat.size or stat.size.usize() != byte_count
+            return (stat.mode & InstallSourceMode::PERMISSION_MASK) == install_source_expected_mode(mode)
+
+
         def install_source_stage_mode_matches(root_fd: int, root: InstallStageRootProof, path: sview, stamp: BuildIncrementalFileStamp, mode: InstallFileMode) -> bool error[InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
             opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
             raise InstallSourceError.StageArtifactChanged if not opened.present
@@ -234,6 +286,241 @@ module EsInstallSourcePosix:
             return (observed.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY and observed.device == expected.device and observed.inode == expected.inode and observed.user == expected.user
 
 
+        def install_source_stage_root_handle_matches(handle: InstallStageRootHandle&) -> bool can[Blocking.IO]:
+            return false if handle.parent_descriptor < 0 or handle.descriptor < 0 or handle.leaf_length == 0 or handle.leaf_length >= 256
+            return false if handle.leaf[handle.leaf_length] != 0u8
+            opened: mutable ElisascriptStat = ElisascriptStat{}
+            return false if not install_source_stat_descriptor(handle.descriptor, opened)
+            return false if not install_source_stage_root_identity_matches(opened, handle.proof)
+            return false if (opened.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::PRIVATE_DIRECTORY or opened.user != install_source_effective_user()
+            named: mutable ElisascriptStat = ElisascriptStat{}
+            name: u8& = (&handle.leaf[0])
+            return false if not install_source_stat_entry_at(handle.parent_descriptor, name.cast[cstr], named, DarwinAtFlag::SYMLINK_NOFOLLOW)
+            return install_source_stage_root_identity_matches(named, handle.proof) and (named.mode & InstallSourceMode::PERMISSION_MASK) == InstallSourceMode::PRIVATE_DIRECTORY
+
+
+        def install_source_copy_stage_segment(path: sview, start: usize, end: usize, buffer: mutable u8&) -> usize:
+            length: usize = end - start
+            return 0 if length == 0 or length >= 256
+            return 0 if (length == 1 and sview_at(path, start) == 46u8) or (length == 2 and sview_at(path, start) == 46u8 and sview_at(path, start + 1) == 46u8)
+            for offset in 0..<length |path, buffer|:
+                byte: u8 = sview_at(path, start + offset)
+                return 0 if byte == 0u8 or byte == 47u8 or byte < 32u8 or byte == 127u8
+                buffer[offset] <- byte
+            buffer[length] <- 0u8
+            return length
+
+
+        def install_source_write_stage_fully(descriptor: int, buffer: mutable u8&, length: usize) -> usize error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.StageFileDescriptorInvalid if descriptor < 0
+            raise InstallSourceError.StageFileBufferInvalid if length != 0 and buffer == null
+            cursor: mutable InstallStageWriteCursor = InstallStageWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, InstallStageWriteState.Write if cursor.offset >= length:
+                    cursor.state <- InstallStageWriteState.Complete
+                    -> Write
+                Write, InstallStageWriteState.Write if cursor.calls >= Limits::STAGE_WRITE_CALLS:
+                    cursor.state <- InstallStageWriteState.Failed
+                    -> Write
+                Write, InstallStageWriteState.Write:
+                    remaining: usize = length - cursor.offset
+                    next_bytes: mutable u8& = buffer + cursor.offset
+                    amount: isize = elisascript_posix_write(descriptor, next_bytes.cast[void&], remaining)
+                    cursor.calls <- cursor.calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        if errno[0] == InstallSourceErrno::EINTR and cursor.interrupted < Limits::EINTR_RETRIES:
+                            cursor.interrupted <- cursor.interrupted + 1
+                            -> Write
+                        cursor.failure_errno <- errno[0]
+                        cursor.state <- InstallStageWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining:
+                        cursor.failure_errno <- InstallSourceErrno::EIO
+                        cursor.state <- InstallStageWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.interrupted <- 0
+                    -> Write
+
+                Write, InstallStageWriteState.Complete:
+                    break
+
+                Write, InstallStageWriteState.Failed:
+                    break
+
+            raise InstallSourceError.StageFileWriteFailed(cursor.failure_errno) if cursor.failure_errno != 0
+            raise InstallSourceError.StageFileWriteLimitExceeded if cursor.calls >= Limits::STAGE_WRITE_CALLS and cursor.offset < length
+            raise InstallSourceError.StageFileWriteIncomplete if cursor.offset != length
+            return cursor.offset
+
+
+        def install_source_sync_stage_descriptor(descriptor: int) -> i32 can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return 0 if elisascript_posix_fsync(descriptor) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == InstallSourceErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return errno[0]
+
+
+        def install_source_close_owned_stage_directory(descriptor: int, owned: bool) -> int can[Blocking.IO]:
+            return 0 if not owned
+            return elisascript_posix_close(descriptor)
+
+
+        def install_source_close_stage_destination_parent(parent: mutable InstallStageDestinationParent&) -> int can[Blocking.IO]:
+            return 0 if not parent.owned
+            descriptor: int = parent.descriptor
+            parent.descriptor <- -1
+            parent.owned <- false
+            return elisascript_posix_close(descriptor)
+
+
+        def install_source_open_stage_destination_parent(stage: InstallStageRootHandle&, path: sview) -> InstallStageDestinationParent error[InstallSourceError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            path_length: usize = sview_len(path)
+            segment_storage: mutable u8[256] = zeroed
+            segment_buffer: mutable u8& = (&segment_storage[0])
+            leaf_storage: mutable u8[256] = zeroed
+            segment_start: mutable usize = 0
+            index: mutable usize = 0
+            current_fd: mutable int = stage.descriptor
+            current_owned: mutable bool = false
+            while index <= path_length:
+                at_end: bool = index == path_length
+                at_separator: bool = not at_end and sview_at(path, index) == 47u8
+                if at_end or at_separator:
+                    segment_length: usize = install_source_copy_stage_segment(path, segment_start, index, segment_buffer)
+                    if segment_length == 0:
+                        close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(close_status) if close_status != 0
+                        raise InstallSourceError.StageRootNameInvalid
+                    if at_end:
+                        for offset in 0..<segment_length |segment_storage, leaf_storage|:
+                            leaf_storage[offset] <- segment_storage[offset]
+                        leaf_storage[segment_length] <- 0u8
+                        return InstallStageDestinationParent{descriptor: current_fd, owned: current_owned, leaf_length: segment_length, leaf: leaf_storage}
+
+                    create_status: int = elisascript_posix_mkdirat(current_fd, segment_buffer.cast[cstr], InstallSourceMode::DIRECTORY.i32())
+                    created: bool = create_status == 0
+                    if create_status != 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        create_errno: i32 = errno[0]
+                        if create_errno != InstallSourceErrno::EEXIST:
+                            close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                            raise InstallSourceError.StageDirectoryCloseFailed(close_status) if close_status != 0
+                            raise InstallSourceError.StageDirectoryCreateOutcomeUnknown(create_errno) if create_errno == InstallSourceErrno::EINTR
+                            raise InstallSourceError.StageDirectoryCreateFailed(create_errno)
+
+                    child_retries: mutable usize = 0
+                    child_fd: mutable int = -1
+                    child_errno: mutable i32 = 0
+                    directory_flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+                    while child_fd < 0 and child_retries <= Limits::EINTR_RETRIES:
+                        child_fd <- elisascript_posix_openat(current_fd, segment_buffer.cast[cstr], directory_flags, 0u32)
+                        if child_fd < 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            child_errno <- errno[0]
+                            if child_errno == InstallSourceErrno::EINTR:
+                                child_retries <- child_retries + 1
+                                continue
+                            break
+                    if child_fd < 0:
+                        close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(close_status) if close_status != 0
+                        raise InstallSourceError.StageDirectoryOpenFailed(child_errno)
+
+                    child_info: mutable ElisascriptStat = ElisascriptStat{}
+                    if not install_source_stat_descriptor(child_fd, child_info):
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageTreeMetadataFailed
+                    if (child_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY or child_info.device != stage.proof.device or child_info.user != stage.proof.user:
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageDirectoryChanged
+                    named_before: mutable ElisascriptStat = ElisascriptStat{}
+                    named_before_ok: bool = install_source_stat_entry_at(current_fd, segment_buffer.cast[cstr], named_before, DarwinAtFlag::SYMLINK_NOFOLLOW)
+                    if not named_before_ok or not install_source_stage_root_identity_matches(named_before, InstallStageRootProof{device: child_info.device, inode: child_info.inode, user: child_info.user}):
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageDirectoryChanged
+                    if created:
+                        if elisascript_posix_fchmod(child_fd, InstallSourceMode::DIRECTORY.u32()) != 0:
+                            errno: mutable i32& = elisascript_posix_errno()
+                            mode_errno: i32 = errno[0]
+                            child_close_status: int = elisascript_posix_close(child_fd)
+                            parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                            raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                            raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                            raise InstallSourceError.StageDirectoryModeFailed(mode_errno)
+                        child_info <- ElisascriptStat{}
+                        if not install_source_stat_descriptor(child_fd, child_info):
+                            child_close_status: int = elisascript_posix_close(child_fd)
+                            parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                            raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                            raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                            raise InstallSourceError.StageTreeMetadataFailed
+                    if child_info.device != stage.proof.device or child_info.user != stage.proof.user or (child_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageDirectoryChanged
+                    if (child_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::DIRECTORY:
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageModeMismatch
+
+                    named_info: mutable ElisascriptStat = ElisascriptStat{}
+                    named_ok: bool = install_source_stat_entry_at(current_fd, segment_buffer.cast[cstr], named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+                    if not named_ok or not install_source_stage_root_identity_matches(named_info, InstallStageRootProof{device: child_info.device, inode: child_info.inode, user: child_info.user}) or (named_info.mode & InstallSourceMode::PERMISSION_MASK) != InstallSourceMode::DIRECTORY:
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                        raise InstallSourceError.StageDirectoryChanged
+                    if created:
+                        child_sync_errno: i32 = install_source_sync_stage_descriptor(child_fd)
+                        if child_sync_errno != 0:
+                            child_close_status: int = elisascript_posix_close(child_fd)
+                            parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                            raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                            raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                            raise InstallSourceError.StageDirectorySyncFailed(child_sync_errno)
+                        parent_sync_errno: i32 = install_source_sync_stage_descriptor(current_fd)
+                        if parent_sync_errno != 0:
+                            child_close_status: int = elisascript_posix_close(child_fd)
+                            parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                            raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                            raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status) if parent_close_status != 0
+                            raise InstallSourceError.StageDirectorySyncFailed(parent_sync_errno)
+                    parent_close_status: int = install_source_close_owned_stage_directory(current_fd, current_owned)
+                    if parent_close_status != 0:
+                        child_close_status: int = elisascript_posix_close(child_fd)
+                        raise InstallSourceError.StageDirectoryCloseFailed(child_close_status) if child_close_status != 0
+                        raise InstallSourceError.StageDirectoryCloseFailed(parent_close_status)
+                    current_fd <- child_fd
+                    current_owned <- true
+                    segment_start <- index + 1
+                index <- index + 1
+            raise InstallSourceError.StageRootNameInvalid
+
+
         def install_source_copy_stage_root_leaf(leaf: sview, buffer: mutable u8&) -> usize:
             length: usize = sview_len(leaf)
             return 0 if length == 0 or length >= 256
@@ -251,6 +538,19 @@ module EsInstallSourcePosix:
             descriptor: int = handle.source_descriptor
             handle.source_descriptor <- -1
             return elisascript_posix_close(descriptor)
+
+
+        def install_source_close_stage_copy_handles(source: mutable InstallSourceCopyHandle&, destination_fd: int, parent: mutable InstallStageDestinationParent&) -> InstallStageCopyCloseStatus can[Blocking.IO]:
+            source_status: int = 0 if source.source_descriptor < 0 else install_source_close_descriptor(source)
+            destination_status: int = 0 if destination_fd < 0 else elisascript_posix_close(destination_fd)
+            parent_status: int = install_source_close_stage_destination_parent(parent)
+            return InstallStageCopyCloseStatus{source: source_status, destination: destination_status, parent: parent_status}
+
+
+        def install_source_require_stage_copy_cleanup(cleanup: InstallStageCopyCloseStatus) -> void error[InstallSourceError]:
+            raise InstallSourceError.CopySourceCloseFailed(cleanup.source) if cleanup.source != 0
+            raise InstallSourceError.StageFileCloseFailed(cleanup.destination) if cleanup.destination != 0
+            raise InstallSourceError.StageDirectoryCloseFailed(cleanup.parent) if cleanup.parent != 0
 
 
         def install_source_receipt_matches_artifact(artifact: InstallArtifact, index: usize, receipt: InstallSourceReceipt) -> bool error[InstallSourceError]:
@@ -692,6 +992,16 @@ module EsInstallSourcePosix:
                 close_status: int = elisascript_posix_close(stage_fd)
                 raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
                 raise InstallSourceError.StageRootEntryChanged
+            stage_sync_errno: i32 = install_source_sync_stage_descriptor(stage_fd)
+            if stage_sync_errno != 0:
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageDirectorySyncFailed(stage_sync_errno)
+            parent_sync_errno: i32 = install_source_sync_stage_descriptor(parent_fd)
+            if parent_sync_errno != 0:
+                close_status: int = elisascript_posix_close(stage_fd)
+                raise InstallSourceError.StageRootCloseFailed(close_status) if close_status != 0
+                raise InstallSourceError.StageDirectorySyncFailed(parent_sync_errno)
             return InstallStageRootHandle{parent_descriptor: parent_fd, descriptor: stage_fd, leaf_length: leaf_length, leaf: leaf_storage, proof: root_proof}
 
 
@@ -930,3 +1240,134 @@ module EsInstallSourcePosix:
             raise InstallSourceError.CopyReadIncomplete if handle.bytes_read != handle.receipt.byte_count
             raise InstallSourceError.SourceChanged if not descriptor_matches or not named_matches
             return true
+
+
+        # Stream one already-verified source receipt into a private stage.
+        # Parents are created one component at a time with no-follow opens;
+        # the incomplete file remains private mode until source revalidation,
+        # then receives its manifest mode and is synced before the caller's
+        # later readback/closure verification. A failure aborts the stage; it
+        # never returns a receipt that could be mistaken for readback proof.
+        def copy_install_source_to_stage(stage: mutable InstallStageRootHandle&, source_root_fd: int, plan: InstallPlan&, receipt: InstallSourceReceipt) -> usize error[InstallContractError, InstallSourceError, OpenError] can[Blocking.IO, Unsafe.PointerCast]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.PlanNotSourcesVerified if plan.state != InstallState.SourcesVerified
+            raise InstallSourceError.StageRootHandleInvalid if not install_source_stage_root_handle_matches(stage)
+            raise InstallSourceError.ArtifactIndexOutOfRange if receipt.artifact_index >= plan.artifacts.count
+            _ = try install_source_receipt_matches_artifact(plan.artifacts[receipt.artifact_index], receipt.artifact_index, receipt)
+            artifact: InstallArtifact = plan.artifacts[receipt.artifact_index]
+            parent: mutable InstallStageDestinationParent = try install_source_open_stage_destination_parent(stage, artifact.destination_path)
+            source: mutable InstallSourceCopyHandle = InstallSourceCopyHandle{root_descriptor: -1, source_descriptor: -1, receipt: receipt}
+
+            catch open_install_source_for_copy(source_root_fd, plan, receipt):
+                ok opened:
+                    source <- opened
+                error failure:
+                    cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, -1, parent)
+                    _ = try install_source_require_stage_copy_cleanup(cleanup)
+                    raise failure
+
+            file_flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            stage_file_fd: int = elisascript_posix_openat(parent.descriptor, (&parent.leaf[0]).cast[cstr], file_flags, 384u32)
+            if stage_file_fd < 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                create_errno: i32 = errno[0]
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, -1, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileCreateFailed(create_errno)
+
+            stage_file_info: mutable ElisascriptStat = ElisascriptStat{}
+            if not install_source_stat_descriptor(stage_file_fd, stage_file_info):
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileMetadataFailed
+            if (stage_file_info.mode & DarwinStatMode::MASK) != DarwinStatMode.REGULAR or stage_file_info.device != stage.proof.device or stage_file_info.user != stage.proof.user or stage_file_info.size != 0 or stage_file_info.link_count != 1u16:
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileChanged
+            stage_file_device: u32 = stage_file_info.device
+            stage_file_inode: u64 = stage_file_info.inode
+            if elisascript_posix_fchmod(stage_file_fd, 384u32) != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                mode_errno: i32 = errno[0]
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileModeFailed(mode_errno)
+            stage_file_info <- ElisascriptStat{}
+            if not install_source_stat_descriptor(stage_file_fd, stage_file_info) or stage_file_info.device != stage_file_device or stage_file_info.inode != stage_file_inode or stage_file_info.user != stage.proof.user or stage_file_info.size != 0 or stage_file_info.link_count != 1u16 or (stage_file_info.mode & DarwinStatMode::MASK) != DarwinStatMode.REGULAR or (stage_file_info.mode & InstallSourceMode::PERMISSION_MASK) != 384u16:
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileChanged
+            stage_file_named_info: mutable ElisascriptStat = ElisascriptStat{}
+            named_ok: bool = install_source_stat_entry_at(parent.descriptor, (&parent.leaf[0]).cast[cstr], stage_file_named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+            if not named_ok or stage_file_named_info.device != stage_file_device or stage_file_named_info.inode != stage_file_inode or stage_file_named_info.user != stage.proof.user or (stage_file_named_info.mode & DarwinStatMode::MASK) != DarwinStatMode.REGULAR or (stage_file_named_info.mode & InstallSourceMode::PERMISSION_MASK) != 384u16:
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileChanged
+
+            copy_buffer_storage: mutable u8[Limits::STREAM_CHUNK_BYTES] = zeroed
+            copy_buffer: mutable u8& = (&copy_buffer_storage[0])
+            bytes_copied: mutable usize = 0
+            while bytes_copied < receipt.byte_count:
+                remaining: usize = receipt.byte_count - bytes_copied
+                capacity: usize = Limits::STREAM_CHUNK_BYTES if remaining > Limits::STREAM_CHUNK_BYTES else remaining
+                chunk_length: mutable usize = 0
+                catch read_install_source_chunk(source, copy_buffer, capacity):
+                    ok amount:
+                        chunk_length <- amount
+                    error failure:
+                        cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                        _ = try install_source_require_stage_copy_cleanup(cleanup)
+                        raise failure
+                if chunk_length == 0 or chunk_length > remaining:
+                    cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                    _ = try install_source_require_stage_copy_cleanup(cleanup)
+                    raise InstallSourceError.StageFileWriteIncomplete
+                catch install_source_write_stage_fully(stage_file_fd, copy_buffer, chunk_length):
+                    ok written:
+                        bytes_copied <- bytes_copied + written
+                    error failure:
+                        cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                        _ = try install_source_require_stage_copy_cleanup(cleanup)
+                        raise failure
+
+            catch finish_install_source_copy(source):
+                ok finished:
+                    _ = finished
+                error failure:
+                    cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                    _ = try install_source_require_stage_copy_cleanup(cleanup)
+                    raise failure
+
+            final_mode: u16 = install_source_expected_mode(artifact.mode)
+            if elisascript_posix_fchmod(stage_file_fd, final_mode.u32()) != 0:
+                errno: mutable i32& = elisascript_posix_errno()
+                mode_errno: i32 = errno[0]
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileModeFailed(mode_errno)
+            file_sync_errno: i32 = install_source_sync_stage_descriptor(stage_file_fd)
+            if file_sync_errno != 0:
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileSyncFailed(file_sync_errno)
+            stage_file_info <- ElisascriptStat{}
+            if not install_source_stat_descriptor(stage_file_fd, stage_file_info) or not install_source_stage_file_matches(stage_file_info, stage.proof, stage_file_device, stage_file_inode, receipt.byte_count, artifact.mode):
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileChanged
+            stage_file_named_info <- ElisascriptStat{}
+            named_ok <- install_source_stat_entry_at(parent.descriptor, (&parent.leaf[0]).cast[cstr], stage_file_named_info, DarwinAtFlag::SYMLINK_NOFOLLOW)
+            if not named_ok or not install_source_stage_file_matches(stage_file_named_info, stage.proof, stage_file_device, stage_file_inode, receipt.byte_count, artifact.mode):
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageFileChanged
+
+            parent_sync_errno: i32 = install_source_sync_stage_descriptor(parent.descriptor)
+            if parent_sync_errno != 0:
+                cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+                _ = try install_source_require_stage_copy_cleanup(cleanup)
+                raise InstallSourceError.StageDirectorySyncFailed(parent_sync_errno)
+
+            cleanup: InstallStageCopyCloseStatus = install_source_close_stage_copy_handles(source, stage_file_fd, parent)
+            _ = try install_source_require_stage_copy_cleanup(cleanup)
+            return bytes_copied

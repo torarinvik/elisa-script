@@ -568,11 +568,21 @@ capability and retains the matching descriptor. `read_install_source_chunk`
 streams at most 64 KiB per call; `finish_install_source_copy` checks descriptor
 and path identity again and consumes the descriptor, while
 `cancel_install_source_copy` closes an abandoned stream.
+`copy_install_source_to_stage` opens destination parents one component at a
+time without following links, creates missing directories as `0755`, and
+exclusively creates a private `0600` regular file. It streams only the receipt's
+bounded byte count, revalidates the source, applies the manifest mode, syncs the
+file and directory entries, and rechecks descriptor/name identity. Its byte
+count is not a staging proof: the caller must still run
+`verify_install_stage_at` to hash the staged bytes and verify exact tree
+closure. A failed copy can leave partial content in the private stage; safe
+recursive cleanup is not implemented yet, so the orchestration layer must not
+publish that stage.
 `advance_install_plan` separates `Publishing` from acknowledged `Published`,
 tracks `PublishUncertain`, and requires rollback to be acknowledged or explicitly
 remain `RollbackUncertain`. The tree scan is only a verifier: nested stage-tree
-population and cleanup, destination directory permission mapping,
-multi-artifact atomic replacement, recovery journal, and the end-to-end
+cleanup, destination directory permission mapping, multi-artifact atomic
+replacement, recovery journal, and the end-to-end
 installation adapter remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
