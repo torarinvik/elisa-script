@@ -781,7 +781,11 @@ the first command, rechecks the current node's outputs immediately before
 launch, and verifies the node's outputs resolve to files before admitting its
 success transition. A later node whose output appeared before its producer's
 dispatch is rejected as `PrematureOutput`, rather than receiving false output
-credit from an earlier action.
+credit from an earlier action. Output paths must use a lexically normalized
+absolute POSIX spelling: empty, `.` and `..` segments, repeated separators, and
+trailing separators are rejected so string-distinct keys cannot name the same
+lexical output. Symlinked ancestor aliases and arbitrary concurrent filesystem
+mutation remain outside this lexical check.
 A pre-existing filesystem entry, including a symlink, is rejected as
 `OutputAlreadyPresent` while the graph remains planned; callers must clean
 prior outputs explicitly. These checks are observations, not an atomic
