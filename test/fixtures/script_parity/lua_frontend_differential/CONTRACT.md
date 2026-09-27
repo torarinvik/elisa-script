@@ -37,6 +37,14 @@ constructed option string through a shell. It may use a stricter, explicitly
 documented option spelling policy only if the fixture records the policy and
 the status/message class is stable.
 
+The source-only Elisascript seam `EsLuaFrontendArguments` now models this
+boundary with typed usage errors, bounded raw arguments and paths, exact and
+unambiguous abbreviated long options, attached/separated values, and explicit
+flags distinguishing an absent path from a supplied empty path. Its runtime
+test source is `test/runtime/lua_frontend_arguments_test.elisa`. This parser is
+not yet connected to a launcher or the W05 workflow, and its tests have not
+been compiled or run; it is implementation source, not parity evidence.
+
 The four process inputs are typed values, not a shell command:
 
 ```text

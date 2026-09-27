@@ -1,0 +1,180 @@
+# Typed argv boundary for the Lua frontend differential driver.
+#
+# This parser owns no host effects. Its returned path/option views borrow the
+# caller's argv storage, which must remain alive and unchanged while consumed.
+
+module EsLuaFrontendArguments:
+    public:
+        const module Limits:
+            ARGUMENTS: usize = 4096
+            ARGUMENT_BYTES: usize = 65536
+            TOTAL_ARGUMENT_BYTES: usize = 65536
+            PATH_BYTES: usize = 4096
+            OPT_LEVEL_BYTES: usize = 64
+
+
+        struct LuaFrontendArguments:
+            corpus_root: mutable sview = ""
+            corpus_root_set: mutable bool = false
+            opt_level: mutable sview = "-O3"
+            strict: mutable bool = false
+            keep_temp: mutable bool = false
+            json_out: mutable sview = ""
+            json_out_set: mutable bool = false
+            help_requested: mutable bool = false
+
+
+        error LuaFrontendArgumentsError:
+            ArgumentCountExceeded
+            ArgumentTooLong
+            ArgumentBytesExceeded
+            EmbeddedNul
+            UnknownOption
+            AmbiguousOption
+            MissingValue
+            UnexpectedValue
+            UnexpectedPositional
+            InvalidOptLevel
+            PathTooLong
+
+
+    private:
+        const module Names:
+            CORPUS_ROOT: sview = "--corpus-root"
+            OPT_LEVEL: sview = "--opt-level"
+            STRICT: sview = "--strict"
+            KEEP_TEMP: sview = "--keep-temp"
+            JSON_OUT: sview = "--json-out"
+            HELP: sview = "--help"
+
+
+        const enum OptionKind of u8:
+            CorpusRoot
+            OptLevel
+            Strict
+            KeepTemp
+            JsonOut
+            Help
+
+
+        struct OptionMatch:
+            kind: mutable OptionKind = OptionKind.CorpusRoot
+            matches: mutable usize = 0
+            exact: bool = false
+
+
+        def lua_frontend_option_prefix_matches(candidate: sview, option: sview) -> bool:
+            return false if sview_len(candidate) > sview_len(option)
+            return string_view_slice(option, 0, sview_len(candidate).i64()) == candidate
+
+
+        def lua_frontend_consider_option(name: sview, option_name: sview, kind: OptionKind, match: mutable OptionMatch&) -> void:
+            if name == option_name:
+                match.kind <- kind
+                match.matches <- 1
+                match.exact <- true
+            elif not match.exact and lua_frontend_option_prefix_matches(name, option_name):
+                match.kind <- kind
+                match.matches <- match.matches + 1
+
+
+        def lua_frontend_option_match(name: sview) -> OptionMatch:
+            match: mutable OptionMatch = OptionMatch{}
+            lua_frontend_consider_option(name, Names::CORPUS_ROOT, OptionKind.CorpusRoot, match)
+            lua_frontend_consider_option(name, Names::OPT_LEVEL, OptionKind.OptLevel, match)
+            lua_frontend_consider_option(name, Names::STRICT, OptionKind.Strict, match)
+            lua_frontend_consider_option(name, Names::KEEP_TEMP, OptionKind.KeepTemp, match)
+            lua_frontend_consider_option(name, Names::JSON_OUT, OptionKind.JsonOut, match)
+            lua_frontend_consider_option(name, Names::HELP, OptionKind.Help, match)
+            return match
+
+
+        def lua_frontend_opt_level_valid(value: sview) -> bool:
+            return value == "-O0" or value == "-O1" or value == "-O2" or value == "-O3" or value == "-Os" or value == "-Oz"
+
+
+        def lua_frontend_separate_value_is_option(value: sview, kind: OptionKind) -> bool:
+            return false if value == "-" or sview_len(value) == 0 or sview_at(value, 0) != 45
+            return true if sview_len(value) > 1 and sview_at(value, 1) == 45
+            return false if kind == OptionKind.OptLevel and lua_frontend_opt_level_valid(value)
+            return true
+
+
+        def lua_frontend_path_within_limit(value: sview) -> bool:
+            return sview_len(value) <= Limits::PATH_BYTES
+
+
+    public:
+        def parse_lua_frontend_arguments(arguments: darray[sview]) -> LuaFrontendArguments error[LuaFrontendArgumentsError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendArgumentsError.ArgumentCountExceeded if arguments.count > Limits::ARGUMENTS
+            total_argument_bytes: mutable usize = 0
+            for argument in arguments |total_argument_bytes|:
+                argument_bytes: usize = sview_len(argument)
+                raise LuaFrontendArgumentsError.ArgumentTooLong if argument_bytes > Limits::ARGUMENT_BYTES
+                raise LuaFrontendArgumentsError.ArgumentBytesExceeded if argument_bytes > Limits::TOTAL_ARGUMENT_BYTES - total_argument_bytes
+                total_argument_bytes <- total_argument_bytes + argument_bytes
+                raise LuaFrontendArgumentsError.EmbeddedNul if sview_contains_byte(argument, 0)
+
+            parsed: mutable LuaFrontendArguments = LuaFrontendArguments{}
+            options_enabled: mutable bool = true
+            index: mutable usize = 0
+            while index < arguments.count |arguments, parsed, options_enabled, index|:
+                argument: sview = arguments[index]
+                if options_enabled and argument == "--":
+                    options_enabled <- false
+                    index <- index + 1
+                    raise LuaFrontendArgumentsError.UnexpectedPositional if index < arguments.count
+                    break
+                elif options_enabled and (argument == "-h" or argument == Names::HELP or argument == "--h"):
+                    parsed.help_requested <- true
+                    return parsed
+                elif not options_enabled:
+                    raise LuaFrontendArgumentsError.UnexpectedPositional
+                elif sview_len(argument) == 0 or sview_at(argument, 0) != 45:
+                    raise LuaFrontendArgumentsError.UnexpectedPositional
+                elif sview_len(argument) < 3 or sview_at(argument, 1) != 45:
+                    raise LuaFrontendArgumentsError.UnknownOption
+
+                option_end: mutable usize = sview_len(argument)
+                for offset in 0..<sview_len(argument) |argument, option_end|:
+                    if sview_at(argument, offset) == 61:
+                        option_end <- offset
+                        break
+                name: sview = string_view_slice(argument, 0, option_end.i64())
+                option: OptionMatch = lua_frontend_option_match(name)
+                raise LuaFrontendArgumentsError.UnknownOption if option.matches == 0
+                raise LuaFrontendArgumentsError.AmbiguousOption if option.matches > 1 and not option.exact
+                inline_value: bool = option_end < sview_len(argument)
+                value: mutable sview = ""
+                if option.kind == OptionKind.CorpusRoot or option.kind == OptionKind.OptLevel or option.kind == OptionKind.JsonOut:
+                    if inline_value:
+                        value <- string_view_slice(argument, (option_end + 1).i64(), sview_len(argument).i64())
+                    else:
+                        raise LuaFrontendArgumentsError.MissingValue if index + 1 >= arguments.count
+                        value <- arguments[index + 1]
+                        raise LuaFrontendArgumentsError.MissingValue if value == "--" or lua_frontend_separate_value_is_option(value, option.kind)
+                        index <- index + 1
+
+                    if option.kind == OptionKind.CorpusRoot:
+                        raise LuaFrontendArgumentsError.PathTooLong if not lua_frontend_path_within_limit(value)
+                        parsed.corpus_root <- value
+                        parsed.corpus_root_set <- true
+                    elif option.kind == OptionKind.OptLevel:
+                        raise LuaFrontendArgumentsError.InvalidOptLevel if sview_len(value) > Limits::OPT_LEVEL_BYTES or not lua_frontend_opt_level_valid(value)
+                        parsed.opt_level <- value
+                    else:
+                        raise LuaFrontendArgumentsError.PathTooLong if not lua_frontend_path_within_limit(value)
+                        parsed.json_out <- value
+                        parsed.json_out_set <- true
+                else:
+                    raise LuaFrontendArgumentsError.UnexpectedValue if inline_value
+                    if option.kind == OptionKind.Strict:
+                        parsed.strict <- true
+                    elif option.kind == OptionKind.KeepTemp:
+                        parsed.keep_temp <- true
+                    else:
+                        parsed.help_requested <- true
+                        return parsed
+                index <- index + 1
+
+            return parsed
