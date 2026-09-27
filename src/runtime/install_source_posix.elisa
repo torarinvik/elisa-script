@@ -1,0 +1,88 @@
+# Descriptor-relative verification of installation sources.
+#
+# This adapter binds an install manifest entry to bytes observed beneath an
+# already-open build-root capability. It rejects symlinked path components,
+# bounds the read, hashes the exact file contents, and returns the stable file
+# stamp needed by a later staging step to detect source replacement.
+
+module EsInstallSourcePosix:
+    using EsBuildIncremental
+    using EsBuildIncrementalPosix
+    using EsInstall
+
+    public:
+        struct InstallSourceReceipt:
+            artifact_index: usize
+            source_path: sview
+            byte_count: usize
+            source_stamp: BuildIncrementalFileStamp
+            digest_0: u64
+            digest_1: u64
+            digest_2: u64
+            digest_3: u64
+
+
+        error InstallSourceError:
+            ArtifactIndexOutOfRange
+            PlanNotPlanned
+            SourceMissing
+            SourceChanged
+            ByteCountMismatch
+            DigestMismatch
+            ReceiptPathMismatch
+
+
+    private:
+        def install_source_stamp_equal(left: BuildIncrementalFileStamp, right: BuildIncrementalFileStamp) -> bool:
+            return left.path == right.path and left.present and right.present and left.size == right.size and left.device == right.device and left.inode == right.inode and left.modify_time.seconds == right.modify_time.seconds and left.modify_time.nanoseconds == right.modify_time.nanoseconds and left.change_time.seconds == right.change_time.seconds and left.change_time.nanoseconds == right.change_time.nanoseconds
+
+
+    public:
+        # Purely validate a receipt against its plan entry. Filesystem
+        # provenance comes from verify_install_source_at; callers must retain
+        # the returned stamp and re-observe it before copying if any time has
+        # elapsed or another actor can modify the build tree.
+        def validate_install_source_receipt(plan: InstallPlan&, receipt: InstallSourceReceipt) -> bool error[InstallContractError, InstallSourceError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.ArtifactIndexOutOfRange if receipt.artifact_index >= plan.artifacts.count
+            artifact: InstallArtifact = plan.artifacts[receipt.artifact_index]
+            raise InstallSourceError.ReceiptPathMismatch if receipt.source_path != artifact.source_path or receipt.source_stamp.path != artifact.source_path
+            raise InstallSourceError.SourceMissing if not receipt.source_stamp.present
+            raise InstallSourceError.ByteCountMismatch if receipt.byte_count != artifact.byte_count or receipt.source_stamp.size != artifact.byte_count
+            raise InstallSourceError.DigestMismatch if receipt.digest_0 != artifact.digest_0 or receipt.digest_1 != artifact.digest_1 or receipt.digest_2 != artifact.digest_2 or receipt.digest_3 != artifact.digest_3
+            return true
+
+
+        # Observe and hash one artifact through EsBuildIncrementalPosix. That
+        # observer opens every path segment with no-follow semantics, checks
+        # regular-file identity and metadata before/after reading, and bounds
+        # the input to the shared build/install file ceiling.
+        def verify_install_source_at(a: mutable Arena&, root_fd: int, plan: InstallPlan&, artifact_index: usize) -> InstallSourceReceipt error[InstallContractError, InstallSourceError, OpenError, ObserveError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            _ = try validate_install_plan(plan)
+            raise InstallSourceError.PlanNotPlanned if plan.state != InstallState.Planned
+            raise InstallSourceError.ArtifactIndexOutOfRange if artifact_index >= plan.artifacts.count
+
+            artifact: InstallArtifact = plan.artifacts[artifact_index]
+            initial_stamp: BuildIncrementalFileStamp = try observe_build_incremental_file_stamp_at(root_fd, artifact.source_path)
+            raise InstallSourceError.SourceMissing if not initial_stamp.present
+            # Check size before the content observer allocates its bounded read
+            # buffer. A manifest expecting a small artifact must not be forced
+            # to materialize a different, much larger file before rejection.
+            raise InstallSourceError.ByteCountMismatch if initial_stamp.size != artifact.byte_count
+            stamp: mutable BuildIncrementalFileStamp = BuildIncrementalFileStamp{path: artifact.source_path}
+            observed: BuildIncrementalObservation = try observe_build_incremental_file_with_stamp_at(a, root_fd, artifact.source_path, stamp)
+            raise InstallSourceError.SourceChanged if not observed.present or not install_source_stamp_equal(initial_stamp, stamp[0])
+            raise InstallSourceError.DigestMismatch if observed.fingerprint != artifact.digest_0 or observed.fingerprint_word1 != artifact.digest_1 or observed.fingerprint_word2 != artifact.digest_2 or observed.fingerprint_word3 != artifact.digest_3
+
+            receipt: InstallSourceReceipt = InstallSourceReceipt{
+                artifact_index: artifact_index,
+                source_path: artifact.source_path,
+                byte_count: stamp[0].size,
+                source_stamp: stamp[0],
+                digest_0: observed.fingerprint,
+                digest_1: observed.fingerprint_word1,
+                digest_2: observed.fingerprint_word2,
+                digest_3: observed.fingerprint_word3
+            }
+            _ = try validate_install_source_receipt(plan, receipt)
+            return receipt

@@ -521,18 +521,22 @@ validation is held.
 
 `EsInstall` makes release publication a typed state machine. An
 `InstallPlan` names the package version, workspace/user/system scope, source,
-bytecode, or native artifact targets, destination paths, executable intent, and
-four-word integrity identity. `validate_install_plan` rejects empty plans,
+bytecode, or native artifact targets, destination paths, typed `Data` or
+`Executable` mode, and a four-word SHA-256 integrity identity. `validate_install_plan` rejects empty plans,
 duplicate or parent/child-conflicting destinations, non-canonical relative
 paths, invalid package-version text, non-`.elisascript` source artifacts,
 oversized per-artifact or aggregate payloads, and an explicitly absent integrity
 identity. Identity presence is separate from its contents, so zero-valued digest
 words and empty artifacts remain representable;
-`advance_install_plan` requires
-`Planned → Staged → Verified → Published` and exposes explicit failure and
-rollback edges; a published plan cannot re-enter failure and must use rollback
-for post-publication recovery. The host installer still owns filesystem permissions, atomic
-replacement, signatures, and platform-specific executable layout.
+`EsInstallSourcePosix.verify_install_source_at` performs a descriptor-relative,
+no-follow, size-bounded read and compares SHA-256 plus byte count to the manifest.
+Its receipt carries the observed device/inode/mtime/ctime stamp for later
+revalidation before copying; it rejects size mismatch before allocating the
+content buffer. `advance_install_plan` separates `Publishing` from
+acknowledged `Published`, tracks `PublishUncertain`, and requires rollback to be
+acknowledged or explicitly remain `RollbackUncertain`. The whole-tree staging,
+exact POSIX permission mapping, multi-artifact atomic replacement, recovery
+journal, and end-to-end installation adapter remain unimplemented.
 
 `EsSourceMap` gives diagnostics and navigation a bounded identity layer across
 modules. Files are explicit unique paths, entries carry generated and original
