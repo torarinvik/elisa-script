@@ -779,6 +779,11 @@ the parent environment with no explicit entries; commands with cleared or
 replaced environments are rejected instead of silently changing meaning. The
 caller still owns atomic file publication and must decide which graph actions
 are compilation units.
+The projection rejects -c commands that switch to preprocessing, assembly,
+syntax-only, precompile, analysis, or another non-object frontend stage rather
+than attributing an object output to them. Clang's -emit-llvm -c form derives a
+.bc primary output instead of .o, and conflicting stage-selection options are
+rejected.
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
