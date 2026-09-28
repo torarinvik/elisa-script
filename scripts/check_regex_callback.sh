@@ -11,9 +11,27 @@ fixture_file="$repo_root/test/ir/elisascript_ir_test.elisa"
 runtime_fixture="$repo_root/test/runtime/regex_callback_model_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
+source_bytes_limit=16777216
+total_source_bytes_limit=33554432
+required_files=("$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger")
 
-for required_file in "$model" "$ir" "$fixture_file" "$runtime_fixture" "$docs" "$ledger"; do
-    [[ -f "$required_file" ]] || { printf 'regex callback audit: missing %s\n' "$required_file" >&2; exit 1; }
+for required_file in "${required_files[@]}"; do
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'regex callback audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+total_source_bytes=0
+for required_file in "${required_files[@]}"; do
+    source_bytes="$(wc -c < "$required_file")"
+    source_bytes="${source_bytes//[[:space:]]/}"
+    if [[ ! "$source_bytes" =~ ^[0-9]+$ ]]; then
+        printf 'regex callback audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    if (( source_bytes > source_bytes_limit || source_bytes > total_source_bytes_limit - total_source_bytes )); then
+        printf 'regex callback audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    total_source_bytes=$((total_source_bytes + source_bytes))
 done
 
 rg -q '^module EsRegexCallback:' "$model"
