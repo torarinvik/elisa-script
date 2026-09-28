@@ -12,6 +12,9 @@ This fixture records the raw-host boundary that must agree with the typed
 - `--test` currently has no script-argument or selection channel; trailing
   values after its source are rejected as `TestArgumentsUnsupported` instead
   of being silently ignored by a future driver route.
+- Test reports default to Human and accept `--format human|json|junit`.
+  JSON/JUnit are rejected outside `--test`, and `--color always` is rejected
+  for machine-readable formats so report bytes remain parseable.
 - The aggregate classification is reported before any claim about the
   complete host string, because the bounded scan already proves that the
   launcher budget was exceeded.

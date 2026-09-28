@@ -25,6 +25,8 @@ for declaration in \
     'Limits::SOURCE_PATH_BYTES' \
     'const enum CliMode of u8:' \
     'const enum CliColorMode of u8:' \
+    'const enum CliReportFormat of u8:' \
+    'report_format: mutable CliReportFormat' \
     'struct CliInvocation:' \
     'error CliContractError:' \
     'def validate_cli_invocation(' \
@@ -35,11 +37,16 @@ done
 for boundary in \
     'cli_mode_valid' \
     'cli_color_valid' \
+    'cli_report_format_valid' \
+    'cli_report_format_from_argument' \
+    'argument == "--format"' \
     'cli_mode_requires_source' \
     'DuplicateMode' \
     'DuplicateOption' \
     'UnexpectedArgument' \
     'TestArgumentsUnsupported' \
+    'ReportFormatUnavailable' \
+    'ColorNotApplicable' \
     'InvalidSourceExtension' \
     'MissingOptionValue' \
     'ArgumentLimitExceeded' \
@@ -48,6 +55,10 @@ for boundary in \
     'arguments[index] == "--" and not invocation.option_end_seen'; do
     rg -Fq "$boundary" "$model"
 done
+
+rg -Fq 'typed_cli_test_report_formats_are_mode_and_color_bounded' "$repo_root/test/runtime/cli_model_test.elisa"
+rg -Fq 'report_format: mutable CliReportFormat' "$runner"
+rg -Fq 'result.report_format <- CliReportFormat.Human' "$runner"
 
 rg -Fq 'include "../runtime/cli_model.elisa"' "$ir"
 for fixture_pattern in \
@@ -66,6 +77,9 @@ done
 rg -Fq '`EsCli::CliInvocation`' "$docs"
 rg -Fq 'using EsCli' "$driver"
 rg -Fq 'request.mode <- invocation.mode' "$driver"
+rg -Fq 'request.report_format <- invocation.report_format' "$driver"
+rg -Fq 'requested_format == EsCli::CliReportFormat.Json' "$driver"
+rg -Fq 'requested_format == EsCli::CliReportFormat.Junit' "$driver"
 rg -Fq 'request.strict_engine <- invocation.strict_engine' "$driver"
 rg -Fq 'HostArgumentFailure.ArgumentBytes' "$driver"
 rg -Fq 'argument_limit < EsIr::ES_RUNTIME_DEFAULT_MAX_CSTRING_BYTES - 1' "$driver"
@@ -86,7 +100,9 @@ rg -Fq 'return if mode == ElisascriptProgramDiagnosticMode.VerifyOnly' "$runner"
 rg -Fq 'diagnostic_check_accepts_modules_without_main_and_never_executes' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'strict_engine_diagnostic_rejects_interpreter_fallback' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'cli_parser_resets_reused_request_state' "$repo_root/test/ir/elisascript_runner_test.elisa"
+rg -Fq 'request.report_format == CliReportFormat.Human' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'bounded C-string scan' "$contract"
+rg -Fq -- '--format human|json|junit' "$contract"
 rg -Fq 'ArgumentBytes' "$contract"
 
-printf 'cli model audit: typed modes and bounded options are present; --check validates without executing\n'
+printf 'cli model audit: typed modes, bounded report formats, and option validation are present; --check validates without executing\n'
