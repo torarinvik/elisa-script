@@ -128,6 +128,42 @@ The adapter and pure source tests
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
 compiled or run; no runtime filesystem evidence is claimed.
 
+### Required toolchain preflight before the build plan
+
+The build-plan model accepts absolute executable paths, but an absolute path
+is not an executable identity. Before the plan can be admitted to a launcher,
+host preflight must produce and validate a separate toolchain receipt with at
+least these facts:
+
+- Elisa-core compiler checkout used by `go run ./src`: approved canonical
+  root, exact commit object identity, and a complete source/worktree snapshot
+  covering every file that can affect package loading, including rejection or
+  accounting for untracked and ignored Go sources. Current state: only
+  `.git/HEAD`/loose-`main` pointer text and four selected tracked blob IDs are
+  checked; the full tree/worktree is not authenticated.
+- `go` launcher and selected Go toolchain: canonical executable path,
+  regular-file/no-symlink policy, stable file identity and content digest,
+  explicit Go-version/toolchain selection, and identity of the selected
+  `GOROOT` tools. Current state: not checked.
+- Go build inputs outside the checkout: explicit module/workspace/cache policy
+  and proof that toolchain selection cannot download or silently switch
+  toolchains during the run. Current state: not checked.
+- `clang` and its link environment: canonical executable path, stable file
+  identity and content digest, plus approved linker, SDK/sysroot, and relevant
+  environment identity. Current state: not checked.
+- Launch-time binding: the supervisor must bind the admitted executable
+  identity to the actual launch and fail closed if the path or object changes
+  between admission and `exec`. Current state: no supervisor is connected.
+
+Do not turn `go version`, `clang --version`, a version string, or the pinned
+Git pointer into a substitute for these checks: they are useful diagnostics,
+not content identity. In particular, hashing only the top-level `go` binary
+does not identify the compiler/toolchain selected by `go run`, and a pinned
+repository commit does not identify a dirty or augmented working tree. These
+facts must be captured before any compiler or C child starts and attached to
+the run report; a missing, incomplete, or changed receipt is an
+infrastructure failure. The host adapter and receipt type remain future work.
+
 The four process inputs are typed values, not a shell command:
 
 ```text
