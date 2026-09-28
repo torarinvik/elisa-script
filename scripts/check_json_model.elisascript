@@ -1,0 +1,338 @@
+# Bounded Elisascript port of check_json_model.sh.
+# This audit treats repository sources as data and never launches rg.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsJsonModelAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = 16777216
+            TOTAL_SOURCE_BYTES: usize = 67108864
+
+
+        const module Inputs:
+            MODEL: sview = "src/runtime/json_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            ENCODER: sview = "src/runtime/json_encode_model.elisa"
+            LEXER: sview = "src/runtime/json_lexer_model.elisa"
+            PARSER: sview = "src/runtime/json_parse_model.elisa"
+            DOCS: sview = "docs/ir.md"
+
+
+        const module Diagnostics:
+            MISSING_ROOT: sview = "json model audit: missing repository root"
+            MISSING_PREFIX: sview = "json model audit: missing "
+            PARSER_BATCH: sview = "json model audit: parser must build one checked batch, not rescan the document per append"
+            SUCCESS: sview = "json model audit: namespaced owned scalar/key arenas and document lifecycle contracts are present"
+
+
+        error AuditReadError:
+            Missing
+            LimitExceeded
+
+
+        def display_path(root: sview, relative: sview) -> sview:
+            return "/" + relative if root == "/"
+            return root + "/" + relative
+
+
+        def write_diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def contains_all(source: sview, required: darray[sview]) -> bool:
+            for needle in required:
+                return false if source.index(needle) < 0
+            return true
+
+
+        def read_source(input_path: Path, source_size: usize) -> sview error[AuditReadError] can[Memory.Allocate, Abort.Panic, Blocking.IO, File.Read, Unsafe.PointerCast]:
+            current_size: usize = try file_size(input_path) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if current_size > source_size or current_size > Limits::SOURCE_BYTES
+            source: sview = try EsBoundedText::read_utf8(input_path, source_size) else err:
+                raise AuditReadError.Missing
+            raise AuditReadError.LimitExceeded if len(source) > source_size or len(source) > Limits::SOURCE_BYTES
+            return source
+
+
+        def audit_sources(repository_root: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+            if not is_directory(repository_root):
+                write_diagnostic(Diagnostics::MISSING_ROOT)
+                return 1i64
+            root_absolute: Path = try path_real(path_absolute(repository_root)) else err:
+                write_diagnostic(Diagnostics::MISSING_ROOT)
+                return 1i64
+            root_text: sview = f"{root_absolute}"
+            relative_paths: darray[sview] = [Inputs::MODEL, Inputs::IR, Inputs::FIXTURE, Inputs::ENCODER, Inputs::LEXER, Inputs::PARSER, Inputs::DOCS]
+            source_sizes: mutable darray[usize] = []
+            sources: mutable darray[sview] = []
+            total_bytes: mutable usize = 0
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text|:
+                input_path: Path = path_join(root_absolute, relative)
+                if not is_file(input_path) or not is_readable(input_path):
+                    write_diagnostic(Diagnostics::MISSING_PREFIX + display_path(root_text, relative))
+                    return 1i64
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, total_bytes|:
+                input_path: Path = path_join(root_absolute, relative)
+                source_size: usize = try file_size(input_path) else err:
+                    write_diagnostic(Diagnostics::MISSING_PREFIX + display_path(root_text, relative))
+                    return 1i64
+                if source_size > Limits::SOURCE_BYTES or source_size > Limits::TOTAL_SOURCE_BYTES - total_bytes:
+                    write_diagnostic("json model audit: source exceeds audit limit: " + display_path(root_text, relative))
+                    return 2i64
+                total_bytes <- total_bytes + source_size
+                source_sizes.push(source_size)
+
+            for relative in relative_paths |relative_paths, root_absolute, root_text, source_sizes, sources|:
+                input_path: Path = path_join(root_absolute, relative)
+                input_display: sview = display_path(root_text, relative)
+                source_index: usize = sources.count
+                catch read_source(input_path, source_sizes[source_index]):
+                    ok source:
+                        sources.push(source)
+                    error failure:
+                        if failure == AuditReadError.LimitExceeded:
+                            write_diagnostic("json model audit: source exceeds audit limit: " + input_display)
+                            return 2i64
+                        write_diagnostic(Diagnostics::MISSING_PREFIX + input_display)
+                        return 1i64
+
+            model: sview = sources[0]
+            ir: sview = sources[1]
+            fixture: sview = sources[2]
+            encoder: sview = sources[3]
+            lexer: sview = sources[4]
+            parser: sview = sources[5]
+            docs: sview = sources[6]
+
+            lexer_contracts: darray[sview] = [
+                "module EsJsonLex:",
+                "struct JsonLexedSource:",
+                "struct JsonLexeme:",
+                "def lex_json(",
+                "def validate_json_lexed_source(",
+                "def json_lex_scan(",
+                "def json_lex_source_matches_tokens(",
+                "json_number_lexeme_is_valid",
+                "json_lex_read_hex4",
+                "InvalidSurrogate",
+                "UnterminatedComment",
+                "JsonLexError.TokenLimitExceeded",
+                "JsonLexError.DepthLimitExceeded"
+            ]
+            parser_contracts: darray[sview] = [
+                "module EsJsonParse:",
+                "error JsonParseError:",
+                "const enum JsonParsePhase of u8:",
+                "struct JsonParseFrame:",
+                "def json_parse_build(",
+                "def parse_json_document(",
+                "def json_parse_sorted_pending_members(",
+                "document.children.push(child)",
+                "document.members.push(member)",
+                "document.member_key_order.push(member_index)",
+                "document.roots.push(value_index)",
+                "JsonDocumentEvent.Seal",
+                "JsonDocumentEvent.Fail",
+                "JsonParseError.TrailingComma",
+                "JsonParseError.MultipleRoots"
+            ]
+            encoder_contracts: darray[sview] = [
+                "module EsJsonEncode:",
+                "error JsonEncodeError:",
+                "def encode_json_root(",
+                "JSON_ENCODE_MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES",
+                "JSON_ENCODE_MAX_FRAMES: usize = 1025",
+                "return false if output.count > limit",
+                "return addition <= limit - output.count",
+                "frames.pop()",
+                "JsonNodeKind.Number",
+                "JsonNodeKind.Object",
+                "if byte == 34u8 or byte == 92u8:",
+                "elif byte < 32u8:",
+                "JsonEncodeError.OutputLimitExceeded"
+            ]
+            model_contracts: darray[sview] = [
+                "module EsJson:",
+                "using EsData",
+                "using EsEncoding",
+                "JSON_MODEL_FORMAT_VERSION: u8 = 5",
+                "const enum JsonNodeKind of u8:",
+                "const enum JsonNodeOwnerKind of u8:",
+                "const enum JsonDocumentState of u8:",
+                "const enum JsonDocumentEvent of u8:",
+                "const enum JsonKeyOrder of u8:",
+                "struct JsonRange:",
+                "struct JsonNode:",
+                "struct JsonNodeInput:",
+                "struct JsonArrayChild:",
+                "struct JsonMemberInput:",
+                "struct JsonMember:",
+                "struct JsonDocument:",
+                "member_key_order: darray[usize] = []",
+                "error JsonContractError:",
+                "def validate_json_document(",
+                "def advance_json_document(",
+                "def json_node_child_range_valid(",
+                "def json_stored_keys_order(",
+                "def json_member_key_order_lower_bound(",
+                "def json_number_next_state(",
+                "def json_number_span_valid(",
+                "def json_text_valid(",
+                "def json_text_span_valid(",
+                "def copy_json_scalar(",
+                "document.key_bytes.push(sview_at(member.key, offset))",
+                "document.scalar_data.push(sview_at(node.scalar_value, offset))",
+                "JSON_MAX_TOTAL_KEY_BYTES",
+                "JSON_MAX_TOTAL_SCALAR_BYTES",
+                "sview_len(key) <= field_byte_limit",
+                "member.key_bytes > document.limits.field_bytes",
+                "node.scalar_bytes > document.scalar_data.count - node.scalar_start",
+                "document.scalar_data.count > document.source_bytes - document.key_bytes.count",
+                "json_bounded_add(document.key_bytes.count, sview_len(member.key), document.source_bytes - document.scalar_data.count)",
+                "node.range.end - node.range.start < 2",
+                "member.key_range.end - member.key_range.start < 2",
+                "json_range_valid(member.key_range, document.source_bytes)",
+                "node.kind == JsonNodeKind.Number",
+                "node.kind == JsonNodeKind.Bool",
+                "try validate_json_document(document)"
+            ]
+            model_boundaries: darray[sview] = [
+                "InvalidRange",
+                "InvalidChildRange",
+                "json_node_child_range_valid(node, document.children.count)",
+                "json_node_member_range_valid(node, document.members.count)",
+                "edge.owner_index != index",
+                "member.owner_index != index",
+                "value.owner_kind != JsonNodeOwnerKind.ArrayChild",
+                "value.owner_kind != JsonNodeOwnerKind.ObjectMember",
+                "node.owner_kind == JsonNodeOwnerKind.Detached",
+                "node.owner_kind == JsonNodeOwnerKind.Root",
+                "old_value.owner_kind <- JsonNodeOwnerKind.Detached",
+                "root.owner_kind <- JsonNodeOwnerKind.Root",
+                "previous_value.range.end > value.range.start",
+                "member.key_range.end > value.range.start",
+                "member.key_bytes > member.key_range.end - member.key_range.start",
+                "previous_member.key_range.end > member.key_range.start",
+                "json_stored_keys_order(document.key_bytes, earlier, member)",
+                "json_stored_key_view_order(document, earlier, member.key)",
+                "member.member_key_order_rank != rank",
+                "expected_key_start != document.key_bytes.count",
+                "expected_scalar_start != document.scalar_data.count",
+                "document.key_bytes.count > document.source_bytes",
+                "document.nodes[previous_root].range.end > root.range.start",
+                "document.policy.duplicate_keys == JsonDuplicateKeyPolicy.KeepFirst",
+                "node.scalar_bytes > node.range.end - node.range.start",
+                "if node.kind == JsonNodeKind.Array",
+                "document.state == JsonDocumentState.Empty",
+                "document.state == JsonDocumentState.Sealed",
+                "derived_depth",
+                "DuplicateObjectKey",
+                "NodeLimitExceeded",
+                "InvalidArrayChild",
+                "InvalidMemberOwner",
+                "InvalidMemberOrder",
+                "MemberLimitExceeded",
+                "RootLimitExceeded",
+                "AppendNotReady",
+                "SealNotReady"
+            ]
+            fixture_patterns: darray[sview] = [
+                "typed_json_document_contract_is_bounded_and_sealed_explicitly",
+                "member_key_order[0] == 1",
+                "forged_key_index_rejected",
+                "typed_json_document_owns_scalar_values_without_coercing_numbers",
+                "typed_json_lexer_preserves_byte_spans_and_decodes_strings",
+                "copy_json_lexed_string(lexed, 2)",
+                "copy_json_lexed_source_span(lexed, lexed.tokens[8].range)",
+                "bad_surrogate_rejected",
+                "forged_tail_rejected",
+                "forged_string_rejected",
+                "token_limit_rejected",
+                "typed_json_parser_materializes_postorder_and_enforces_grammar",
+                "parse_json_document(lexed)",
+                "sorted_keys: JsonDocument",
+                "trailing_comma_rejected",
+                "duplicate_last",
+                "duplicate_first",
+                "duplicate_rejected",
+                "missing_colon_rejected",
+                "multiple_roots_rejected",
+                "non_string_key_rejected",
+                "missing_value_rejected",
+                "missing_separator_rejected",
+                "typed_json_encoder_is_bounded_and_preserves_values",
+                "encode_json_root(document, 0)",
+                "encoded_values: darray[u8] = encode_json_root(document, 0)",
+                "encoded_object: darray[u8] = encode_json_root(object_document, 0)",
+                "encoded_nested: darray[u8] = encode_json_root(nested_document, 0)",
+                "encoded_empty: darray[u8] = encode_json_root(empty_document, 0)",
+                "encoded_null: darray[u8] = encode_json_root(null_document, 0)",
+                "JsonEncodeError.OutputLimitExceeded",
+                "JsonNodeInput{kind: JsonNodeKind.Number",
+                "JsonDocumentEvent.AppendNode",
+                "JsonDocumentEvent.AppendArrayChild",
+                "JsonDocumentEvent.AppendMember",
+                "JsonNodeOwnerKind.ObjectMember",
+                "JsonNodeOwnerKind.Detached",
+                "JsonContractError.DuplicateObjectKey",
+                "duplicate_root_rejected",
+                "unordered_child_rejected",
+                "late_key_rejected",
+                "key_limit_rejected",
+                "short_container_rejected",
+                "short_key_rejected",
+                "reversed_key_range_rejected",
+                "number_rejected",
+                "scalar_limit_rejected",
+                "invalid_utf8_key",
+                "copy_json_scalar(document, 3)",
+                "nul_key.key_bytes[2] == 0",
+                "JsonArrayChild{owner_index: 1, value_index: 0, ordinal: 0}",
+                "JsonMemberInput{owner_index: 3, key: \"name\"",
+                "key_bytes: [110, 97, 109, 101, 110, 97, 109, 101]",
+                "nul_key",
+                "forged_policy_duplicates",
+                "forged_empty",
+                "forged_depth"
+            ]
+
+            return 1i64 if not contains_all(lexer, lexer_contracts)
+            return 1i64 if not contains_all(parser, parser_contracts)
+            return 1i64 if not contains_all(encoder, encoder_contracts)
+            return 1i64 if not contains_all(model, model_contracts)
+            return 1i64 if not contains_all(model, model_boundaries)
+            if parser.index("advance_json_document(document, JsonDocumentEvent.Append") >= 0:
+                write_diagnostic(Diagnostics::PARSER_BATCH)
+                return 1i64
+            if ir.index("include \"../runtime/json_model.elisa\"") < 0 or ir.index("include \"../runtime/json_lexer_model.elisa\"") < 0 or ir.index("include \"../runtime/json_parse_model.elisa\"") < 0 or ir.index("include \"../runtime/json_encode_model.elisa\"") < 0:
+                return 1i64
+            return 1i64 if not contains_all(fixture, fixture_patterns)
+            return 1i64 if docs.index("`EsJson` is the namespaced owned-document boundary") < 0
+
+            print(Diagnostics::SUCCESS)
+            return 0i64
+
+
+    public:
+        def run(repository_root: Path) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+            return audit_sources(repository_root)
+
+
+        def run_default() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+            script_path: Path = Script::source_path()
+            script_directory: Path = try path_real(path_absolute(script_path.parent())) else err:
+                write_diagnostic(Diagnostics::MISSING_ROOT)
+                return 1i64
+            return audit_sources(script_directory.parent())
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Blocking.IO, Directory.Read, File.Read, Unsafe.PointerCast]:
+    return EsJsonModelAudit::run_default()
