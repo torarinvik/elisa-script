@@ -10,8 +10,14 @@ bytecode_file="$repo_root/src/bytecode/bytecode.elisa"
 fixture_file="$repo_root/test/ir/elisascript_interpreter_test.elisa"
 bytecode_fixture_file="$repo_root/test/ir/elisascript_bytecode_test.elisa"
 docs_file="$repo_root/docs/ir.md"
+parity_root="$repo_root/test/fixtures/script_parity/regex_replacement"
+parity_reference="$parity_root/reference.pl"
+parity_candidate="$parity_root/candidate.elisascript"
+parity_golden="$parity_root/expected.txt"
+parity_contract="$parity_root/CONTRACT.md"
+parity_launcher="$repo_root/test/script_parity/regex_replacement_launcher_test.elisascript"
 
-for required_file in "$source_file" "$bytecode_file" "$fixture_file" "$bytecode_fixture_file" "$docs_file"; do
+for required_file in "$source_file" "$bytecode_file" "$fixture_file" "$bytecode_fixture_file" "$docs_file" "$parity_reference" "$parity_candidate" "$parity_golden" "$parity_contract" "$parity_launcher"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'regex replacement audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -52,5 +58,13 @@ rg -q 'regex_machine_accepts_a_leading_close_bracket_in_character_classes' "$fix
 rg -q 'bytecode_direct_regex_leading_close_bracket_matches_reference_interpreter' "$bytecode_fixture_file"
 rg -Fq 'cursor <- cursor + 1 if cursor < sview_len(pattern) and sview_at(pattern, cursor) == 93' "$source_file"
 rg -q 'regex_quote_replacement' "$docs_file"
+rg -Fq 'regex_replacement_public_launcher_matches_perl_reference_and_golden' "$parity_launcher"
+rg -Fq 'ELISASCRIPT_VALIDATION_REAUTHORIZED' "$parity_launcher"
+rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_launcher"
+rg -Fq 'ProcessEnvironmentMode.Replace' "$parity_launcher"
+rg -Fq 'regex_sub(regex"([a-z]+)=([0-9]+)", "$1:$2", "id=42; id=7")' "$parity_candidate"
+rg -Fq 'my $fields = "id=42; id=7";' "$parity_reference"
+rg -Fq 'id:42; id:7' "$parity_golden"
+rg -Fq 'callback replacement exactly once per match' "$parity_contract"
 
-printf 'regex audit: replacement quoting, bounded output, and leading class-bracket support are present\n'
+printf 'regex audit: replacement quoting, bounded output, leading class-bracket support, and gated Perl parity source are present\n'
