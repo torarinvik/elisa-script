@@ -3591,14 +3591,14 @@ decoded, including `\"`, `\\`, `\uXXXX`, and `\UXXXXXXXX`; key escapes that
 produce forbidden control bytes are rejected. Quoted dotted keys remain
 rejected because the current flattened configuration-key view reserves dots
 for path separators. Dotted keys inside inline tables, dates/times, and
-multiline strings remain unsupported. A snapshot of the observed
-`WasmBrowser/Cargo.toml` workspace/dependency subset has fixtures for multiline
-member arrays, nested inline dependency values, and package aliases. A gated
-parity slice compares a normalized workspace/package/member/dependency
-projection with Python's standard-library `tomllib`; the candidate reads the
-snapshot through `EsConfigTomlFilePosix`. This test is source-only until run
-under the bounded reauthorization workflow and does not establish full Cargo
-manifest compatibility.
+multiline strings remain unsupported. Snapshots of the observed
+`WasmBrowser/Cargo.toml` and `neural-computer-agent/pyproject.toml` cover the
+Cargo workspace/dependency subset and Python project/build/tool metadata. A
+gated parity slice compares normalized workspace/package/member/dependency
+facts and nested pyproject tool-table values with Python's standard-library
+`tomllib`; the candidate reads both snapshots through `EsConfigTomlFilePosix`.
+This test is source-only until run under the bounded reauthorization workflow
+and does not establish full Cargo or PEP 517/518 compatibility.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are
