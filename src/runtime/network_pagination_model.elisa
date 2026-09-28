@@ -1,21 +1,62 @@
-# Bounded RFC-style HTTP Link pagination projection.
+# Bounded RFC-style HTTP Link pagination planning.
 #
-# This layer turns one successful GET response into either a terminal result or
-# the next page URL and ordered request headers. It performs no network I/O.
+# This layer parses one successful GET response and drives a bounded
+# multi-response pagination session. It performs no network I/O.
 
 module EsNetworkPagination:
     using EsNetwork
+    using EsHash
 
     public:
         const module Limits:
             LINK_VALUES: usize = 1024
             PARAMETERS: usize = 4096
+            PAGES: usize = 256
+            URL_ARENA_BYTES: usize = 8388608
+            VISITED_URLS: usize = 513
 
 
         struct NetworkPaginationResult:
             has_next: bool = false
             next_url: darray[u8] = []
             next_headers: darray[sview] = []
+            credentials_stripping_active: bool = false
+
+
+        const enum NetworkPaginationSessionState of u8:
+            Ready
+            InFlight
+            Completed
+            Failed
+            Cancelling
+            Cancelled
+
+
+        const enum NetworkPaginationSessionEvent of u8:
+            Fail
+            Cancel
+            CancelAck
+
+
+        struct NetworkPaginationVisitedUrl:
+            start: usize = 0
+            byte_count: usize = 0
+            fingerprint: u64 = 0
+
+
+        # The session owns its URL bytes and visitation ledger. Header views
+        # retain the same lifetime requirement as NetworkRequest header views.
+        # `request.url` is refreshed whenever another URL is appended so no
+        # internal view points into an invalidated arena allocation.
+        struct NetworkPaginationSession:
+            request: NetworkRequest
+            state: NetworkPaginationSessionState = NetworkPaginationSessionState.Ready
+            url_arena: darray[u8] = []
+            visited_urls: darray[NetworkPaginationVisitedUrl] = []
+            current_visit: usize = 0
+            current_headers: darray[sview] = []
+            max_pages: usize = Limits::PAGES
+            pages_started: usize = 0
             credentials_stripping_active: bool = false
 
 
@@ -28,9 +69,24 @@ module EsNetworkPagination:
             DuplicateRelationParameter
             MultipleNextLinks
             HttpsDowngrade
+            InvalidState
+            InvalidEvent
+            InvalidPageLimit
+            InvalidResponseUrl
+            PageLimitExceeded
+            CycleDetected
+            UrlArenaLimitExceeded
+            VisitedUrlLimitExceeded
+            AccountingInvalid
+            CancelNotReady
 
 
     private:
+        const module UrlFingerprint:
+            FNV_OFFSET: u64 = 14695981039346656037u64
+            FNV_PRIME: u64 = 1099511628211u64
+
+
         const enum LinkFieldScanState of u8:
             Outside
             Target
@@ -81,6 +137,61 @@ module EsNetworkPagination:
             return false if byte <= 32u8 or byte == 127u8
             return false if byte == 34u8 or byte == 60u8 or byte == 62u8 or byte == 92u8 or byte == 94u8 or byte == 96u8 or byte == 123u8 or byte == 124u8 or byte == 125u8
             return true
+
+
+        def pagination_session_state_valid(state: NetworkPaginationSessionState) -> bool:
+            return state in {NetworkPaginationSessionState.Ready, NetworkPaginationSessionState.InFlight, NetworkPaginationSessionState.Completed, NetworkPaginationSessionState.Failed, NetworkPaginationSessionState.Cancelling, NetworkPaginationSessionState.Cancelled}
+
+
+        def pagination_session_event_valid(event: NetworkPaginationSessionEvent) -> bool:
+            return event in {NetworkPaginationSessionEvent.Fail, NetworkPaginationSessionEvent.Cancel, NetworkPaginationSessionEvent.CancelAck}
+
+
+        def pagination_url_fingerprint(url: sview) -> u64:
+            fingerprint: mutable u64 = UrlFingerprint::FNV_OFFSET
+            for byte in url |url, fingerprint|:
+                fingerprint <- EsHash::hash_wrapping_multiply_u64(fingerprint ^ byte.u64(), UrlFingerprint::FNV_PRIME)
+            return fingerprint
+
+
+        def pagination_visited_url_view(session: NetworkPaginationSession&, index: usize) -> sview:
+            entry: NetworkPaginationVisitedUrl = session.visited_urls[index]
+            return string_view_slice(bytes_view(session.url_arena), entry.start.i64(), (entry.start + entry.byte_count).i64())
+
+
+        def pagination_find_visited_url(session: NetworkPaginationSession&, fingerprint: u64) -> usize:
+            for index in 0..<session.visited_urls.count |session, fingerprint|:
+                return index if session.visited_urls[index].fingerprint == fingerprint
+            return session.visited_urls.count
+
+
+        def pagination_header_vectors_equal(left: darray[sview], right: darray[sview]) -> bool:
+            return false if left.count != right.count
+            equal: mutable bool = true
+            for index in 0..<left.count |left, right, equal|:
+                equal <- false if left[index] != right[index]
+            return equal
+
+
+        def pagination_append_visited_url(session: mutable NetworkPaginationSession&, url: sview) -> usize error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            url_bytes: usize = sview_len(url)
+            raise NetworkPaginationError.InvalidResponseUrl if url_bytes == 0 or url_bytes >= EsNetwork::Limits::URL_BYTES
+            raise NetworkPaginationError.UrlArenaLimitExceeded if session.url_arena.count > Limits::URL_ARENA_BYTES
+            raise NetworkPaginationError.UrlArenaLimitExceeded if url_bytes > Limits::URL_ARENA_BYTES - session.url_arena.count
+            raise NetworkPaginationError.VisitedUrlLimitExceeded if session.visited_urls.count >= Limits::VISITED_URLS
+            _ = try network_url_uses_tls(url)
+            start: usize = session.url_arena.count
+            for byte in url |url, session|:
+                session.url_arena.push(byte)
+            session.visited_urls.push(NetworkPaginationVisitedUrl{start: start, byte_count: url_bytes, fingerprint: pagination_url_fingerprint(url)})
+            return session.visited_urls.count - 1
+
+
+        def pagination_session_current_request(session: NetworkPaginationSession&) -> NetworkRequest:
+            current_request: mutable NetworkRequest = session.request
+            current_request.url <- pagination_visited_url_view(session, session.current_visit)
+            current_request.headers <- session.current_headers
+            return current_request
 
 
         def pagination_parse_link_value(value: sview, start: usize, end: usize, base_url: sview, base_uses_tls: bool, result: mutable NetworkPaginationResult&, link_count: mutable usize&, parameter_count: mutable usize&) -> void error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
@@ -191,6 +302,168 @@ module EsNetworkPagination:
 
 
     public:
+        def validate_network_pagination_session(session: NetworkPaginationSession&) -> bool error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            raise NetworkPaginationError.InvalidState if not pagination_session_state_valid(session.state)
+            raise NetworkPaginationError.InvalidPageLimit if session.max_pages == 0 or session.max_pages > Limits::PAGES
+            raise NetworkPaginationError.PageLimitExceeded if session.pages_started > session.max_pages
+            raise NetworkPaginationError.UrlArenaLimitExceeded if session.url_arena.count > Limits::URL_ARENA_BYTES
+            raise NetworkPaginationError.VisitedUrlLimitExceeded if session.visited_urls.count == 0 or session.visited_urls.count > Limits::VISITED_URLS or session.visited_urls.count > session.max_pages * 2 + 1
+            raise NetworkPaginationError.AccountingInvalid if session.current_visit >= session.visited_urls.count or session.current_visit != session.visited_urls.count - 1
+            raise NetworkPaginationError.AccountingInvalid if session.pages_started > session.visited_urls.count
+            try validate_network_request(session.request)
+            raise NetworkPaginationError.InvalidRequest if session.request.method != NetworkMethod.Get or session.request.body.count != 0
+            raise NetworkPaginationError.AccountingInvalid if session.current_headers.count % 2 != 0
+            expected_start: mutable usize = 0
+            for index in 0..<session.visited_urls.count |session, expected_start|:
+                entry: NetworkPaginationVisitedUrl = session.visited_urls[index]
+                raise NetworkPaginationError.AccountingInvalid if entry.start != expected_start or entry.byte_count == 0 or entry.byte_count >= EsNetwork::Limits::URL_BYTES
+                raise NetworkPaginationError.AccountingInvalid if entry.start > session.url_arena.count
+                raise NetworkPaginationError.AccountingInvalid if entry.byte_count > session.url_arena.count - entry.start
+                url: sview = pagination_visited_url_view(session, index)
+                raise NetworkPaginationError.AccountingInvalid if pagination_url_fingerprint(url) != entry.fingerprint
+                _ = try network_url_uses_tls(url)
+                for prior in 0..<index |session, entry|:
+                    raise NetworkPaginationError.CycleDetected if session.visited_urls[prior].fingerprint == entry.fingerprint
+                expected_start <- expected_start + entry.byte_count
+            raise NetworkPaginationError.AccountingInvalid if expected_start != session.url_arena.count
+            raise NetworkPaginationError.AccountingInvalid if session.request.url != pagination_visited_url_view(session, session.current_visit)
+            current_request: NetworkRequest = pagination_session_current_request(session)
+            try validate_network_request(current_request)
+            raise NetworkPaginationError.InvalidRequest if current_request.method != NetworkMethod.Get or current_request.body.count != 0
+            expected_headers: mutable darray[sview] = session.request.headers
+            if session.current_visit != 0:
+                expected_headers <- try network_request_effective_headers(session.request, NetworkMethod.Get, 0, true, session.credentials_stripping_active)
+            raise NetworkPaginationError.AccountingInvalid if not pagination_header_vectors_equal(session.current_headers, expected_headers)
+            if session.state == NetworkPaginationSessionState.Ready:
+                raise NetworkPaginationError.InvalidState if session.pages_started >= session.max_pages
+            elif session.state == NetworkPaginationSessionState.InFlight:
+                raise NetworkPaginationError.AccountingInvalid if session.pages_started == 0
+            elif session.state == NetworkPaginationSessionState.Completed:
+                raise NetworkPaginationError.AccountingInvalid if session.pages_started == 0
+            elif session.state == NetworkPaginationSessionState.Cancelling or session.state == NetworkPaginationSessionState.Cancelled:
+                raise NetworkPaginationError.AccountingInvalid if session.state == NetworkPaginationSessionState.Cancelling and session.pages_started == 0
+            return true
+
+
+        # Capture a GET policy into an owned pagination session. URL bytes are
+        # copied; the request's header and sensitive-header views remain
+        # borrowed for the lifetime of the session.
+        def start_network_pagination(request: NetworkRequest, max_pages: usize = Limits::PAGES) -> NetworkPaginationSession error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_network_request(request)
+            raise NetworkPaginationError.InvalidRequest if request.method != NetworkMethod.Get or request.body.count != 0
+            raise NetworkPaginationError.InvalidPageLimit if max_pages == 0 or max_pages > Limits::PAGES
+            initial_url: sview = request.url
+            session: mutable NetworkPaginationSession = NetworkPaginationSession{request: request, current_headers: request.headers, max_pages: max_pages}
+            initial_visit: usize = try pagination_append_visited_url(session, initial_url)
+            session.current_visit <- initial_visit
+            session.request.url <- pagination_visited_url_view(session, initial_visit)
+            try validate_network_pagination_session(session)
+            return session
+
+
+        # Dispatch exactly one page request. The returned URL is backed by the
+        # session-owned arena; the caller must keep the session alive until the
+        # request has completed or cancellation has been acknowledged.
+        def dispatch_network_pagination_page(session: mutable NetworkPaginationSession&) -> NetworkRequest error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_network_pagination_session(session)
+            raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.Ready
+            raise NetworkPaginationError.PageLimitExceeded if session.pages_started >= session.max_pages
+            request: NetworkRequest = pagination_session_current_request(session)
+            session.pages_started <- session.pages_started + 1
+            session.state <- NetworkPaginationSessionState.InFlight
+            return request
+
+
+        # Complete the in-flight GET response and either seal the session or
+        # prepare its next request. Repeated URL fingerprints fail closed, so
+        # even a hash collision cannot turn a cycle into an unbounded fetch.
+        def complete_network_pagination_page(session: mutable NetworkPaginationSession&, response: NetworkResponse, effective_response_url: sview, hop_credentials_stripping_active: bool = false) -> NetworkPaginationResult error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_network_pagination_session(session)
+            raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.InFlight
+            effective_url_valid: mutable bool = false
+            catch network_url_uses_tls(effective_response_url):
+                ok value:
+                    effective_url_valid <- true
+                error issue:
+                    effective_url_valid <- false
+            raise NetworkPaginationError.InvalidResponseUrl if not effective_url_valid
+            request: NetworkRequest = pagination_session_current_request(session)
+            requested_uses_tls: bool = try network_url_uses_tls(request.url)
+            effective_uses_tls: bool = try network_url_uses_tls(effective_response_url)
+            raise NetworkPaginationError.HttpsDowngrade if requested_uses_tls and not effective_uses_tls
+            credentials_were_stripped: bool = session.credentials_stripping_active or hop_credentials_stripping_active
+            result: mutable NetworkPaginationResult = try network_pagination_next_page(request, effective_response_url, response, credentials_were_stripped)
+            if not result.has_next:
+                session.state <- NetworkPaginationSessionState.Completed
+                try validate_network_pagination_session(session)
+                return result
+
+            if session.pages_started >= session.max_pages:
+                session.state <- NetworkPaginationSessionState.Failed
+                raise NetworkPaginationError.PageLimitExceeded
+
+            effective_fingerprint: u64 = pagination_url_fingerprint(effective_response_url)
+            effective_index: usize = pagination_find_visited_url(session, effective_fingerprint)
+            current_url: sview = pagination_visited_url_view(session, session.current_visit)
+            if effective_index < session.visited_urls.count:
+                if effective_index != session.current_visit or pagination_visited_url_view(session, effective_index) != effective_response_url:
+                    session.state <- NetworkPaginationSessionState.Failed
+                    raise NetworkPaginationError.CycleDetected
+            next_url: sview = bytes_view(result.next_url)
+            next_fingerprint: u64 = pagination_url_fingerprint(next_url)
+            if pagination_find_visited_url(session, next_fingerprint) < session.visited_urls.count or next_fingerprint == effective_fingerprint:
+                session.state <- NetworkPaginationSessionState.Failed
+                raise NetworkPaginationError.CycleDetected
+
+            add_effective_url: bool = effective_response_url != current_url
+            url_bytes_needed: usize = sview_len(next_url)
+            if url_bytes_needed > Limits::URL_ARENA_BYTES:
+                session.state <- NetworkPaginationSessionState.Failed
+                raise NetworkPaginationError.UrlArenaLimitExceeded
+            if add_effective_url:
+                if sview_len(effective_response_url) > Limits::URL_ARENA_BYTES - url_bytes_needed:
+                    session.state <- NetworkPaginationSessionState.Failed
+                    raise NetworkPaginationError.UrlArenaLimitExceeded
+                url_bytes_needed <- url_bytes_needed + sview_len(effective_response_url)
+            if session.url_arena.count > Limits::URL_ARENA_BYTES or url_bytes_needed > Limits::URL_ARENA_BYTES - session.url_arena.count:
+                session.state <- NetworkPaginationSessionState.Failed
+                raise NetworkPaginationError.UrlArenaLimitExceeded
+            new_visit_count: usize = 1 if not add_effective_url else 2
+            if new_visit_count > session.max_pages * 2 + 1 - session.visited_urls.count:
+                session.state <- NetworkPaginationSessionState.Failed
+                raise NetworkPaginationError.VisitedUrlLimitExceeded
+
+            if add_effective_url:
+                _ = try pagination_append_visited_url(session, effective_response_url)
+            next_visit: usize = try pagination_append_visited_url(session, next_url)
+            session.current_visit <- next_visit
+            session.current_headers <- result.next_headers
+            session.credentials_stripping_active <- result.credentials_stripping_active
+            session.request.url <- pagination_visited_url_view(session, next_visit)
+            session.state <- NetworkPaginationSessionState.Ready
+            try validate_network_pagination_session(session)
+            return result
+
+
+        def advance_network_pagination_session(session: mutable NetworkPaginationSession&, event: NetworkPaginationSessionEvent) -> NetworkPaginationSessionState error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_network_pagination_session(session)
+            raise NetworkPaginationError.InvalidEvent if not pagination_session_event_valid(event)
+            if event == NetworkPaginationSessionEvent.Fail:
+                raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.Ready and session.state != NetworkPaginationSessionState.InFlight
+                session.state <- NetworkPaginationSessionState.Failed
+            elif event == NetworkPaginationSessionEvent.Cancel:
+                raise NetworkPaginationError.CancelNotReady if session.state != NetworkPaginationSessionState.Ready and session.state != NetworkPaginationSessionState.InFlight
+                if session.state == NetworkPaginationSessionState.Ready:
+                    session.state <- NetworkPaginationSessionState.Cancelled
+                else:
+                    session.state <- NetworkPaginationSessionState.Cancelling
+            elif event == NetworkPaginationSessionEvent.CancelAck:
+                raise NetworkPaginationError.CancelNotReady if session.state != NetworkPaginationSessionState.Cancelling
+                session.state <- NetworkPaginationSessionState.Cancelled
+            try validate_network_pagination_session(session)
+            return session.state
+
+
         # Extract exactly one rel=next target from an HTTP Link response. The
         # returned URL bytes are owned; header text views still borrow from the
         # request, which the caller must keep alive while using next_headers.

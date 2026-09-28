@@ -772,11 +772,15 @@ live service adapters remain open. `NetworkStream`/`NetworkChunk` now supply a
 bounded, sequence-checked pause/resume buffer contract with explicit drain and
 cancel edges for those adapters; cancellation clears buffered payload state
 before both `Cancelling` and `Cancelled` states can be observed.
-`EsNetworkPagination` adds a bounded one-page `Link rel=next` projection that
-resolves relative targets, retains repeated response fields, rejects
-ambiguous-next and HTTPS-downgrade cases, and projects next-page headers with
-sticky cross-origin credential removal. It does not fetch pages or yet own a
-total page/cycle budget.
+`EsNetworkPagination` adds a bounded `Link rel=next` parser and a transport-
+neutral pagination session. The session owns copied request URLs, caps a run at
+256 pages and an 8 MiB URL arena, detects repeated request/effective-response
+URL fingerprints conservatively, carries sticky cross-origin credential
+stripping, and exposes dispatch/completion/failure/cancellation transitions.
+The host still performs the actual HTTP request and supplies its effective
+response URL; header text remains borrowed. Static fixtures cover successful
+multi-page completion, duplicate dispatch, page/cycle refusal, and cancel
+acknowledgement. Runtime/compiler evidence and a real transport remain open.
 
 ## Evidence record template
 
@@ -1054,9 +1058,13 @@ socket/TLS/redirect and deadline adapters remain open.
 ES-SCRIPT-056 | EsNetworkPagination parses bounded `Link` list values,
 distinguishes quoted commas and URI-reference commas, resolves exactly one
 `rel=next` against the effective response URL, and builds next-page headers
-with cross-origin redaction and HTTPS-downgrade refusal. Per-response link and
-parameter limits are explicit; page fetching, total-page ceilings, cycle
-detection, and runtime parity remain open.
+with cross-origin redaction and HTTPS-downgrade refusal. Its owned session
+limits each chain to 256 dispatched pages and 8 MiB of stored URLs, detects
+cycles among requested and effective-response URLs, keeps credential stripping
+sticky across pagination and transport redirect hops, and models dispatch,
+completion, failure, and cancellation acknowledgement. Per-response link and
+parameter limits remain explicit. Socket/TLS adapters, executed compiler
+evidence, and runtime parity remain open.
 
 ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/
 replacement ceilings, capture-group limits, shared work accounting, bounded

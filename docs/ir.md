@@ -2561,15 +2561,22 @@ consumed attempt.
 Active transport phases also retain the neutral success/zero-status pair until
 the explicit receive-completion or failure edge.
 
-`EsNetworkPagination` converts one validated 2xx GET response into a bounded
-`Link`-header `rel=next` projection. Its scanner distinguishes commas inside
-URI references and quoted parameters from list separators, caps link values and
+`EsNetworkPagination` converts validated 2xx GET responses into a bounded
+`Link`-header `rel=next` sequence. Its scanner distinguishes commas inside URI
+references and quoted parameters from list separators, caps links and
 parameters, resolves relative targets against the effective response URL,
-rejects ambiguous next links and HTTPS downgrade, and builds the next ordered
-header vector with sticky cross-origin credential stripping. The result owns
-the next URL bytes but its header text remains borrowed from the original
-request storage. This is one-page planning, not a socket client or complete
-pagination session: callers still need a total page ceiling and cycle tracking.
+rejects ambiguous next links and HTTPS downgrade, and builds ordered headers
+with sticky cross-origin credential stripping. `NetworkPaginationSession`
+owns a bounded URL arena and visitation ledger, caps each run at 256 pages,
+rejects repeated URL fingerprints (conservatively treating collisions as
+cycles), and exposes explicit ready/in-flight/completed/failure/cancellation
+transitions. Callers dispatch each returned `NetworkRequest` through a host
+transport and report its response/effective URL back; this model itself does
+not perform socket I/O. Request header text remains borrowed from the caller,
+so its storage must outlive the session. Static fixtures cover multi-page
+completion, duplicate dispatch rejection, page and cycle limits, sticky
+credential redaction, and cancellation acknowledgement; executed runtime and
+transport parity remain open under the validation hold.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
 for process maps. Jobs have unique IDs, pending/running/awaiting-reap/retryable/
