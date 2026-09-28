@@ -40,10 +40,14 @@ module EsRegexCallback:
             policy: RegexCallbackPolicy
             input_bytes: usize
             state: RegexCallbackState = RegexCallbackState.Planned
+            # For the pending start (or consumed cursor), output plus removed
+            # matched input equals consumed input plus callback replacement bytes.
             cursor: usize = 0
             matches: usize = 0
             captures: usize = 0
             output_bytes: usize = 0
+            replaced_input_bytes: usize = 0
+            replacement_total_bytes: usize = 0
             pending: bool = false
             pending_start: usize = 0
             pending_end: usize = 0
@@ -104,6 +108,8 @@ module EsRegexCallback:
             raise RegexCallbackError.MatchLimitExceeded if not session.policy.global and session.matches > 1
             raise RegexCallbackError.CaptureLimitExceeded if session.captures > session.policy.max_captures
             raise RegexCallbackError.OutputLimitExceeded if session.output_bytes > session.policy.max_output_bytes
+            raise RegexCallbackError.AccountingInvalid if session.replaced_input_bytes > session.input_bytes
+            raise RegexCallbackError.AccountingInvalid if session.replacement_total_bytes > session.output_bytes or session.replacement_total_bytes > session.policy.max_output_bytes
             raise RegexCallbackError.SpanInvalid if session.cursor > session.input_bytes or session.pending_start > session.pending_end or session.pending_end > session.input_bytes
             raise RegexCallbackError.SpanInvalid if session.pending and session.pending_start < session.cursor
             raise RegexCallbackError.InvalidState if session.pending and session.state != RegexCallbackState.Matching
@@ -114,7 +120,12 @@ module EsRegexCallback:
                 raise RegexCallbackError.AccountingInvalid if session.output_bytes != expected_pending_output
             else:
                 raise RegexCallbackError.AccountingInvalid if session.pending_output_before != 0
-            raise RegexCallbackError.AccountingInvalid if session.matches == 0 and (session.captures != 0 or session.has_last_zero)
+            accounting_position: usize = session.pending_start if session.pending else session.cursor
+            accounting_limit: usize = REGEX_CALLBACK_MAX_INPUT_BYTES + REGEX_CALLBACK_MAX_OUTPUT_BYTES
+            raise RegexCallbackError.AccountingInvalid if not regex_callback_add_fits(session.output_bytes, session.replaced_input_bytes, accounting_limit)
+            raise RegexCallbackError.AccountingInvalid if not regex_callback_add_fits(accounting_position, session.replacement_total_bytes, accounting_limit)
+            raise RegexCallbackError.AccountingInvalid if session.output_bytes + session.replaced_input_bytes != accounting_position + session.replacement_total_bytes
+            raise RegexCallbackError.AccountingInvalid if session.matches == 0 and (session.captures != 0 or session.replaced_input_bytes != 0 or session.replacement_total_bytes != 0 or session.has_last_zero)
             raise RegexCallbackError.AccountingInvalid if not session.has_last_zero and session.last_zero_start != 0
             raise RegexCallbackError.AccountingInvalid if session.has_last_zero and session.last_zero_start > session.input_bytes
             if session.has_last_zero:
@@ -123,12 +134,12 @@ module EsRegexCallback:
                 else:
                     at_consumed_eof: bool = session.cursor == session.input_bytes and session.last_zero_start == session.input_bytes
                     raise RegexCallbackError.AccountingInvalid if session.cursor <= session.last_zero_start and not at_consumed_eof
-            raise RegexCallbackError.AccountingInvalid if session.state == RegexCallbackState.Planned and (session.cursor != 0 or session.matches != 0 or session.captures != 0 or session.output_bytes != 0 or session.pending or session.has_last_zero or session.last_zero_start != 0)
+            raise RegexCallbackError.AccountingInvalid if session.state == RegexCallbackState.Planned and (session.cursor != 0 or session.matches != 0 or session.captures != 0 or session.output_bytes != 0 or session.replaced_input_bytes != 0 or session.replacement_total_bytes != 0 or session.pending or session.has_last_zero or session.last_zero_start != 0)
             # A matching session with no submitted match is still at the
             # beginning of the input.  Work may have been spent probing, but
             # cursor, capture/output ledgers, and zero-width/pending markers
             # cannot have advanced until the first Match edge.
-            raise RegexCallbackError.AccountingInvalid if session.state == RegexCallbackState.Matching and session.matches == 0 and (session.cursor != 0 or session.captures != 0 or session.output_bytes != 0 or session.pending or session.has_last_zero or session.last_zero_start != 0)
+            raise RegexCallbackError.AccountingInvalid if session.state == RegexCallbackState.Matching and session.matches == 0 and (session.cursor != 0 or session.captures != 0 or session.output_bytes != 0 or session.replaced_input_bytes != 0 or session.replacement_total_bytes != 0 or session.pending or session.has_last_zero or session.last_zero_start != 0)
             # A recorded match must either await its replacement, have
             # advanced the cursor, or be the one valid zero-width match at
             # EOF on empty input. Otherwise a forged snapshot could claim a
@@ -182,7 +193,11 @@ module EsRegexCallback:
                     raise RegexCallbackError.InvalidEventPayload if zero_width_advance_bytes != 0
                 next_output: usize = session.output_bytes + replacement_bytes
                 raise RegexCallbackError.OutputLimitExceeded if not regex_callback_add_fits(next_output, preserved, session.policy.max_output_bytes)
+                matched_input_bytes: usize = session.pending_end - session.pending_start
+                raise RegexCallbackError.AccountingInvalid if not regex_callback_add_fits(session.replaced_input_bytes, matched_input_bytes, session.input_bytes)
                 session.output_bytes <- next_output + preserved
+                session.replaced_input_bytes <- session.replaced_input_bytes + matched_input_bytes
+                session.replacement_total_bytes <- session.replacement_total_bytes + replacement_bytes
                 session.cursor <- session.pending_end if session.pending_end > session.pending_start else session.pending_start + preserved
                 session.pending <- false
                 session.pending_output_before <- 0
@@ -198,6 +213,7 @@ module EsRegexCallback:
                 session.state <- RegexCallbackState.Complete
             elif event == RegexCallbackEvent.Fail:
                 raise RegexCallbackError.InvalidState if session.state != RegexCallbackState.Matching
+                session.cursor <- session.pending_start if session.pending
                 session.state <- RegexCallbackState.Failed
                 session.pending <- false
                 session.pending_start <- 0
@@ -207,6 +223,7 @@ module EsRegexCallback:
                 session.last_zero_start <- 0
             elif event == RegexCallbackEvent.Cancel:
                 raise RegexCallbackError.CancelNotReady if session.state != RegexCallbackState.Matching
+                session.cursor <- session.pending_start if session.pending
                 session.state <- RegexCallbackState.Cancelled
                 session.pending <- false
                 session.pending_start <- 0

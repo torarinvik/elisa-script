@@ -37,6 +37,8 @@ for boundary in \
     'regex_callback_add_fits' \
     'pending' \
     'pending_output_before' \
+    'replaced_input_bytes: usize = 0' \
+    'replacement_total_bytes: usize = 0' \
     'session.pending_output_before <- session.output_bytes' \
     'session.pending_output_before <- 0' \
     'session.pending_start <- 0' \
@@ -45,13 +47,16 @@ for boundary in \
     'session.last_zero_start <- 0' \
     'pending_prefix_bytes' \
     'expected_pending_output' \
+    'accounting_position: usize = session.pending_start if session.pending else session.cursor' \
+    'session.output_bytes + session.replaced_input_bytes != accounting_position + session.replacement_total_bytes' \
+    'session.cursor <- session.pending_start if session.pending' \
     'has_last_zero' \
     'RegexCallbackError.NonProgress' \
     'RegexCallbackError.ReplacementNotReady' \
     'RegexCallbackError.OutputLimitExceeded' \
     'RegexCallbackError.AccountingInvalid' \
     'not session.policy.global and session.matches > 1' \
-    'session.matches == 0 and (session.captures != 0 or session.has_last_zero)' \
+    'session.matches == 0 and (session.captures != 0 or session.replaced_input_bytes != 0 or session.replacement_total_bytes != 0 or session.has_last_zero)' \
     'not session.has_last_zero and session.last_zero_start != 0' \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
@@ -74,6 +79,7 @@ rg -Fq 'regex_callback_accepts_empty_input_zero_width_match_at_eof' "$runtime_fi
 rg -Fq 'regex_callback_abort_clears_unconsumed_zero_width_match' "$runtime_fixture"
 rg -Fq 'regex_callback_uses_matcher_supplied_zero_width_advance' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_missing_or_oversized_zero_width_advance' "$runtime_fixture"
+rg -Fq 'regex_callback_rejects_forged_completed_output_accounting' "$runtime_fixture"
 rg -Fq 'zero_width_advance_bytes: usize = 0' "$model"
 rg -Fq 'raise RegexCallbackError.NonProgress if zero_width_advance_bytes == 0' "$model"
 rg -Fq 'session.cursor <- session.pending_start + preserved' "$model"
