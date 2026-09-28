@@ -41,6 +41,7 @@ for boundary in \
     'Limits::SELECTION_REASON_BYTES' \
     'test_runner_selection_reason_budget_valid' \
     'test_runner_selection_output_bytes' \
+    'test_runner_completion_output_bytes' \
     'TestRunnerError.SelectionReasonLimitExceeded' \
     'TestRunnerError.OutputLimitExceeded' \
     'Limits::MESSAGE_BYTES' \
@@ -104,6 +105,8 @@ rg -Fq 'using EsTestRunner' "$fixture"
 for fixture_pattern in \
     'typed_test_runner_contract_discovers_retries_and_seals_reports' \
     'typed_test_runner_selection_output_limit_failure_is_atomic' \
+    'typed_test_runner_completion_output_limit_does_not_consume_attempt' \
+    'typed_test_runner_fail_fast_output_preflight_includes_queued_cancellations' \
     'TestRunnerError.OutputLimitExceeded' \
     'TestRunnerEvent.Discover' \
     'TestRunnerEvent.SelectionDone' \

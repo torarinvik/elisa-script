@@ -260,6 +260,35 @@ module EsTestRunner:
             return total
 
 
+        # Predict completion accounting without changing the case ledger. A
+        # fail-fast receipt also accounts for queued cases that will be
+        # converted to cancellation records by the same transition.
+        def test_runner_completion_output_bytes(runner: TestRunner&, completed_index: usize, completion: TestResult, terminal_failure: bool) -> usize error[TestRunnerError]:
+            total: mutable usize = 0
+            cancellation_message: sview = "runner stopped after test failure"
+            for index in 0..<runner.cases.count |runner, total|:
+                case: TestCase = runner.cases[index]
+                case_bytes: mutable usize = 0
+                if index == completed_index:
+                    candidate_case: mutable TestCase = case
+                    candidate_case.result <- completion
+                    case_bytes <- try test_case_result_bytes(candidate_case, Limits::OUTPUT_BYTES)
+                elif runner.state == TestRunnerState.Running and terminal_failure and (case.state == TestCaseState.Selected or case.state == TestCaseState.Retryable):
+                    if case.state == TestCaseState.Retryable:
+                        case_bytes <- try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                        raise TestRunnerError.OutputLimitExceeded if case_bytes > Limits::OUTPUT_BYTES or sview_len(cancellation_message) > Limits::OUTPUT_BYTES - case_bytes
+                        case_bytes <- case_bytes + sview_len(cancellation_message)
+                    else:
+                        candidate_case: mutable TestCase = case
+                        candidate_case.result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: cancellation_message}
+                        case_bytes <- try test_case_result_bytes(candidate_case, Limits::OUTPUT_BYTES)
+                elif case.result.published or case.attempt_history.count != 0:
+                    case_bytes <- try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                raise TestRunnerError.OutputLimitExceeded if total > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - total
+                total <- total + case_bytes
+            return total
+
+
         def test_result_unpublished_valid(result: TestResult) -> bool:
             return not result.published and result.outcome == TestOutcome.NotRun and result.process.kind == ProcessResultKind.SpawnFailure and result.process.exit_status == 0 and result.process.signal == 0 and result.process.stdout == "" and result.process.stderr == "" and result.process.error_text == "" and result.attempt_token == 0 and result.duration_ms == 0 and result.message == ""
 
@@ -758,13 +787,17 @@ module EsTestRunner:
                 else:
                     terminal_state <- TestCaseState.Error
                 raise TestRunnerError.AccountingInvalid if runner.active == 0
-                runner.cases[case_index].result <- TestResult{published: true, outcome: terminal_outcome, process: process, attempt_token: attempt_token, duration_ms: duration_ms, message: effective_message}
+                retryable_attempt: bool = runner.state == TestRunnerState.Running and not unexpected_cancellation and test_outcome_retryable(outcome, runner.retry_policy) and runner.cases[case_index].attempts < runner.max_attempts
+                terminal_failure: bool = not retryable_attempt and (terminal_state == TestCaseState.Failed or terminal_state == TestCaseState.Crashed or terminal_state == TestCaseState.TimedOut or terminal_state == TestCaseState.Error)
+                completion: TestResult = TestResult{published: true, outcome: terminal_outcome, process: process, attempt_token: attempt_token, duration_ms: duration_ms, message: effective_message}
+                projected_output_bytes: usize = try test_runner_completion_output_bytes(runner, case_index, completion, terminal_failure)
+                raise TestRunnerError.OutputLimitExceeded if projected_output_bytes > runner.report.options.max_bytes
+                runner.cases[case_index].result <- completion
                 runner.active <- runner.active - 1
-                if runner.state == TestRunnerState.Running and not unexpected_cancellation and test_outcome_retryable(outcome, runner.retry_policy) and runner.cases[case_index].attempts < runner.max_attempts:
+                if retryable_attempt:
                     runner.cases[case_index].state <- TestCaseState.Retryable
                 else:
                     runner.cases[case_index].state <- terminal_state
-                    terminal_failure: bool = terminal_state == TestCaseState.Failed or terminal_state == TestCaseState.Crashed or terminal_state == TestCaseState.TimedOut or terminal_state == TestCaseState.Error
                     if terminal_failure:
                         runner.failure_latched <- true
                         if runner.state == TestRunnerState.Running:

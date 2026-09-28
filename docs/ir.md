@@ -2564,8 +2564,10 @@ The intermediate `Reporting` state applies the same latch consistency before
 `Complete`. Retained selection-reason views have an aggregate ceiling; before
 `SelectionDone` changes any case, the runner budgets every prospective skipped
 record against both its global output ceiling and the selected report limit.
-An over-limit selection therefore remains intact in `Selecting` and can be
-corrected without recovering a partially transitioned runner.
+Completions likewise preflight the completed case and any fail-fast
+cancellation records before consuming the attempt token. An over-limit
+selection or completion therefore remains intact and can be corrected without
+recovering a partially transitioned runner.
 
 `EsScriptTest` supplies the in-process `@test` boundary used by the CLI's
 `ExecuteTests` workflow step. Discovery is ordered and bounded to 4,096 cases;
