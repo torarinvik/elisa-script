@@ -2400,6 +2400,8 @@ impossible pre-match cursor/ledger state, pending callbacks outside matching,
 and a complete session must have consumed the entire input cursor. A pending
 match also retains the output count before its unmatched prefix; validation
 rejects forged pending spans whose prefix bytes were omitted or over-counted.
+Fail/cancel discard pending span and zero-width progress markers, leaving a
+valid terminal snapshot even when the callback aborts before replacement.
 Callback invocation and capture materialization remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value

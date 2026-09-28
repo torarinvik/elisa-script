@@ -39,6 +39,10 @@ for boundary in \
     'pending_output_before' \
     'session.pending_output_before <- session.output_bytes' \
     'session.pending_output_before <- 0' \
+    'session.pending_start <- 0' \
+    'session.pending_end <- 0' \
+    'session.has_last_zero <- false' \
+    'session.last_zero_start <- 0' \
     'pending_prefix_bytes' \
     'expected_pending_output' \
     'has_last_zero' \
@@ -67,6 +71,7 @@ rg -Fq 'regex_callback_rejects_match_count_without_span_progress' "$runtime_fixt
 rg -Fq 'regex_callback_rejects_forged_pending_prefix_accounting' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_zero_width_marker_ahead_of_cursor' "$runtime_fixture"
 rg -Fq 'regex_callback_accepts_empty_input_zero_width_match_at_eof' "$runtime_fixture"
+rg -Fq 'regex_callback_abort_clears_unconsumed_zero_width_match' "$runtime_fixture"
 rg -Fq 'regex_callback_uses_matcher_supplied_zero_width_advance' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_missing_or_oversized_zero_width_advance' "$runtime_fixture"
 rg -Fq 'zero_width_advance_bytes: usize = 0' "$model"
