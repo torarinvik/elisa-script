@@ -7,7 +7,18 @@ MAX_SOURCE_BYTES=16777216
 MAX_TOTAL_SOURCE_BYTES=67108864
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+if (($# > 1)); then
+    printf 'usage: json model audit [repository-root]\n' >&2
+    exit 2
+fi
+repo_root_operand="$script_dir/.."
+if (($# == 1)); then
+    repo_root_operand="$1"
+fi
+repo_root="$(CDPATH= cd -- "$repo_root_operand" 2>/dev/null && pwd 2>/dev/null)" || {
+    printf 'json model audit: missing repository root\n' >&2
+    exit 1
+}
 model="$repo_root/src/runtime/json_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
