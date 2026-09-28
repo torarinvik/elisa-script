@@ -15,7 +15,9 @@ This fixture records the raw-host boundary that must agree with the typed
   unsupported and are rejected as `TestArgumentsUnsupported`.
 - Test reports default to Human and accept `--format human|json|junit`.
   JSON/JUnit are rejected outside `--test`, and `--color always` is rejected
-  for machine-readable formats so report bytes remain parseable.
+  for machine-readable formats so report bytes remain parseable. Setup failures
+  in JSON/JUnit mode are also emitted as one typed `error` report record on
+  stdout rather than as human diagnostics on stderr.
 - The aggregate classification is reported before any claim about the
   complete host string, because the bounded scan already proves that the
   launcher budget was exceeded.
