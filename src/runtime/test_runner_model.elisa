@@ -289,6 +289,30 @@ module EsTestRunner:
             return total
 
 
+        # Predict the bulk cancellation records used by Fail and Cancel. A
+        # retryable case keeps its last attempt in history, so its only new
+        # output is the cancellation message; all other targeted cases gain a
+        # name and a cancellation message.
+        def test_runner_bulk_transition_output_bytes(runner: TestRunner&, message: sview, include_discovered: bool) -> usize error[TestRunnerError]:
+            total: mutable usize = 0
+            for case in runner.cases |runner, total|:
+                case_bytes: mutable usize = 0
+                target: bool = (include_discovered and case.state == TestCaseState.Discovered) or case.state == TestCaseState.Selected or case.state == TestCaseState.Retryable
+                if target and case.state == TestCaseState.Retryable:
+                    case_bytes <- try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                    raise TestRunnerError.OutputLimitExceeded if case_bytes > Limits::OUTPUT_BYTES or sview_len(message) > Limits::OUTPUT_BYTES - case_bytes
+                    case_bytes <- case_bytes + sview_len(message)
+                elif target:
+                    candidate_case: mutable TestCase = case
+                    candidate_case.result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: message}
+                    case_bytes <- try test_case_result_bytes(candidate_case, Limits::OUTPUT_BYTES)
+                elif case.result.published or case.attempt_history.count != 0:
+                    case_bytes <- try test_case_result_bytes(case, Limits::OUTPUT_BYTES)
+                raise TestRunnerError.OutputLimitExceeded if total > Limits::OUTPUT_BYTES or case_bytes > Limits::OUTPUT_BYTES - total
+                total <- total + case_bytes
+            return total
+
+
         def test_result_unpublished_valid(result: TestResult) -> bool:
             return not result.published and result.outcome == TestOutcome.NotRun and result.process.kind == ProcessResultKind.SpawnFailure and result.process.exit_status == 0 and result.process.signal == 0 and result.process.stdout == "" and result.process.stderr == "" and result.process.error_text == "" and result.attempt_token == 0 and result.duration_ms == 0 and result.message == ""
 
@@ -842,17 +866,20 @@ module EsTestRunner:
                 runner.state <- TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled if runner.cancellation_requested else TestRunnerState.Complete
             elif event == TestRunnerEvent.Fail:
                 raise TestRunnerError.InvalidState if runner.state == TestRunnerState.Planned or runner.state == TestRunnerState.Complete or runner.state == TestRunnerState.Failed or runner.state == TestRunnerState.Cancelled or runner.state == TestRunnerState.Reporting
+                failure_message: sview = "runner stopped after infrastructure failure"
+                projected_output_bytes: usize = try test_runner_bulk_transition_output_bytes(runner, failure_message, true)
+                raise TestRunnerError.OutputLimitExceeded if projected_output_bytes > runner.report.options.max_bytes
                 runner.failure_latched <- true
                 for index in 0..<runner.cases.count |runner|:
                     if runner.cases[index].state == TestCaseState.Discovered:
                         runner.cases[index].selected <- false
-                        runner.cases[index].selection_reason <- "runner stopped after infrastructure failure"
-                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: "runner stopped after infrastructure failure"}
+                        runner.cases[index].selection_reason <- failure_message
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: failure_message}
                         runner.cases[index].state <- TestCaseState.Cancelled
                     elif runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
                         test_case_archive_retryable_attempt(runner.cases[index], runner.retry_policy) if runner.cases[index].state == TestCaseState.Retryable
                         runner.cases[index].selected <- true
-                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "runner stopped after infrastructure failure"}
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: failure_message}
                         runner.cases[index].state <- TestCaseState.Cancelled
                 try test_runner_refresh_accounting(runner)
                 if runner.state == TestRunnerState.Cancelling:
@@ -861,12 +888,16 @@ module EsTestRunner:
                     runner.state <- TestRunnerState.Failed if runner.active == 0 else TestRunnerState.Draining
             elif event == TestRunnerEvent.Cancel:
                 raise TestRunnerError.InvalidState if runner.state == TestRunnerState.Complete or runner.state == TestRunnerState.Failed or runner.state == TestRunnerState.Cancelled or runner.state == TestRunnerState.Reporting or runner.failure_latched
+                before_launch: bool = runner.state == TestRunnerState.Planned or runner.state == TestRunnerState.Discovering or runner.state == TestRunnerState.Selecting
+                cancellation_message: sview = "cancelled before launch"
+                projected_output_bytes: usize = try test_runner_bulk_transition_output_bytes(runner, cancellation_message, before_launch)
+                raise TestRunnerError.OutputLimitExceeded if projected_output_bytes > runner.report.options.max_bytes
                 runner.cancellation_requested <- true
-                if runner.state == TestRunnerState.Planned or runner.state == TestRunnerState.Discovering or runner.state == TestRunnerState.Selecting:
+                if before_launch:
                     for index in 0..<runner.cases.count |runner|:
                         runner.cases[index].selected <- false
-                        runner.cases[index].selection_reason <- "cancelled before launch"
-                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: "cancelled before launch"}
+                        runner.cases[index].selection_reason <- cancellation_message
+                        runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, message: cancellation_message}
                         runner.cases[index].state <- TestCaseState.Cancelled
                     try test_runner_refresh_accounting(runner)
                     runner.state <- TestRunnerState.Cancelled
@@ -875,7 +906,7 @@ module EsTestRunner:
                         if runner.cases[index].state == TestCaseState.Selected or runner.cases[index].state == TestCaseState.Retryable:
                             test_case_archive_retryable_attempt(runner.cases[index], runner.retry_policy) if runner.cases[index].state == TestCaseState.Retryable
                             runner.cases[index].selected <- true
-                            runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: "cancelled before launch"}
+                            runner.cases[index].result <- TestResult{published: true, outcome: TestOutcome.Cancelled, process: ProcessResult{kind: ProcessResultKind.Cancelled}, attempt_token: runner.cases[index].attempt_token, message: cancellation_message}
                             runner.cases[index].state <- TestCaseState.Cancelled
                     try test_runner_refresh_accounting(runner)
                     runner.state <- TestRunnerState.Cancelling if runner.active != 0 else TestRunnerState.Failed if runner.failure_latched else TestRunnerState.Cancelled
