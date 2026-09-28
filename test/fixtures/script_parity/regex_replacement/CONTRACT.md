@@ -3,7 +3,8 @@
 This bounded fixture compares an independent Perl reference with an
 Elisascript candidate over replacement behaviors already implemented by the
 string-template API: numbered captures, named captures, whole-match
-interpolation, zero-width start/end anchors, deletion, and global non-overlap.
+interpolation, sequential zero-width start/end anchor substitutions on one
+evolving value, deletion, and global non-overlap.
 The exact ordered output is checked against a separate golden and both process
 results.
 
