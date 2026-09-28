@@ -89,7 +89,43 @@ def render_hugo(path):
     return "\n".join(rows) + "\n"
 
 
+def render_precedence():
+    sources = [
+        (
+            "defaults",
+            'fallback = true\nfeatures = ["default"]\nsettings = { mode = "debug", retries = 1 }\nworkers = 2\n',
+        ),
+        (
+            "file",
+            'features = ["file"]\nsettings = { mode = "release", retries = 3 }\nworkers = 4\n',
+        ),
+        (
+            "environment",
+            'features = ["environment"]\nsettings = { mode = "ci", source = "environment" }\n',
+        ),
+        ("command-line", 'features = ["command-line"]\n'),
+    ]
+    values = {}
+    provenance = {}
+    for source, document in sources:
+        for key, value in tomllib.loads(document).items():
+            values[key] = value
+            provenance[key] = source
+
+    rows = [
+        f"precedence.fallback={str(values['fallback']).lower()}@{provenance['fallback']}",
+        f"precedence.workers={values['workers']}@{provenance['workers']}",
+        f"precedence.features={values['features'][0]}@{provenance['features']}",
+        f"precedence.settings.mode={values['settings']['mode']}@{provenance['settings']}",
+        f"precedence.settings.source={values['settings']['source']}@{provenance['settings']}",
+    ]
+    return "\n".join(rows) + "\n"
+
+
 def main(arguments):
+    if arguments == ["--precedence-batch"]:
+        sys.stdout.write(render_precedence())
+        return 0
     if len(arguments) != 4 or arguments[0] != "--parity-batch":
         return 2
     sys.stdout.write(

@@ -30,6 +30,12 @@ module EsTomlManifestCandidate:
             return value.fields.count
 
 
+        def resolved_inline_field_index(value: ConfigTomlResolvedValue&, key: sview) -> usize:
+            for index in 0..<value.fields.count |value|:
+                return index if bytes_view(value.fields[index].key) == key
+            return value.fields.count
+
+
         def append_field(output: mutable darray[u8]&, prefix: sview, value: ConfigTomlValue&, key: sview) can[Memory.Allocate, Abort.Panic]:
             field_index: usize = inline_field_index(value, key)
             if field_index < value.fields.count:
@@ -60,6 +66,85 @@ module EsTomlManifestCandidate:
                 append_bytes(output, item.text)
                 append_text(output, "\n")
             return true
+
+
+        def config_source_label(source: ConfigSource) -> sview:
+            if source == ConfigSource.Defaults:
+                return "defaults"
+            if source == ConfigSource.File:
+                return "file"
+            if source == ConfigSource.Environment:
+                return "environment"
+            if source == ConfigSource.CommandLine:
+                return "command-line"
+            return "unknown"
+
+
+        def append_resolved_scalar(output: mutable darray[u8]&, resolution: ConfigTomlResolution&, key: sview, output_key: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            value_index: usize = lookup_resolved_toml_config_value(resolution, key)
+            return false if value_index >= resolution.values.count
+            value: ConfigTomlResolvedValue = resolution.values[value_index]
+            return false if value.kind == ConfigTomlValueKind.Array or value.kind == ConfigTomlValueKind.InlineTable
+            append_text(output, output_key + "=")
+            append_bytes(output, value.text)
+            append_text(output, "@" + config_source_label(value.source) + "\n")
+            return true
+
+
+        def append_resolved_array_item(output: mutable darray[u8]&, resolution: ConfigTomlResolution&, key: sview, output_key: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            value_index: usize = lookup_resolved_toml_config_value(resolution, key)
+            return false if value_index >= resolution.values.count
+            value: ConfigTomlResolvedValue = resolution.values[value_index]
+            return false if value.kind != ConfigTomlValueKind.Array or value.items.count != 1
+            return false if value.items[0].kind != ConfigTomlValueKind.Text
+            append_text(output, output_key + "=")
+            append_bytes(output, value.items[0].text)
+            append_text(output, "@" + config_source_label(value.source) + "\n")
+            return true
+
+
+        def append_resolved_inline_field(output: mutable darray[u8]&, resolution: ConfigTomlResolution&, key: sview, field_key: sview, output_key: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            value_index: usize = lookup_resolved_toml_config_value(resolution, key)
+            return false if value_index >= resolution.values.count
+            value: ConfigTomlResolvedValue = resolution.values[value_index]
+            return false if value.kind != ConfigTomlValueKind.InlineTable
+            field_index: usize = resolved_inline_field_index(value, field_key)
+            return false if field_index >= value.fields.count
+            field: ConfigTomlTableField = value.fields[field_index]
+            return false if field.kind == ConfigTomlValueKind.Array or field.kind == ConfigTomlValueKind.InlineTable
+            append_text(output, output_key + "=")
+            append_bytes(output, field.text)
+            append_text(output, "@" + config_source_label(value.source) + "\n")
+            return true
+
+
+        def render_precedence() darray[u8] error[ConfigTomlError, ConfigError] can[Memory.Allocate, Abort.Panic]:
+            defaults: ConfigTomlLayer = try parse_toml_config_layer("fallback = true\nfeatures = [\"default\"]\nsettings = { mode = \"debug\", retries = 1 }\nworkers = 2\n", ConfigSource.Defaults)
+            file: ConfigTomlLayer = try parse_toml_config_layer("features = [\"file\"]\nsettings = { mode = \"release\", retries = 3 }\nworkers = 4\n", ConfigSource.File)
+            environment: ConfigTomlLayer = try parse_toml_config_layer("features = [\"environment\"]\nsettings = { mode = \"ci\", source = \"environment\" }\n", ConfigSource.Environment)
+            command_line: ConfigTomlLayer = try parse_toml_config_layer("features = [\"command-line\"]\n", ConfigSource.CommandLine)
+            resolution: ConfigTomlResolution = try resolve_toml_config_typed_layers([defaults, file, environment, command_line])
+
+            fallback_index: usize = lookup_resolved_toml_config_value(resolution, "fallback")
+            workers_index: usize = lookup_resolved_toml_config_value(resolution, "workers")
+            features_index: usize = lookup_resolved_toml_config_value(resolution, "features")
+            settings_index: usize = lookup_resolved_toml_config_value(resolution, "settings")
+            return [] if fallback_index >= resolution.values.count or workers_index >= resolution.values.count
+            return [] if features_index >= resolution.values.count or settings_index >= resolution.values.count
+            return [] if resolution.values[fallback_index].source != ConfigSource.Defaults
+            return [] if resolution.values[workers_index].source != ConfigSource.File
+            return [] if resolution.values[features_index].source != ConfigSource.CommandLine
+            return [] if resolution.values[settings_index].source != ConfigSource.Environment
+            return [] if resolution.values[settings_index].fields.count != 2
+            return [] if resolved_inline_field_index(resolution.values[settings_index], "retries") < resolution.values[settings_index].fields.count
+
+            output: mutable darray[u8] = []
+            return [] if not append_resolved_scalar(output, resolution, "fallback", "precedence.fallback")
+            return [] if not append_resolved_scalar(output, resolution, "workers", "precedence.workers")
+            return [] if not append_resolved_array_item(output, resolution, "features", "precedence.features")
+            return [] if not append_resolved_inline_field(output, resolution, "settings", "mode", "precedence.settings.mode")
+            return [] if not append_resolved_inline_field(output, resolution, "settings", "source", "precedence.settings.source")
+            return output
 
 
         def render_cargo(path_text: sview) -> darray[u8] error[ReadError, ConfigTomlError, ConfigError, ConfigTomlFileError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
@@ -157,8 +242,18 @@ module EsTomlManifestCandidate:
 
     public:
         def run(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Write, Unsafe.PointerCast]:
+            if arguments.count == 1 and arguments[0] == "--precedence-batch":
+                precedence_output: darray[u8] = catch render_precedence():
+                    ok output:
+                        output
+                    error failure:
+                        _ = write_stderr("Elisascript TOML precedence parse or resolution failed\n")
+                        return 1i64
+                return 1i64 if precedence_output.count == 0
+                _ = write_stdout(bytes_view(precedence_output))
+                return 0i64
             if arguments.count != 4 or arguments[0] != "--parity-batch":
-                _ = write_stderr("usage: candidate --parity-batch <cargo.toml> <pyproject.toml> <hugo.toml>\n")
+                _ = write_stderr("usage: candidate --parity-batch <cargo.toml> <pyproject.toml> <hugo.toml> | --precedence-batch\n")
                 return 2i64
             cargo_output: darray[u8] = catch render_cargo(arguments[1]):
                 ok output:

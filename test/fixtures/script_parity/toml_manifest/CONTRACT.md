@@ -12,13 +12,17 @@ booleans, arrays, literal HTML strings, and array-of-table row values.
 
 The candidate intentionally uses the public file-reading path rather than
 parsing duplicated string literals. Exact output is checked against
-`expected.txt` as well as against the independent Python process. These are
-representative real-project slices; the Hugo input is an adapted subset of its
-source file, not the complete site configuration. The cases do not imply full
-TOML 1.0 compatibility or exhaustive Cargo, pyproject, or Hugo semantics.
+`expected.txt` as well as against the independent Python process. A separate
+`--precedence-batch` compares defaults, file, environment, and command-line
+layers, including whole-inline-table replacement and the provenance of each
+winner; it has its own `precedence_expected.txt` golden. These are
+representative project/configuration slices; the Hugo input is an adapted
+subset of its source file, not the complete site configuration. The cases do
+not imply full TOML 1.0 compatibility or exhaustive Cargo, pyproject, or Hugo
+semantics.
 
 The test is gated by explicit validation reauthorization, an active RSS guard,
 and both compiler variables being pinned to the local StructPy compiler. Its
-sources, interpreter, input snapshot, and golden are SHA-256 pinned. It remains
+sources, interpreter, input snapshots, and both goldens are SHA-256 pinned. It remains
 unqualified until that gated launcher is run under the approved bounded
 validation workflow.
