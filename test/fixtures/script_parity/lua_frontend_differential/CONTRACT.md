@@ -117,8 +117,12 @@ The adapter additionally reads the tracked Python driver through the stable
 descriptor path and checks its Git blob SHA-1 against
 `0c520694c81537e333b8204ab110155ce2c6d133`. The bounded SHA-1 routine exists
 only to interoperate with this existing Git object ID; it is not an adversarial
-signature. The source lock authenticates the frontend and corpus with SHA-256.
-Tracked C harness/shim blob checks and executable identity remain outstanding.
+signature. It also checks the candidate C harness, runtime shims, and reference
+C harness against their blob IDs in the pinned commit, with a 1 MiB bound per
+build input. The source lock authenticates the frontend and corpus with
+SHA-256. This still does not hash the complete Go compiler source tree or the
+`go`/`clang` executables; executable and compiler-tree identity remain
+outstanding.
 The adapter and pure source tests
 (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
