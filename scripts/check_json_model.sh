@@ -3,6 +3,9 @@
 # Compiler-free audit for the namespaced JSON adapter boundary.
 set -euo pipefail
 
+MAX_SOURCE_BYTES=16777216
+MAX_TOTAL_SOURCE_BYTES=67108864
+
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/json_model.elisa"
@@ -13,8 +16,17 @@ lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 parser="$repo_root/src/runtime/json_parse_model.elisa"
 docs="$repo_root/docs/ir.md"
 
-for required_file in "$model" "$lexer" "$parser" "$encoder" "$ir" "$fixture" "$docs"; do
-    [[ -f "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
+total_source_bytes=0
+for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$docs"; do
+    [[ -f "$required_file" && -r "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
+    size_output="$(wc -c < "$required_file")"
+    source_size="${size_output//[[:space:]]/}"
+    [[ "$source_size" =~ ^[0-9]+$ ]] || { printf 'json model audit: unable to inspect %s\n' "$required_file" >&2; exit 1; }
+    if (( source_size > MAX_SOURCE_BYTES || source_size > MAX_TOTAL_SOURCE_BYTES - total_source_bytes )); then
+        printf 'json model audit: source exceeds audit limit: %s\n' "$required_file" >&2
+        exit 2
+    fi
+    total_source_bytes=$((total_source_bytes + source_size))
 done
 
 for lexer_contract in \
