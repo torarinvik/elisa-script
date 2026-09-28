@@ -11,10 +11,11 @@ execution="$repo_root/src/ir/execution.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runner_fixture="$repo_root/test/ir/elisascript_runner_test.elisa"
+interpret="$repo_root/src/ir/interpret.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$runner" "$execution" "$ir" "$fixture" "$runner_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$runner" "$execution" "$ir" "$fixture" "$runner_fixture" "$interpret" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'script test audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -99,6 +100,9 @@ rg -Fq 'session.name_order.push(new_case_index)' "$model"
 
 for multi_case_boundary in \
     'elisascript_test_remaining_policy' \
+    'elisascript_test_runtime_message' \
+    'return "Assertion" if failure == InterpretError.Assertion' \
+    'return "InvocationContextUnavailable" if failure == InterpretError.InvocationContextUnavailable' \
     'elisascript_test_usage_add' \
     'cursor.state <- ElisascriptTestRunState.CaseBegin' \
     'ScriptTestEvent.CaseFail' \
@@ -120,6 +124,16 @@ for multi_case_boundary in \
     rg -Fq "$multi_case_boundary" "$runner"
 done
 rg -Uq 'def elisascript_record_pass_limits\([^\n]*\):\n[[:space:]]+raise ScriptTestError\.TestLimitExceeded if executions >= EsScriptTest::Limits::TESTS\n[[:space:]]+raise InterpretError\.OutputLimit if not elisascript_test_usage_add\(usage, addition, policy\)' "$runner"
+
+interpret_error_variants="$(sed -n '/^error InterpretError:/,/^extend EsIr:/p' "$interpret" | sed -n 's/^    \([A-Za-z][A-Za-z0-9_]*\)$/\1/p')"
+[[ -n "$interpret_error_variants" ]] || { printf 'script test audit: missing InterpretError variants\n' >&2; exit 1; }
+while IFS= read -r variant; do
+    [[ -n "$variant" ]] || continue
+    rg -Fq "return \"$variant\" if failure == InterpretError.$variant" "$runner" || {
+        printf 'script test audit: missing test diagnostic mapping for InterpretError.%s\n' "$variant" >&2
+        exit 1
+    }
+done <<< "$interpret_error_variants"
 
 rg -Fq 'include "../runtime/script_test_model.elisa"' "$ir"
 rg -Fq 'using EsScriptTest' "$fixture"

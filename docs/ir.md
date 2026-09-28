@@ -2660,10 +2660,12 @@ completed case, so a rejected over-limit case cannot partially advance the
 aggregate ledger.
 Borrowed runtime values are never retained. A runtime `InterpretError` becomes
 the first typed case failure while the error enum is preserved beside the
-session diagnostic. The boolean cancellation request is a synchronous
-boundary snapshot: it cancels before the first case when true and is checked
-only between cases, with `Cancel → CancelAck` leaving every unstarted case
-`Cancelled`. File, NUL-terminated source-buffer, and length-delimited
+session diagnostic; the bounded failure message is the stable spelling of its
+`InterpretError` variant rather than a generic message. The boolean
+cancellation request is a synchronous boundary snapshot: it cancels before
+the first case when true and is checked only between cases, with
+`Cancel → CancelAck` leaving every unstarted case `Cancelled`. File,
+NUL-terminated source-buffer, and length-delimited
 source-byte adapters all call the same machine; each has dynamic-handler and
 no-handler entry points, so source-buffer differential runs cannot silently
 use a different policy or failure path. The driver now routes `--test` through
