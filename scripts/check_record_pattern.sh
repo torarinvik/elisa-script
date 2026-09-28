@@ -35,10 +35,18 @@ done
 for boundary in \
     'Limits::CLAUSES' \
     'Limits::RECORDS' \
+    'Limits::MATCH_WORK' \
+    'max_match_work' \
+    'record_pattern_charge_match_work' \
+    'record_pattern_text_equal' \
+    'record_pattern_text_contains' \
+    'RecordPatternError.MatchWorkLimitExceeded' \
+    'while offset < sview_len(needle) and matched' \
     'RecordPatternPredicateKind.External' \
     'RecordPatternEvent.Record' \
     'RecordPatternError.ObservationShapeInvalid' \
     'RecordPatternError.AccountingInvalid' \
+    'clause_state == RecordPatternClauseState.Active and not session.clauses[index].has_end' \
     'decision.record_number <= session.decisions[index - 1].record_number' \
     'RecordPatternError.EndNotReady' \
     'record_pattern_predicate_valid(clause.end, policy)' \
@@ -61,9 +69,15 @@ for fixture_pattern in \
     'forged_record_order' \
     'duplicate_record_order' \
     'hidden_end_payload' \
+    'active_without_end_rejected' \
     'RecordPatternError.InvalidClause' \
     'record_pattern_selected' \
     'boundary_pattern_policy' \
+    'bounded_match_session' \
+    'match_work_rejected' \
+    'session.match_work == 4' \
+    'equal_session.match_work == 5' \
+    'range_work_session.match_work == 4' \
     'max_text_bytes: 4'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

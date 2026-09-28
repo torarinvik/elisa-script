@@ -2453,13 +2453,18 @@ record; selection is the OR of all matching clauses for that record. Its policy
 carries the source `RecordStreamPolicy` explicitly, so separator preservation
 and the record byte ceiling are not replaced by a silent default during
 observation validation. Predicate text at exactly the configured text ceiling
-is admitted consistently with the record byte ceiling. Validation reconciles decision cardinality/selection counters and
+is admitted consistently with the record byte ceiling. Predicate and clause
+evaluation share a cumulative 100-million work ceiling; textual equality and
+containment charge each inspected byte, and containment stops at the first
+mismatch. This prevents an unbounded quadratic substring scan from multiplying
+across records and clauses. A record is staged locally and publishes range
+states, text bytes, work, and its decision only after all predicates fit, so
+work-limit errors leave the session unchanged. Validation reconciles decision cardinality/selection counters and
 running/terminal clause-state shape, and requires strictly increasing global
 record numbers in the retained decisions. Shape mismatches, duplicate or
-out-of-order records, unterminated ranges,
-malformed predicates, text limits, cancellation, and terminal transitions use
-`error[RecordPatternError]`; regex compilation and callback dispatch remain
-separate adapters.
+out-of-order records, unterminated ranges, malformed predicates, text/work
+limits, cancellation, and terminal transitions use `error[RecordPatternError]`;
+regex compilation and callback dispatch remain separate adapters.
 
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,

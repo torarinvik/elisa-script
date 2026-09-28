@@ -12,6 +12,7 @@ module EsRecordPattern:
             CLAUSES: usize = 4096
             RECORDS: usize = 1048576
             TEXT_BYTES: usize = EsRecord::Limits::TEXT_BYTES
+            MATCH_WORK: usize = 100000000
 
 
         const enum RecordPatternState of u8:
@@ -67,6 +68,7 @@ module EsRecordPattern:
             max_clauses: usize = Limits::CLAUSES
             max_records: usize = Limits::RECORDS
             max_text_bytes: usize = Limits::TEXT_BYTES - 1
+            max_match_work: usize = Limits::MATCH_WORK
             record_policy: RecordStreamPolicy = RecordStreamPolicy{}
 
 
@@ -91,6 +93,7 @@ module EsRecordPattern:
             processed_records: usize = 0
             selected_records: usize = 0
             text_bytes: usize = 0
+            match_work: usize = 0
 
 
         error RecordPatternError:
@@ -110,6 +113,7 @@ module EsRecordPattern:
             RangeStateInvalid
             EndNotReady
             CancelNotReady
+            MatchWorkLimitExceeded
 
 
     private:
@@ -148,7 +152,7 @@ module EsRecordPattern:
 
 
         def record_pattern_policy_valid(policy: RecordPatternPolicy) -> bool:
-            return false if policy.max_clauses == 0 or policy.max_clauses > Limits::CLAUSES or policy.max_records == 0 or policy.max_records > Limits::RECORDS or policy.max_text_bytes == 0 or policy.max_text_bytes >= Limits::TEXT_BYTES
+            return false if policy.max_clauses == 0 or policy.max_clauses > Limits::CLAUSES or policy.max_records == 0 or policy.max_records > Limits::RECORDS or policy.max_text_bytes == 0 or policy.max_text_bytes >= Limits::TEXT_BYTES or policy.max_match_work == 0 or policy.max_match_work > Limits::MATCH_WORK
             return false if policy.record_policy.max_record_bytes > policy.max_text_bytes
             catch validate_record_stream_policy(policy.record_policy):
                 ok:
@@ -164,20 +168,41 @@ module EsRecordPattern:
             return record_pattern_action_valid(clause.action)
 
 
-        def record_pattern_text_contains(haystack: sview, needle: sview) -> bool:
+        def record_pattern_charge_match_work(work: mutable usize&, maximum: usize, amount: usize) -> void error[RecordPatternError]:
+            raise RecordPatternError.MatchWorkLimitExceeded if work > maximum
+            raise RecordPatternError.MatchWorkLimitExceeded if amount > maximum - work
+            work <- work + amount
+
+
+        def record_pattern_text_equal(left: sview, right: sview, work: mutable usize&, maximum: usize) -> bool error[RecordPatternError]:
+            return false if sview_len(left) != sview_len(right)
+            equal: mutable bool = true
+            offset: mutable usize = 0
+            while offset < sview_len(left) and equal:
+                try record_pattern_charge_match_work(work, maximum, 1)
+                equal <- false if sview_at(left, offset) != sview_at(right, offset)
+                offset <- offset + 1
+            return equal
+
+
+        def record_pattern_text_contains(haystack: sview, needle: sview, work: mutable usize&, maximum: usize) -> bool error[RecordPatternError]:
             return true if needle == ""
             return false if sview_len(needle) > sview_len(haystack)
             limit: usize = sview_len(haystack) - sview_len(needle)
             for start in 0..<(limit + 1) |haystack, needle|:
                 matched: mutable bool = true
-                for offset in 0..<sview_len(needle) |haystack, needle, start, matched|:
+                offset: mutable usize = 0
+                while offset < sview_len(needle) and matched:
+                    try record_pattern_charge_match_work(work, maximum, 1)
                     matched <- false if sview_at(haystack, start + offset) != sview_at(needle, offset)
+                    offset <- offset + 1
                 return true if matched
             return false
 
 
-        def record_pattern_predicate_matches(predicate: RecordPatternPredicate, record: Record, external_match: bool) -> bool error[RecordPatternError]:
+        def record_pattern_predicate_matches(predicate: RecordPatternPredicate, record: Record, external_match: bool, work: mutable usize&, maximum_work: usize) -> bool error[RecordPatternError]:
             raise RecordPatternError.InvalidPredicate if not record_pattern_predicate_kind_valid(predicate.kind)
+            try record_pattern_charge_match_work(work, maximum_work, 1)
             if predicate.kind == RecordPatternPredicateKind.Always:
                 return true
             elif predicate.kind == RecordPatternPredicateKind.Never:
@@ -187,9 +212,9 @@ module EsRecordPattern:
             elif predicate.kind == RecordPatternPredicateKind.FileRecordNumberEquals:
                 return record.file_record_number == predicate.number
             elif predicate.kind == RecordPatternPredicateKind.TextEquals:
-                return record.raw == predicate.text
+                return try record_pattern_text_equal(record.raw, predicate.text, work, maximum_work)
             elif predicate.kind == RecordPatternPredicateKind.TextContains:
-                return record_pattern_text_contains(record.raw, predicate.text)
+                return try record_pattern_text_contains(record.raw, predicate.text, work, maximum_work)
             elif predicate.kind == RecordPatternPredicateKind.External:
                 return external_match
             return false
@@ -203,15 +228,18 @@ module EsRecordPattern:
             raise RecordPatternError.RecordLimitExceeded if session.processed_records > session.policy.max_records
             raise RecordPatternError.RecordLimitExceeded if session.selected_records > session.processed_records
             raise RecordPatternError.TextLimitExceeded if session.text_bytes > session.policy.max_text_bytes
+            raise RecordPatternError.MatchWorkLimitExceeded if session.match_work > session.policy.max_match_work
             raise RecordPatternError.ObservationShapeInvalid if session.clause_states.count != 0 and session.clause_states.count != session.clauses.count
-            raise RecordPatternError.InvalidState if session.state == RecordPatternState.Planned and (session.clause_states.count != 0 or session.decisions.count != 0 or session.processed_records != 0 or session.selected_records != 0 or session.text_bytes != 0)
+            raise RecordPatternError.InvalidState if session.state == RecordPatternState.Planned and (session.clause_states.count != 0 or session.decisions.count != 0 or session.processed_records != 0 or session.selected_records != 0 or session.text_bytes != 0 or session.match_work != 0)
             raise RecordPatternError.ObservationShapeInvalid if session.state == RecordPatternState.Running and session.clause_states.count != session.clauses.count
             raise RecordPatternError.ObservationShapeInvalid if session.state == RecordPatternState.Completed and session.clause_states.count != session.clauses.count
             raise RecordPatternError.ObservationShapeInvalid if session.state == RecordPatternState.Failed and session.clause_states.count != session.clauses.count
             for clause in session.clauses |session|:
                 raise RecordPatternError.InvalidClause if not record_pattern_clause_valid(clause, session.policy)
-            for clause_state in session.clause_states:
+            for index in 0..<session.clause_states.count |session|:
+                clause_state: RecordPatternClauseState = session.clause_states[index]
                 raise RecordPatternError.RangeStateInvalid if clause_state != RecordPatternClauseState.Inactive and clause_state != RecordPatternClauseState.Active
+                raise RecordPatternError.RangeStateInvalid if clause_state == RecordPatternClauseState.Active and not session.clauses[index].has_end
             active_range: mutable bool = false
             for clause_state in session.clause_states |active_range|:
                 active_range <- true if clause_state == RecordPatternClauseState.Active
@@ -240,9 +268,10 @@ module EsRecordPattern:
             raise RecordPatternError.InvalidEvent if not record_pattern_event_valid(event)
             if event == RecordPatternEvent.Begin:
                 raise RecordPatternError.InvalidState if session.state != RecordPatternState.Planned
-                session.clause_states <- []
+                initial_clause_states: mutable darray[RecordPatternClauseState] = []
                 for clause in session.clauses:
-                    session.clause_states.push(RecordPatternClauseState.Inactive)
+                    initial_clause_states.push(RecordPatternClauseState.Inactive)
+                session.clause_states <- initial_clause_states
                 session.state <- RecordPatternState.Running
             elif event == RecordPatternEvent.Record:
                 raise RecordPatternError.InvalidState if session.state != RecordPatternState.Running
@@ -255,32 +284,35 @@ module EsRecordPattern:
                         raise RecordPatternError.RecordInvalid
                 raise RecordPatternError.ObservationShapeInvalid if observation.start_matches.count != session.clauses.count or observation.end_matches.count != session.clauses.count
                 raise RecordPatternError.TextLimitExceeded if sview_len(observation.record.raw) > session.policy.max_text_bytes - session.text_bytes
-                session.text_bytes <- session.text_bytes + sview_len(observation.record.raw)
+                raise RecordPatternError.DecisionLimitExceeded if session.decisions.count >= session.policy.max_records
+                record_match_work: mutable usize = session.match_work
+                next_clause_states: mutable darray[RecordPatternClauseState] = []
+                for clause_state in session.clause_states:
+                    next_clause_states.push(clause_state)
                 record_selected: mutable bool = false
-                for index in 0..<session.clauses.count |session, observation|:
+                for index in 0..<session.clauses.count |session, observation, next_clause_states, record_match_work|:
                     clause: RecordPatternClause = session.clauses[index]
-                    state: RecordPatternClauseState = session.clause_states[index]
-                    start_match: bool = try record_pattern_predicate_matches(clause.start, observation.record, observation.start_matches[index])
-                    end_match: mutable bool = false
-                    if clause.has_end:
-                        end_match <- try record_pattern_predicate_matches(clause.end, observation.record, observation.end_matches[index])
+                    state: RecordPatternClauseState = next_clause_states[index]
                     clause_selected: mutable bool = false
                     if state == RecordPatternClauseState.Inactive:
+                        start_match: bool = try record_pattern_predicate_matches(clause.start, observation.record, observation.start_matches[index], record_match_work, session.policy.max_match_work)
                         if start_match:
                             clause_selected <- clause.action == RecordPatternAction.Select
-                            session.clause_states[index] <- RecordPatternClauseState.Active if clause.has_end
-                            if clause.has_end and end_match:
-                                session.clause_states[index] <- RecordPatternClauseState.Inactive
+                            if clause.has_end:
+                                end_match: bool = try record_pattern_predicate_matches(clause.end, observation.record, observation.end_matches[index], record_match_work, session.policy.max_match_work)
+                                next_clause_states[index] <- RecordPatternClauseState.Inactive if end_match else RecordPatternClauseState.Active
                     else:
                         clause_selected <- clause.action == RecordPatternAction.Select
-                        if end_match:
-                            session.clause_states[index] <- RecordPatternClauseState.Inactive
+                        end_match: bool = try record_pattern_predicate_matches(clause.end, observation.record, observation.end_matches[index], record_match_work, session.policy.max_match_work)
+                        next_clause_states[index] <- RecordPatternClauseState.Inactive if end_match
                     record_selected <- true if clause_selected
                 active_ranges: mutable usize = 0
-                for clause_state in session.clause_states:
+                for clause_state in next_clause_states:
                     active_ranges <- active_ranges + 1 if clause_state == RecordPatternClauseState.Active
-                raise RecordPatternError.DecisionLimitExceeded if session.decisions.count >= session.policy.max_records
                 session.decisions.push(RecordPatternDecision{record_number: observation.record.record_number, selected: record_selected, active_ranges: active_ranges})
+                session.clause_states <- next_clause_states
+                session.match_work <- record_match_work
+                session.text_bytes <- session.text_bytes + sview_len(observation.record.raw)
                 session.selected_records <- session.selected_records + 1 if record_selected
                 session.processed_records <- session.processed_records + 1
             elif event == RecordPatternEvent.End:
