@@ -63,10 +63,40 @@ def render_pyproject(path):
     return "\n".join(rows) + "\n"
 
 
+def render_hugo(path):
+    config = load(path)
+    rows = [
+        f"hugo.baseURL={config['baseURL']}",
+        f"hugo.title={config['title']}",
+        f"hugo.enableRobotsTXT={str(config['enableRobotsTXT']).lower()}",
+    ]
+    rows.extend(f"hugo.theme={entry}" for entry in config["theme"])
+    rows.extend(f"hugo.disableKinds={entry}" for entry in config["disableKinds"])
+    rows.extend(
+        [
+            f"hugo.permalinks.blog={config['permalinks']['blog']}",
+            f"hugo.imaging.quality={config['imaging']['quality']}",
+            f"hugo.services.googleAnalytics.id={config['services']['googleAnalytics']['id']}",
+            f"hugo.languages.en.languageName={config['languages']['en']['languageName']}",
+            f"hugo.markup.goldmark.renderer.unsafe={str(config['markup']['goldmark']['renderer']['unsafe']).lower()}",
+            f"hugo.params.ui.feedback.yes={config['params']['ui']['feedback']['yes']}",
+            f"hugo.params.links.user.0.name={config['params']['links']['user'][0]['name']}",
+            f"hugo.params.links.user.0.url={config['params']['links']['user'][0]['url']}",
+            f"hugo.params.links.developer.0.name={config['params']['links']['developer'][0]['name']}",
+            f"hugo.params.mermaid.enable={str(config['params']['mermaid']['enable']).lower()}",
+        ]
+    )
+    return "\n".join(rows) + "\n"
+
+
 def main(arguments):
-    if len(arguments) != 3 or arguments[0] != "--parity-batch":
+    if len(arguments) != 4 or arguments[0] != "--parity-batch":
         return 2
-    sys.stdout.write(render_cargo(arguments[1]) + render_pyproject(arguments[2]))
+    sys.stdout.write(
+        render_cargo(arguments[1])
+        + render_pyproject(arguments[2])
+        + render_hugo(arguments[3])
+    )
     return 0
 
 

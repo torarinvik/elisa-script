@@ -1195,10 +1195,11 @@ descriptor validation. Typed structured overrides and TOML date/time values
 remain unsupported.
 Focused fixtures and the compiler-free static audit are source-only. A gated
 Python `tomllib` versus Elisascript parity slice now projects representative
-workspace/member/inline-dependency facts from a pinned Cargo manifest snapshot
-and project/build/nested-tool settings from a pinned `pyproject.toml` snapshot;
-it has not run, so runtime and project-level parity qualification remain open
-under the validation hold.
+workspace/member/inline-dependency facts from a pinned Cargo manifest snapshot,
+project/build/nested-tool settings from a pinned `pyproject.toml` snapshot, and
+selected nested-table/array-table values from Hugo config; it has not run, so
+runtime and project-level parity qualification remain open under the validation
+hold.
 
 ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
 minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and

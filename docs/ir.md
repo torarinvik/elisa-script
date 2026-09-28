@@ -3591,14 +3591,16 @@ decoded, including `\"`, `\\`, `\uXXXX`, and `\UXXXXXXXX`; key escapes that
 produce forbidden control bytes are rejected. Quoted dotted keys remain
 rejected because the current flattened configuration-key view reserves dots
 for path separators. Dotted keys inside inline tables, dates/times, and
-multiline strings remain unsupported. Snapshots of the observed
-`WasmBrowser/Cargo.toml` and `neural-computer-agent/pyproject.toml` cover the
-Cargo workspace/dependency subset and Python project/build/tool metadata. A
-gated parity slice compares normalized workspace/package/member/dependency
-facts and nested pyproject tool-table values with Python's standard-library
-`tomllib`; the candidate reads both snapshots through `EsConfigTomlFilePosix`.
-This test is source-only until run under the bounded reauthorization workflow
-and does not establish full Cargo or PEP 517/518 compatibility.
+multiline strings remain unsupported. Snapshots cover the observed
+`WasmBrowser/Cargo.toml`, `neural-computer-agent/pyproject.toml`, and selected
+values from `elisa-skia/site/config.toml`. A gated parity slice compares
+normalized workspace/package/member/dependency facts, nested pyproject
+tool-table values, and Hugo nested tables/arrays/array-table rows with Python's
+standard-library `tomllib`; the candidate reads all three inputs through
+`EsConfigTomlFilePosix`. The Hugo fixture is a selected-value adaptation, not a
+complete site-config copy. This test is source-only until run under the bounded
+reauthorization workflow and does not establish full TOML, Cargo, PEP 517/518,
+or Hugo compatibility.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are
@@ -3625,7 +3627,8 @@ environment and command-line values as text.
 `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
 array parsing plus rejection boundaries. Runtime tests and the gated
-Python-versus-Elisascript manifest parity slice remain unexecuted pending
+Python-versus-Elisascript parity slice over the three observed project TOML
+inputs remain unexecuted pending
 compiler-validation reauthorization. This is a deliberately small TOML slice of
 A06, not full TOML compatibility.
 
