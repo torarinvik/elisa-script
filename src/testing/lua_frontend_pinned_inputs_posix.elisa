@@ -24,6 +24,11 @@ module EsLuaFrontendPinnedInputsPosix:
             inode: u64 = 0
 
 
+        struct LuaFrontendPinRootPair:
+            manifest_root: LuaFrontendPinRootCapability
+            source_root: LuaFrontendPinRootCapability
+
+
         error LuaFrontendPinReadError:
             InvalidAbsoluteRoot
             RootPathTooLong
@@ -271,10 +276,29 @@ module EsLuaFrontendPinnedInputsPosix:
             raise LuaFrontendPinReadError.RootCloseFailed(root.path) if elisascript_posix_close(descriptor) != 0
 
 
+    private:
+        def lua_frontend_pin_close_root_pair(pair: mutable LuaFrontendPinRootPair&) -> void error[LuaFrontendPinReadError] can[Blocking.IO]:
+            source_close_failed: mutable bool = false
+            manifest_close_failed: mutable bool = false
+            catch close_lua_frontend_pin_root(pair.source_root):
+                ok closed:
+                    _ = closed
+                error failure:
+                    _ = failure
+                    source_close_failed <- true
+            catch close_lua_frontend_pin_root(pair.manifest_root):
+                ok closed:
+                    _ = closed
+                error failure:
+                    _ = failure
+                    manifest_close_failed <- true
+            raise LuaFrontendPinReadError.RootCloseFailed(pair.source_root.path) if source_close_failed
+            raise LuaFrontendPinReadError.RootCloseFailed(pair.manifest_root.path) if manifest_close_failed
+
+
         # Validate the tracked lock before opening any corpus file, then read
         # exactly its rows beneath the independently approved source root.
         # The caller keeps `a` alive while consuming the returned views.
-    private:
         def verify_lua_frontend_pinned_inputs_at(a: mutable Arena&, manifest_root_fd: int, manifest_path: sview, source_root_fd: int) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             manifest_file: OpenedFile = try open_build_incremental_file_at(manifest_root_fd, manifest_path)
             raise LuaFrontendPinReadError.ManifestMissing(manifest_path) if not manifest_file.present
@@ -308,3 +332,34 @@ module EsLuaFrontendPinnedInputsPosix:
             raise LuaFrontendPinReadError.InvalidRootCapability(manifest_root.path) if not lua_frontend_pin_root_capability_valid(manifest_root)
             raise LuaFrontendPinReadError.InvalidRootCapability(source_root.path) if not lua_frontend_pin_root_capability_valid(source_root)
             return try verify_lua_frontend_pinned_inputs_at(a, manifest_root.descriptor, manifest_path, source_root.descriptor)
+
+
+        # Own both root descriptors for the complete verification transaction.
+        # This closes them on success and on every ordinary typed-error path;
+        # the caller still owns `a`, which retains the returned exact byte views.
+        def verify_lua_frontend_pinned_inputs_from_roots(a: mutable Arena&, manifest_root_path: sview, manifest_path: sview, source_root_path: sview) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            manifest_root: mutable LuaFrontendPinRootCapability = try open_lua_frontend_pin_root(manifest_root_path)
+            source_root: mutable LuaFrontendPinRootCapability = LuaFrontendPinRootCapability{path: source_root_path}
+            catch open_lua_frontend_pin_root(source_root_path):
+                ok opened:
+                    source_root <- opened
+                error failure:
+                    catch close_lua_frontend_pin_root(manifest_root):
+                        ok closed:
+                            _ = closed
+                        error cleanup_failure:
+                            raise cleanup_failure
+                    raise failure
+
+            pair: mutable LuaFrontendPinRootPair = LuaFrontendPinRootPair{manifest_root: manifest_root, source_root: source_root}
+            catch verify_lua_frontend_pinned_inputs(a, pair.manifest_root, manifest_path, pair.source_root):
+                ok verification:
+                    _ = try lua_frontend_pin_close_root_pair(pair)
+                    return verification
+                error failure:
+                    catch lua_frontend_pin_close_root_pair(pair):
+                        ok closed:
+                            _ = closed
+                        error cleanup_failure:
+                            raise cleanup_failure
+                    raise failure

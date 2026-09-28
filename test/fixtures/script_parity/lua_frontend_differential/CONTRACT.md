@@ -106,9 +106,11 @@ opening source rows and resolves every relative path component with
 `O_NOFOLLOW`. It checks per-file and aggregate source limits before
 allocating/reading each source, verifies the retained descriptor and its name
 after the bounded read, then passes the exact arena-backed byte views to the
-pure verifier. The caller must keep that arena alive through corpus admission
-and independently establish that the two selected roots are the approved
-checkouts; safe path traversal alone does not establish repository identity.
+pure verifier. The path-based entry point owns and closes both root descriptors
+on success and ordinary typed-error paths. The caller must keep the arena alive
+through corpus admission and independently establish that the two selected
+roots are the approved checkouts; safe path traversal alone does not establish
+repository identity.
 The adapter and pure source tests
 (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
