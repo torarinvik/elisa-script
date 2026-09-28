@@ -13,7 +13,9 @@ $anchors =~ s/^/>/g;
 $anchors =~ s/$/!/g;
 my $deleted = "banana";
 $deleted =~ s/na//g;
+my $unchanged = "nothing";
+$unchanged =~ s/[0-9]+/x/g;
 my $eof = "abc";
 $eof =~ s/$/!/g;
 
-print join("\n", $fields, $named, $alternatives, $anchors, $deleted, $eof), "\n";
+print join("\n", $fields, $named, $alternatives, $anchors, $deleted, $unchanged, $eof), "\n";

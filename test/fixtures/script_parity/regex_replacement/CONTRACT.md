@@ -5,6 +5,7 @@ Elisascript candidate over replacement behaviors already implemented by the
 string-template API: numbered captures, named captures, whole-match
 interpolation, sequential zero-width start/end anchor substitutions on one
 evolving value, deletion, and global non-overlap.
+It also pins the no-match rule: the original input remains unchanged.
 The exact ordered output is checked against a separate golden and both process
 results.
 

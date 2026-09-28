@@ -68,7 +68,10 @@ rg -Fq 'anchors: sview = replace_regex(anchored_start, regex"$", "!")' "$parity_
 rg -Fq 'my $fields = "id=42; id=7";' "$parity_reference"
 rg -Fq '$anchors =~ s/^/>/g;' "$parity_reference"
 rg -Fq '$anchors =~ s/$/!/g;' "$parity_reference"
+rg -Fq '$unchanged =~ s/[0-9]+/x/g;' "$parity_reference"
+rg -Fq 'unchanged: sview = replace_regex("nothing", regex"[0-9]+", "x")' "$parity_candidate"
 rg -Fq '>abc!' "$parity_golden"
+rg -Fq 'nothing' "$parity_golden"
 rg -Fq 'id:42; id:7' "$parity_golden"
 rg -Fq 'callback replacement exactly once per match' "$parity_contract"
 
