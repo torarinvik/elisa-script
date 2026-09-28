@@ -946,9 +946,11 @@ frame-kind/index/sequence/byte acknowledgements and short-write, reorder, forge,
 and per-frame/total-limit rejection; it retains no borrowed text. The Darwin
 `EsOutputTransportPosix` adapter writes canonical frame payloads to a
 caller-owned descriptor, handles bounded `EINTR`/short writes, and acknowledges
-only completed writes. The focused IR fixture and check_output_renderer.sh audit
-remain static evidence; end-to-end host behavior and CLI `--test` routing are
-unverified.
+only completed writes. `write_output_document_fd` combines document admission
+with one-shot host delivery, while the lower-level writer remains available to
+callers that need direct transport-state inspection. The focused IR fixture and
+check_output_renderer.sh audit remain static evidence; end-to-end host behavior
+and CLI `--test` routing are unverified.
 
 ES-SCRIPT-004 | EsPackageRegistry supplies bounded candidate rows, semver-aware
 deterministic ordering (stable releases follow matching prereleases in only that direction), integrity admission, sealed-state lookup by PackageConstraint, and

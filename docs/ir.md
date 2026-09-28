@@ -692,6 +692,9 @@ The Darwin `EsOutputTransportPosix` adapter streams one owned frame at a
 time to a caller-owned descriptor, retries bounded `EINTR`, loops over positive
 short writes, and acknowledges a frame only after the complete payload is
 accepted by `write(2)`.
+`write_output_document_fd` combines sealed-document admission with that writer
+for a one-shot call. Callers that need to inspect completed-frame accounting
+after a partial host failure can construct and retain the transport explicitly.
 It starts only from a `Planned` transport, preventing a partially emitted
 report from being resumed onto a different descriptor.
 On failure it marks the transport failed and reports bytes accepted in that

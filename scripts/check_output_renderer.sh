@@ -23,6 +23,7 @@ for declaration in \
     'const module Limits:' \
     'WRITE_CALLS: usize = 1048576' \
     'error OutputTransportPosixError:' \
+    'def write_output_document_fd(' \
     'def write_output_transport_fd(' \
     'transport.state != OutputTransportState.Planned' \
     'DarwinErrno::EINTR' \
@@ -129,6 +130,7 @@ rg -Fq 'extraneous_transport_payload_rejected' "$fixture"
 rg -Fq 'EsOutputRender adds the renderer-side state machine' "$docs"
 rg -Fq '`EsOutputTransport` wraps that renderer' "$docs"
 rg -Fq '`EsOutputTransportPosix` adapter streams one owned frame at a' "$docs"
+rg -Fq '`write_output_document_fd` admits a sealed document' "$docs"
 rg -Fq 'ES-SCRIPT-003 | EsOutputRender' "$ledger"
 
 printf 'output renderer audit: bounded formatting, authenticated transport, and POSIX full-write adapter are present\n'
