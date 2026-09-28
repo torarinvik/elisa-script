@@ -2528,13 +2528,23 @@ current URL and TLS route, rejects HTTPS-to-HTTP downgrade, and sets a sticky
 `network_request_header_is_sensitive` to omit `Authorization`,
 `Proxy-Authorization`, `Cookie`, `Cookie2`, and application-declared sensitive
 names on later hops; the origin comparison is deliberately conservative about
-authority spellings. The session rewrites POST to
+authority spellings. `network_session_effective_request_headers` now returns
+the ordered outbound field pairs after applying the session's sticky
+credential-stripping decision. When redirect policy changes the method/body,
+it drops stale `Content-Length`, `Transfer-Encoding`, and `Trailer` fields; on
+any redirect it also drops a caller-supplied `Host` so the adapter can
+regenerate the target authority and framing for the effective body. It does not
+itself serialize or generate those fields. The session rewrites POST to
 GET on 301/302 and non-GET/HEAD methods to GET on 303, and preserves method/body
-for 307/308. `network_resolve_redirect_location` resolves absolute, scheme-relative,
+for 307/308. A retry restarts at the original URL and clears the per-hop
+redirect/credential projection state while retaining the session-wide redirect
+ceiling. `network_resolve_redirect_location` resolves absolute, scheme-relative,
 root-relative, path-relative (including `.`/`..`), query-only, fragment-only,
 and empty references into owned absolute URL bytes. Keep that byte buffer alive
 while `NetworkSession.current_url` borrows its view. Redirect adapters must
-recompute body-framing headers; the session tracks the effective method and
+recompute body-framing headers. The projected header array owns pair order but
+its text values remain borrowed from request storage, which must stay alive
+while the adapter uses the projection. The session tracks the effective method and
 body-byte budget but does not own serialized headers.
 Each redirect is an explicit `Receiving → Resolving` edge that clears
 transient request/response accounting before the next resolution. It preserves

@@ -186,6 +186,7 @@ module EsNetwork:
             InvalidRedirectLocation
             RedirectTargetLimitExceeded
             BodyLimitExceeded
+            EffectiveBodyLimitExceeded
             InvalidTimeout
             InvalidResponseLimit
             InvalidRetryMode
@@ -364,6 +365,14 @@ module EsNetwork:
             return equal
 
 
+        def network_header_comparison_matches(left: sview, right: sview, comparison_work: mutable usize&) -> bool error[NetworkContractError]:
+            shared_name_bytes: usize = sview_len(left) if sview_len(left) < sview_len(right) else sview_len(right)
+            comparison_cost: usize = shared_name_bytes + 1
+            raise NetworkContractError.HeaderComparisonLimitExceeded if comparison_cost > Limits::HEADER_COMPARISON_WORK - comparison_work
+            comparison_work <- comparison_work + comparison_cost
+            return network_header_names_equal(left, right)
+
+
         def network_headers_valid(headers: darray[sview], reject_duplicate_names: bool) -> bool error[NetworkContractError]:
             raise NetworkContractError.HeaderVectorMalformed if headers.count % 2 != 0
             total: mutable usize = 0
@@ -378,11 +387,8 @@ module EsNetwork:
                         for earlier in 0..<offset |headers, entry, comparison_work|:
                             if earlier % 2 == 0:
                                 previous_name: sview = headers[earlier]
-                                shared_name_bytes: usize = sview_len(previous_name) if sview_len(previous_name) < sview_len(entry) else sview_len(entry)
-                                comparison_cost: usize = shared_name_bytes + 1
-                                raise NetworkContractError.HeaderComparisonLimitExceeded if comparison_cost > Limits::HEADER_COMPARISON_WORK - comparison_work
-                                comparison_work <- comparison_work + comparison_cost
-                                raise NetworkContractError.DuplicateHeaderName if network_header_names_equal(previous_name, entry)
+                                duplicate: bool = try network_header_comparison_matches(previous_name, entry, comparison_work)
+                                raise NetworkContractError.DuplicateHeaderName if duplicate
                 else:
                     raise NetworkContractError.HeaderValueInvalid if not network_header_value_valid(entry)
                 raise NetworkContractError.HeaderLimitExceeded if total > Limits::HEADER_BYTES - sview_len(entry) - 1
@@ -398,11 +404,8 @@ module EsNetwork:
                 raise NetworkContractError.SensitiveHeaderNameInvalid if not network_header_name_valid(names[index])
                 for earlier in 0..<index |names, index, comparison_work|:
                     previous_name: sview = names[earlier]
-                    shared_name_bytes: usize = sview_len(previous_name) if sview_len(previous_name) < sview_len(names[index]) else sview_len(names[index])
-                    comparison_cost: usize = shared_name_bytes + 1
-                    raise NetworkContractError.HeaderComparisonLimitExceeded if comparison_cost > Limits::HEADER_COMPARISON_WORK - comparison_work
-                    comparison_work <- comparison_work + comparison_cost
-                    raise NetworkContractError.DuplicateSensitiveHeaderName if network_header_names_equal(previous_name, names[index])
+                    duplicate: bool = try network_header_comparison_matches(previous_name, names[index], comparison_work)
+                    raise NetworkContractError.DuplicateSensitiveHeaderName if duplicate
                 raise NetworkContractError.HeaderLimitExceeded if total > Limits::HEADER_BYTES - sview_len(names[index]) - 1
                 total <- total + sview_len(names[index]) + 1
             return true
@@ -726,10 +729,24 @@ module EsNetwork:
             def network_request_header_is_sensitive(name: sview, request: NetworkRequest&) -> bool error[NetworkContractError]:
                 raise NetworkContractError.HeaderNameInvalid if not network_header_name_valid(name)
                 try network_sensitive_header_names_valid(request.sensitive_headers)
-                return true if network_header_names_equal(name, "authorization") or network_header_names_equal(name, "proxy-authorization") or network_header_names_equal(name, "cookie") or network_header_names_equal(name, "cookie2")
-                for index in 0..<request.sensitive_headers.count |request|:
-                    return true if network_header_names_equal(name, request.sensitive_headers[index])
-                return false
+                comparison_work: mutable usize = 0
+                sensitive: mutable bool = false
+                match: mutable bool = try network_header_comparison_matches(name, "authorization", comparison_work)
+                sensitive <- true if match
+                if not sensitive:
+                    match <- try network_header_comparison_matches(name, "proxy-authorization", comparison_work)
+                    sensitive <- true if match
+                if not sensitive:
+                    match <- try network_header_comparison_matches(name, "cookie", comparison_work)
+                    sensitive <- true if match
+                if not sensitive:
+                    match <- try network_header_comparison_matches(name, "cookie2", comparison_work)
+                    sensitive <- true if match
+                for index in 0..<request.sensitive_headers.count |request, sensitive, comparison_work, match|:
+                    if not sensitive:
+                        match <- try network_header_comparison_matches(name, request.sensitive_headers[index], comparison_work)
+                        sensitive <- true if match
+                return sensitive
 
 
             def validate_network_request(request: NetworkRequest&) -> bool error[NetworkContractError]:
@@ -743,6 +760,61 @@ module EsNetwork:
                 try validate_network_retry_policy(request.retry, request.method)
                 try validate_network_tls_policy(request.tls)
                 return true
+
+
+            # Return an ordered pair-vector copy for the effective method/body.
+            # Text views still borrow from request storage. Redirects drop stale
+            # Host fields; body rewrites drop framing and cross-origin hops
+            # omit standard/application-declared credentials.
+            def network_request_effective_headers(request: NetworkRequest&, effective_method: NetworkMethod, effective_body_bytes: usize, after_redirect: bool, strip_sensitive_headers: bool) -> darray[sview] error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+                try validate_network_request(request)
+                raise NetworkContractError.InvalidMethod if not network_method_valid(effective_method)
+                raise NetworkContractError.EffectiveBodyLimitExceeded if effective_body_bytes != request.body.count and effective_body_bytes != 0
+                raise NetworkContractError.EffectiveBodyLimitExceeded if effective_method != request.method and (effective_method != NetworkMethod.Get or effective_body_bytes != 0)
+                raise NetworkContractError.EffectiveBodyLimitExceeded if effective_method == request.method and effective_body_bytes != request.body.count
+                body_rewritten: bool = effective_method != request.method or effective_body_bytes != request.body.count
+                comparison_work: mutable usize = 0
+                effective_headers: mutable darray[sview] = []
+                for offset in 0..<request.headers.count |request, effective_headers, comparison_work|:
+                    if offset % 2 == 0:
+                        name: sview = request.headers[offset]
+                        omit_header: mutable bool = false
+                        match: mutable bool = false
+                        if after_redirect:
+                            match <- try network_header_comparison_matches(name, "host", comparison_work)
+                            omit_header <- true if match
+                        if body_rewritten:
+                            if not omit_header:
+                                match <- try network_header_comparison_matches(name, "content-length", comparison_work)
+                                omit_header <- true if match
+                            if not omit_header:
+                                match <- try network_header_comparison_matches(name, "transfer-encoding", comparison_work)
+                                omit_header <- true if match
+                            if not omit_header:
+                                match <- try network_header_comparison_matches(name, "trailer", comparison_work)
+                                omit_header <- true if match
+                        if strip_sensitive_headers and not omit_header:
+                            sensitive: mutable bool = false
+                            match <- try network_header_comparison_matches(name, "authorization", comparison_work)
+                            sensitive <- true if match
+                            if not sensitive:
+                                match <- try network_header_comparison_matches(name, "proxy-authorization", comparison_work)
+                                sensitive <- true if match
+                            if not sensitive:
+                                match <- try network_header_comparison_matches(name, "cookie", comparison_work)
+                                sensitive <- true if match
+                            if not sensitive:
+                                match <- try network_header_comparison_matches(name, "cookie2", comparison_work)
+                                sensitive <- true if match
+                            for index in 0..<request.sensitive_headers.count |request, name, sensitive, comparison_work, match|:
+                                if not sensitive:
+                                    match <- try network_header_comparison_matches(name, request.sensitive_headers[index], comparison_work)
+                                    sensitive <- true if match
+                            omit_header <- sensitive
+                        if not omit_header:
+                            effective_headers.push(name)
+                            effective_headers.push(request.headers[offset + 1])
+                return effective_headers
 
 
             def validate_network_response(response: NetworkResponse&) -> bool error[NetworkContractError]:

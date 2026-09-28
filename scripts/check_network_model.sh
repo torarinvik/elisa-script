@@ -69,6 +69,13 @@ for boundary in \
     'network_header_value_valid' \
     'network_header_name_byte_equal' \
     'network_header_names_equal' \
+    'network_header_comparison_matches' \
+    'EffectiveBodyLimitExceeded' \
+    'network_request_effective_headers' \
+    'network_header_comparison_matches(name, "host", comparison_work)' \
+    'Content-Length' \
+    'Transfer-Encoding' \
+    'Trailer' \
     'left_folded' \
     'HeaderComparisonLimitExceeded' \
     'comparison_work' \

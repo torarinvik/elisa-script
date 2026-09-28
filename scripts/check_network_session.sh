@@ -23,8 +23,10 @@ for declaration in \
     'const enum NetworkSessionState of u8:' \
     'const enum NetworkSessionEvent of u8:' \
     'struct NetworkSession:' \
+    'current_url_from_redirect' \
     'error NetworkSessionError:' \
     'def validate_network_session(' \
+    'def network_session_effective_request_headers(' \
     'def advance_network_session('; do
     rg -Fq "$declaration" "$model"
 done
@@ -35,6 +37,9 @@ for boundary in \
     'ReceiveLimitExceeded' \
     'PollLimitExceeded' \
     'RedirectLimitExceeded' \
+    'network_request_effective_headers(session.request, session.current_method, session.current_body_bytes, session.current_url_from_redirect, session.strip_sensitive_headers)' \
+    'session.current_url_from_redirect <- true' \
+    'session.current_url_from_redirect <- false' \
     'RedirectNotAllowed' \
     'InvalidRedirectStatus' \
     'RetryNotReady' \
@@ -62,6 +67,14 @@ for fixture_pattern in \
     'NetworkSessionEvent.ReceiveChunk' \
     'NetworkSessionEvent.ReceiveComplete' \
     'NetworkSessionEvent.Redirect' \
+    'network_session_effective_request_headers' \
+    'partial_effective_body_rejected' \
+    'original_post_headers.count == 8' \
+    'rewritten_post_headers.count == 4' \
+    'rewritten_chunked_headers.count == 0' \
+    'cross_origin_headers.count == 2' \
+    'retry_redirect.current_url_from_redirect' \
+    'retry_headers.count == 4' \
     'NetworkSessionError.RedirectNotAllowed' \
     'NetworkSessionEvent.CancelAck' \
     'NetworkSessionError.AccountingInvalid'; do

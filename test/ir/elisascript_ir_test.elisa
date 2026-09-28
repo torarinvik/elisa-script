@@ -10498,9 +10498,19 @@ def typed_network_session_contract_accounts_send_receive_and_cancel() -> void:
     assert advance_network_session(redirect, NetworkSessionEvent.TlsReady) == NetworkSessionState.Sending
     assert advance_network_session(redirect, NetworkSessionEvent.SendComplete) == NetworkSessionState.Receiving
     assert advance_network_session(redirect, NetworkSessionEvent.ReceiveComplete, 0, NetworkOutcome.Success, 200) == NetworkSessionState.Completed
-    post_redirect_request: NetworkRequest = NetworkRequest{url: "https://example.test/submit", method: NetworkMethod.Post, body: [1, 2], timeout_micros: 1000000, max_response_bytes: 128, follow_redirects: true}
+    post_redirect_request: NetworkRequest = NetworkRequest{url: "https://example.test/submit", method: NetworkMethod.Post, headers: ["Host", "example.test", "Authorization", "Bearer token", "Content-Length", "2", "X-Trace", "keep"], body: [1, 2], timeout_micros: 1000000, max_response_bytes: 128, follow_redirects: true}
+    partial_effective_body_rejected: mutable bool = false
+    catch network_request_effective_headers(post_redirect_request, NetworkMethod.Get, 1, true, true):
+        ok values:
+            assert false
+        error issue:
+            assert issue == NetworkContractError.EffectiveBodyLimitExceeded
+            partial_effective_body_rejected <- true
+    assert partial_effective_body_rejected
     post_redirect: mutable NetworkSession = NetworkSession{request: post_redirect_request}
     assert advance_network_session(post_redirect, NetworkSessionEvent.Begin) == NetworkSessionState.Resolving
+    original_post_headers: darray[sview] = try network_session_effective_request_headers(post_redirect)
+    assert original_post_headers.count == 8 and original_post_headers[0] == "Host" and original_post_headers[2] == "Authorization" and original_post_headers[4] == "Content-Length"
     assert advance_network_session(post_redirect, NetworkSessionEvent.DnsReady) == NetworkSessionState.Connecting
     assert advance_network_session(post_redirect, NetworkSessionEvent.ConnectReady) == NetworkSessionState.Securing
     assert advance_network_session(post_redirect, NetworkSessionEvent.TlsReady) == NetworkSessionState.Sending
@@ -10508,6 +10518,23 @@ def typed_network_session_contract_accounts_send_receive_and_cancel() -> void:
     assert advance_network_session(post_redirect, NetworkSessionEvent.SendComplete) == NetworkSessionState.Receiving
     assert advance_network_session(post_redirect, NetworkSessionEvent.Redirect, 0, NetworkOutcome.Success, 303, "https://example.test/result") == NetworkSessionState.Resolving
     assert post_redirect.current_method == NetworkMethod.Get and post_redirect.current_body_bytes == 0
+    rewritten_post_headers: darray[sview] = try network_session_effective_request_headers(post_redirect)
+    assert rewritten_post_headers.count == 4
+    assert rewritten_post_headers[0] == "Authorization" and rewritten_post_headers[1] == "Bearer token"
+    assert rewritten_post_headers[2] == "X-Trace" and rewritten_post_headers[3] == "keep"
+    chunked_post_request: NetworkRequest = NetworkRequest{url: "https://example.test/chunked", method: NetworkMethod.Post, headers: ["Transfer-Encoding", "chunked", "Trailer", "Digest"], body: [1], timeout_micros: 1000000, max_response_bytes: 128, follow_redirects: true}
+    chunked_post: mutable NetworkSession = NetworkSession{request: chunked_post_request}
+    assert advance_network_session(chunked_post, NetworkSessionEvent.Begin) == NetworkSessionState.Resolving
+    original_chunked_headers: darray[sview] = try network_session_effective_request_headers(chunked_post)
+    assert original_chunked_headers.count == 4
+    assert advance_network_session(chunked_post, NetworkSessionEvent.DnsReady) == NetworkSessionState.Connecting
+    assert advance_network_session(chunked_post, NetworkSessionEvent.ConnectReady) == NetworkSessionState.Securing
+    assert advance_network_session(chunked_post, NetworkSessionEvent.TlsReady) == NetworkSessionState.Sending
+    assert advance_network_session(chunked_post, NetworkSessionEvent.SendChunk, 1) == NetworkSessionState.Sending
+    assert advance_network_session(chunked_post, NetworkSessionEvent.SendComplete) == NetworkSessionState.Receiving
+    assert advance_network_session(chunked_post, NetworkSessionEvent.Redirect, 0, NetworkOutcome.Success, 303, "https://example.test/chunked-result") == NetworkSessionState.Resolving
+    rewritten_chunked_headers: darray[sview] = try network_session_effective_request_headers(chunked_post)
+    assert rewritten_chunked_headers.count == 0
     assert advance_network_session(post_redirect, NetworkSessionEvent.DnsReady) == NetworkSessionState.Connecting
     assert advance_network_session(post_redirect, NetworkSessionEvent.ConnectReady) == NetworkSessionState.Securing
     assert advance_network_session(post_redirect, NetworkSessionEvent.TlsReady) == NetworkSessionState.Sending
@@ -10582,12 +10609,29 @@ def typed_network_session_contract_accounts_send_receive_and_cancel() -> void:
             assert failure == NetworkSessionError.InvalidRedirectTarget
             malformed_redirect_target <- true
     assert malformed_redirect_target and downgrade_session.redirects == 0
-    cross_origin_request: NetworkRequest = NetworkRequest{url: "https://example.test/api", headers: ["Authorization", "Bearer token", "X-Automation-Key", "custom secret"], sensitive_headers: ["X-Automation-Key"], timeout_micros: 1000000, follow_redirects: true}
+    cross_origin_request: NetworkRequest = NetworkRequest{url: "https://example.test/api", headers: ["Host", "example.test", "Authorization", "Bearer token", "X-Automation-Key", "custom secret", "X-Trace", "keep", "Cookie", "session=x", "Proxy-Authorization", "Basic token"], sensitive_headers: ["X-Automation-Key"], timeout_micros: 1000000, follow_redirects: true}
     cross_origin_session: mutable NetworkSession = NetworkSession{request: cross_origin_request, state: NetworkSessionState.Receiving, current_url: cross_origin_request.url, current_method: NetworkMethod.Get, tls_established: true, attempts: 1}
     assert advance_network_session(cross_origin_session, NetworkSessionEvent.Redirect, 0, NetworkOutcome.Success, 302, "https://api.example.test/next") == NetworkSessionState.Resolving
     assert cross_origin_session.strip_sensitive_headers
+    cross_origin_headers: darray[sview] = try network_session_effective_request_headers(cross_origin_session)
+    assert cross_origin_headers.count == 2 and cross_origin_headers[0] == "X-Trace" and cross_origin_headers[1] == "keep"
     assert advance_network_session(cross_origin_session, NetworkSessionEvent.DnsReady) == NetworkSessionState.Connecting
     assert cross_origin_session.strip_sensitive_headers
+    retry_redirect_request: NetworkRequest = NetworkRequest{url: "https://example.test/retry", headers: ["Host", "example.test", "Authorization", "Bearer token"], timeout_micros: 1000000, follow_redirects: true, retry: NetworkRetryPolicy{mode: NetworkRetryMode.IdempotentOnly, max_attempts: 2, initial_backoff_micros: 1000, max_backoff_micros: 1000}}
+    retry_redirect: mutable NetworkSession = NetworkSession{request: retry_redirect_request}
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.Begin) == NetworkSessionState.Resolving
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.DnsReady) == NetworkSessionState.Connecting
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.ConnectReady) == NetworkSessionState.Securing
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.TlsReady) == NetworkSessionState.Sending
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.SendComplete) == NetworkSessionState.Receiving
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.Redirect, 0, NetworkOutcome.Success, 302, "https://api.example.test/retry") == NetworkSessionState.Resolving
+    assert retry_redirect.current_url_from_redirect and retry_redirect.strip_sensitive_headers
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.Fail, 0, NetworkOutcome.TransportFailure) == NetworkSessionState.Failed
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.Retry) == NetworkSessionState.Planned
+    assert retry_redirect.redirects == 1 and not retry_redirect.current_url_from_redirect and not retry_redirect.strip_sensitive_headers
+    assert advance_network_session(retry_redirect, NetworkSessionEvent.Begin) == NetworkSessionState.Resolving
+    retry_headers: darray[sview] = try network_session_effective_request_headers(retry_redirect)
+    assert retry_headers.count == 4 and retry_headers[0] == "Host" and retry_headers[2] == "Authorization"
     cancellation: mutable NetworkSession = NetworkSession{request: request}
     assert advance_network_session(cancellation, NetworkSessionEvent.Begin) == NetworkSessionState.Resolving
     assert advance_network_session(cancellation, NetworkSessionEvent.Cancel) == NetworkSessionState.Cancelling

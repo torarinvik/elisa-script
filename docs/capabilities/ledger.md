@@ -754,6 +754,10 @@ comparison-work ceiling, repeated response field-line preservation in arrival
 order, token-name validation, and control-byte rejection in values; binary
 bodies; timeout/response ceilings; redirect policy; and distinct DNS, TLS,
 transport, timeout, protocol, status, decode, and cancellation outcomes.
+The session's effective-header projection preserves order while dropping
+standard/application-sensitive fields after cross-origin redirects and stale
+`Host` routing and body-framing fields after redirects/method rewrites; host
+adapters still own wire serialization and regenerated authority/framing.
 `NetworkRetryPolicy` makes retries explicit and bounded: `Never` is one-shot,
 `IdempotentOnly` admits only GET/HEAD/PUT/DELETE, and mutation retries require
 `Explicit` mode plus nonzero backoff. `network_retry_backoff_micros` derives
