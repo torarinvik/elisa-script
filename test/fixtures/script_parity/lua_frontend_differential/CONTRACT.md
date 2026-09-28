@@ -108,9 +108,13 @@ allocating/reading each source, verifies the retained descriptor and its name
 after the bounded read, then passes the exact arena-backed byte views to the
 pure verifier. The path-based entry point owns and closes both root descriptors
 on success and ordinary typed-error paths. The caller must keep the arena alive
-through corpus admission and independently establish that the two selected
-roots are the approved checkouts; safe path traversal alone does not establish
-repository identity.
+through corpus admission. Before reading source rows, the adapter also reads
+stable `.git/HEAD` and, for the pinned `main` symbolic ref, the loose
+`.git/refs/heads/main` file; either must identify commit
+`a891c07857536c0f8b3c2ede3bf97385ba12f7c5`. This detects a moved checkout but
+does not authenticate the Git object database or every tracked worktree file.
+The source lock authenticates only the frontend and corpus bytes; tracked driver
+and harness blob checks plus executable identity remain outstanding.
 The adapter and pure source tests
 (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
