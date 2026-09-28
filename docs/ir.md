@@ -2459,9 +2459,11 @@ containment charge each inspected byte, and containment stops at the first
 mismatch. This prevents an unbounded quadratic substring scan from multiplying
 across records and clauses. A record is staged locally and publishes range
 states, text bytes, work, and its decision only after all predicates fit, so
-work-limit errors leave the session unchanged. Validation reconciles decision cardinality/selection counters and
-running/terminal clause-state shape, and requires strictly increasing global
-record numbers in the retained decisions. Shape mismatches, duplicate or
+work-limit errors leave the session unchanged. Validation reconciles decision
+cardinality/selection counters and running/terminal clause-state shape,
+requires strictly increasing global record numbers, and reconciles each
+decision's cumulative work watermark with the session total (with positive
+work progress per processed record). Shape mismatches, duplicate or
 out-of-order records, unterminated ranges, malformed predicates, text/work
 limits, cancellation, and terminal transitions use `error[RecordPatternError]`;
 regex compilation and callback dispatch remain separate adapters.

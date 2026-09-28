@@ -1568,7 +1568,9 @@ inclusive text/record ceilings, and shape checks are validated through
 clause scans and text comparisons; byte-wise equality and containment charge
 their comparisons, `TextContains` short-circuits mismatches, and a record's
 selection/range/work changes publish transactionally only after all predicates
-fit. Terminal failure/cancellation edges remain explicit.
+fit. Each retained decision records the cumulative work watermark; validation
+requires monotonic per-record progress and reconciles the final watermark with
+the session counter. Terminal failure/cancellation edges remain explicit.
 The focused IR fixture, namespace inclusion, documentation, and
 check_record_pattern.sh audit are static evidence; regex adapter integration,
 callback dispatch, and executed stream parity remain open.

@@ -41,6 +41,10 @@ for boundary in \
     'record_pattern_text_equal' \
     'record_pattern_text_contains' \
     'RecordPatternError.MatchWorkLimitExceeded' \
+    'MatchWorkAccountingInvalid' \
+    'derived_match_work' \
+    'decision.match_work <= derived_match_work' \
+    'match_work: record_match_work' \
     'while offset < sview_len(needle) and matched' \
     'RecordPatternPredicateKind.External' \
     'RecordPatternEvent.Record' \
@@ -75,6 +79,9 @@ for fixture_pattern in \
     'boundary_pattern_policy' \
     'bounded_match_session' \
     'match_work_rejected' \
+    'forged_match_work' \
+    'missing_decision_work' \
+    'RecordPatternError.MatchWorkAccountingInvalid' \
     'session.match_work == 4' \
     'equal_session.match_work == 5' \
     'range_work_session.match_work == 4' \
