@@ -118,6 +118,9 @@ for fixture_pattern in \
     'NetworkRequestState.Cancelling' \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
+    'repeated_response_fields' \
+    'session=two' \
+    '</page/3>; rel=next' \
     'NetworkContractError.InvalidTimeout' \
     'NetworkContractError.InvalidStatus' \
     'forged_cancelled_stream' \

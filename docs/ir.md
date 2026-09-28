@@ -2467,10 +2467,15 @@ binary body, positive timeout, response ceiling, redirect policy, and an
 optional bounded list of application-specific sensitive header names; responses
 carry a closed outcome (`Success`, DNS/TLS/transport failure, timeout, protocol,
 status, decode, or cancellation), status, headers, body, and bounded error text.
-`validate_network_request` and `validate_network_response` reject malformed or
-duplicate (ASCII case-insensitive) headers, non-token field names, control bytes in values, embedded NULs, oversized URL/header/body payloads, zero
-timeouts, invalid response ceilings, unsupported URL schemes, HTTP(S) authorities
-without a host, and status/outcome contradictions through
+`validate_network_request` rejects duplicate request field names using ASCII
+case-insensitive comparison; `validate_network_response` accepts repeated
+response field lines and retains their original order so callers can handle
+fields such as `Set-Cookie` without lossy comma-joining, consistent with
+[RFC 9110 §§ 5.2–5.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-5.2).
+Both validators reject malformed header vectors, non-token field names,
+control bytes in values, embedded NULs, oversized URL/header/body payloads,
+zero timeouts, invalid response ceilings, unsupported URL schemes, HTTP(S)
+authorities without a host, and status/outcome contradictions through
 `error[NetworkContractError]`. `NetworkRetryPolicy` makes retry intent explicit:
 `Never` permits one attempt, `IdempotentOnly` permits bounded retries only for
 GET/HEAD/PUT/DELETE, and `Explicit` is required for mutation retries. Every
