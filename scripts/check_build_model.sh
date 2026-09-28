@@ -345,6 +345,18 @@ rg -Fq 'def fixture_sources_are_pinned(' "$minimal_native_parity"
 rg -Fq 'if not fixture_sources_are_pinned(fixture_directory):' "$minimal_native_parity"
 rg -Fq 'source_snapshot_matches: bool = fixture_sources_are_pinned(fixture_directory)' "$minimal_native_parity"
 rg -Fq 'return matches and source_snapshot_matches and cleanup_ok' "$minimal_native_parity"
+for source_hash_pin in \
+    'CMAKE_LISTS: sview = "73537f5d1146bd713c79b93ae7f55ed9cfc54ea48e22bc6e6c34aca018e75ab6"' \
+    'EXPECTATIONS: sview = "9d36cfbe5e655c6bccee26fe001ec7c03365d425d2be2ffc11a7fe4a05d531ba"' \
+    'BUILD_SCRIPT: sview = "4caea479a700aa96b963b868e41b9b3fbf09cdf4261f3ac9f2e15164568e7cc5"' \
+    'ANSWER_HEADER: sview = "a48263dc6d2b2d523ce1063fec37e4a6cff54b90e3e9728984968d9356ee150b"' \
+    'CONFIG_TEMPLATE: sview = "f89111d74ce8c34aa166410fad753c3f5f37ebda2b27b9a33b8783ca06d0cc92"' \
+    'CONFIG_VARIANT_TEMPLATE: sview = "aef4a23b4a968939287373e257d858717ea2b218c8b79d7fb40ecb55ca345b88"' \
+    'ANSWER_SOURCE: sview = "79029c693e2af3a504c34790b8977788b0a2b4de36fa2973a2c34e125bf3b69b"' \
+    'MAIN_SOURCE: sview = "eb78440d210383c2b1e717df8d680fb6af2591e792f066e9b1b0c5d052637648"' \
+    'MAIN_VARIANT_SOURCE: sview = "68c06a743ead7e411f5b2fc7506de9805768ef47b2fe6e32cabcd8f41ea8473c"'; do
+    rg -Fq "$source_hash_pin" "$minimal_native_parity"
+done
 rg -Fq 'EsBoundedBytes::read_bounded_bytes(candidate_cache, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
 rg -Fq 'EsBoundedBytes::read_bounded_bytes(main_object_seed, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
 rg -Fq 'EsBoundedBytes::read_bounded_bytes(candidate_main_object, Limits::MAX_BINARY_SNAPSHOT_BYTES)' "$minimal_native_parity"
