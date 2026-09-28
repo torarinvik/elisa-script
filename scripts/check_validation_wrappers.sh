@@ -208,6 +208,8 @@ rg -Fq 'wrapper process group is never eligible for per-PID signaling' "$snapsho
 rg -Fq 'rows after the snapshot sentinel are rejected' "$snapshot_fixture"
 rg -Fq 'duplicate PIDs are rejected from identity snapshots' "$snapshot_fixture"
 rg -Fq 'validation_process_group_rss_from_snapshot 10 10 8' "$snapshot_fixture"
+rg -Fq 'PATH=/nonexistent validation_process_group_rss_from_snapshot 10 10 8' "$snapshot_fixture"
+rg -Fq 'RSS parser ignores caller PATH' "$snapshot_fixture"
 rg -Fq 'RSS above the decimal-safe ceiling' "$snapshot_fixture"
 rg -Fq 'RSS integer wider than ten decimal digits' "$snapshot_fixture"
 rg -Fq 'PID exceeds portable signed process-ID range' "$snapshot_fixture"

@@ -215,6 +215,11 @@ __ELISASCRIPT_PS_STATUS__ 0'
 rss_result="$(printf '%s\n' "$rss_snapshot" | validation_process_group_rss_from_snapshot 10 10 8)"
 assert_equal 140 "$rss_result" 'union of process group and root descendants without double counting'
 
+# A poisoned/empty caller PATH must not change the RSS parser's result. This
+# pins the absolute system AWK used for process-snapshot security decisions.
+path_isolated_rss="$(printf '%s\n' "$rss_snapshot" | PATH=/nonexistent validation_process_group_rss_from_snapshot 10 10 8)"
+assert_equal 140 "$path_isolated_rss" 'RSS parser ignores caller PATH'
+
 orphaned_group_snapshot='13 1 10 20
 __ELISASCRIPT_PS_STATUS__ 0'
 orphaned_group_rss="$(printf '%s\n' "$orphaned_group_snapshot" | validation_process_group_rss_from_snapshot 10 10 2)"
@@ -251,4 +256,4 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, reparenting, escaped-group rejection, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, caller-PATH isolation, reparenting, escaped-group rejection, malformed/failed/truncated snapshots covered'
