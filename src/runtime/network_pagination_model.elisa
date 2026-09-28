@@ -1,0 +1,216 @@
+# Bounded RFC-style HTTP Link pagination projection.
+#
+# This layer turns one successful GET response into either a terminal result or
+# the next page URL and ordered request headers. It performs no network I/O.
+
+module EsNetworkPagination:
+    using EsNetwork
+
+    public:
+        const module Limits:
+            LINK_VALUES: usize = 1024
+            PARAMETERS: usize = 4096
+
+
+        struct NetworkPaginationResult:
+            has_next: bool = false
+            next_url: darray[u8] = []
+            next_headers: darray[sview] = []
+            credentials_stripping_active: bool = false
+
+
+        error NetworkPaginationError:
+            InvalidRequest
+            InvalidResponseStatus
+            InvalidLinkValue
+            LinkValueLimitExceeded
+            ParameterLimitExceeded
+            DuplicateRelationParameter
+            MultipleNextLinks
+            HttpsDowngrade
+
+
+    private:
+        const enum LinkFieldScanState of u8:
+            Outside
+            Target
+            Quoted
+            QuotedEscape
+
+
+        def pagination_ascii_lower(byte: u8) -> u8:
+            return byte + 32u8 if byte >= 65u8 and byte <= 90u8 else byte
+
+
+        def pagination_ascii_equal_ignore_case(left: sview, right: sview) -> bool:
+            return false if sview_len(left) != sview_len(right)
+            equal: mutable bool = true
+            for index in 0..<sview_len(left) |left, right, equal|:
+                equal <- false if pagination_ascii_lower(sview_at(left, index)) != pagination_ascii_lower(sview_at(right, index))
+            return equal
+
+
+        def pagination_token_byte_valid(byte: u8) -> bool:
+            return true if byte >= 48u8 and byte <= 57u8
+            return true if byte >= 65u8 and byte <= 90u8
+            return true if byte >= 97u8 and byte <= 122u8
+            return true if byte == 33u8 or byte == 35u8 or byte == 36u8 or byte == 37u8 or byte == 38u8 or byte == 39u8 or byte == 42u8 or byte == 43u8 or byte == 45u8 or byte == 46u8 or byte == 94u8 or byte == 95u8 or byte == 96u8 or byte == 124u8 or byte == 126u8
+            return false
+
+
+        def pagination_skip_ows(value: sview, cursor: mutable usize&, end: usize) -> void:
+            while cursor < end and (sview_at(value, cursor) == 32u8 or sview_at(value, cursor) == 9u8):
+                cursor <- cursor + 1
+
+
+        def pagination_relation_value_has_next(value: sview, start: usize, end: usize) -> bool:
+            cursor: mutable usize = start
+            found: mutable bool = false
+            while cursor < end:
+                pagination_skip_ows(value, cursor, end)
+                relation_start: usize = cursor
+                while cursor < end and sview_at(value, cursor) != 32u8 and sview_at(value, cursor) != 9u8:
+                    cursor <- cursor + 1
+                if cursor > relation_start:
+                    relation: sview = string_view_slice(value, relation_start.i64(), cursor.i64())
+                    found <- true if pagination_ascii_equal_ignore_case(relation, "next")
+            return found
+
+
+        def pagination_target_byte_valid(byte: u8) -> bool:
+            return false if byte <= 32u8 or byte == 127u8
+            return false if byte == 34u8 or byte == 60u8 or byte == 62u8 or byte == 92u8 or byte == 94u8 or byte == 96u8 or byte == 123u8 or byte == 124u8 or byte == 125u8
+            return true
+
+
+        def pagination_parse_link_value(value: sview, start: usize, end: usize, base_url: sview, base_uses_tls: bool, result: mutable NetworkPaginationResult&, link_count: mutable usize&, parameter_count: mutable usize&) -> void error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            cursor: mutable usize = start
+            pagination_skip_ows(value, cursor, end)
+            return if cursor == end
+            raise NetworkPaginationError.InvalidLinkValue if sview_at(value, cursor) != 60u8
+            target_start: usize = cursor + 1
+            cursor <- target_start
+            while cursor < end and sview_at(value, cursor) != 62u8:
+                raise NetworkPaginationError.InvalidLinkValue if sview_at(value, cursor) == 60u8 or not pagination_target_byte_valid(sview_at(value, cursor))
+                cursor <- cursor + 1
+            raise NetworkPaginationError.InvalidLinkValue if cursor >= end
+            target_end: usize = cursor
+            target: sview = string_view_slice(value, target_start.i64(), target_end.i64())
+            cursor <- cursor + 1
+            rel_seen: mutable bool = false
+            rel_has_next: mutable bool = false
+            while cursor < end:
+                pagination_skip_ows(value, cursor, end)
+                if cursor < end:
+                    raise NetworkPaginationError.InvalidLinkValue if sview_at(value, cursor) != 59u8
+                    cursor <- cursor + 1
+                    pagination_skip_ows(value, cursor, end)
+                    parameter_start: usize = cursor
+                    while cursor < end and pagination_token_byte_valid(sview_at(value, cursor)):
+                        cursor <- cursor + 1
+                    raise NetworkPaginationError.InvalidLinkValue if cursor == parameter_start
+                    parameter_name: sview = string_view_slice(value, parameter_start.i64(), cursor.i64())
+                    pagination_skip_ows(value, cursor, end)
+                    has_value: mutable bool = false
+                    quoted_value: mutable bool = false
+                    value_had_escape: mutable bool = false
+                    parameter_value_start: mutable usize = cursor
+                    parameter_value_end: mutable usize = cursor
+                    if cursor < end and sview_at(value, cursor) == 61u8:
+                        has_value <- true
+                        cursor <- cursor + 1
+                        pagination_skip_ows(value, cursor, end)
+                        if cursor < end and sview_at(value, cursor) == 34u8:
+                            quoted_value <- true
+                            cursor <- cursor + 1
+                            parameter_value_start <- cursor
+                            closed: mutable bool = false
+                            while cursor < end and not closed:
+                                byte: u8 = sview_at(value, cursor)
+                                if value_had_escape:
+                                    value_had_escape <- false
+                                    cursor <- cursor + 1
+                                elif byte == 92u8:
+                                    value_had_escape <- true
+                                    cursor <- cursor + 1
+                                elif byte == 34u8:
+                                    parameter_value_end <- cursor
+                                    cursor <- cursor + 1
+                                    closed <- true
+                                else:
+                                    cursor <- cursor + 1
+                            raise NetworkPaginationError.InvalidLinkValue if not closed or value_had_escape
+                        else:
+                            parameter_value_start <- cursor
+                            while cursor < end and pagination_token_byte_valid(sview_at(value, cursor)):
+                                cursor <- cursor + 1
+                            raise NetworkPaginationError.InvalidLinkValue if cursor == parameter_value_start
+                            parameter_value_end <- cursor
+                    raise NetworkPaginationError.ParameterLimitExceeded if parameter_count >= Limits::PARAMETERS
+                    parameter_count <- parameter_count + 1
+                    if pagination_ascii_equal_ignore_case(parameter_name, "rel"):
+                        raise NetworkPaginationError.DuplicateRelationParameter if rel_seen
+                        rel_seen <- true
+                        if has_value:
+                            parameter_value: sview = string_view_slice(value, parameter_value_start.i64(), parameter_value_end.i64())
+                            rel_has_next <- pagination_relation_value_has_next(parameter_value, 0, sview_len(parameter_value)) if quoted_value
+                            rel_has_next <- pagination_ascii_equal_ignore_case(parameter_value, "next") if not quoted_value
+            link_count <- link_count + 1
+            raise NetworkPaginationError.LinkValueLimitExceeded if link_count > Limits::LINK_VALUES
+            if rel_has_next:
+                raise NetworkPaginationError.MultipleNextLinks if result.has_next
+                result.next_url <- try network_resolve_redirect_location(base_url, target)
+                next_uses_tls: bool = try network_url_uses_tls(bytes_view(result.next_url))
+                raise NetworkPaginationError.HttpsDowngrade if base_uses_tls and not next_uses_tls
+                result.has_next <- true
+
+
+        def pagination_parse_link_field(value: sview, base_url: sview, base_uses_tls: bool, result: mutable NetworkPaginationResult&, link_count: mutable usize&, parameter_count: mutable usize&) -> void error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            state: mutable LinkFieldScanState = LinkFieldScanState.Outside
+            segment_start: mutable usize = 0
+            for index in 0..<sview_len(value) |value, state, segment_start, base_url, base_uses_tls, result, link_count, parameter_count|:
+                byte: u8 = sview_at(value, index)
+                match state:
+                    LinkFieldScanState.Outside:
+                        if byte == 60u8:
+                            state <- LinkFieldScanState.Target
+                        elif byte == 34u8:
+                            state <- LinkFieldScanState.Quoted
+                        elif byte == 44u8:
+                            try pagination_parse_link_value(value, segment_start, index, base_url, base_uses_tls, result, link_count, parameter_count)
+                            segment_start <- index + 1
+                    LinkFieldScanState.Target:
+                        state <- LinkFieldScanState.Outside if byte == 62u8
+                    LinkFieldScanState.Quoted:
+                        state <- LinkFieldScanState.QuotedEscape if byte == 92u8
+                        state <- LinkFieldScanState.Outside if byte == 34u8
+                    LinkFieldScanState.QuotedEscape:
+                        state <- LinkFieldScanState.Quoted
+            raise NetworkPaginationError.InvalidLinkValue if state != LinkFieldScanState.Outside
+            try pagination_parse_link_value(value, segment_start, sview_len(value), base_url, base_uses_tls, result, link_count, parameter_count)
+
+
+    public:
+        # Extract exactly one rel=next target from an HTTP Link response. The
+        # returned URL bytes are owned; header text views still borrow from the
+        # request, which the caller must keep alive while using next_headers.
+        # Carry credentials_stripping_active into the next call to keep
+        # credential removal sticky across a cross-origin pagination chain.
+        def network_pagination_next_page(request: NetworkRequest&, current_url: sview, response: NetworkResponse&, credentials_stripping_active: bool = false) -> NetworkPaginationResult error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_network_request(request)
+            raise NetworkPaginationError.InvalidRequest if request.method != NetworkMethod.Get or request.body.count != 0
+            base_uses_tls: bool = try network_url_uses_tls(current_url)
+            try validate_network_response(response)
+            raise NetworkPaginationError.InvalidResponseStatus if response.outcome != NetworkOutcome.Success or response.status < 200 or response.status > 299
+            result: mutable NetworkPaginationResult = NetworkPaginationResult{credentials_stripping_active: credentials_stripping_active}
+            link_count: mutable usize = 0
+            parameter_count: mutable usize = 0
+            for index in 0..<response.headers.count |response, result, link_count, parameter_count, current_url, base_uses_tls|:
+                if index % 2 == 0 and pagination_ascii_equal_ignore_case(response.headers[index], "link"):
+                    try pagination_parse_link_field(response.headers[index + 1], current_url, base_uses_tls, result, link_count, parameter_count)
+            if result.has_next:
+                next_url: sview = bytes_view(result.next_url)
+                same_origin: bool = try network_url_same_origin(current_url, next_url)
+                result.credentials_stripping_active <- result.credentials_stripping_active or not same_origin
+                result.next_headers <- try network_request_effective_headers(request, NetworkMethod.Get, 0, true, result.credentials_stripping_active)
+            return result

@@ -2561,6 +2561,16 @@ consumed attempt.
 Active transport phases also retain the neutral success/zero-status pair until
 the explicit receive-completion or failure edge.
 
+`EsNetworkPagination` converts one validated 2xx GET response into a bounded
+`Link`-header `rel=next` projection. Its scanner distinguishes commas inside
+URI references and quoted parameters from list separators, caps link values and
+parameters, resolves relative targets against the effective response URL,
+rejects ambiguous next links and HTTPS downgrade, and builds the next ordered
+header vector with sticky cross-origin credential stripping. The result owns
+the next URL bytes but its header text remains borrowed from the original
+request storage. This is one-page planning, not a socket client or complete
+pagination session: callers still need a total page ceiling and cycle tracking.
+
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
 for process maps. Jobs have unique IDs, pending/running/awaiting-reap/retryable/
 terminal states, bounded attempts, and explicit launch/complete/fail/reap/retry

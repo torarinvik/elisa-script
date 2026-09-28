@@ -772,6 +772,11 @@ live service adapters remain open. `NetworkStream`/`NetworkChunk` now supply a
 bounded, sequence-checked pause/resume buffer contract with explicit drain and
 cancel edges for those adapters; cancellation clears buffered payload state
 before both `Cancelling` and `Cancelled` states can be observed.
+`EsNetworkPagination` adds a bounded one-page `Link rel=next` projection that
+resolves relative targets, retains repeated response fields, rejects
+ambiguous-next and HTTPS-downgrade cases, and projects next-page headers with
+sticky cross-origin credential removal. It does not fetch pages or yet own a
+total page/cycle budget.
 
 ## Evidence record template
 
@@ -1045,6 +1050,13 @@ poll/redirect ceilings, an explicit bounded 3xx redirect reset edge,
 state-consistent status outcomes, clean retry resets, and cancellation. The
 focused IR fixture and check_network_session.sh audit are static evidence;
 socket/TLS/redirect and deadline adapters remain open.
+
+ES-SCRIPT-056 | EsNetworkPagination parses bounded `Link` list values,
+distinguishes quoted commas and URI-reference commas, resolves exactly one
+`rel=next` against the effective response URL, and builds next-page headers
+with cross-origin redaction and HTTPS-downgrade refusal. Per-response link and
+parameter limits are explicit; page fetching, total-page ceilings, cycle
+detection, and runtime parity remain open.
 
 ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/
 replacement ceilings, capture-group limits, shared work accounting, bounded
