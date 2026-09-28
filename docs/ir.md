@@ -2468,7 +2468,8 @@ carry a closed outcome (`Success`, DNS/TLS/transport failure, timeout, protocol,
 status, decode, or cancellation), status, headers, body, and bounded error text.
 `validate_network_request` and `validate_network_response` reject malformed or
 duplicate (ASCII case-insensitive) headers, non-token field names, control bytes in values, embedded NULs, oversized URL/header/body payloads, zero
-timeouts, invalid response ceilings, and status/outcome contradictions through
+timeouts, invalid response ceilings, unsupported URL schemes, HTTP(S) authorities
+without a host, and status/outcome contradictions through
 `error[NetworkContractError]`. `NetworkRetryPolicy` makes retry intent explicit:
 `Never` permits one attempt, `IdempotentOnly` permits bounded retries only for
 GET/HEAD/PUT/DELETE, and `Explicit` is required for mutation retries. Every
@@ -2478,8 +2479,16 @@ host responsibilities. `network_retry_backoff_micros` derives the delay for a
 one-based attempt with zero delay for the initial dispatch, checked doubling,
 and saturation at the configured ceiling, so hosts do not reimplement retry
 arithmetic with overflow-prone defaults.
-`NetworkRequestJob` supplies the corresponding lifecycle state machine:
-`Planned → Resolving → Connecting → Securing → Sending → Receiving → Completed`,
+`NetworkRequestJob` supplies the corresponding TLS-capable lifecycle state
+machine. `EsNetworkSession` binds that lifecycle to the request URL:
+`http://` transitions from `Connecting` directly to `Sending`, while
+`https://` requires `Connecting → Securing → Sending` and an explicit TLS-ready
+event before request bytes may be sent. URL schemes are ASCII case-insensitive;
+only absolute HTTP and HTTPS URLs with a non-empty host authority are accepted.
+The session records whether TLS completed and rejects plaintext sessions that
+enter `Securing` or HTTPS sessions that reach send/receive/completion without a
+handshake. The lifecycle is therefore:
+`Planned → Resolving → Connecting → [Securing →] Sending → Receiving → Completed`,
 with explicit `Failed`, `Cancelling`, `Cancelled`, and bounded `Retry` edges.
 Attempt accounting is part of that state machine: active/terminal attempt states
 require a consumed attempt, planned retries must retain budget, and exhausted or
