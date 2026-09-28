@@ -889,6 +889,7 @@ input, and output fingerprints plus ordered target dependencies. POSIX file
 fingerprints hash a versioned tag, permission/special mode bits, and file bytes,
 so chmod-only changes—including a removed executable bit—cannot authorize a
 stale cache hit. The cache wire version rejects older content-only fingerprints.
+Each file's four packed fingerprint words are extracted from one SHA-256 pass.
 `Phony` targets
 cover aggregate, test, and alias tasks that intentionally have no output file;
 validation rejects any phony target that declares an output, while accepting
