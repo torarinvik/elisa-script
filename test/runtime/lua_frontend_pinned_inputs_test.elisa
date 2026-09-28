@@ -1,0 +1,91 @@
+include "../../src/ir/ir.elisa"
+include "../../src/testing/lua_frontend_pinned_inputs.elisa"
+
+using EsIr
+using EsLuaFrontendPinnedInputs
+
+
+def lua_frontend_pin_test_append_row(output: mutable darray[u8]&, digest: sview, path: sview) -> void can[Memory.Allocate, Abort.Panic]:
+    for byte in digest |output|:
+        output.push(byte)
+    output.push(32u8)
+    output.push(32u8)
+    for byte in path |output|:
+        output.push(byte)
+    output.push(10u8)
+
+
+def lua_frontend_pin_test_manifest(digest: sview, source_path: sview, case_path: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    output: mutable darray[u8] = []
+    lua_frontend_pin_test_append_row(output, digest, source_path)
+    lua_frontend_pin_test_append_row(output, digest, case_path)
+    return output
+
+
+@test
+def lua_frontend_pin_manifest_parses_and_verifies_exact_source_bytes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        digest: sview = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        source_path: sview = "Code/elisacore_lua/src/lua_frontend.elisa"
+        case_path: sview = "Code/elisacore_lua/test/differential_corpus/control_flow/accept_one.lua"
+        manifest_bytes: darray[u8] = lua_frontend_pin_test_manifest(digest, source_path, case_path)
+        manifest: LuaFrontendPinManifest = try parse_lua_frontend_pin_manifest(bytes_view(manifest_bytes))
+        assert manifest.entries.count == 2
+        assert manifest.entries[0].relative_path == source_path
+        assert manifest.entries[1].digest_hex == digest
+
+        inputs: darray[LuaFrontendPinSourceInput] = [
+            LuaFrontendPinSourceInput{relative_path: source_path, source: "abc", regular_file: true},
+            LuaFrontendPinSourceInput{relative_path: case_path, source: "abc", regular_file: true}
+        ]
+        verified: LuaFrontendPinVerification = try verify_lua_frontend_pin_entries(manifest, inputs, 2)
+        assert verified.entries_verified == 2
+        assert verified.total_source_bytes == 6
+        assert verified.inputs.count == 2 and verified.inputs[0].source == "abc"
+
+        digest_mismatch: mutable bool = false
+        changed_inputs: darray[LuaFrontendPinSourceInput] = [
+            LuaFrontendPinSourceInput{relative_path: source_path, source: "abc", regular_file: true},
+            LuaFrontendPinSourceInput{relative_path: case_path, source: "abd", regular_file: true}
+        ]
+        catch verify_lua_frontend_pin_entries(manifest, changed_inputs, 2):
+            ok result:
+                _ = result
+            error failure:
+                digest_mismatch <- failure == LuaFrontendPinError.SourceDigestMismatch
+        assert digest_mismatch
+
+
+@test
+def lua_frontend_pin_manifest_rejects_malformed_or_untrusted_rows() -> void:
+    can Memory.Allocate, Abort.Panic:
+        bad_digest: mutable bool = false
+        malformed_bytes: darray[u8] = lua_frontend_pin_test_manifest("BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD", "Code/elisacore_lua/src/lua_frontend.elisa", "Code/elisacore_lua/test/differential_corpus/control_flow/accept_one.lua")
+        catch parse_lua_frontend_pin_manifest(bytes_view(malformed_bytes)):
+            ok manifest:
+                _ = manifest
+            error failure:
+                bad_digest <- failure == LuaFrontendPinError.InvalidDigest
+
+        escaped_path: mutable bool = false
+        escaped_bytes: darray[u8] = lua_frontend_pin_test_manifest("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "Code/elisacore_lua/src/lua_frontend.elisa", "Code/elisacore_lua/test/differential_corpus/../accept_one.lua")
+        catch parse_lua_frontend_pin_manifest(bytes_view(escaped_bytes)):
+            ok manifest:
+                _ = manifest
+            error failure:
+                escaped_path <- failure == LuaFrontendPinError.InvalidRelativePath
+
+        symlink: mutable bool = false
+        valid_bytes: darray[u8] = lua_frontend_pin_test_manifest("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "Code/elisacore_lua/src/lua_frontend.elisa", "Code/elisacore_lua/test/differential_corpus/control_flow/accept_one.lua")
+        valid_manifest: LuaFrontendPinManifest = try parse_lua_frontend_pin_manifest(bytes_view(valid_bytes))
+        untrusted_inputs: darray[LuaFrontendPinSourceInput] = [
+            LuaFrontendPinSourceInput{relative_path: "Code/elisacore_lua/src/lua_frontend.elisa", source: "abc", regular_file: true},
+            LuaFrontendPinSourceInput{relative_path: "Code/elisacore_lua/test/differential_corpus/control_flow/accept_one.lua", source: "abc", regular_file: true, symbolic_link: true}
+        ]
+        catch verify_lua_frontend_pin_entries(valid_manifest, untrusted_inputs, 2):
+            ok result:
+                _ = result
+            error failure:
+                symlink <- failure == LuaFrontendPinError.SourceTypeInvalid
+
+        assert bad_digest and escaped_path and symlink

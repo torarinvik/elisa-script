@@ -1,0 +1,227 @@
+# Content-integrity gate for the ignored Elisa-core Lua source and corpus.
+#
+# The lock file is itself pinned in this model, then every bounded source byte
+# view is hashed with SHA-256 and matched to one unique manifest row. The host
+# adapter must obtain those views through no-follow, stable-descriptor reads;
+# injected file-kind booleans are evidence to validate, not filesystem access.
+
+module EsLuaFrontendPinnedInputs:
+    using EsIr
+
+    public:
+        const module Limits:
+            MANIFEST_BYTES: usize = 65536
+            MANIFEST_ENTRIES: usize = 128
+            REFERENCE_ENTRY_COUNT: usize = 28
+            PATH_BYTES: usize = 4096
+            SOURCE_BYTES: usize = 16777216
+            TOTAL_SOURCE_BYTES: usize = 67108864
+
+
+        struct LuaFrontendPinEntry:
+            digest_hex: sview
+            relative_path: sview
+
+
+        struct LuaFrontendPinManifest:
+            entries: darray[LuaFrontendPinEntry] = []
+
+
+        struct LuaFrontendPinSourceInput:
+            relative_path: sview
+            source: sview
+            regular_file: bool = false
+            symbolic_link: bool = false
+
+
+        struct LuaFrontendPinVerification:
+            entries_verified: usize = 0
+            total_source_bytes: usize = 0
+            # Keep the exact hashed byte views for later corpus admission; do
+            # not reopen and silently verify one snapshot then consume another.
+            inputs: darray[LuaFrontendPinSourceInput] = []
+
+
+        error LuaFrontendPinError:
+            ManifestTooLarge
+            InvalidManifest
+            ManifestEntryLimitExceeded
+            ManifestEntryCountMismatch
+            InvalidDigest
+            InvalidRelativePath
+            ManifestPathOrderInvalid
+            ManifestIdentityInvalid
+            ManifestDigestMismatch
+            SourceCountMismatch
+            SourcePathMissing
+            DuplicateSourcePath
+            SourcePathUnexpected
+            SourceTypeInvalid
+            SourceTooLarge
+            TotalSourceBytesExceeded
+            SourceDigestUnavailable
+            SourceDigestMismatch
+
+
+    private:
+        const module Names:
+            FRONTEND_SOURCE: sview = "Code/elisacore_lua/src/lua_frontend.elisa"
+            CORPUS_PREFIX: sview = "Code/elisacore_lua/test/differential_corpus/"
+            LUA_SUFFIX: sview = ".lua"
+            EXPECTED_MANIFEST_SHA256: sview = "3a2e50f09bfefbfff1dbe44a7caeaedaf7de926926c62f8ad2be0cc3042e4c47"
+
+
+        def lua_frontend_pin_hex_nibble(byte: u8) -> u8:
+            return byte - 48u8 if byte >= 48u8 and byte <= 57u8
+            return byte - 87u8 if byte >= 97u8 and byte <= 102u8
+            return 255u8
+
+
+        def lua_frontend_pin_hex_valid(value: sview) -> bool:
+            return false if sview_len(value) != 64
+            for byte in value:
+                return false if lua_frontend_pin_hex_nibble(byte) > 15u8
+            return true
+
+
+        def lua_frontend_pin_path_valid(value: sview) -> bool:
+            return false if sview_len(value) == 0 or sview_len(value) > Limits::PATH_BYTES
+            return false if sview_at(value, 0) == 47u8 or sview_contains_byte(value, 0)
+            segment_start: mutable usize = 0
+            index: mutable usize = 0
+            while index <= sview_len(value) |value, segment_start, index|:
+                at_end: bool = index == sview_len(value)
+                separator: bool = not at_end and sview_at(value, index) == 47u8
+                if at_end or separator:
+                    return false if index == segment_start
+                    segment: sview = string_view_slice(value, segment_start.i64(), index.i64())
+                    return false if segment == "." or segment == ".."
+                    segment_start <- index + 1
+                else:
+                    byte: u8 = sview_at(value, index)
+                    return false if not (byte >= 48u8 and byte <= 57u8 or byte >= 65u8 and byte <= 90u8 or byte >= 97u8 and byte <= 122u8 or byte == 45u8 or byte == 46u8 or byte == 95u8)
+                index <- index + 1
+            return value == Names::FRONTEND_SOURCE or lua_frontend_pin_starts_with(value, Names::CORPUS_PREFIX) and sview_len(value) > sview_len(Names::CORPUS_PREFIX) + sview_len(Names::LUA_SUFFIX) and lua_frontend_pin_has_suffix(value, Names::LUA_SUFFIX)
+
+
+        def lua_frontend_pin_starts_with(value: sview, prefix: sview) -> bool:
+            return false if sview_len(prefix) > sview_len(value)
+            return string_view_slice(value, 0, sview_len(prefix).i64()) == prefix
+
+
+        def lua_frontend_pin_has_suffix(value: sview, suffix: sview) -> bool:
+            return false if sview_len(suffix) > sview_len(value)
+            return string_view_slice(value, (sview_len(value) - sview_len(suffix)).i64(), sview_len(value).i64()) == suffix
+
+
+        def lua_frontend_pin_path_less(left: sview, right: sview) -> bool:
+            shared: usize = sview_len(left) if sview_len(left) < sview_len(right) else sview_len(right)
+            index: mutable usize = 0
+            while index < shared:
+                left_byte: u8 = sview_at(left, index)
+                right_byte: u8 = sview_at(right, index)
+                return left_byte < right_byte if left_byte != right_byte
+                index <- index + 1
+            return sview_len(left) < sview_len(right)
+
+
+        def lua_frontend_pin_source_path_allowed(path: sview) -> bool:
+            return path == Names::FRONTEND_SOURCE or lua_frontend_pin_starts_with(path, Names::CORPUS_PREFIX) and lua_frontend_pin_has_suffix(path, Names::LUA_SUFFIX)
+
+
+        def lua_frontend_pin_manifest_digest_matches(text: sview, expected: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable darray[u8] = []
+            bytes.reserve(sview_len(text))
+            for byte in text |bytes|:
+                bytes.push(byte)
+            digest: darray[u8] = EsIr::canonical_bytes_sha256(bytes)
+            return false if digest.count != 32 or not lua_frontend_pin_hex_valid(expected)
+            for index in 0..<digest.count |digest, expected|:
+                expected_high: u8 = lua_frontend_pin_hex_nibble(sview_at(expected, index * 2))
+                expected_low: u8 = lua_frontend_pin_hex_nibble(sview_at(expected, index * 2 + 1))
+                return false if digest[index] != expected_high * 16u8 + expected_low
+            return true
+
+
+        def lua_frontend_pin_digest_matches(source: sview, expected: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable darray[u8] = []
+            bytes.reserve(sview_len(source))
+            for byte in source |bytes|:
+                bytes.push(byte)
+            digest: darray[u8] = EsIr::canonical_bytes_sha256(bytes)
+            return false if digest.count != 32 or not lua_frontend_pin_hex_valid(expected)
+            for index in 0..<digest.count |digest, expected|:
+                expected_high: u8 = lua_frontend_pin_hex_nibble(sview_at(expected, index * 2))
+                expected_low: u8 = lua_frontend_pin_hex_nibble(sview_at(expected, index * 2 + 1))
+                return false if digest[index] != expected_high * 16u8 + expected_low
+            return true
+
+
+    public:
+        def parse_lua_frontend_pin_manifest(text: sview) -> LuaFrontendPinManifest error[LuaFrontendPinError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendPinError.ManifestTooLarge if sview_len(text) > Limits::MANIFEST_BYTES
+            raise LuaFrontendPinError.InvalidManifest if sview_len(text) == 0 or sview_at(text, sview_len(text) - 1) != 10u8
+            manifest: mutable LuaFrontendPinManifest = LuaFrontendPinManifest{}
+            line_start: mutable usize = 0
+            while line_start < sview_len(text) |text, manifest, line_start|:
+                line_end: mutable usize = line_start
+                while line_end < sview_len(text) and sview_at(text, line_end) != 10u8:
+                    line_end <- line_end + 1
+                raise LuaFrontendPinError.InvalidManifest if line_end >= sview_len(text)
+                line_bytes: usize = line_end - line_start
+                raise LuaFrontendPinError.InvalidManifest if line_bytes < 67 or line_bytes > Limits::PATH_BYTES + 66
+                raise LuaFrontendPinError.InvalidManifest if sview_at(text, line_start + 64) != 32u8 or sview_at(text, line_start + 65) != 32u8
+                digest_hex: sview = string_view_slice(text, line_start.i64(), (line_start + 64).i64())
+                relative_path: sview = string_view_slice(text, (line_start + 66).i64(), line_end.i64())
+                raise LuaFrontendPinError.InvalidDigest if not lua_frontend_pin_hex_valid(digest_hex)
+                raise LuaFrontendPinError.InvalidRelativePath if not lua_frontend_pin_path_valid(relative_path)
+                raise LuaFrontendPinError.ManifestEntryLimitExceeded if manifest.entries.count >= Limits::MANIFEST_ENTRIES
+                if manifest.entries.count == 0:
+                    raise LuaFrontendPinError.InvalidManifest if relative_path != Names::FRONTEND_SOURCE
+                else:
+                    raise LuaFrontendPinError.InvalidRelativePath if not lua_frontend_pin_starts_with(relative_path, Names::CORPUS_PREFIX)
+                    raise LuaFrontendPinError.ManifestPathOrderInvalid if not lua_frontend_pin_path_less(manifest.entries[manifest.entries.count - 1].relative_path, relative_path)
+                manifest.entries.push(LuaFrontendPinEntry{digest_hex: digest_hex, relative_path: relative_path})
+                line_start <- line_end + 1
+            raise LuaFrontendPinError.InvalidManifest if manifest.entries.count == 0
+            return manifest
+
+
+        def verify_lua_frontend_pin_entries(manifest: LuaFrontendPinManifest, inputs: darray[LuaFrontendPinSourceInput], expected_count: usize) -> LuaFrontendPinVerification error[LuaFrontendPinError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendPinError.ManifestEntryCountMismatch if expected_count == 0 or expected_count > Limits::MANIFEST_ENTRIES or manifest.entries.count != expected_count
+            raise LuaFrontendPinError.SourceCountMismatch if inputs.count != expected_count
+            for index in 0..<manifest.entries.count |manifest|:
+                entry: LuaFrontendPinEntry = manifest.entries[index]
+                raise LuaFrontendPinError.InvalidDigest if not lua_frontend_pin_hex_valid(entry.digest_hex)
+                raise LuaFrontendPinError.InvalidRelativePath if not lua_frontend_pin_path_valid(entry.relative_path)
+                if index == 0:
+                    raise LuaFrontendPinError.InvalidManifest if entry.relative_path != Names::FRONTEND_SOURCE
+                else:
+                    raise LuaFrontendPinError.InvalidRelativePath if not lua_frontend_pin_starts_with(entry.relative_path, Names::CORPUS_PREFIX)
+                    raise LuaFrontendPinError.ManifestPathOrderInvalid if not lua_frontend_pin_path_less(manifest.entries[index - 1].relative_path, entry.relative_path)
+            total_source_bytes: mutable usize = 0
+            for entry in manifest.entries:
+                found: mutable bool = false
+                for input in inputs |found, total_source_bytes|:
+                    if input.relative_path == entry.relative_path:
+                        raise LuaFrontendPinError.DuplicateSourcePath if found
+                        found <- true
+                        raise LuaFrontendPinError.SourceTypeInvalid if not input.regular_file or input.symbolic_link
+                        raise LuaFrontendPinError.SourceTooLarge if sview_len(input.source) > Limits::SOURCE_BYTES
+                        raise LuaFrontendPinError.TotalSourceBytesExceeded if sview_len(input.source) > Limits::TOTAL_SOURCE_BYTES - total_source_bytes
+                        total_source_bytes <- total_source_bytes + sview_len(input.source)
+                        raise LuaFrontendPinError.SourceDigestUnavailable if not lua_frontend_pin_hex_valid(entry.digest_hex)
+                        raise LuaFrontendPinError.SourceDigestMismatch if not lua_frontend_pin_digest_matches(input.source, entry.digest_hex)
+                raise LuaFrontendPinError.SourcePathMissing if not found
+            for input in inputs:
+                raise LuaFrontendPinError.InvalidRelativePath if not lua_frontend_pin_path_valid(input.relative_path)
+                raise LuaFrontendPinError.SourcePathUnexpected if not lua_frontend_pin_source_path_allowed(input.relative_path)
+            return LuaFrontendPinVerification{entries_verified: manifest.entries.count, total_source_bytes: total_source_bytes, inputs: inputs}
+
+
+        def verify_lua_frontend_reference_inputs(manifest_text: sview, manifest_regular_file: bool, manifest_symbolic_link: bool, inputs: darray[LuaFrontendPinSourceInput]) -> LuaFrontendPinVerification error[LuaFrontendPinError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendPinError.ManifestIdentityInvalid if not manifest_regular_file or manifest_symbolic_link
+            raise LuaFrontendPinError.ManifestTooLarge if sview_len(manifest_text) > Limits::MANIFEST_BYTES
+            raise LuaFrontendPinError.ManifestDigestMismatch if not lua_frontend_pin_manifest_digest_matches(manifest_text, Names::EXPECTED_MANIFEST_SHA256)
+            manifest: LuaFrontendPinManifest = try parse_lua_frontend_pin_manifest(manifest_text)
+            return try verify_lua_frontend_pin_entries(manifest, inputs, Limits::REFERENCE_ENTRY_COUNT)
