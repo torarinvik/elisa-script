@@ -131,12 +131,15 @@ source and bytecode but does not select or execute a backend.
 `EsDriver::run` now consumes that typed invocation directly. Help/version exit
 before source allocation. `--check` loads and type-checks the source, lowers
 and verifies its IR/bytecode, and returns success without requiring `main`,
-staging script arguments, or executing code. Test/fmt/doc still return an
-explicit unsupported-mode diagnostic rather than silently taking the run
-path; source arguments and the `--` boundary are passed to the typed runner
-only for an actual run. `--test` rejects trailing script arguments because the
-current in-process test adapter has no argument or selection semantics; this
-prevents a future driver route from silently discarding them.
+staging script arguments, or executing code. `--test` discovers and executes
+all top-level `@test` functions in source order, builds the bounded Human
+report, and streams it through the POSIX output transport; it returns nonzero
+for a failed suite and honors `--color` using `isatty(1)` for `auto`. Test
+functions' own stdout/stderr is still written directly and is not captured into
+individual report records. Test/fmt/doc selection and per-test filtering remain
+unsupported; `--test` continues to reject trailing arguments rather than
+silently discarding them. Source arguments and the `--` boundary are passed to
+the typed runner only for an actual program run.
 
 EsCliWorkflow separates planning from host execution. Each accepted mode maps
 to a fixed step sequence: run loads, lowers, verifies, executes the entrypoint,
@@ -2657,8 +2660,9 @@ only between cases, with `Cancel → CancelAck` leaving every unstarted case
 `Cancelled`. File, NUL-terminated source-buffer, and length-delimited
 source-byte adapters all call the same machine; each has dynamic-handler and
 no-handler entry points, so source-buffer differential runs cannot silently
-use a different policy or failure path. Driver `--test` routing and
-compiler/runtime qualification remain open. The private run validator checks
+use a different policy or failure path. The driver now routes `--test` through
+this runner, a sealed Human report, and the bounded POSIX writer; test-output
+capture and compiler/runtime qualification remain open. The private run validator checks
 that successful summaries match the passed prefix, scalar counters stay within
 shared ceilings, and rejects a runtime-error latch on a non-failed state. A
 runner-produced runtime failure still sets the latch on `Failed`, while a

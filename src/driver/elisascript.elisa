@@ -10,6 +10,11 @@ include "../ir/execution.elisa"
 
 using EsIr
 using EsCli
+using EsScriptTest
+using EsOutput
+using EsOutputTransport
+using EsOutputTransportPosix
+using EsRuntime
 
 
 module EsDriver:
@@ -296,6 +301,67 @@ module EsDriver:
             return "Raised" if failure == InterpretError.Raised
             return "UnknownRuntimeError"
 
+
+        # The in-process test runner returns a terminal typed session and a
+        # sealed report. Keep command routing here, with report formatting and
+        # host writes delegated to the bounded output modules.
+        def run_test_mode(path_items: u8&, source: sview, requested_color: EsCli::CliColorMode) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Unsafe.PointerCast, Blocking.IO]:
+            result: mutable EsIr::ElisascriptTestRun = EsIr::ElisascriptTestRun{}
+            setup_detail: mutable sview = ""
+            catch EsIr::execute_elisascript_file_tests(path_items, "elisascript-cli-test", result):
+                ok:
+                    setup_detail <- ""
+                error failure:
+                    setup_detail <- "InvalidExtension" if failure == ElisascriptSourceError.InvalidExtension
+                    setup_detail <- "EmbeddedNul" if failure == ElisascriptSourceError.EmbeddedNul
+                    setup_detail <- "InvalidUtf8" if failure == ElisascriptSourceError.InvalidUtf8
+                    setup_detail <- "SourceTooLarge" if failure == ElisascriptSourceError.SourceTooLarge
+                    setup_detail <- "FileIo" if failure == ElisascriptSourceError.FileIo
+                    setup_detail <- "ParseFailed" if failure == ElisascriptSourceError.ParseFailed
+                    setup_detail <- "SemanticFailed" if failure == ElisascriptSourceError.SemanticFailed
+                    setup_detail <- "LowerFailed" if failure == ElisascriptSourceError.LowerFailed
+                    setup_detail <- "VerificationFailed" if failure == ElisascriptSourceError.VerificationFailed
+                    setup_detail <- "NoTests" if failure == EsScriptTest::ScriptTestError.NoTests
+                    setup_detail <- "TestLimitExceeded" if failure == EsScriptTest::ScriptTestError.TestLimitExceeded
+                    setup_detail <- "FunctionNotFound" if failure == EsScriptTest::ScriptTestError.FunctionNotFound
+                    setup_detail <- "FunctionSignatureInvalid" if failure == EsScriptTest::ScriptTestError.FunctionSignatureInvalid
+                    setup_detail <- "TestSetupFailed" if setup_detail == ""
+            if setup_detail != "":
+                return report_failure(source, "test", setup_detail)
+
+            options: mutable EsOutput::OutputOptions = EsOutput::OutputOptions{}
+            color_enabled: mutable bool = false
+            if requested_color == EsCli::CliColorMode.Always:
+                options.color <- EsOutput::OutputColorMode.Always
+                color_enabled <- true
+            elif requested_color == EsCli::CliColorMode.Never:
+                options.color <- EsOutput::OutputColorMode.Never
+            else:
+                color_enabled <- EsRuntime::elisascript_posix_isatty(1)
+            report: mutable EsOutput::OutputDocument = EsOutput::OutputDocument{}
+            report_ready: mutable bool = false
+            catch EsIr::build_elisascript_test_report(result, options, report):
+                ok:
+                    report_ready <- true
+                error failure:
+                    _ = failure
+            if not report_ready:
+                return report_failure(source, "test-report", "unable to build test report")
+
+            policy: EsOutputTransport::OutputTransportPolicy = EsOutputTransport::OutputTransportPolicy{color_enabled: color_enabled}
+            output_written: mutable bool = false
+            catch EsOutputTransportPosix::write_output_document_fd(report, 1, policy):
+                written_bytes:
+                    _ = written_bytes
+                    output_written <- true
+                error failure:
+                    _ = failure
+            if not output_written:
+                return report_failure(source, "test-output", "unable to write complete test report")
+            return 1 if result.session.state == EsScriptTest::ScriptTestState.Failed
+            return 130 if result.session.state == EsScriptTest::ScriptTestState.Cancelled
+            return 0
+
     public:
         def run(argc: i64, argv: mutable void&) -> i64 can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Format, Console.Write, Blocking.IO, Memory.Release]:
             if argc < 0 or argc > EsIr::LauncherLimits::ARGC:
@@ -322,7 +388,7 @@ module EsDriver:
             if request.mode == EsCli::CliMode.Version:
                 write_stderr("elisascript 0.1\n")
                 return 0
-            if request.mode != EsCli::CliMode.Run and request.mode != EsCli::CliMode.Check:
+            if request.mode != EsCli::CliMode.Run and request.mode != EsCli::CliMode.Check and request.mode != EsCli::CliMode.Test:
                 return report_failure("", "driver", "requested launcher mode is not implemented")
 
             source_length: usize = sview_len(request.source)
@@ -349,6 +415,8 @@ module EsDriver:
                 if diagnostic.failed:
                     return report_program_failure(request.source, diagnostic)
                 return 0
+            if request.mode == EsCli::CliMode.Test:
+                return run_test_mode(path_items, request.source, request.color)
             if request.strict_engine:
                 EsIr::execute_elisascript_program_file_direct_only_diagnostic(path_items, request.arguments, diagnostic)
             else:

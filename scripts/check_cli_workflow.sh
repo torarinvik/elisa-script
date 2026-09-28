@@ -9,10 +9,13 @@ model="$repo_root/src/runtime/cli_workflow_model.elisa"
 cli_model="$repo_root/src/runtime/cli_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
+driver="$repo_root/src/driver/elisascript.elisa"
+stdio="$repo_root/src/runtime/stdio_posix.elisa"
+test_smoke="$repo_root/test/driver/elisascript_bounded_test_smoke.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cli_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cli_model" "$ir" "$fixture" "$driver" "$stdio" "$test_smoke" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'cli workflow audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -51,6 +54,13 @@ for boundary in \
 done
 
 rg -Fq 'include "../runtime/cli_workflow_model.elisa"' "$ir"
+rg -Fq 'request.mode == EsCli::CliMode.Test' "$driver"
+rg -Fq 'execute_elisascript_file_tests' "$driver"
+rg -Fq 'build_elisascript_test_report' "$driver"
+rg -Fq 'write_output_document_fd' "$driver"
+rg -Fq 'elisascript_posix_isatty' "$driver"
+rg -Fq 'def elisascript_posix_isatty(' "$stdio"
+rg -Fq '@test' "$test_smoke"
 rg -Fq 'using EsCliWorkflow' "$fixture"
 for fixture_pattern in \
     'typed_cli_workflow_contract_maps_modes_to_ordered_steps' \
