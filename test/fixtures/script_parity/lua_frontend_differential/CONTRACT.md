@@ -81,6 +81,18 @@ digests, symlink policy, temporary-root ownership, and approved executable
 identity; the pure plan does not prove those host facts. Its source test is
 `test/runtime/lua_frontend_build_plan_test.elisa` and remains uncompiled.
 
+`EsLuaFrontendProcessReceipt` only classifies a normal exit after the host
+confirms `exec` succeeded, the RSS guard was enforced, and the process group is
+quiescent. A nonzero parser exit is then a rejection; build-role nonzero exits
+and all abnormal or uncertain outcomes are infrastructure failures. This
+distinction is necessary because the current POSIX interpreter path maps
+`execvp` failure to ordinary exit 127 (and setup failure to 126), so that path
+cannot yet provide trustworthy `ExecConfirmed` receipts. No RSS guard currently
+feeds this model either. A process adapter must add explicit exec-status
+reporting and real process-tree RSS enforcement before W05 may launch any
+child. Test source is `test/runtime/lua_frontend_process_receipt_test.elisa`;
+it remains uncompiled.
+
 The four process inputs are typed values, not a shell command:
 
 ```text
