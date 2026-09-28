@@ -2677,11 +2677,12 @@ runner-produced runtime failure still sets the latch on `Failed`, while a
 host/static failed session may legitimately carry no `InterpretError` enum.
 `build_elisascript_test_report` projects a terminal run into a temporary
 shared `OutputDocument` and publishes it only after `Begin → Append* → Seal`
-validation succeeds. Passing cases are
-`Pass`, the first runtime failure is `Fail`, and trailing planned or cancelled
-cases are explicit `Skip` records using the canonical messages `runner stopped
-after test failure` and `cancelled before launch`; a report cannot be built from a planned,
-running, or cancellation-in-flight session.
+validation succeeds. Passing cases are `Pass`, ordinary runtime failures are
+`Fail`, uncaught `InterpretError.Panic` failures are `Crashed`, and
+`InterpretError.StepLimitExceeded` is `TimedOut`. Trailing planned or
+cancelled cases are explicit `Skip` records using the canonical messages
+`runner stopped after test failure` and `cancelled before launch`; a report
+cannot be built from a planned, running, or cancellation-in-flight session.
 
 Before any regex opcode executes, both backends enforce a shared input-size
 boundary: haystack text is at most 64 MiB, the compiled-pattern payload is at

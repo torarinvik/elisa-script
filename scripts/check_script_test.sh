@@ -101,8 +101,11 @@ rg -Fq 'session.name_order.push(new_case_index)' "$model"
 for multi_case_boundary in \
     'elisascript_test_remaining_policy' \
     'elisascript_test_runtime_message' \
+    'elisascript_test_runtime_status' \
     'return "Assertion" if failure == InterpretError.Assertion' \
     'return "InvocationContextUnavailable" if failure == InterpretError.InvocationContextUnavailable' \
+    'return OutputStatus.Crashed if failure == InterpretError.Panic' \
+    'return OutputStatus.TimedOut if failure == InterpretError.StepLimitExceeded' \
     'elisascript_test_usage_add' \
     'cursor.state <- ElisascriptTestRunState.CaseBegin' \
     'ScriptTestEvent.CaseFail' \
@@ -170,7 +173,12 @@ for runner_fixture_pattern in \
     'runner_cancels_unstarted_file_tests_at_state_machine_boundary' \
     'cancel_requested: true' \
     'runner_maps_runtime_failure_to_typed_case_diagnostic' \
+    'runner_projects_panic_and_step_budget_as_distinct_outcomes' \
     'runtime_error == InterpretError.Assertion' \
+    'runtime_error == InterpretError.Panic' \
+    'runtime_error == InterpretError.StepLimitExceeded' \
+    'OutputStatus.Crashed' \
+    'OutputStatus.TimedOut' \
     'runner stopped after test failure' \
     'cancelled before launch' \
     'runner_executes_source_buffer_tests_through_same_machine' \
