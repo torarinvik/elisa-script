@@ -3591,11 +3591,14 @@ decoded, including `\"`, `\\`, `\uXXXX`, and `\UXXXXXXXX`; key escapes that
 produce forbidden control bytes are rejected. Quoted dotted keys remain
 rejected because the current flattened configuration-key view reserves dots
 for path separators. Dotted keys inside inline tables, dates/times, and
-multiline strings remain unsupported. A
-source-only snapshot of the
-observed `WasmBrowser/Cargo.toml` workspace/dependency subset has a fixture for
-multiline member arrays, nested inline dependency values, and package aliases;
-it has not been executed and does not establish Cargo compatibility.
+multiline strings remain unsupported. A snapshot of the observed
+`WasmBrowser/Cargo.toml` workspace/dependency subset has fixtures for multiline
+member arrays, nested inline dependency values, and package aliases. A gated
+parity slice compares a normalized workspace/package/member/dependency
+projection with Python's standard-library `tomllib`; the candidate reads the
+snapshot through `EsConfigTomlFilePosix`. This test is source-only until run
+under the bounded reauthorization workflow and does not establish full Cargo
+manifest compatibility.
 Array-of-table headers are represented as zero-based numeric dotted key
 segments (for example `links.user.0.name`) and a
 typed row directory (`ConfigTomlArrayTableInstance`); nested regular tables are
@@ -3621,7 +3624,8 @@ array-table paths. The existing generic override path continues treating
 environment and command-line values as text.
 `EsConfigTomlFilePosix` reads files through the shared
 stable UTF-8 reader with a 16 MiB ceiling. Source fixtures cover scalar and
-array parsing plus rejection boundaries, but remain unexecuted pending
+array parsing plus rejection boundaries. Runtime tests and the gated
+Python-versus-Elisascript manifest parity slice remain unexecuted pending
 compiler-validation reauthorization. This is a deliberately small TOML slice of
 A06, not full TOML compatibility.
 

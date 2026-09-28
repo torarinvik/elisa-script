@@ -1193,8 +1193,11 @@ recursive typed value graph. It rejects more than 4,096 resolved
 values, top-level schema fields, type nodes, or nested fields before expensive
 descriptor validation. Typed structured overrides and TOML date/time values
 remain unsupported.
-Focused fixtures and the compiler-free static audit are source-only; runtime
-and project-level parity qualification remain open under the validation hold.
+Focused fixtures and the compiler-free static audit are source-only. A gated
+Python `tomllib` versus Elisascript parity slice now projects representative
+workspace/member/inline-dependency facts from a pinned Cargo manifest snapshot;
+it has not run, so runtime and project-level parity qualification remain open
+under the validation hold.
 
 ES-SCRIPT-013 | EsDifferentialStability supplies a bounded repeat session with
 minimum/maximum repeat policy, baseline fingerprint accounting, stable-equal and

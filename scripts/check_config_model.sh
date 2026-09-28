@@ -31,10 +31,16 @@ application_cli_candidate="$application_cli_root/candidate.elisascript"
 application_cli_golden="$application_cli_root/expected.txt"
 application_cli_contract="$application_cli_root/CONTRACT.md"
 application_cli_parity="$repo_root/test/script_parity/application_cli_launcher_test.elisascript"
+toml_manifest_root="$repo_root/test/fixtures/script_parity/toml_manifest"
+toml_manifest_reference="$toml_manifest_root/reference.py"
+toml_manifest_candidate="$toml_manifest_root/candidate.elisascript"
+toml_manifest_golden="$toml_manifest_root/expected.txt"
+toml_manifest_contract="$toml_manifest_root/CONTRACT.md"
+toml_manifest_parity="$repo_root/test/script_parity/toml_manifest_launcher_test.elisascript"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$application_cli_reference" "$application_cli_candidate" "$application_cli_golden" "$application_cli_contract" "$application_cli_parity" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$application_cli_reference" "$application_cli_candidate" "$application_cli_golden" "$application_cli_contract" "$application_cli_parity" "$toml_manifest_reference" "$toml_manifest_candidate" "$toml_manifest_golden" "$toml_manifest_contract" "$toml_manifest_parity" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for toml_boundary in \
@@ -233,6 +239,16 @@ for application_cli_case in \
     'unexpected-boolean-value'; do
     rg -Fq "case=$application_cli_case" "$application_cli_golden"
 done
+rg -Fq 'toml_manifest_public_launcher_matches_independent_python_and_goldens' "$toml_manifest_parity"
+rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$toml_manifest_parity"
+rg -Fq 'read_config_toml_file(path(path_text))' "$toml_manifest_candidate"
+rg -Fq 'lookup_toml_config_value(parsed, "workspace.dependencies.wasmtime")' "$toml_manifest_candidate"
+rg -Fq 'tomllib.load(source)' "$toml_manifest_reference"
+rg -Fq 'A06/C07' "$toml_manifest_contract"
+rg -Fq 'workspace.dependencies.wasmtime.feature=component-model' "$toml_manifest_golden"
+rg -Fq 'workspace.dependencies.sha2_11.package=sha2' "$toml_manifest_golden"
+rg -Fq 'workspace.member=crates/wb-manifest' "$toml_manifest_golden"
+rg -Fq 'workspace.member=crates/wb-cli' "$toml_manifest_golden"
 rg -Fq 'config_precedence_composes_all_four_explicit_sources' "$integration_fixture"
 rg -Fq 'config_precedence_accepts_toml_table_file_values' "$integration_fixture"
 rg -Fq 'bounded_json_configuration_file_retains_layer_document_storage' "$json_file_fixture"
