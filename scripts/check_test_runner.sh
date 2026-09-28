@@ -109,6 +109,7 @@ for fixture_pattern in \
     'typed_test_runner_completion_output_limit_does_not_consume_attempt' \
     'typed_test_runner_fail_fast_output_preflight_includes_queued_cancellations' \
     'typed_test_runner_fail_and_cancel_output_limits_are_atomic' \
+    'typed_test_runner_fail_preflight_preserves_retryable_attempt_on_limit_error' \
     'TestRunnerError.OutputLimitExceeded' \
     'TestRunnerEvent.Discover' \
     'TestRunnerEvent.SelectionDone' \

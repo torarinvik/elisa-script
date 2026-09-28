@@ -2567,8 +2567,8 @@ record against both its global output ceiling and the selected report limit.
 Completions likewise preflight the completed case and any fail-fast
 cancellation records before consuming the attempt token. An over-limit
 selection, completion, infrastructure failure, or cancellation therefore
-remains intact and can be corrected without recovering a partially transitioned
-runner.
+remains intact—including retryable attempt evidence—and can be corrected
+without recovering a partially transitioned runner.
 
 `EsScriptTest` supplies the in-process `@test` boundary used by the CLI's
 `ExecuteTests` workflow step. Discovery is ordered and bounded to 4,096 cases;
