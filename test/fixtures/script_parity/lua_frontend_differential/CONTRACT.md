@@ -99,15 +99,18 @@ against SHA-256 of the bytes supplied by preflight. It rejects missing,
 duplicate, extra, or digest-mismatched inputs, reordered lock rows, symlinked,
 non-regular, or oversized inputs before a build plan should be created.
 `EsLuaFrontendPinnedInputsPosix` is the descriptor-relative host adapter: it
-accepts separate already-open directory capabilities for this fixture and the
-Elisa-core checkout, authenticates the bounded lock before opening source rows,
-and resolves every path component with `O_NOFOLLOW`. It checks per-file and
-aggregate source limits before allocating/reading each source, verifies the
-retained descriptor and its name after the bounded read, then passes the exact
-arena-backed byte views to the pure verifier. The caller must keep that arena
-alive through corpus admission and must independently establish that the two
-root descriptors refer to the approved checkouts. The adapter and pure source
-tests (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
+can open separate directory capabilities for this fixture and the Elisa-core
+checkout by walking canonical absolute paths from `/` with `O_NOFOLLOW`, or
+accept existing capabilities. It authenticates the bounded lock before
+opening source rows and resolves every relative path component with
+`O_NOFOLLOW`. It checks per-file and aggregate source limits before
+allocating/reading each source, verifies the retained descriptor and its name
+after the bounded read, then passes the exact arena-backed byte views to the
+pure verifier. The caller must keep that arena alive through corpus admission
+and independently establish that the two selected roots are the approved
+checkouts; safe path traversal alone does not establish repository identity.
+The adapter and pure source tests
+(`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
 compiled or run; no runtime filesystem evidence is claimed.
 

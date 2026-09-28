@@ -10,11 +10,28 @@ module EsLuaFrontendPinnedInputsPosix:
 
     public:
         const module Limits:
+            ROOT_PATH_BYTES: usize = 4096
+            ROOT_COMPONENT_BYTES: usize = 255
+            ROOT_OPEN_EINTR_RETRIES: usize = 8
             READ_EINTR_RETRIES: usize = 8
             READ_CALLS: usize = 1048576
 
 
+        struct LuaFrontendPinRootCapability:
+            path: sview
+            descriptor: int = -1
+            device: u32 = 0
+            inode: u64 = 0
+
+
         error LuaFrontendPinReadError:
+            InvalidAbsoluteRoot
+            RootPathTooLong
+            RootOpenFailed(path: sview, errno: i32)
+            RootMetadataFailed(path: sview)
+            RootNotDirectory(path: sview)
+            RootCloseFailed(path: sview)
+            InvalidRootCapability(path: sview)
             ManifestMissing(path: sview)
             SourceMissing(path: sview)
             FileTooLarge(path: sview)
@@ -33,6 +50,29 @@ module EsLuaFrontendPinnedInputsPosix:
             Failed
 
 
+        def lua_frontend_pin_root_path_valid(path: sview) -> bool:
+            return false if sview_len(path) == 0 or sview_len(path) > Limits::ROOT_PATH_BYTES
+            return false if sview_at(path, 0) != 47u8 or sview_contains_byte(path, 0)
+            return true if path == "/"
+            return false if sview_at(path, sview_len(path) - 1) == 47u8
+            segment_start: mutable usize = 1
+            index: mutable usize = 1
+            while index <= sview_len(path) |path, segment_start, index|:
+                at_end: bool = index == sview_len(path)
+                separator: bool = not at_end and sview_at(path, index) == 47u8
+                if at_end or separator:
+                    return false if index == segment_start
+                    segment: sview = string_view_slice(path, segment_start.i64(), index.i64())
+                    return false if segment == "." or segment == ".."
+                    return false if sview_len(segment) > Limits::ROOT_COMPONENT_BYTES
+                    segment_start <- index + 1
+                else:
+                    byte: u8 = sview_at(path, index)
+                    return false if byte < 32u8 or byte == 127u8
+                index <- index + 1
+            return true
+
+
         def lua_frontend_pin_posix_fstat(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
             retries: mutable usize = 0
             while true:
@@ -42,6 +82,26 @@ module EsLuaFrontendPinnedInputsPosix:
                     retries <- retries + 1
                     continue
                 return false
+
+
+        def lua_frontend_pin_root_open(path: cstr, directory_fd: int, flags: int, errno_out: mutable i32&) -> int can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                descriptor: int = elisascript_posix_open(path, flags, 0u32) if directory_fd < 0 else elisascript_posix_openat(directory_fd, path, flags, 0u32)
+                return descriptor if descriptor >= 0
+                errno: mutable i32& = elisascript_posix_errno()
+                errno_out[0] <- errno[0]
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::ROOT_OPEN_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return -1
+
+
+        def lua_frontend_pin_root_capability_valid(root: LuaFrontendPinRootCapability) -> bool can[Blocking.IO]:
+            return false if root.descriptor < 0 or not lua_frontend_pin_root_path_valid(root.path)
+            root_info: mutable ElisascriptStat = zeroed
+            return false if not lua_frontend_pin_posix_fstat(root.descriptor, root_info)
+            return (root_info.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY and root_info.device == root.device and root_info.inode == root.inode
 
 
         def lua_frontend_pin_posix_identity_matches(left: OpenedFile, right: OpenedFile) -> bool:
@@ -151,9 +211,69 @@ module EsLuaFrontendPinnedInputsPosix:
 
 
     public:
+        # Resolve an absolute directory path from `/` one component at a time.
+        # The returned descriptor is owned by the caller. This proves only the
+        # no-follow traversal and directory identity; repository approval is a
+        # separate caller responsibility.
+        def open_lua_frontend_pin_root(path: sview) -> LuaFrontendPinRootCapability error[LuaFrontendPinReadError] can[Blocking.IO, Unsafe.PointerCast]:
+            raise LuaFrontendPinReadError.RootPathTooLong if sview_len(path) > Limits::ROOT_PATH_BYTES
+            raise LuaFrontendPinReadError.InvalidAbsoluteRoot if not lua_frontend_pin_root_path_valid(path)
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::DIRECTORY | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            open_errno: mutable i32 = 0
+            root_fd: int = lua_frontend_pin_root_open("/", -1, flags, open_errno)
+            if root_fd < 0:
+                raise LuaFrontendPinReadError.RootOpenFailed(path, open_errno)
+
+            current_fd: mutable int = root_fd
+            segment_start: mutable usize = 1
+            while segment_start < sview_len(path) |current_fd, segment_start, path|:
+                segment_end: mutable usize = segment_start
+                while segment_end < sview_len(path) and sview_at(path, segment_end) != 47u8:
+                    segment_end <- segment_end + 1
+                segment_length: usize = segment_end - segment_start
+                component_storage: mutable u8[Limits::ROOT_COMPONENT_BYTES + 1] = zeroed
+                component: mutable u8& = &component_storage[0]
+                for offset in 0..<segment_length |component, path|:
+                    component[offset] <- sview_at(path, segment_start + offset)
+                component[segment_length] <- 0
+                open_errno <- 0
+                next_fd: int = lua_frontend_pin_root_open(component.cast[cstr], current_fd, flags, open_errno)
+                if next_fd < 0:
+                    close_status: int = elisascript_posix_close(current_fd)
+                    raise LuaFrontendPinReadError.RootCloseFailed(path) if close_status != 0
+                    raise LuaFrontendPinReadError.RootOpenFailed(path, open_errno)
+                close_status: int = elisascript_posix_close(current_fd)
+                if close_status != 0:
+                    _ = elisascript_posix_close(next_fd)
+                    raise LuaFrontendPinReadError.RootCloseFailed(path)
+                current_fd <- next_fd
+                segment_start <- segment_end + 1
+
+            root_info: mutable ElisascriptStat = zeroed
+            if not lua_frontend_pin_posix_fstat(current_fd, root_info):
+                close_status: int = elisascript_posix_close(current_fd)
+                raise LuaFrontendPinReadError.RootCloseFailed(path) if close_status != 0
+                raise LuaFrontendPinReadError.RootMetadataFailed(path)
+            if (root_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
+                close_status: int = elisascript_posix_close(current_fd)
+                raise LuaFrontendPinReadError.RootCloseFailed(path) if close_status != 0
+                raise LuaFrontendPinReadError.RootNotDirectory(path)
+            return LuaFrontendPinRootCapability{path: path, descriptor: current_fd, device: root_info.device, inode: root_info.inode}
+
+
+        # close(2) is attempted once: retrying EINTR can close an unrelated fd
+        # if the host has already released and reused the descriptor number.
+        def close_lua_frontend_pin_root(root: mutable LuaFrontendPinRootCapability&) -> void error[LuaFrontendPinReadError] can[Blocking.IO]:
+            raise LuaFrontendPinReadError.InvalidRootCapability(root.path) if root.descriptor < 0
+            descriptor: mutable int = root.descriptor
+            root.descriptor <- -1
+            raise LuaFrontendPinReadError.RootCloseFailed(root.path) if elisascript_posix_close(descriptor) != 0
+
+
         # Validate the tracked lock before opening any corpus file, then read
         # exactly its rows beneath the independently approved source root.
         # The caller keeps `a` alive while consuming the returned views.
+    private:
         def verify_lua_frontend_pinned_inputs_at(a: mutable Arena&, manifest_root_fd: int, manifest_path: sview, source_root_fd: int) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             manifest_file: OpenedFile = try open_build_incremental_file_at(manifest_root_fd, manifest_path)
             raise LuaFrontendPinReadError.ManifestMissing(manifest_path) if not manifest_file.present
@@ -180,3 +300,10 @@ module EsLuaFrontendPinnedInputsPosix:
                 inputs.push(LuaFrontendPinSourceInput{relative_path: entry.relative_path, source: source, regular_file: true, symbolic_link: false})
 
             return try verify_lua_frontend_pin_entries(manifest, inputs, Limits::REFERENCE_ENTRY_COUNT)
+
+
+    public:
+        def verify_lua_frontend_pinned_inputs(a: mutable Arena&, manifest_root: LuaFrontendPinRootCapability, manifest_path: sview, source_root: LuaFrontendPinRootCapability) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise LuaFrontendPinReadError.InvalidRootCapability(manifest_root.path) if not lua_frontend_pin_root_capability_valid(manifest_root)
+            raise LuaFrontendPinReadError.InvalidRootCapability(source_root.path) if not lua_frontend_pin_root_capability_valid(source_root)
+            return try verify_lua_frontend_pinned_inputs_at(a, manifest_root.descriptor, manifest_path, source_root.descriptor)
