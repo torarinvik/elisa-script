@@ -70,6 +70,17 @@ Unicode decimal digits; this model currently rejects those spellings as
 27-case corpus uses ASCII values. Whitespace trimming and line splitting cover
 Python's Unicode whitespace and `splitlines()` boundaries.
 
+`EsLuaFrontendBuildPlan` now materializes the four exact argv vectors and
+explicit working directories as typed `ProcessCommand` values. It requires
+absolute bounded paths, checks the fixed source suffixes and output layout,
+and supplies finite per-command deadlines and capture ceilings while
+rejecting per-child RSS ceilings above 2 GiB. The process adapter must still enforce those ceilings and the
+caller must keep the borrowed path storage alive. `PathFacts` and
+`CompilerIdentity` preflight remain responsible for file identity, source
+digests, symlink policy, temporary-root ownership, and approved executable
+identity; the pure plan does not prove those host facts. Its source test is
+`test/runtime/lua_frontend_build_plan_test.elisa` and remains uncompiled.
+
 The four process inputs are typed values, not a shell command:
 
 ```text

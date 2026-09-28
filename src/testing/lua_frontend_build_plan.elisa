@@ -1,0 +1,199 @@
+# Pure, shell-free four-command build graph for the Lua frontend parity tool.
+#
+# PathFacts and CompilerIdentity must admit every input path and executable
+# before calling this model. Commands borrow all input sviews; keep the input
+# record's backing storage alive for as long as the plan is consumed. This
+# model materializes argv and resource policy only; it never starts a process.
+
+module EsLuaFrontendBuildPlan:
+    using EsProcess
+
+    public:
+        const module Limits:
+            PATH_BYTES: usize = 4096
+            CAPTURE_BYTES: usize = 67108864
+            MAX_RSS_BYTES: usize = 2147483648
+
+
+        struct LuaFrontendBuildPlanInput:
+            go_executable: sview
+            clang_executable: sview
+            repository_root: sview
+            compiler_root: sview
+            temporary_root: sview
+            opt_level: sview = "-O3"
+            timeout_micros: u64 = 120000000u64
+            max_rss_bytes: usize = Limits::MAX_RSS_BYTES
+            capture_output_limit_bytes: usize = Limits::CAPTURE_BYTES
+            frontend_source: sview
+            candidate_harness_source: sview
+            runtime_shims_source: sview
+            reference_harness_source: sview
+            ll_directory: sview
+            reference_directory: sview
+            header_output: sview
+            object_output: sview
+            candidate_output: sview
+            reference_output: sview
+
+
+        struct LuaFrontendPlannedCommand:
+            process: EsProcess::ProcessCommand
+            max_rss_bytes: usize
+
+
+        struct LuaFrontendBuildPlan:
+            commands: darray[LuaFrontendPlannedCommand] = []
+            ll_directory: sview = ""
+            reference_directory: sview = ""
+            header_output: sview = ""
+            object_output: sview = ""
+            candidate_output: sview = ""
+            reference_output: sview = ""
+
+
+        error LuaFrontendBuildPlanError:
+            InvalidPath
+            PathTooLong
+            InvalidExecutable
+            InvalidOptLevel
+            InvalidResourceLimit
+            PathOutsideRepository
+            PathOutsideTemporaryRoot
+            UnexpectedBuildPath
+
+
+    private:
+        const module Names:
+            FRONTEND_SOURCE_SUFFIX: sview = "/Code/elisacore_lua/src/lua_frontend.elisa"
+            CANDIDATE_SOURCE_SUFFIX: sview = "/Code/benchmarks/lua_frontend_bench.c"
+            SHIMS_SOURCE_SUFFIX: sview = "/Code/benchmarks/json_parser_runtime_shims.c"
+            REFERENCE_SOURCE_SUFFIX: sview = "/Code/benchmarks/lua_reference_parse_harness.c"
+            LL_DIRECTORY: sview = "ll"
+            REFERENCE_DIRECTORY: sview = "ref"
+            HEADER_OUTPUT: sview = "lua_frontend.h"
+            OBJECT_OUTPUT: sview = "lua_frontend.o"
+            CANDIDATE_OUTPUT: sview = "lua_frontend_bench"
+            REFERENCE_OUTPUT: sview = "lua_reference_parse"
+
+
+        def lua_frontend_plan_absolute_path_valid(value: sview) -> bool:
+            return false if sview_len(value) == 0 or sview_len(value) > Limits::PATH_BYTES
+            return false if sview_at(value, 0) != 47u8 or sview_contains_byte(value, 0)
+            return true if value == "/"
+            return false if sview_at(value, sview_len(value) - 1) == 47u8
+            segment_start: mutable usize = 1
+            index: mutable usize = 1
+            while index <= sview_len(value) |value, segment_start, index|:
+                at_end: bool = index == sview_len(value)
+                separator: bool = not at_end and sview_at(value, index) == 47u8
+                if at_end or separator:
+                    return false if index == segment_start
+                    segment: sview = string_view_slice(value, segment_start.i64(), index.i64())
+                    return false if segment == "." or segment == ".."
+                    segment_start <- index + 1
+                else:
+                    byte: u8 = sview_at(value, index)
+                    return false if byte < 32u8 or byte == 92u8 or byte == 127u8
+                index <- index + 1
+            return true
+
+
+        def lua_frontend_plan_path_within(root: sview, value: sview) -> bool:
+            return false if value == root or sview_len(value) <= sview_len(root)
+            return false if string_view_slice(value, 0, sview_len(root).i64()) != root
+            return true if root == "/"
+            return sview_at(value, sview_len(root)) == 47u8
+
+
+        def lua_frontend_plan_has_suffix(value: sview, suffix: sview) -> bool:
+            return false if sview_len(suffix) > sview_len(value)
+            return string_view_slice(value, (sview_len(value) - sview_len(suffix)).i64(), sview_len(value).i64()) == suffix
+
+
+        def lua_frontend_plan_direct_child(parent: sview, child: sview, name: sview) -> bool:
+            return false if not lua_frontend_plan_path_within(parent, child)
+            child_start: usize = 1 if parent == "/" else sview_len(parent) + 1
+            return false if sview_at(child, child_start - 1) != 47u8
+            return false if sview_len(child) - child_start != sview_len(name)
+            return string_view_slice(child, child_start.i64(), sview_len(child).i64()) == name
+
+
+        def lua_frontend_plan_valid_source(root: sview, source: sview, suffix: sview) -> bool:
+            return false if not lua_frontend_plan_absolute_path_valid(source)
+            return false if not lua_frontend_plan_path_within(root, source)
+            return lua_frontend_plan_has_suffix(source, suffix)
+
+
+        def lua_frontend_plan_valid_executable(value: sview) -> bool:
+            return lua_frontend_plan_absolute_path_valid(value)
+
+
+        def lua_frontend_plan_add_command(plan: mutable LuaFrontendBuildPlan&, process: EsProcess::ProcessCommand, max_rss_bytes: usize) -> void error[EsProcess::ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            checked: mutable EsProcess::ProcessCommand = process
+            _ = try EsProcess::validate_process_command(checked)
+            plan.commands.push(LuaFrontendPlannedCommand{process: checked, max_rss_bytes: max_rss_bytes})
+
+
+    public:
+        def make_lua_frontend_build_plan(input: LuaFrontendBuildPlanInput) -> LuaFrontendBuildPlan error[LuaFrontendBuildPlanError, EsProcess::ProcessCommandError] can[Memory.Allocate, Abort.Panic]:
+            raise LuaFrontendBuildPlanError.InvalidExecutable if not lua_frontend_plan_valid_executable(input.go_executable) or not lua_frontend_plan_valid_executable(input.clang_executable)
+            for path in [input.repository_root, input.compiler_root, input.temporary_root, input.frontend_source, input.candidate_harness_source, input.runtime_shims_source, input.reference_harness_source, input.ll_directory, input.reference_directory, input.header_output, input.object_output, input.candidate_output, input.reference_output]:
+                raise LuaFrontendBuildPlanError.PathTooLong if sview_len(path) > Limits::PATH_BYTES
+                raise LuaFrontendBuildPlanError.InvalidPath if not lua_frontend_plan_absolute_path_valid(path)
+
+            raise LuaFrontendBuildPlanError.InvalidOptLevel if input.opt_level != "-O0" and input.opt_level != "-O1" and input.opt_level != "-O2" and input.opt_level != "-O3" and input.opt_level != "-Os" and input.opt_level != "-Oz"
+            raise LuaFrontendBuildPlanError.InvalidResourceLimit if input.timeout_micros == 0 or input.timeout_micros > EsProcess::PROCESS_COMMAND_MAX_TIMEOUT_MICROS
+            raise LuaFrontendBuildPlanError.InvalidResourceLimit if input.capture_output_limit_bytes == 0 or input.capture_output_limit_bytes > Limits::CAPTURE_BYTES
+            raise LuaFrontendBuildPlanError.InvalidResourceLimit if input.max_rss_bytes == 0 or input.max_rss_bytes > Limits::MAX_RSS_BYTES
+
+            raise LuaFrontendBuildPlanError.PathOutsideRepository if not lua_frontend_plan_valid_source(input.repository_root, input.frontend_source, Names::FRONTEND_SOURCE_SUFFIX)
+            raise LuaFrontendBuildPlanError.PathOutsideRepository if not lua_frontend_plan_valid_source(input.repository_root, input.candidate_harness_source, Names::CANDIDATE_SOURCE_SUFFIX)
+            raise LuaFrontendBuildPlanError.PathOutsideRepository if not lua_frontend_plan_valid_source(input.repository_root, input.runtime_shims_source, Names::SHIMS_SOURCE_SUFFIX)
+            raise LuaFrontendBuildPlanError.PathOutsideRepository if not lua_frontend_plan_valid_source(input.repository_root, input.reference_harness_source, Names::REFERENCE_SOURCE_SUFFIX)
+
+            raise LuaFrontendBuildPlanError.PathOutsideTemporaryRoot if not lua_frontend_plan_direct_child(input.temporary_root, input.ll_directory, Names::LL_DIRECTORY)
+            raise LuaFrontendBuildPlanError.PathOutsideTemporaryRoot if not lua_frontend_plan_direct_child(input.temporary_root, input.reference_directory, Names::REFERENCE_DIRECTORY)
+            raise LuaFrontendBuildPlanError.UnexpectedBuildPath if not lua_frontend_plan_direct_child(input.ll_directory, input.header_output, Names::HEADER_OUTPUT)
+            raise LuaFrontendBuildPlanError.UnexpectedBuildPath if not lua_frontend_plan_direct_child(input.ll_directory, input.object_output, Names::OBJECT_OUTPUT)
+            raise LuaFrontendBuildPlanError.UnexpectedBuildPath if not lua_frontend_plan_direct_child(input.ll_directory, input.candidate_output, Names::CANDIDATE_OUTPUT)
+            raise LuaFrontendBuildPlanError.UnexpectedBuildPath if not lua_frontend_plan_direct_child(input.reference_directory, input.reference_output, Names::REFERENCE_OUTPUT)
+
+            plan: mutable LuaFrontendBuildPlan = LuaFrontendBuildPlan{
+                commands: [],
+                ll_directory: input.ll_directory,
+                reference_directory: input.reference_directory,
+                header_output: input.header_output,
+                object_output: input.object_output,
+                candidate_output: input.candidate_output,
+                reference_output: input.reference_output
+            }
+            try lua_frontend_plan_add_command(plan, EsProcess::ProcessCommand{
+                executable: input.go_executable,
+                arguments: ["run", "./src", input.opt_level, "-emit", "header", "-o", input.header_output, input.frontend_source],
+                working_directory: input.compiler_root,
+                timeout_micros: input.timeout_micros,
+                capture_output_limit_bytes: input.capture_output_limit_bytes
+            }, input.max_rss_bytes)
+            try lua_frontend_plan_add_command(plan, EsProcess::ProcessCommand{
+                executable: input.go_executable,
+                arguments: ["run", "./src", input.opt_level, "-emit", "obj", "-o", input.object_output, input.frontend_source],
+                working_directory: input.compiler_root,
+                timeout_micros: input.timeout_micros,
+                capture_output_limit_bytes: input.capture_output_limit_bytes
+            }, input.max_rss_bytes)
+            try lua_frontend_plan_add_command(plan, EsProcess::ProcessCommand{
+                executable: input.clang_executable,
+                arguments: [input.opt_level, "-pthread", "-Wl,-undefined,dynamic_lookup", "-I", input.ll_directory, input.candidate_harness_source, input.runtime_shims_source, input.object_output, "-o", input.candidate_output],
+                working_directory: input.compiler_root,
+                timeout_micros: input.timeout_micros,
+                capture_output_limit_bytes: input.capture_output_limit_bytes
+            }, input.max_rss_bytes)
+            try lua_frontend_plan_add_command(plan, EsProcess::ProcessCommand{
+                executable: input.clang_executable,
+                arguments: [input.opt_level, "-std=c99", input.reference_harness_source, "-lm", "-ldl", "-o", input.reference_output],
+                working_directory: input.repository_root,
+                timeout_micros: input.timeout_micros,
+                capture_output_limit_bytes: input.capture_output_limit_bytes
+            }, input.max_rss_bytes)
+            return plan
