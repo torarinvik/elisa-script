@@ -1,0 +1,182 @@
+# Filesystem boundary for the pinned Lua reference set. Roots are supplied as
+# open directory capabilities; every manifest/source path is resolved beneath
+# its root without following symlinks. Returned source views borrow `a` and are
+# the exact bytes later hashed and retained by EsLuaFrontendPinnedInputs.
+
+module EsLuaFrontendPinnedInputsPosix:
+    using EsLuaFrontendPinnedInputs
+    using EsBuildIncrementalPosix
+    using EsRuntime
+
+    public:
+        const module Limits:
+            READ_EINTR_RETRIES: usize = 8
+            READ_CALLS: usize = 1048576
+
+
+        error LuaFrontendPinReadError:
+            ManifestMissing(path: sview)
+            SourceMissing(path: sview)
+            FileTooLarge(path: sview)
+            TotalSourceBytesExceeded
+            ReadFailed(path: sview, errno: i32)
+            ReadIncomplete(path: sview)
+            MetadataFailed(path: sview)
+            ChangedDuringRead(path: sview)
+            CloseFailed(path: sview)
+
+
+    private:
+        const enum LuaFrontendPinReadState of u8:
+            Read
+            Done
+            Failed
+
+
+        def lua_frontend_pin_posix_fstat(descriptor: int, result: mutable ElisascriptStat&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while true:
+                return true if elisascript_posix_fstat(descriptor, result) == 0
+                errno: mutable i32& = elisascript_posix_errno()
+                if errno[0] == DarwinErrno::EINTR and retries < Limits::READ_EINTR_RETRIES:
+                    retries <- retries + 1
+                    continue
+                return false
+
+
+        def lua_frontend_pin_posix_identity_matches(left: OpenedFile, right: OpenedFile) -> bool:
+            return left.present and right.present
+                and left.device == right.device
+                and left.inode == right.inode
+                and left.size == right.size
+                and left.modify_time.seconds == right.modify_time.seconds
+                and left.modify_time.nanoseconds == right.modify_time.nanoseconds
+                and left.change_time.seconds == right.change_time.seconds
+                and left.change_time.nanoseconds == right.change_time.nanoseconds
+
+
+        def lua_frontend_pin_posix_descriptor_matches(opened: OpenedFile, current: ElisascriptStat&) -> bool:
+            return (current.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR
+                and current.device == opened.device
+                and current.inode == opened.inode
+                and current.size >= 0
+                and current.size.usize().i64() == current.size
+                and current.size.usize() == opened.size
+                and current.modify_time.seconds == opened.modify_time.seconds
+                and current.modify_time.nanoseconds == opened.modify_time.nanoseconds
+                and current.change_time.seconds == opened.change_time.seconds
+                and current.change_time.nanoseconds == opened.change_time.nanoseconds
+
+
+        def lua_frontend_pin_posix_read_fully(descriptor: int, bytes: mutable darray[u8]&, expected_count: usize, errno_out: mutable i32&) -> bool can[Blocking.IO, Unsafe.PointerCast]:
+            state: mutable LuaFrontendPinReadState = LuaFrontendPinReadState.Read
+            offset: mutable usize = 0
+            calls: mutable usize = 0
+            interrupted: mutable usize = 0
+            errno_out[0] <- 0
+            machine over state:
+                state Read
+                start Read
+
+                Read, LuaFrontendPinReadState.Read if offset >= expected_count:
+                    state <- LuaFrontendPinReadState.Done
+                    -> Read
+                Read, LuaFrontendPinReadState.Read:
+                    if calls >= Limits::READ_CALLS:
+                        state <- LuaFrontendPinReadState.Failed
+                        -> Read
+                    remaining: usize = expected_count - offset
+                    destination: mutable u8& = bytes.items + offset
+                    amount: isize = elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)
+                    calls <- calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        errno_out[0] <- errno[0]
+                        if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
+                            interrupted <- interrupted + 1
+                            -> Read
+                        state <- LuaFrontendPinReadState.Failed
+                        -> Read
+                    if amount == 0 or amount.usize() > remaining:
+                        state <- LuaFrontendPinReadState.Failed
+                        -> Read
+                    offset <- offset + amount.usize()
+                    bytes.count <- offset
+                    interrupted <- 0
+                    -> Read
+                Read, LuaFrontendPinReadState.Done:
+                    break
+                Read, LuaFrontendPinReadState.Failed:
+                    break
+            return state == LuaFrontendPinReadState.Done
+
+
+        # Takes ownership of `opened.descriptor` on entry and closes it on all
+        # ordinary return paths. `byte_limit` is checked before allocating.
+        def lua_frontend_pin_posix_read_opened(a: mutable Arena&, root_fd: int, path: sview, opened: OpenedFile, byte_limit: usize) -> sview error[LuaFrontendPinReadError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            if opened.size > byte_limit:
+                close_status: int = elisascript_posix_close(opened.descriptor)
+                raise LuaFrontendPinReadError.CloseFailed(path) if close_status != 0
+                raise LuaFrontendPinReadError.FileTooLarge(path)
+
+            bytes: mutable darray[u8] = []
+            _ = arena_da_reserve(a, bytes, opened.size) if opened.size != 0
+            read_errno: mutable i32 = 0
+            read_ok: bool = lua_frontend_pin_posix_read_fully(opened.descriptor, bytes, opened.size, read_errno)
+            current_info: mutable ElisascriptStat = zeroed
+            metadata_ok: bool = lua_frontend_pin_posix_fstat(opened.descriptor, current_info)
+            stable_descriptor: bool = metadata_ok and lua_frontend_pin_posix_descriptor_matches(opened, current_info)
+
+            named_path_matches: mutable bool = false
+            named_path_close_ok: mutable bool = true
+            reopen_close_failed: mutable bool = false
+            reopen_failed: mutable bool = false
+            catch open_build_incremental_file_at(root_fd, path):
+                ok named_file:
+                    named_path_matches <- lua_frontend_pin_posix_identity_matches(opened, named_file)
+                    if named_file.present:
+                        named_path_close_ok <- elisascript_posix_close(named_file.descriptor) == 0
+                error failure:
+                    reopen_close_failed <- failure == OpenError.CloseFailed(path)
+                    reopen_failed <- not reopen_close_failed
+
+            close_status: int = elisascript_posix_close(opened.descriptor)
+            raise LuaFrontendPinReadError.CloseFailed(path) if close_status != 0 or not named_path_close_ok or reopen_close_failed
+            raise LuaFrontendPinReadError.ReadIncomplete(path) if not read_ok and read_errno == 0
+            raise LuaFrontendPinReadError.ReadFailed(path, read_errno) if not read_ok
+            raise LuaFrontendPinReadError.MetadataFailed(path) if not metadata_ok
+            raise LuaFrontendPinReadError.ChangedDuringRead(path) if not stable_descriptor or not named_path_matches or reopen_failed
+            raise LuaFrontendPinReadError.ReadIncomplete(path) if bytes.count != opened.size
+            return bytes_view(bytes)
+
+
+    public:
+        # Validate the tracked lock before opening any corpus file, then read
+        # exactly its rows beneath the independently approved source root.
+        # The caller keeps `a` alive while consuming the returned views.
+        def verify_lua_frontend_pinned_inputs_at(a: mutable Arena&, manifest_root_fd: int, manifest_path: sview, source_root_fd: int) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            manifest_file: OpenedFile = try open_build_incremental_file_at(manifest_root_fd, manifest_path)
+            raise LuaFrontendPinReadError.ManifestMissing(manifest_path) if not manifest_file.present
+            manifest_text: sview = try lua_frontend_pin_posix_read_opened(a, manifest_root_fd, manifest_path, manifest_file, Limits::MANIFEST_BYTES)
+            manifest: LuaFrontendPinManifest = try validate_lua_frontend_reference_manifest(manifest_text)
+
+            inputs: mutable darray[LuaFrontendPinSourceInput] = []
+            total_source_bytes: mutable usize = 0
+            for entry in manifest.entries |inputs, total_source_bytes|:
+                opened: OpenedFile = try open_build_incremental_file_at(source_root_fd, entry.relative_path)
+                if not opened.present:
+                    raise LuaFrontendPinReadError.SourceMissing(entry.relative_path)
+                if opened.size > Limits::SOURCE_BYTES:
+                    close_status: int = elisascript_posix_close(opened.descriptor)
+                    raise LuaFrontendPinReadError.CloseFailed(entry.relative_path) if close_status != 0
+                    raise LuaFrontendPinReadError.FileTooLarge(entry.relative_path)
+                if opened.size > Limits::TOTAL_SOURCE_BYTES - total_source_bytes:
+                    close_status: int = elisascript_posix_close(opened.descriptor)
+                    raise LuaFrontendPinReadError.CloseFailed(entry.relative_path) if close_status != 0
+                    raise LuaFrontendPinReadError.TotalSourceBytesExceeded
+
+                source: sview = try lua_frontend_pin_posix_read_opened(a, source_root_fd, entry.relative_path, opened, Limits::SOURCE_BYTES)
+                total_source_bytes <- total_source_bytes + opened.size
+                inputs.push(LuaFrontendPinSourceInput{relative_path: entry.relative_path, source: source, regular_file: true, symbolic_link: false})
+
+            return try verify_lua_frontend_pin_entries(manifest, inputs, Limits::REFERENCE_ENTRY_COUNT)

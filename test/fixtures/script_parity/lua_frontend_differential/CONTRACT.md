@@ -93,19 +93,23 @@ reporting and real process-tree RSS enforcement before W05 may launch any
 child. Test source is `test/runtime/lua_frontend_process_receipt_test.elisa`;
 it remains uncompiled.
 
-`EsLuaFrontendPinnedInputs` now pins the exact SHA-256 of the tracked
+`EsLuaFrontendPinnedInputs` pins the exact SHA-256 of the tracked
 `REFERENCE_INPUTS.sha256` lock and verifies its 28 exact source/corpus rows
 against SHA-256 of the bytes supplied by preflight. It rejects missing,
 duplicate, extra, or digest-mismatched inputs, reordered lock rows, symlinked,
 non-regular, or oversized inputs before a build plan should be created.
-Per-file and aggregate source limits match the corpus admission ceiling. This uses the
-existing SHA-256 implementation in `EsIr`; it does not acquire files or prove
-the injected lstat/open/read stability facts. The host adapter must use
-descriptor-relative `O_NOFOLLOW` reads and pass only complete stable byte
-views. The verification value retains the exact hashed source views so corpus
-admission can consume those bytes without reopening files. The focused source
-test exercises a two-row synthetic manifest and digest mismatch; it does not
-execute the pinned real set and remains uncompiled.
+`EsLuaFrontendPinnedInputsPosix` is the descriptor-relative host adapter: it
+accepts separate already-open directory capabilities for this fixture and the
+Elisa-core checkout, authenticates the bounded lock before opening source rows,
+and resolves every path component with `O_NOFOLLOW`. It checks per-file and
+aggregate source limits before allocating/reading each source, verifies the
+retained descriptor and its name after the bounded read, then passes the exact
+arena-backed byte views to the pure verifier. The caller must keep that arena
+alive through corpus admission and must independently establish that the two
+root descriptors refer to the approved checkouts. The adapter and pure source
+tests (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
+`test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been
+compiled or run; no runtime filesystem evidence is claimed.
 
 The four process inputs are typed values, not a shell command:
 
