@@ -39,6 +39,10 @@ for boundary in \
     'Limits::TESTS' \
     'Limits::NAME_BYTES' \
     'Limits::SELECTION_REASON_BYTES' \
+    'test_runner_selection_reason_budget_valid' \
+    'test_runner_selection_output_bytes' \
+    'TestRunnerError.SelectionReasonLimitExceeded' \
+    'TestRunnerError.OutputLimitExceeded' \
     'Limits::MESSAGE_BYTES' \
     'Limits::ATTEMPTS' \
     'Limits::PARALLEL' \
@@ -99,6 +103,8 @@ rg -Fq 'include "../runtime/test_runner_model.elisa"' "$ir"
 rg -Fq 'using EsTestRunner' "$fixture"
 for fixture_pattern in \
     'typed_test_runner_contract_discovers_retries_and_seals_reports' \
+    'typed_test_runner_selection_output_limit_failure_is_atomic' \
+    'TestRunnerError.OutputLimitExceeded' \
     'TestRunnerEvent.Discover' \
     'TestRunnerEvent.SelectionDone' \
     'TestRunnerEvent.Launch' \

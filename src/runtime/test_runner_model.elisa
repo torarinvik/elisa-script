@@ -150,7 +150,9 @@ module EsTestRunner:
             TestLimitExceeded
             NameInvalid
             SelectionReasonInvalid
+            SelectionReasonLimitExceeded
             MessageInvalid
+            OutputLimitExceeded
             AttemptLimitExceeded
             ParallelLimitExceeded
             StaleAttempt
@@ -226,6 +228,35 @@ module EsTestRunner:
                     raise TestRunnerError.AccountingInvalid if total > limit
                     raise TestRunnerError.AccountingInvalid if sview_len(value) > limit - total
                     total <- total + sview_len(value)
+            return total
+
+
+        # Selection reasons are borrowed but retained by the runner. Bound
+        # their aggregate before accepting another view, not only when skipped
+        # reasons are copied into the report at SelectionDone.
+        def test_runner_selection_reason_budget_valid(runner: TestRunner&, replacement_index: usize = Limits::TESTS, replacement: sview = "") -> bool:
+            total: mutable usize = 0
+            for index in 0..<runner.cases.count |runner, total|:
+                reason: sview = runner.cases[index].selection_reason
+                reason <- replacement if index == replacement_index
+                return false if total > Limits::OUTPUT_BYTES or sview_len(reason) > Limits::OUTPUT_BYTES - total
+                total <- total + sview_len(reason)
+            return true
+
+
+        # Compute the exact text budget SelectionDone will publish for skipped
+        # cases. The caller must run this before mutating any case state.
+        def test_runner_selection_output_bytes(runner: TestRunner&) -> usize error[TestRunnerError]:
+            total: mutable usize = 0
+            for case in runner.cases |runner, total|:
+                if not case.selected:
+                    reason: sview = case.selection_reason
+                    reason <- "not selected" if reason == ""
+                    name_bytes: usize = sview_len(case.spec.name)
+                    raise TestRunnerError.OutputLimitExceeded if total > Limits::OUTPUT_BYTES or name_bytes > Limits::OUTPUT_BYTES - total
+                    total <- total + name_bytes
+                    raise TestRunnerError.OutputLimitExceeded if sview_len(reason) > Limits::OUTPUT_BYTES - total
+                    total <- total + sview_len(reason)
             return total
 
 
@@ -515,6 +546,7 @@ module EsTestRunner:
             raise TestRunnerError.ParallelLimitExceeded if runner.active > runner.max_parallel
             raise TestRunnerError.AccountingInvalid if runner.selected > runner.cases.count or runner.terminal > runner.cases.count
             raise TestRunnerError.AccountingInvalid if runner.output_bytes > Limits::OUTPUT_BYTES
+            raise TestRunnerError.SelectionReasonLimitExceeded if not test_runner_selection_reason_budget_valid(runner)
             valid_report: mutable bool = false
             catch validate_output_document(runner.report):
                 ok:
@@ -664,13 +696,17 @@ module EsTestRunner:
                 raise TestRunnerError.InvalidIndex if case_index >= runner.cases.count
                 raise TestRunnerError.InvalidCaseState if runner.cases[case_index].state != TestCaseState.Discovered
                 raise TestRunnerError.SelectionReasonInvalid if not test_runner_text_valid(selection_reason, Limits::SELECTION_REASON_BYTES)
+                raise TestRunnerError.SelectionReasonLimitExceeded if not test_runner_selection_reason_budget_valid(runner, case_index, selection_reason)
                 runner.cases[case_index].selected <- selected
                 runner.cases[case_index].selection_reason <- selection_reason
                 try test_runner_refresh_accounting(runner)
             elif event == TestRunnerEvent.SelectionDone:
                 raise TestRunnerError.InvalidState if runner.state != TestRunnerState.Selecting
+                selection_output_bytes: usize = try test_runner_selection_output_bytes(runner)
+                raise TestRunnerError.OutputLimitExceeded if selection_output_bytes > runner.report.options.max_bytes
                 for index in 0..<runner.cases.count |runner|:
                     if runner.cases[index].selected:
+                        runner.cases[index].selection_reason <- ""
                         runner.cases[index].state <- TestCaseState.Selected
                     else:
                         reason: sview = runner.cases[index].selection_reason
