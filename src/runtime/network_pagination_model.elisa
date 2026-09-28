@@ -44,6 +44,11 @@ module EsNetworkPagination:
             fingerprint: u64 = 0
 
 
+        struct NetworkPaginationDispatch:
+            page_token: usize
+            request: NetworkRequest
+
+
         # The session owns its URL bytes and visitation ledger. Header views
         # retain the same lifetime requirement as NetworkRequest header views.
         # `request.url` is refreshed whenever another URL is appended so no
@@ -77,6 +82,8 @@ module EsNetworkPagination:
             CycleDetected
             UrlArenaLimitExceeded
             VisitedUrlLimitExceeded
+            InvalidPageToken
+            StalePageToken
             AccountingInvalid
             CancelNotReady
 
@@ -364,22 +371,24 @@ module EsNetworkPagination:
         # Dispatch exactly one page request. The returned URL is backed by the
         # session-owned arena; the caller must keep the session alive until the
         # request has completed or cancellation has been acknowledged.
-        def dispatch_network_pagination_page(session: mutable NetworkPaginationSession&) -> NetworkRequest error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+        def dispatch_network_pagination_page(session: mutable NetworkPaginationSession&) -> NetworkPaginationDispatch error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
             try validate_network_pagination_session(session)
             raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.Ready
             raise NetworkPaginationError.PageLimitExceeded if session.pages_started >= session.max_pages
             request: NetworkRequest = pagination_session_current_request(session)
             session.pages_started <- session.pages_started + 1
             session.state <- NetworkPaginationSessionState.InFlight
-            return request
+            return NetworkPaginationDispatch{page_token: session.pages_started, request: request}
 
 
         # Complete the in-flight GET response and either seal the session or
         # prepare its next request. Repeated URL fingerprints fail closed, so
         # even a hash collision cannot turn a cycle into an unbounded fetch.
-        def complete_network_pagination_page(session: mutable NetworkPaginationSession&, response: NetworkResponse, effective_response_url: sview, hop_credentials_stripping_active: bool = false) -> NetworkPaginationResult error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+        def complete_network_pagination_page(session: mutable NetworkPaginationSession&, page_token: usize, response: NetworkResponse, effective_response_url: sview, hop_credentials_stripping_active: bool = false) -> NetworkPaginationResult error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
             try validate_network_pagination_session(session)
             raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.InFlight
+            raise NetworkPaginationError.InvalidPageToken if page_token == 0
+            raise NetworkPaginationError.StalePageToken if page_token != session.pages_started
             effective_url_valid: mutable bool = false
             catch network_url_uses_tls(effective_response_url):
                 ok value:
@@ -445,20 +454,30 @@ module EsNetworkPagination:
             return result
 
 
-        def advance_network_pagination_session(session: mutable NetworkPaginationSession&, event: NetworkPaginationSessionEvent) -> NetworkPaginationSessionState error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+        def advance_network_pagination_session(session: mutable NetworkPaginationSession&, event: NetworkPaginationSessionEvent, page_token: usize = 0) -> NetworkPaginationSessionState error[NetworkPaginationError, NetworkContractError] can[Memory.Allocate, Abort.Panic]:
             try validate_network_pagination_session(session)
             raise NetworkPaginationError.InvalidEvent if not pagination_session_event_valid(event)
             if event == NetworkPaginationSessionEvent.Fail:
                 raise NetworkPaginationError.InvalidState if session.state != NetworkPaginationSessionState.Ready and session.state != NetworkPaginationSessionState.InFlight
+                if session.state == NetworkPaginationSessionState.Ready:
+                    raise NetworkPaginationError.InvalidPageToken if page_token != 0
+                else:
+                    raise NetworkPaginationError.InvalidPageToken if page_token == 0
+                    raise NetworkPaginationError.StalePageToken if page_token != session.pages_started
                 session.state <- NetworkPaginationSessionState.Failed
             elif event == NetworkPaginationSessionEvent.Cancel:
                 raise NetworkPaginationError.CancelNotReady if session.state != NetworkPaginationSessionState.Ready and session.state != NetworkPaginationSessionState.InFlight
                 if session.state == NetworkPaginationSessionState.Ready:
+                    raise NetworkPaginationError.InvalidPageToken if page_token != 0
                     session.state <- NetworkPaginationSessionState.Cancelled
                 else:
+                    raise NetworkPaginationError.InvalidPageToken if page_token == 0
+                    raise NetworkPaginationError.StalePageToken if page_token != session.pages_started
                     session.state <- NetworkPaginationSessionState.Cancelling
             elif event == NetworkPaginationSessionEvent.CancelAck:
                 raise NetworkPaginationError.CancelNotReady if session.state != NetworkPaginationSessionState.Cancelling
+                raise NetworkPaginationError.InvalidPageToken if page_token == 0
+                raise NetworkPaginationError.StalePageToken if page_token != session.pages_started
                 session.state <- NetworkPaginationSessionState.Cancelled
             try validate_network_pagination_session(session)
             return session.state

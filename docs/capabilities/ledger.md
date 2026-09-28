@@ -777,9 +777,11 @@ neutral pagination session. The session owns copied request URLs, caps a run at
 256 pages and an 8 MiB URL arena, detects repeated request/effective-response
 URL fingerprints conservatively, carries sticky cross-origin credential
 stripping, and exposes dispatch/completion/failure/cancellation transitions.
-The host still performs the actual HTTP request and supplies its effective
-response URL; header text remains borrowed. Static fixtures cover successful
-multi-page completion, duplicate dispatch, page/cycle refusal, and cancel
+Dispatches carry monotonic page tokens; response and cancellation receipts
+must echo the active token to reject delayed completions. The host still
+performs the actual HTTP request and supplies its effective response URL;
+header text remains borrowed. Static fixtures cover successful multi-page
+completion, stale/duplicate dispatch rejection, page/cycle refusal, and cancel
 acknowledgement. Runtime/compiler evidence and a real transport remain open.
 
 ## Evidence record template
@@ -1061,9 +1063,9 @@ distinguishes quoted commas and URI-reference commas, resolves exactly one
 with cross-origin redaction and HTTPS-downgrade refusal. Its owned session
 limits each chain to 256 dispatched pages and 8 MiB of stored URLs, detects
 cycles among requested and effective-response URLs, keeps credential stripping
-sticky across pagination and transport redirect hops, and models dispatch,
-completion, failure, and cancellation acknowledgement. Per-response link and
-parameter limits remain explicit. Socket/TLS adapters, executed compiler
+sticky across pagination and transport redirect hops, and binds response,
+failure, and cancellation receipts to monotonic page tokens. Per-response link
+and parameter limits remain explicit. Socket/TLS adapters, executed compiler
 evidence, and runtime parity remain open.
 
 ES-SCRIPT-012 | EsRegex supplies typed operation identity, pattern/input/

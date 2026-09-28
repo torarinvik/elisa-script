@@ -2569,14 +2569,17 @@ rejects ambiguous next links and HTTPS downgrade, and builds ordered headers
 with sticky cross-origin credential stripping. `NetworkPaginationSession`
 owns a bounded URL arena and visitation ledger, caps each run at 256 pages,
 rejects repeated URL fingerprints (conservatively treating collisions as
-cycles), and exposes explicit ready/in-flight/completed/failure/cancellation
-transitions. Callers dispatch each returned `NetworkRequest` through a host
-transport and report its response/effective URL back; this model itself does
-not perform socket I/O. Request header text remains borrowed from the caller,
-so its storage must outlive the session. Static fixtures cover multi-page
-completion, duplicate dispatch rejection, page and cycle limits, sticky
-credential redaction, and cancellation acknowledgement; executed runtime and
-transport parity remain open under the validation hold.
+cycles). Each dispatch has a monotonically increasing page token; response,
+failure, and cancellation-acknowledgement receipts must echo the current token,
+so a delayed page cannot complete a later request. The session exposes
+explicit ready/in-flight/completed/failure/cancellation transitions. Callers
+dispatch each returned request through a host transport and report its
+response/effective URL back; this model itself does not perform socket I/O.
+Request header text remains borrowed from the caller, so its storage must
+outlive the session. Static fixtures cover multi-page completion, stale-receipt
+and duplicate-dispatch rejection, page and cycle limits, sticky credential
+redaction, and cancellation acknowledgement; executed runtime and transport
+parity remain open under the validation hold.
 
 `EsProcessBatch::ProcessBatchSession` supplies the bounded fan-out/fan-in layer
 for process maps. Jobs have unique IDs, pending/running/awaiting-reap/retryable/

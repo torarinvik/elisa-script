@@ -23,6 +23,7 @@ for declaration in \
     'PAGES' \
     'URL_ARENA_BYTES' \
     'struct NetworkPaginationResult:' \
+    'struct NetworkPaginationDispatch:' \
     'struct NetworkPaginationSession:' \
     'error NetworkPaginationError:' \
     'const enum LinkFieldScanState of u8:' \
@@ -42,6 +43,7 @@ for boundary in \
     'HttpsDowngrade' \
     'PageLimitExceeded' \
     'CycleDetected' \
+    'StalePageToken' \
     'CancelAck' \
     'LinkFieldScanState.QuotedEscape' \
     'network_url_same_origin' \
@@ -56,8 +58,10 @@ for fixture_pattern in \
     'typed_network_link_pagination_projects_next_page_request' \
     'typed_network_pagination_session_caps_pages_and_detects_cycles' \
     'typed_network_pagination_session_cancellation_is_acknowledged' \
+    'stale_receipt_rejected' \
     'complete_network_pagination_page(redirected, redirect_response' \
     'redirected_result.credentials_stripping_active' \
+    'stale_ack_rejected' \
     'part, one' \
     'cross_page.credentials_stripping_active' \
     'later_page.credentials_stripping_active' \

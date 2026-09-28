@@ -10467,7 +10467,8 @@ def typed_network_pagination_session_caps_pages_and_detects_cycles() -> void:
     can Memory.Allocate, Abort.Panic:
         request: NetworkRequest = NetworkRequest{url: "https://example.test/api/items?page=1", headers: ["Host", "example.test", "Authorization", "Bearer token"], timeout_micros: 1000000}
         session: mutable NetworkPaginationSession = try start_network_pagination(request, 2)
-        first_request: NetworkRequest = try dispatch_network_pagination_page(session)
+        first_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(session)
+        first_request: NetworkRequest = first_dispatch.request
         assert first_request.url == request.url
         duplicate_dispatch_rejected: mutable bool = false
         catch dispatch_network_pagination_page(session):
@@ -10479,28 +10480,37 @@ def typed_network_pagination_session_caps_pages_and_detects_cycles() -> void:
         assert duplicate_dispatch_rejected
 
         second_page_response: NetworkResponse = NetworkResponse{outcome: NetworkOutcome.Success, status: 200, headers: ["Link", "</api/items?page=2>; rel=next"]}
-        first_result: NetworkPaginationResult = try complete_network_pagination_page(session, second_page_response, "https://example.test/api/items?page=1")
+        first_result: NetworkPaginationResult = try complete_network_pagination_page(session, first_dispatch.page_token, second_page_response, "https://example.test/api/items?page=1")
         assert first_result.has_next and session.state == NetworkPaginationSessionState.Ready
         assert session.pages_started == 1 and session.current_headers.count == 2
-        second_request: NetworkRequest = try dispatch_network_pagination_page(session)
+        second_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(session)
+        second_request: NetworkRequest = second_dispatch.request
         assert second_request.url == "https://example.test/api/items?page=2"
         terminal_response: NetworkResponse = NetworkResponse{outcome: NetworkOutcome.Success, status: 200}
-        terminal: NetworkPaginationResult = try complete_network_pagination_page(session, terminal_response, "https://example.test/api/items?page=2")
+        stale_receipt_rejected: mutable bool = false
+        catch complete_network_pagination_page(session, first_dispatch.page_token, terminal_response, "https://example.test/api/items?page=2"):
+            ok value:
+                assert false
+            error issue:
+                assert issue == NetworkPaginationError.StalePageToken
+                stale_receipt_rejected <- true
+        assert stale_receipt_rejected and session.state == NetworkPaginationSessionState.InFlight
+        terminal: NetworkPaginationResult = try complete_network_pagination_page(session, second_dispatch.page_token, terminal_response, "https://example.test/api/items?page=2")
         assert not terminal.has_next and session.state == NetworkPaginationSessionState.Completed
         assert session.pages_started == 2
 
         redirected_request: NetworkRequest = NetworkRequest{url: "https://example.test/api/items", headers: ["Authorization", "Bearer token", "X-Trace", "keep"], timeout_micros: 1000000}
         redirected: mutable NetworkPaginationSession = try start_network_pagination(redirected_request, 2)
-        _ = try dispatch_network_pagination_page(redirected)
+        redirected_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(redirected)
         redirect_response: NetworkResponse = NetworkResponse{outcome: NetworkOutcome.Success, status: 200, headers: ["Link", "</page/2>; rel=next"]}
-        redirected_result: NetworkPaginationResult = try complete_network_pagination_page(redirected, redirect_response, "https://api.example.test/page/1", true)
+        redirected_result: NetworkPaginationResult = try complete_network_pagination_page(redirected, redirected_dispatch.page_token, redirect_response, "https://api.example.test/page/1", true)
         assert redirected_result.has_next and redirected_result.credentials_stripping_active
         assert redirected_result.next_headers.count == 2 and redirected_result.next_headers[0] == "X-Trace"
 
         limited: mutable NetworkPaginationSession = try start_network_pagination(request, 1)
-        _ = try dispatch_network_pagination_page(limited)
+        limited_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(limited)
         page_limit_rejected: mutable bool = false
-        catch complete_network_pagination_page(limited, second_page_response, "https://example.test/api/items?page=1"):
+        catch complete_network_pagination_page(limited, limited_dispatch.page_token, second_page_response, "https://example.test/api/items?page=1"):
             ok value:
                 assert false
             error issue:
@@ -10509,10 +10519,10 @@ def typed_network_pagination_session_caps_pages_and_detects_cycles() -> void:
         assert page_limit_rejected and limited.state == NetworkPaginationSessionState.Failed
 
         cycling: mutable NetworkPaginationSession = try start_network_pagination(request, 3)
-        _ = try dispatch_network_pagination_page(cycling)
+        cycle_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(cycling)
         cycle_response: NetworkResponse = NetworkResponse{outcome: NetworkOutcome.Success, status: 200, headers: ["Link", "<https://example.test/api/items?page=1>; rel=next"]}
         cycle_rejected: mutable bool = false
-        catch complete_network_pagination_page(cycling, cycle_response, "https://example.test/api/items?page=1"):
+        catch complete_network_pagination_page(cycling, cycle_dispatch.page_token, cycle_response, "https://example.test/api/items?page=1"):
             ok value:
                 assert false
             error issue:
@@ -10529,10 +10539,18 @@ def typed_network_pagination_session_cancellation_is_acknowledged() -> void:
         ready_cancelled: NetworkPaginationSessionState = try advance_network_pagination_session(ready, NetworkPaginationSessionEvent.Cancel)
         assert ready_cancelled == NetworkPaginationSessionState.Cancelled
         active: mutable NetworkPaginationSession = try start_network_pagination(request, 4)
-        _ = try dispatch_network_pagination_page(active)
-        active_cancelling: NetworkPaginationSessionState = try advance_network_pagination_session(active, NetworkPaginationSessionEvent.Cancel)
+        active_dispatch: NetworkPaginationDispatch = try dispatch_network_pagination_page(active)
+        active_cancelling: NetworkPaginationSessionState = try advance_network_pagination_session(active, NetworkPaginationSessionEvent.Cancel, active_dispatch.page_token)
         assert active_cancelling == NetworkPaginationSessionState.Cancelling
-        active_cancelled: NetworkPaginationSessionState = try advance_network_pagination_session(active, NetworkPaginationSessionEvent.CancelAck)
+        stale_ack_rejected: mutable bool = false
+        catch advance_network_pagination_session(active, NetworkPaginationSessionEvent.CancelAck, active_dispatch.page_token + 1):
+            ok value:
+                assert false
+            error issue:
+                assert issue == NetworkPaginationError.StalePageToken
+                stale_ack_rejected <- true
+        assert stale_ack_rejected and active.state == NetworkPaginationSessionState.Cancelling
+        active_cancelled: NetworkPaginationSessionState = try advance_network_pagination_session(active, NetworkPaginationSessionEvent.CancelAck, active_dispatch.page_token)
         assert active_cancelled == NetworkPaginationSessionState.Cancelled
 
 
