@@ -45,6 +45,7 @@ extend EsIr:
         struct ElisascriptCliRequest:
             source: mutable sview = ""
             arguments: mutable darray[sview] = []
+            test_selection: mutable darray[sview] = []
             mode: mutable CliMode = CliMode.Run
             color: mutable CliColorMode = CliColorMode.Auto
             report_format: mutable CliReportFormat = CliReportFormat.Human
@@ -288,10 +289,12 @@ extend EsIr:
         def parse_elisascript_cli[@r](arguments: darray[sview]&, result: mutable ElisascriptCliRequest& @r) -> void error[ElisascriptCliError] can[Memory.Allocate, Abort.Panic]:
             # This request is reusable. Clear every derived field before any
             # validation so a rejected parse (or a later parse with fewer
-            # options) cannot expose source, mode, color, report format,
+            # options) cannot expose source, script args, test selection, mode,
+            # color, report format,
             # strict-engine, or option-boundary state left by an earlier call.
             result.source <- ""
             result.arguments <- []
+            result.test_selection <- []
             result.mode <- CliMode.Run
             result.color <- CliColorMode.Auto
             result.report_format <- CliReportFormat.Human
@@ -494,6 +497,7 @@ extend EsIr:
     private:
         def elisascript_test_session_reset(session: mutable ScriptTestSession&) -> void:
             session.cases.truncate(0)
+            session.name_order.truncate(0)
             session.state <- ScriptTestState.Planned
             session.next_case <- 0
             session.active_case <- EsScriptTest::Limits::NO_ACTIVE
@@ -798,7 +802,8 @@ extend EsIr:
             return try elisascript_execute_test_runtime(module, spec, observations, storage, policy, invocation_context)
 
 
-        # Execute every discovered top-level `@test` in source order. The
+        # Execute every discovered top-level `@test` in source order, or the
+        # selected exact-name subset in that same order. The
         # session transitions are the authority: no case is run before
         # `CaseBegin`, a runtime failure becomes exactly one `CaseFail`, and a
         # cancellation request is acknowledged only between cases. The bool is
@@ -807,47 +812,50 @@ extend EsIr:
         # API. The module is lowered once, and the suite budget is carried
         # across cases through `elisascript_test_remaining_policy` instead of
         # silently resetting a step/output allowance for every function.
-        def execute_elisascript_file_tests_with_handlers(filename: u8&, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_file_tests_with_handlers(filename: u8&, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_file_tests_with_handlers(filename, module_name, handlers, result.session)
+            try select_script_test_session(result.session, selected_names)
             invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
         # Source-buffer counterpart used by differential and editor adapters.
         # It keeps source lifetime in the caller for the duration of the run.
-        def execute_elisascript_source_tests_with_handlers(filename: u8&, source: u8&, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_source_tests_with_handlers(filename: u8&, source: u8&, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_source_tests_with_handlers(filename, source, module_name, handlers, result.session)
+            try select_script_test_session(result.session, selected_names)
             invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
-        def execute_elisascript_source_tests(filename: u8&, source: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_source_tests(filename: u8&, source: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             handlers: darray[Handler] = []
-            return execute_elisascript_source_tests_with_handlers(filename, source, module_name, handlers, result, policy, cancel_requested)
+            return execute_elisascript_source_tests_with_handlers(filename, source, module_name, handlers, result, policy, cancel_requested, selected_names)
 
 
         # Length-delimited source keeps the same state machine while the loader
         # copies input bytes into its permanent context before returning views.
-        def execute_elisascript_source_bytes_tests_with_handlers(filename: u8&, source: u8&, source_length: usize, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_source_bytes_tests_with_handlers(filename: u8&, source: u8&, source_length: usize, module_name: sview, handlers: darray[Handler]&, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             elisascript_reset_test_run(result)
             try elisascript_validate_test_policy(policy)
             module: Module = try discover_elisascript_source_bytes_tests_with_handlers(filename, source, source_length, module_name, handlers, result.session)
+            try select_script_test_session(result.session, selected_names)
             invocation_context: ScriptInvocationContext = elisascript_optional_script_invocation_context(filename)
             return elisascript_run_test_module(module, result, policy, cancel_requested, invocation_context)
 
 
-        def execute_elisascript_source_bytes_tests(filename: u8&, source: u8&, source_length: usize, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_source_bytes_tests(filename: u8&, source: u8&, source_length: usize, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             handlers: darray[Handler] = []
-            return execute_elisascript_source_bytes_tests_with_handlers(filename, source, source_length, module_name, handlers, result, policy, cancel_requested)
+            return execute_elisascript_source_bytes_tests_with_handlers(filename, source, source_length, module_name, handlers, result, policy, cancel_requested, selected_names)
 
 
-        def execute_elisascript_file_tests(filename: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
+        def execute_elisascript_file_tests(filename: u8&, module_name: sview, result: mutable ElisascriptTestRun&, policy: RuntimeResourcePolicy = RuntimeResourcePolicy{}, cancel_requested: bool = false, selected_names: darray[sview] = []) -> void error[ElisascriptSourceError, ScriptTestError, InterpretError] can[Memory.Allocate, Abort.Panic]:
             handlers: darray[Handler] = []
-            return execute_elisascript_file_tests_with_handlers(filename, module_name, handlers, result, policy, cancel_requested)
+            return execute_elisascript_file_tests_with_handlers(filename, module_name, handlers, result, policy, cancel_requested, selected_names)
 
 
         # Project a terminal in-process run into the shared sealed output

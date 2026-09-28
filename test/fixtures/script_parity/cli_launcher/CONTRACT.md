@@ -9,9 +9,10 @@ This fixture records the raw-host boundary that must agree with the typed
   continues past the remaining budget is an `ArgumentBytes` failure.
 - A scan that reaches the ordinary C-string ceiling before the aggregate
   ceiling is a `HostCString` failure.
-- `--test` currently has no script-argument or selection channel; trailing
-  values after its source are rejected as `TestArgumentsUnsupported` instead
-  of being silently ignored by a future driver route.
+- `--test` accepts repeated exact-name `--select NAME` options before the
+  source path; selected functions execute in source order. Duplicate or
+  unknown selections are rejected. Trailing values after the source remain
+  unsupported and are rejected as `TestArgumentsUnsupported`.
 - Test reports default to Human and accept `--format human|json|junit`.
   JSON/JUnit are rejected outside `--test`, and `--color always` is rejected
   for machine-readable formats so report bytes remain parseable.

@@ -23,6 +23,8 @@ for declaration in \
     'Limits::ARGUMENTS' \
     'Limits::TEXT_BYTES' \
     'Limits::SOURCE_PATH_BYTES' \
+    'Limits::TEST_SELECTIONS' \
+    'Limits::TEST_NAME_BYTES' \
     'const enum CliMode of u8:' \
     'const enum CliColorMode of u8:' \
     'const enum CliReportFormat of u8:' \
@@ -40,11 +42,16 @@ for boundary in \
     'cli_report_format_valid' \
     'cli_report_format_from_argument' \
     'argument == "--format"' \
+    'argument == "--select"' \
     'cli_mode_requires_source' \
     'DuplicateMode' \
     'DuplicateOption' \
     'UnexpectedArgument' \
     'TestArgumentsUnsupported' \
+    'TestSelectionUnavailable' \
+    'TestSelectionLimitExceeded' \
+    'TestSelectionInvalid' \
+    'DuplicateTestSelection' \
     'ReportFormatUnavailable' \
     'ColorNotApplicable' \
     'InvalidSourceExtension' \
@@ -57,8 +64,11 @@ for boundary in \
 done
 
 rg -Fq 'typed_cli_test_report_formats_are_mode_and_color_bounded' "$repo_root/test/runtime/cli_model_test.elisa"
+rg -Fq 'typed_cli_test_selection_is_explicit_bounded_and_unique' "$repo_root/test/runtime/cli_model_test.elisa"
 rg -Fq 'report_format: mutable CliReportFormat' "$runner"
 rg -Fq 'result.report_format <- CliReportFormat.Human' "$runner"
+rg -Fq 'test_selection: mutable darray[sview]' "$model"
+rg -Fq 'test_selection: mutable darray[sview]' "$runner"
 
 rg -Fq 'include "../runtime/cli_model.elisa"' "$ir"
 for fixture_pattern in \
@@ -73,11 +83,15 @@ for fixture_pattern in \
     'CliContractError.DuplicateOption'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
+rg -Fq 'EsCli::Limits::TEST_SELECTIONS == EsScriptTest::Limits::TESTS' "$fixture"
+rg -Fq 'EsCli::Limits::TEST_NAME_BYTES == EsScriptTest::Limits::NAME_BYTES' "$fixture"
 
 rg -Fq '`EsCli::CliInvocation`' "$docs"
 rg -Fq 'using EsCli' "$driver"
 rg -Fq 'request.mode <- invocation.mode' "$driver"
 rg -Fq 'request.report_format <- invocation.report_format' "$driver"
+rg -Fq 'request.test_selection <- invocation.test_selection' "$driver"
+rg -Fq 'selected_names: selected_names' "$driver"
 rg -Fq 'requested_format == EsCli::CliReportFormat.Json' "$driver"
 rg -Fq 'requested_format == EsCli::CliReportFormat.Junit' "$driver"
 rg -Fq 'request.strict_engine <- invocation.strict_engine' "$driver"
@@ -103,6 +117,7 @@ rg -Fq 'cli_parser_resets_reused_request_state' "$repo_root/test/ir/elisascript_
 rg -Fq 'request.report_format == CliReportFormat.Human' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'bounded C-string scan' "$contract"
 rg -Fq -- '--format human|json|junit' "$contract"
+rg -Fq -- '--select NAME' "$contract"
 rg -Fq 'ArgumentBytes' "$contract"
 
-printf 'cli model audit: typed modes, bounded report formats, and option validation are present; --check validates without executing\n'
+printf 'cli model audit: typed modes, bounded report formats, exact test selection, and option validation are present; --check validates without executing\n'

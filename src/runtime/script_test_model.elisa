@@ -61,6 +61,9 @@ module EsScriptTest:
 
         struct ScriptTestSession:
             cases: mutable darray[ScriptTestSpec] = []
+            # Sorted case indices make exact-name uniqueness validation linear
+            # at state-machine boundaries without changing source-order cases.
+            name_order: mutable darray[usize] = []
             state: mutable ScriptTestState = ScriptTestState.Planned
             next_case: mutable usize = 0
             active_case: mutable usize = Limits::NO_ACTIVE
@@ -90,6 +93,11 @@ module EsScriptTest:
             AccountingInvalid
             FunctionNotFound
             FunctionSignatureInvalid
+            SelectionLimitExceeded
+            SelectionInvalid
+            DuplicateSelection
+            SelectionNotFound
+            NameIndexInvalid
 
 
     private:
@@ -107,6 +115,14 @@ module EsScriptTest:
 
         def script_test_name_valid(name: sview) -> bool:
             return sview_len(name) != 0 and sview_len(name) < Limits::NAME_BYTES and not sview_contains_byte(name, 0)
+
+
+        def script_test_name_less(left: sview, right: sview) -> bool:
+            shared: usize = sview_len(left) if sview_len(left) < sview_len(right) else sview_len(right)
+            for index in 0..<shared |left, right|:
+                return true if sview_at(left, index) < sview_at(right, index)
+                return false if sview_at(left, index) > sview_at(right, index)
+            return sview_len(left) < sview_len(right)
 
 
         def script_test_message_valid(message: sview) -> bool:
@@ -152,8 +168,13 @@ module EsScriptTest:
                 counted_failed <- counted_failed + 1 if spec.state == ScriptTestCaseState.Failed
                 counted_running <- counted_running + 1 if spec.state == ScriptTestCaseState.Running
                 counted_cancelled <- counted_cancelled + 1 if spec.state == ScriptTestCaseState.Cancelled
-                for earlier in 0..<index |session, spec|:
-                    raise ScriptTestError.DuplicateName if session.cases[earlier].name == spec.name
+            raise ScriptTestError.NameIndexInvalid if session.name_order.count != session.cases.count
+            for order_index in 0..<session.name_order.count |session|:
+                case_index: usize = session.name_order[order_index]
+                raise ScriptTestError.NameIndexInvalid if case_index >= session.cases.count
+                if order_index != 0:
+                    previous_index: usize = session.name_order[order_index - 1]
+                    raise ScriptTestError.NameIndexInvalid if not script_test_name_less(session.cases[previous_index].name, session.cases[case_index].name)
             raise ScriptTestError.AccountingInvalid if counted_passed != session.passed or counted_failed != session.failed
             raise ScriptTestError.ActiveCase if counted_running > 1
             raise ScriptTestError.ActiveCase if session.active_case == Limits::NO_ACTIVE and counted_running != 0
@@ -221,9 +242,20 @@ module EsScriptTest:
                 raise ScriptTestError.TestLimitExceeded if session.cases.count >= Limits::TESTS
                 try validate_script_test_spec(spec)
                 raise ScriptTestError.InvalidOrdinal if spec.ordinal != session.cases.count
-                for existing in session.cases:
+                name_position: mutable usize = 0
+                while name_position < session.name_order.count |session, spec, name_position|:
+                    existing: ScriptTestSpec = session.cases[session.name_order[name_position]]
                     raise ScriptTestError.DuplicateName if existing.name == spec.name
+                    break if script_test_name_less(spec.name, existing.name)
+                    name_position <- name_position + 1
+                new_case_index: usize = session.cases.count
                 session.cases.push(spec)
+                session.name_order.push(new_case_index)
+                cursor: mutable usize = session.name_order.count - 1
+                while cursor > name_position |session, cursor, name_position|:
+                    session.name_order[cursor] <- session.name_order[cursor - 1]
+                    cursor <- cursor - 1
+                session.name_order[name_position] <- new_case_index
             elif event == ScriptTestEvent.Begin:
                 raise ScriptTestError.InvalidTransition if session.state != ScriptTestState.Planned
                 raise ScriptTestError.NoTests if session.cases.count == 0
@@ -265,3 +297,36 @@ module EsScriptTest:
                 session.state <- ScriptTestState.Cancelled
             try validate_script_test_session(session)
             return session.state
+
+
+        # Restrict a fresh discovery session to exact names while preserving
+        # source order. Validate all requested names before publishing a
+        # candidate so unknown/duplicate input cannot leave a partial suite.
+        # An empty selection means the caller requested the complete catalog.
+        def select_script_test_session(session: mutable ScriptTestSession&, selected_names: darray[sview]) -> bool error[ScriptTestError] can[Memory.Allocate, Abort.Panic]:
+            try validate_script_test_session(session)
+            raise ScriptTestError.InvalidState if session.state != ScriptTestState.Planned
+            return true if selected_names.count == 0
+            raise ScriptTestError.NoTests if session.cases.count == 0
+            raise ScriptTestError.SelectionLimitExceeded if selected_names.count > Limits::TESTS
+            for index in 0..<selected_names.count |selected_names|:
+                name: sview = selected_names[index]
+                raise ScriptTestError.SelectionInvalid if not script_test_name_valid(name)
+                for earlier in 0..<index |selected_names, name|:
+                    raise ScriptTestError.DuplicateSelection if selected_names[earlier] == name
+                found: mutable bool = false
+                for spec in session.cases:
+                    found <- true if spec.name == name
+                raise ScriptTestError.SelectionNotFound if not found
+
+            candidate: mutable ScriptTestSession = ScriptTestSession{}
+            for case_index in 0..<session.cases.count |session, selected_names, candidate|:
+                selected: mutable bool = false
+                for name in selected_names:
+                    selected <- true if session.cases[case_index].name == name
+                if selected:
+                    spec: ScriptTestSpec = ScriptTestSpec{ordinal: candidate.cases.count, name: session.cases[case_index].name, line: session.cases[case_index].line}
+                    try advance_script_test(candidate, ScriptTestEvent.Discover, Limits::NO_ACTIVE, spec)
+            try validate_script_test_session(candidate)
+            session <- candidate
+            return true

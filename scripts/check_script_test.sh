@@ -34,10 +34,12 @@ for declaration in \
     'struct ScriptTestSpec:' \
     'struct ScriptTestFailure:' \
     'struct ScriptTestSession:' \
+    'name_order: mutable darray[usize]' \
     'error ScriptTestError:' \
     'def validate_script_test_spec(' \
     'def validate_script_test_session(' \
-    'def advance_script_test('; do
+    'def advance_script_test(' \
+    'def select_script_test_session('; do
     rg -Fq "$declaration" "$model"
 done
 
@@ -77,6 +79,12 @@ for boundary in \
     'CancellationNotReady' \
     'FunctionNotFound' \
     'FunctionSignatureInvalid' \
+    'NameIndexInvalid' \
+    'name_order: mutable darray[usize]' \
+    'SelectionLimitExceeded' \
+    'SelectionInvalid' \
+    'DuplicateSelection' \
+    'SelectionNotFound' \
     'counted_cancelled' \
     'ScriptTestState.Cancelling' \
     'ScriptTestState.Cancelled' \
@@ -85,6 +93,9 @@ for boundary in \
     'try validate_script_test_session(session)'; do
     rg -Fq "$boundary" "$model"
 done
+rg -Fq 'session.name_order.count != session.cases.count' "$model"
+rg -Fq 'script_test_name_less(session.cases[previous_index].name, session.cases[case_index].name)' "$model"
+rg -Fq 'session.name_order.push(new_case_index)' "$model"
 
 for multi_case_boundary in \
     'elisascript_test_remaining_policy' \
@@ -126,7 +137,11 @@ for fixture_pattern in \
     'ScriptTestError.InvalidCaseState' \
     'ScriptTestCaseState.Cancelled' \
     'forged_running' \
-    'forged_cancelled'; do
+    'forged_cancelled' \
+    'NameIndexInvalid' \
+    'typed_script_test_selection_is_exact_transactional_and_source_ordered' \
+    'select_script_test_session' \
+    'name_order: [1, 0]'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 
@@ -145,6 +160,8 @@ for runner_fixture_pattern in \
     'runner stopped after test failure' \
     'cancelled before launch' \
     'runner_executes_source_buffer_tests_through_same_machine' \
+    'runner_executes_only_exact_selected_tests_in_source_order' \
+    'selected_names: selected' \
     'execute_elisascript_source_tests(' \
     'execute_elisascript_source_bytes_tests(' \
     'build_elisascript_test_report(' \
@@ -157,4 +174,4 @@ rg -Fq 'The runner' "$docs"
 rg -Fq 'ES-TEST-002 | `EsScriptTest`' "$ledger"
 rg -Fq 'ES-TEST-005 | runner discovery and single-case invocation' "$ledger"
 
-printf 'script test audit: bounded discovery, ordered execution, failure diagnostics, and cancellation are present\n'
+printf 'script test audit: bounded discovery, exact selection, ordered execution, failure diagnostics, and cancellation are present\n'

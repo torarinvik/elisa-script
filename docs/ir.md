@@ -100,15 +100,18 @@ code small while preventing driver implementation helpers from entering the
 program-wide namespace.
 
 `EsCli::CliInvocation` is the launcher argument contract: run/check/test/fmt/doc
-and help/version modes are explicit, `--color`, `--format`, and
+and help/version modes are explicit, `--color`, `--format`, `--select`, and
 `--strict-engine` are typed options, source-requiring modes accept only the
 `.elisascript` suffix, and the first source path ends launcher-option parsing.
+For `--test`, repeated `--select NAME` options request exact function names;
+the runner rejects duplicate or missing names and executes selected cases in
+source order. Selection options must appear before the source path.
 A literal `--` marks the script-argument boundary and is omitted from the script's argv;
 subsequent values are preserved byte-for-byte and are never shell-expanded.
 `validate_cli_invocation` enforces source,
-argument, NUL, and text ceilings, rejects source/script arguments for
-source-free help/version modes, rejects trailing arguments for `--test` until
-the test-selection channel is defined, and rejects repeated colors through
+argument, NUL, text, and test-selection ceilings, rejects source/script
+arguments for source-free help/version modes, rejects trailing script arguments
+for `--test` rather than discarding them, and rejects repeated colors through
 `error[CliContractError]`, while
 `parse_cli_arguments` rejects unknown options, duplicate modes/options, and
 missing option values before source loading.
@@ -131,16 +134,17 @@ source and bytecode but does not select or execute a backend.
 `EsDriver::run` now consumes that typed invocation directly. Help/version exit
 before source allocation. `--check` loads and type-checks the source, lowers
 and verifies its IR/bytecode, and returns success without requiring `main`,
-staging script arguments, or executing code. `--test` discovers and executes
-all top-level `@test` functions in source order, builds the bounded report,
+staging script arguments, or executing code. `--test` discovers top-level
+`@test` functions and executes either all of them or the exact names requested
+with `--select`, always in source order. It builds the bounded report,
 and streams it through the POSIX output transport; it returns nonzero
 for a failed suite and accepts `--format human|json|junit` for its bounded
 report document. Human output honors `--color` using `isatty(1)` for `auto`;
 `--color always` is rejected for JSON/JUnit reports. Test functions' own
 stdout/stderr is still written directly and is not captured into individual
-report records. Test/fmt/doc selection and per-test filtering remain
-unsupported; `--test` continues to reject trailing arguments rather than
-silently discarding them. Source arguments and the `--` boundary are passed to
+report records. Substring filtering and fmt/doc selection remain unsupported;
+`--test` continues to reject trailing arguments rather than silently
+discarding them. Source arguments and the `--` boundary are passed to
 the typed runner only for an actual program run.
 
 EsCliWorkflow separates planning from host execution. Each accepted mode maps
