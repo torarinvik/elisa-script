@@ -31,6 +31,11 @@ for checker in "$script_dir"/check_*.sh; do
 done
 
 for wrapper in "$lowering" "$test_wrapper"; do
+    rg -Uq 'umask 077\nvalidation_caller_path="\$\{PATH:-/usr/bin:/bin\}"\nPATH=/usr/bin:/bin\nexport PATH\nscript_dir=' "$wrapper"
+    rg -Fq 'validation_caller_path="${PATH:-/usr/bin:/bin}"' "$wrapper"
+    rg -Fq 'PATH=/usr/bin:/bin' "$wrapper"
+    rg -Fq 'export PATH' "$wrapper"
+    rg -Fq 'if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then' "$wrapper"
     rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED:-0' "$wrapper"
     rg -q 'elisascript-validation\.disabled' "$wrapper"
     rg -q 'sampled and reactive, not an OS-enforced hard memory cap' "$wrapper"
@@ -78,10 +83,10 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'case "\$setsid_path" in' "$wrapper"
     case "$wrapper" in
         "$lowering")
-            rg -Fq '"$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
+            rg -Fq 'PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
             ;;
         "$test_wrapper")
-            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
             ;;
     esac
     rg -q 'compiler_pgid' "$wrapper"
@@ -127,7 +132,8 @@ for wrapper in "$lowering" "$test_wrapper"; do
     fi
     rg -q 'validation_lease' "$wrapper"
     rg -Uq 'acquire_validation_lease\n\nif \[ -e "\$validation_disabled_file" \] \|\| \[ -L "\$validation_disabled_file" \]; then' "$wrapper"
-    rg -Fq 'sh "$script_dir/validation_identity.sh"' "$wrapper"
+    rg -Fq 'PATH="$validation_caller_path" ELISA_LOCAL_COMPILER="$compiler_path"' "$wrapper"
+    rg -Fq '/bin/sh "$script_dir/validation_identity.sh"' "$wrapper"
     rg -q 'validation_compiler_binary_revision' "$wrapper"
     rg -q 'validation_compiler_binary_modified' "$wrapper"
     rg -q 'compiler_binary_revision=%s.*compiler_binary_modified=%s' "$wrapper"
@@ -156,6 +162,15 @@ rg -Fq 'validation_process_group_rss_from_snapshot()' "$snapshot_library"
 rg -Fq 'validation_process_group_has_live_members_from_snapshot()' "$snapshot_library"
 rg -Fq 'validation_process_state_from_snapshot()' "$snapshot_library"
 rg -Fq 'validation_process_tree_identities_from_snapshot()' "$snapshot_library"
+rg -Fq '/usr/bin/awk -v target_pid=' "$snapshot_library"
+rg -Fq '/usr/bin/awk -v group=' "$snapshot_library"
+rg -Fq '/usr/bin/awk -v target=' "$snapshot_library"
+rg -Fq '/usr/bin/awk -v root=' "$snapshot_library"
+rg -Fq '/usr/bin/awk -v group="$1" -v root="$2"' "$snapshot_library"
+if rg -q '^[[:space:]]*awk[[:space:]]+-v' "$snapshot_library"; then
+    printf 'validation wrapper audit: snapshot parsers must not resolve awk through caller PATH\n' >&2
+    exit 1
+fi
 rg -Fq 'NF != 8' "$snapshot_library"
 rg -Fq 'start_token[pid] = $4 "-" $5 "-" $6 "-" $7 "-" $8' "$snapshot_library"
 rg -Fq 'target_state ~ /^Z/' "$snapshot_library"
@@ -220,6 +235,10 @@ for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; 
 done
 
 rg -q 'emergency-stop latch' "$stopper"
+rg -Uq 'umask 077\nPATH=/usr/bin:/bin\nexport PATH\nscript_dir=' "$stopper"
+rg -Fq 'if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then' "$stopper"
+rg -Fq 'PATH=/usr/bin:/bin' "$stopper"
+rg -Fq 'export PATH' "$stopper"
 rg -q 'owner\.start' "$stopper"
 rg -q 'process_tree_snapshot' "$stopper"
 rg -Fq '. "$script_dir/validation_process_snapshot.sh"' "$stopper"

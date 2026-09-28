@@ -8,6 +8,9 @@
 
 set -u
 umask 077
+validation_caller_path="${PATH:-/usr/bin:/bin}"
+PATH=/usr/bin:/bin
+export PATH
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/validation_process_snapshot.sh"
 
@@ -68,6 +71,10 @@ if [ -z "$setsid_path" ]; then
 fi
 if [ ! -x /bin/ps ]; then
     echo "run_bounded_lowering: refusing to launch without the pinned /bin/ps process sampler" >&2
+    exit 125
+fi
+if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then
+    echo "run_bounded_lowering: refusing to launch without pinned process-snapshot tools" >&2
     exit 125
 fi
 
@@ -399,7 +406,7 @@ if [ -e "$validation_disabled_file" ] || [ -L "$validation_disabled_file" ]; the
 fi
 
 validation_mode="lowered"
-if ! validation_identity_output="$(ELISA_LOCAL_COMPILER="$compiler_path" ELISASCRIPT_VALIDATION_OPT_LEVEL=O0 ELISASCRIPT_VALIDATION_TARGET=native ELISASCRIPT_VALIDATION_MODE="$validation_mode" sh "$script_dir/validation_identity.sh")"; then
+if ! validation_identity_output="$(PATH="$validation_caller_path" ELISA_LOCAL_COMPILER="$compiler_path" ELISASCRIPT_VALIDATION_OPT_LEVEL=O0 ELISASCRIPT_VALIDATION_TARGET=native ELISASCRIPT_VALIDATION_MODE="$validation_mode" /bin/sh "$script_dir/validation_identity.sh")"; then
     echo "run_bounded_lowering: unable to establish compiler/configuration identity; refusing to launch" >&2
     exit 125
 fi
@@ -534,7 +541,7 @@ for source_file in "$@"; do
         exit 125
     fi
     metadata_finalized=0
-    "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot" >"$log_file" 2>&1 &
+    PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot" >"$log_file" 2>&1 &
     compiler_pid=$!
     compiler_pgid="$(process_group_for_pid "$compiler_pid")"
     if ! {

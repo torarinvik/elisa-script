@@ -31,7 +31,7 @@ validation_process_start_token_matches() {
 # without pidfd-style handles, but stale/recycled PIDs and changed process
 # groups are rejected before a per-PID signal is attempted.
 validation_process_identity_matches_from_snapshot() {
-    awk -v target_pid="$1" -v target_group="$2" -v target_start="$3" -v wrapper_group="$4" -v row_limit="$5" '
+    /usr/bin/awk -v target_pid="$1" -v target_group="$2" -v target_start="$3" -v wrapper_group="$4" -v row_limit="$5" '
         BEGIN {
             if (target_pid !~ /^[0-9]+$/ || target_pid == "0" ||
                 target_group !~ /^[0-9]+$/ || target_group == "0" ||
@@ -70,7 +70,7 @@ validation_process_identity_matches_from_snapshot() {
 }
 
 validation_process_group_has_live_members_from_snapshot() {
-    awk -v group="$1" -v row_limit="$2" '
+    /usr/bin/awk -v group="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
             if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
@@ -94,7 +94,7 @@ validation_process_group_has_live_members_from_snapshot() {
 }
 
 validation_process_state_from_snapshot() {
-    awk -v target="$1" -v row_limit="$2" '
+    /usr/bin/awk -v target="$1" -v row_limit="$2" '
         BEGIN { if (target !~ /^[0-9]+$/ || target == "0") malformed = 1 }
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
@@ -128,7 +128,7 @@ validation_process_state_from_snapshot() {
 }
 
 validation_process_tree_pids_from_snapshot() {
-    awk -v root="$1" -v row_limit="$2" '
+    /usr/bin/awk -v root="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
             if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
@@ -168,7 +168,7 @@ validation_process_tree_pids_from_snapshot() {
 }
 
 validation_process_tree_identities_from_snapshot() {
-    awk -v root="$1" -v row_limit="$2" '
+    /usr/bin/awk -v root="$1" -v row_limit="$2" '
         NR > row_limit + 1 { overflow = 1; exit }
         $1 == "__ELISASCRIPT_PS_STATUS__" {
             if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
@@ -214,7 +214,7 @@ validation_process_tree_identities_from_snapshot() {
 }
 
 validation_process_group_rss_from_snapshot() {
-    awk -v group="$1" -v root="$2" -v row_limit="$3" '
+    /usr/bin/awk -v group="$1" -v root="$2" -v row_limit="$3" '
         function process_id_valid(value) {
             return value ~ /^[0-9]+$/ && length(value) <= 10 && value + 0 <= 2147483647
         }

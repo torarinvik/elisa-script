@@ -6,6 +6,8 @@
 
 set -u
 umask 077
+PATH=/usr/bin:/bin
+export PATH
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 if ! . "$script_dir/validation_process_snapshot.sh"; then
     echo "stop_bounded_validation: unable to load process snapshot helpers; refusing to signal" >&2
@@ -33,6 +35,10 @@ if [ ! -e "$validation_disabled_file/reason" ]; then
 fi
 if [ ! -x /bin/ps ]; then
     echo "stop_bounded_validation: pinned /bin/ps process sampler is unavailable; refusing to signal" >&2
+    exit 125
+fi
+if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then
+    echo "stop_bounded_validation: pinned process-snapshot tools are unavailable; refusing to signal" >&2
     exit 125
 fi
 
