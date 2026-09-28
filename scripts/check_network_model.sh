@@ -52,21 +52,26 @@ for declaration in \
 done
 
 for boundary in \
-    'NETWORK_MAX_URL_BYTES' \
-    'NETWORK_MAX_HEADER_BYTES' \
-    'NETWORK_MAX_BODY_BYTES' \
-    'NETWORK_MAX_RETRY_ATTEMPTS' \
-    'NETWORK_MAX_BACKOFF_MICROS' \
-    'NETWORK_MAX_TLS_PATH_BYTES' \
-    'NETWORK_MAX_CHUNK_BYTES' \
-    'NETWORK_MAX_BUFFER_BYTES' \
-    'NETWORK_MAX_STREAM_CHUNKS' \
+    'const module Limits:' \
+    'Limits::URL_BYTES' \
+    'Limits::HEADER_BYTES' \
+    'Limits::HEADER_COMPARISON_WORK' \
+    'Limits::BODY_BYTES' \
+    'Limits::RETRY_ATTEMPTS' \
+    'Limits::BACKOFF_MICROS' \
+    'Limits::TLS_PATH_BYTES' \
+    'Limits::CHUNK_BYTES' \
+    'Limits::BUFFER_BYTES' \
+    'Limits::STREAM_CHUNKS' \
     'network_headers_valid' \
+    'network_sensitive_header_names_valid' \
     'network_header_name_byte_valid' \
     'network_header_value_valid' \
     'network_header_name_byte_equal' \
     'network_header_names_equal' \
     'left_folded' \
+    'HeaderComparisonLimitExceeded' \
+    'comparison_work' \
     'network_method_is_idempotent' \
     'network_retry_backoff_micros' \
     'network_tls_path_valid' \
@@ -118,6 +123,8 @@ for fixture_pattern in \
     'NetworkRequestState.Cancelling' \
     'NetworkRequestState.Cancelled' \
     'NetworkContractError.DuplicateHeaderName' \
+    'request_header_duplicate_comparison_work_is_bounded' \
+    'NetworkContractError.HeaderComparisonLimitExceeded' \
     'repeated_response_fields' \
     'session=two' \
     '</page/3>; rel=next' \

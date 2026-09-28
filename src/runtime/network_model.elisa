@@ -6,16 +6,18 @@
 
 module EsNetwork:
     public:
-        const NETWORK_MAX_URL_BYTES: usize = 16384
-        const NETWORK_MAX_HEADER_BYTES: usize = 1048576
-        const NETWORK_MAX_SENSITIVE_HEADER_NAMES: usize = 128
-        const NETWORK_MAX_BODY_BYTES: usize = 67108864
-        const NETWORK_MAX_RETRY_ATTEMPTS: usize = 8
-        const NETWORK_MAX_BACKOFF_MICROS: u64 = 60000000
-        const NETWORK_MAX_TLS_PATH_BYTES: usize = 4096
-        const NETWORK_MAX_CHUNK_BYTES: usize = 1048576
-        const NETWORK_MAX_BUFFER_BYTES: usize = 16777216
-        const NETWORK_MAX_STREAM_CHUNKS: usize = 1048576
+        const module Limits:
+            URL_BYTES: usize = 16384
+            HEADER_BYTES: usize = 1048576
+            HEADER_COMPARISON_WORK: usize = 1048576
+            SENSITIVE_HEADER_NAMES: usize = 128
+            BODY_BYTES: usize = 67108864
+            RETRY_ATTEMPTS: usize = 8
+            BACKOFF_MICROS: u64 = 60000000
+            TLS_PATH_BYTES: usize = 4096
+            CHUNK_BYTES: usize = 1048576
+            BUFFER_BYTES: usize = 16777216
+            STREAM_CHUNKS: usize = 1048576
 
 
         const enum NetworkMethod of u8:
@@ -108,7 +110,7 @@ module EsNetwork:
             state: NetworkStreamState = NetworkStreamState.Idle
             next_sequence: usize = 0
             buffered_bytes: usize = 0
-            max_buffer_bytes: usize = NETWORK_MAX_BUFFER_BYTES
+            max_buffer_bytes: usize = Limits::BUFFER_BYTES
             final_seen: bool = false
 
 
@@ -151,7 +153,7 @@ module EsNetwork:
             sensitive_headers: darray[sview] = []
             body: darray[u8] = []
             timeout_micros: u64 = 0
-            max_response_bytes: usize = NETWORK_MAX_BODY_BYTES
+            max_response_bytes: usize = Limits::BODY_BYTES
             follow_redirects: bool = false
             retry: NetworkRetryPolicy = NetworkRetryPolicy{}
             tls: NetworkTlsPolicy = NetworkTlsPolicy{}
@@ -176,6 +178,7 @@ module EsNetwork:
             HeaderNameInvalid
             HeaderValueInvalid
             DuplicateHeaderName
+            HeaderComparisonLimitExceeded
             SensitiveHeaderLimitExceeded
             SensitiveHeaderNameInvalid
             DuplicateSensitiveHeaderName
@@ -234,7 +237,7 @@ module EsNetwork:
 
 
         def network_tls_path_valid(value: sview) -> bool:
-            return value == "" or (sview_len(value) < NETWORK_MAX_TLS_PATH_BYTES and not sview_contains_byte(value, 0))
+            return value == "" or (sview_len(value) < Limits::TLS_PATH_BYTES and not sview_contains_byte(value, 0))
 
 
         def network_url_prefix_matches(url: sview, prefix: sview) -> bool:
@@ -332,14 +335,14 @@ module EsNetwork:
 
 
         def network_header_name_valid(name: sview) -> bool:
-            return false if sview_len(name) == 0 or not network_text_valid(name, NETWORK_MAX_HEADER_BYTES)
+            return false if sview_len(name) == 0 or not network_text_valid(name, Limits::HEADER_BYTES)
             for index in 0..<sview_len(name) |name|:
                 return false if not network_header_name_byte_valid(sview_at(name, index))
             return true
 
 
         def network_header_value_valid(value: sview) -> bool:
-            return false if not network_text_valid(value, NETWORK_MAX_HEADER_BYTES)
+            return false if not network_text_valid(value, Limits::HEADER_BYTES)
             for index in 0..<sview_len(value) |value|:
                 byte: u8 = sview_at(value, index)
                 return false if byte < 32u8 and byte != 9u8
@@ -364,37 +367,50 @@ module EsNetwork:
         def network_headers_valid(headers: darray[sview], reject_duplicate_names: bool) -> bool error[NetworkContractError]:
             raise NetworkContractError.HeaderVectorMalformed if headers.count % 2 != 0
             total: mutable usize = 0
-            for offset in 0..<headers.count |headers, total|:
+            comparison_work: mutable usize = 0
+            for offset in 0..<headers.count |headers, total, comparison_work|:
                 entry: sview = headers[offset]
-                raise NetworkContractError.HeaderLimitExceeded if not network_text_length_valid(entry, NETWORK_MAX_HEADER_BYTES)
+                raise NetworkContractError.HeaderLimitExceeded if not network_text_length_valid(entry, Limits::HEADER_BYTES)
                 raise NetworkContractError.EmbeddedNul if sview_contains_byte(entry, 0)
                 if offset % 2 == 0:
                     raise NetworkContractError.HeaderNameInvalid if not network_header_name_valid(entry)
                     if reject_duplicate_names:
-                        for earlier in 0..<offset |headers, entry|:
-                            raise NetworkContractError.DuplicateHeaderName if earlier % 2 == 0 and network_header_names_equal(headers[earlier], entry)
+                        for earlier in 0..<offset |headers, entry, comparison_work|:
+                            if earlier % 2 == 0:
+                                previous_name: sview = headers[earlier]
+                                shared_name_bytes: usize = sview_len(previous_name) if sview_len(previous_name) < sview_len(entry) else sview_len(entry)
+                                comparison_cost: usize = shared_name_bytes + 1
+                                raise NetworkContractError.HeaderComparisonLimitExceeded if comparison_cost > Limits::HEADER_COMPARISON_WORK - comparison_work
+                                comparison_work <- comparison_work + comparison_cost
+                                raise NetworkContractError.DuplicateHeaderName if network_header_names_equal(previous_name, entry)
                 else:
                     raise NetworkContractError.HeaderValueInvalid if not network_header_value_valid(entry)
-                raise NetworkContractError.HeaderLimitExceeded if total > NETWORK_MAX_HEADER_BYTES - sview_len(entry) - 1
+                raise NetworkContractError.HeaderLimitExceeded if total > Limits::HEADER_BYTES - sview_len(entry) - 1
                 total <- total + sview_len(entry) + 1
             return true
 
 
         def network_sensitive_header_names_valid(names: darray[sview]) -> bool error[NetworkContractError]:
-            raise NetworkContractError.SensitiveHeaderLimitExceeded if names.count > NETWORK_MAX_SENSITIVE_HEADER_NAMES
+            raise NetworkContractError.SensitiveHeaderLimitExceeded if names.count > Limits::SENSITIVE_HEADER_NAMES
             total: mutable usize = 0
-            for index in 0..<names.count |names|:
+            comparison_work: mutable usize = 0
+            for index in 0..<names.count |names, comparison_work|:
                 raise NetworkContractError.SensitiveHeaderNameInvalid if not network_header_name_valid(names[index])
-                for earlier in 0..<index |names|:
-                    raise NetworkContractError.DuplicateSensitiveHeaderName if network_header_names_equal(names[earlier], names[index])
-                raise NetworkContractError.HeaderLimitExceeded if total > NETWORK_MAX_HEADER_BYTES - sview_len(names[index]) - 1
+                for earlier in 0..<index |names, index, comparison_work|:
+                    previous_name: sview = names[earlier]
+                    shared_name_bytes: usize = sview_len(previous_name) if sview_len(previous_name) < sview_len(names[index]) else sview_len(names[index])
+                    comparison_cost: usize = shared_name_bytes + 1
+                    raise NetworkContractError.HeaderComparisonLimitExceeded if comparison_cost > Limits::HEADER_COMPARISON_WORK - comparison_work
+                    comparison_work <- comparison_work + comparison_cost
+                    raise NetworkContractError.DuplicateSensitiveHeaderName if network_header_names_equal(previous_name, names[index])
+                raise NetworkContractError.HeaderLimitExceeded if total > Limits::HEADER_BYTES - sview_len(names[index]) - 1
                 total <- total + sview_len(names[index]) + 1
             return true
 
 
         def network_url_append_view(output: mutable darray[u8]&, value: sview) -> void error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
-            raise NetworkContractError.RedirectTargetLimitExceeded if output.count >= NETWORK_MAX_URL_BYTES
-            raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(value) > NETWORK_MAX_URL_BYTES - 1 - output.count
+            raise NetworkContractError.RedirectTargetLimitExceeded if output.count >= Limits::URL_BYTES
+            raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(value) > Limits::URL_BYTES - 1 - output.count
             for byte in value |output|:
                 output.push(byte)
 
@@ -453,9 +469,9 @@ module EsNetwork:
             def validate_network_stream(stream: NetworkStream&) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidStreamDirection if not network_stream_direction_valid(stream.direction)
                 raise NetworkContractError.InvalidStreamState if not network_stream_state_valid(stream.state)
-                raise NetworkContractError.StreamBufferExceeded if stream.max_buffer_bytes == 0 or stream.max_buffer_bytes > NETWORK_MAX_BUFFER_BYTES
+                raise NetworkContractError.StreamBufferExceeded if stream.max_buffer_bytes == 0 or stream.max_buffer_bytes > Limits::BUFFER_BYTES
                 raise NetworkContractError.StreamBufferExceeded if stream.buffered_bytes > stream.max_buffer_bytes
-                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence > NETWORK_MAX_STREAM_CHUNKS
+                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence > Limits::STREAM_CHUNKS
                 raise NetworkContractError.StreamAccountingInvalid if stream.next_sequence == 0 and (stream.buffered_bytes != 0 or stream.final_seen)
                 raise NetworkContractError.StreamAccountingInvalid if stream.state == NetworkStreamState.Idle and (stream.next_sequence != 0 or stream.buffered_bytes != 0 or stream.final_seen)
                 raise NetworkContractError.StreamAccountingInvalid if stream.state == NetworkStreamState.Finished and (stream.next_sequence == 0 or not stream.final_seen or stream.buffered_bytes != 0)
@@ -503,11 +519,11 @@ module EsNetwork:
                 try validate_network_stream(stream)
                 raise NetworkContractError.InvalidStreamState if stream.state != NetworkStreamState.Open
                 raise NetworkContractError.InvalidChunk if chunk.bytes.count == 0 and not chunk.final_chunk
-                raise NetworkContractError.ChunkLimitExceeded if chunk.bytes.count > NETWORK_MAX_CHUNK_BYTES
+                raise NetworkContractError.ChunkLimitExceeded if chunk.bytes.count > Limits::CHUNK_BYTES
                 raise NetworkContractError.ChunkSequenceMismatch if chunk.sequence != stream.next_sequence
                 raise NetworkContractError.ChunkSequenceMismatch if stream.final_seen
                 raise NetworkContractError.StreamBufferExceeded if chunk.bytes.count > stream.max_buffer_bytes - stream.buffered_bytes
-                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence >= NETWORK_MAX_STREAM_CHUNKS
+                raise NetworkContractError.ChunkSequenceMismatch if stream.next_sequence >= Limits::STREAM_CHUNKS
                 stream.buffered_bytes <- stream.buffered_bytes + chunk.bytes.count
                 stream.next_sequence <- stream.next_sequence + 1
                 stream.final_seen <- chunk.final_chunk if chunk.final_chunk
@@ -537,7 +553,7 @@ module EsNetwork:
             def advance_network_request(job: mutable NetworkRequestJob&, event: NetworkRequestEvent) -> NetworkRequestState error[NetworkContractError]:
                 raise NetworkContractError.InvalidRequestState if not network_request_state_valid(job.state)
                 raise NetworkContractError.InvalidRequestEvent if not network_request_event_valid(event)
-                raise NetworkContractError.InvalidRetryAttempts if job.max_attempts == 0 or job.max_attempts > NETWORK_MAX_RETRY_ATTEMPTS
+                raise NetworkContractError.InvalidRetryAttempts if job.max_attempts == 0 or job.max_attempts > Limits::RETRY_ATTEMPTS
                 raise NetworkContractError.RetryLimitExceeded if job.attempts > job.max_attempts
                 raise NetworkContractError.InvalidRequestState if network_request_state_requires_attempt(job.state) and job.attempts == 0
                 raise NetworkContractError.RetryLimitExceeded if job.state == NetworkRequestState.Planned and job.attempts >= job.max_attempts
@@ -582,8 +598,8 @@ module EsNetwork:
 
             def validate_network_retry_policy(policy: NetworkRetryPolicy&, method: NetworkMethod) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidRetryMode if not network_retry_mode_valid(policy.mode)
-                raise NetworkContractError.InvalidRetryAttempts if policy.max_attempts == 0 or policy.max_attempts > NETWORK_MAX_RETRY_ATTEMPTS
-                raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros > NETWORK_MAX_BACKOFF_MICROS or policy.max_backoff_micros > NETWORK_MAX_BACKOFF_MICROS
+                raise NetworkContractError.InvalidRetryAttempts if policy.max_attempts == 0 or policy.max_attempts > Limits::RETRY_ATTEMPTS
+                raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros > Limits::BACKOFF_MICROS or policy.max_backoff_micros > Limits::BACKOFF_MICROS
                 raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros > policy.max_backoff_micros
                 if policy.max_attempts == 1:
                     raise NetworkContractError.InvalidRetryBackoff if policy.initial_backoff_micros != 0 or policy.max_backoff_micros != 0
@@ -613,7 +629,7 @@ module EsNetwork:
 
             def network_url_uses_tls(url: sview) -> bool error[NetworkContractError]:
                 raise NetworkContractError.MissingUrl if url == ""
-                raise NetworkContractError.UrlLimitExceeded if not network_text_length_valid(url, NETWORK_MAX_URL_BYTES)
+                raise NetworkContractError.UrlLimitExceeded if not network_text_length_valid(url, Limits::URL_BYTES)
                 raise NetworkContractError.EmbeddedNul if sview_contains_byte(url, 0)
                 raise NetworkContractError.InvalidUrl if not network_url_valid(url)
                 return network_url_scheme_is_tls(url)
@@ -624,7 +640,7 @@ module EsNetwork:
             # `bytes_view(buffer)` as its current URL.
             def network_resolve_redirect_location(base_url: sview, location: sview) -> darray[u8] error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
                 base_uses_tls: bool = try network_url_uses_tls(base_url)
-                raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(location) >= NETWORK_MAX_URL_BYTES
+                raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(location) >= Limits::URL_BYTES
                 raise NetworkContractError.EmbeddedNul if sview_contains_byte(location, 0)
                 for index in 0..<sview_len(location) |location|:
                     byte: u8 = sview_at(location, index)
@@ -721,9 +737,9 @@ module EsNetwork:
                 _ = try network_url_uses_tls(request.url)
                 raise NetworkContractError.HeaderVectorMalformed if not network_headers_valid(request.headers, true)
                 try network_sensitive_header_names_valid(request.sensitive_headers)
-                raise NetworkContractError.BodyLimitExceeded if request.body.count > NETWORK_MAX_BODY_BYTES
+                raise NetworkContractError.BodyLimitExceeded if request.body.count > Limits::BODY_BYTES
                 raise NetworkContractError.InvalidTimeout if request.timeout_micros == 0
-                raise NetworkContractError.InvalidResponseLimit if request.max_response_bytes == 0 or request.max_response_bytes > NETWORK_MAX_BODY_BYTES
+                raise NetworkContractError.InvalidResponseLimit if request.max_response_bytes == 0 or request.max_response_bytes > Limits::BODY_BYTES
                 try validate_network_retry_policy(request.retry, request.method)
                 try validate_network_tls_policy(request.tls)
                 return true
@@ -734,8 +750,8 @@ module EsNetwork:
                 # Responses may legally contain repeated field lines such as
                 # Set-Cookie; preserve their order for field-specific handling.
                 raise NetworkContractError.HeaderVectorMalformed if not network_headers_valid(response.headers, false)
-                raise NetworkContractError.BodyLimitExceeded if response.body.count > NETWORK_MAX_BODY_BYTES
-                raise NetworkContractError.ErrorTextInvalid if not network_text_valid(response.error_text, NETWORK_MAX_BODY_BYTES)
+                raise NetworkContractError.BodyLimitExceeded if response.body.count > Limits::BODY_BYTES
+                raise NetworkContractError.ErrorTextInvalid if not network_text_valid(response.error_text, Limits::BODY_BYTES)
                 if response.outcome == NetworkOutcome.Success:
                     raise NetworkContractError.InvalidStatus if response.status < 200 or response.status > 399
                 elif response.outcome == NetworkOutcome.StatusFailure:
