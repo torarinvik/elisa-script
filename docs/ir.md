@@ -2463,7 +2463,8 @@ separate adapters.
 
 `EsNetwork::NetworkRequest` and `NetworkResponse` define a transport-neutral
 HTTP/TLS boundary. Requests carry an explicit method, URL, ordered header pairs,
-binary body, positive timeout, response ceiling, and redirect policy; responses
+binary body, positive timeout, response ceiling, redirect policy, and an
+optional bounded list of application-specific sensitive header names; responses
 carry a closed outcome (`Success`, DNS/TLS/transport failure, timeout, protocol,
 status, decode, or cancellation), status, headers, body, and bounded error text.
 `validate_network_request` and `validate_network_response` reject malformed or
@@ -2515,12 +2516,16 @@ the DNS/connect/(optional TLS)/send/receive order, charges request and response
 bytes before advancing, caps polls and redirects, and requires explicit
 redirect opt-in. A redirect event must include its resolved absolute HTTP(S)
 target; only 301, 302, 303, 307, and 308 are followed. The session updates its
-current URL and TLS route, rejects HTTPS-to-HTTP downgrade, rewrites POST to
+current URL and TLS route, rejects HTTPS-to-HTTP downgrade, and sets a sticky
+`strip_sensitive_headers` flag after crossing origins. The adapter can use
+`network_request_header_is_sensitive` to omit `Authorization`,
+`Proxy-Authorization`, `Cookie`, `Cookie2`, and application-declared sensitive
+names on later hops; the origin comparison is deliberately conservative about
+authority spellings. The session rewrites POST to
 GET on 301/302 and non-GET/HEAD methods to GET on 303, and preserves method/body
 for 307/308. Relative `Location` resolution remains the adapter's responsibility.
-Redirect adapters must also strip sensitive headers across origins and
-recompute body-framing headers; the session tracks the effective method and
-body-byte budget but does not own serialized headers.
+Redirect adapters must recompute body-framing headers; the session tracks the
+effective method and body-byte budget but does not own serialized headers.
 Each redirect is an explicit `Receiving → Resolving` edge that clears
 transient request/response accounting before the next resolution. It preserves
 status failures as typed completed outcomes, and exposes retry/failure/cancellation edges without
