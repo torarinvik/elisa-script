@@ -36,11 +36,29 @@ minimal_native_main="$minimal_native_root/src/main.c"
 minimal_native_main_variant="$minimal_native_root/src/main_variant.c"
 minimal_native_parity="$repo_root/test/script_parity/minimal_native_build_launcher_test.elisascript"
 bounded_bytes_reader="$repo_root/src/runtime/bounded_bytes_posix.elisa"
+recipe_signature_model="$repo_root/src/runtime/build_recipe_signature.elisa"
+recipe_signature_fixture="$repo_root/test/runtime/build_recipe_signature_test.elisa"
 docs="$repo_root/docs/ir.md"
 
 for required_file in "$model" "$ir" "$fixture" "$usage_model" "$usage_fixture" "$usage_argv_model" "$usage_argv_fixture" "$usage_graph_model" "$usage_graph_fixture" "$target_usage_candidate" "$executor_model" "$executor_fixture" "$process_model" "$process_posix" "$sequential_tools_reference" "$sequential_tools_candidate" "$sequential_tools_expected" "$sequential_tools_contract" "$sequential_tools_parity" "$incremental_executor_fixture" "$incremental_model" "$incremental_posix" "$incremental_posix_executor" "$minimal_native_candidate" "$minimal_native_cmake" "$minimal_native_main" "$minimal_native_main_variant" "$minimal_native_root/include/generated_build_config.h.in" "$minimal_native_root/include/generated_build_config_variant.h.in" "$minimal_native_parity" "$bounded_bytes_reader" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
+
+for required_file in "$recipe_signature_model" "$recipe_signature_fixture"; do
+    [[ -f "$required_file" ]] || { printf 'build model audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for signature_boundary in \
+    'def signature_graph_recipe_shape_valid(' \
+    'return false if node.name != recipe.name' \
+    'return false if node.dependencies.count != recipe.dependencies.count' \
+    'return false if graph.nodes[dependency_index].name != recipe.dependencies[dependency_position]' \
+    'BuildRecipeSignatureError.InvalidRecipe if not signature_graph_recipe_shape_valid(graph, recipes)'; do
+    rg -Fq "$signature_boundary" "$recipe_signature_model"
+done
+rg -Fq 'def build_recipe_signature_rejects_graph_recipe_misalignment()' "$recipe_signature_fixture"
+rg -Fq 'name_mismatch_rejected' "$recipe_signature_fixture"
+rg -Fq 'dependency_mismatch_rejected' "$recipe_signature_fixture"
 
 for declaration in \
     'module EsBuild:' \
