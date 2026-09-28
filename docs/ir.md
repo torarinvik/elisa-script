@@ -2511,10 +2511,17 @@ cancellation clears buffered bytes and final-chunk state before both the
 `Cancelling` and `Cancelled` states are exposed.
 
 EsNetworkSession binds those policies to one transport attempt. It requires
-the DNS/connect/TLS/send/receive order, charges request and response bytes
-before advancing, caps polls and redirects, requires explicit redirect opt-in,
-and models each redirect as an
-explicit `Receiving → Resolving` edge that validates a 3xx status and clears
+the DNS/connect/(optional TLS)/send/receive order, charges request and response
+bytes before advancing, caps polls and redirects, and requires explicit
+redirect opt-in. A redirect event must include its resolved absolute HTTP(S)
+target; only 301, 302, 303, 307, and 308 are followed. The session updates its
+current URL and TLS route, rejects HTTPS-to-HTTP downgrade, rewrites POST to
+GET on 301/302 and non-GET/HEAD methods to GET on 303, and preserves method/body
+for 307/308. Relative `Location` resolution remains the adapter's responsibility.
+Redirect adapters must also strip sensitive headers across origins and
+recompute body-framing headers; the session tracks the effective method and
+body-byte budget but does not own serialized headers.
+Each redirect is an explicit `Receiving → Resolving` edge that clears
 transient request/response accounting before the next resolution. It preserves
 status failures as typed completed outcomes, and exposes retry/failure/cancellation edges without
 opening sockets itself. Planned/retry states clear transient I/O fields,
@@ -2522,9 +2529,10 @@ completed states require a real status, and failure/cancellation outcomes must
 match their states; `StatusFailure` failures require a non-2xx/3xx HTTP status,
 while other failures retain neutral status. A failure edge cannot carry the distinct `Cancelled`
 outcome; cancellation must use the explicit cancellation state machine.
-Completed sessions also require the full request body to be accounted for, and
-cancellation states cannot retain an HTTP status; every post-planned state must
-also account for at least one consumed attempt.
+Completed sessions also require the effective request body for the current
+redirect hop to be accounted for, and cancellation states cannot retain an
+HTTP status; every post-planned state must also account for at least one
+consumed attempt.
 Active transport phases also retain the neutral success/zero-status pair until
 the explicit receive-completion or failure edge.
 

@@ -1,8 +1,9 @@
 # Typed network-session adapter boundary.
 #
 # NetworkRequest describes policy; NetworkSession describes one bounded
-# transport attempt. DNS, connect, TLS, send, receive, retry, and cancellation
-# are explicit events, while sockets and TLS libraries remain host adapters.
+# transport attempt. DNS, connect, optional TLS, send, receive, redirects,
+# retry, and cancellation are explicit events, while sockets and TLS libraries
+# remain host adapters.
 
 module EsNetworkSession:
     using EsNetwork
@@ -46,6 +47,9 @@ module EsNetworkSession:
         struct NetworkSession:
             request: NetworkRequest
             state: NetworkSessionState = NetworkSessionState.Planned
+            current_url: sview = ""
+            current_method: NetworkMethod = NetworkMethod.Get
+            current_body_bytes: usize = 0
             tls_established: bool = false
             attempts: usize = 0
             redirects: usize = 0
@@ -69,6 +73,8 @@ module EsNetworkSession:
             InvalidOutcome
             RedirectNotAllowed
             InvalidRedirectStatus
+            InvalidRedirectTarget
+            RedirectTlsDowngrade
             RetryNotReady
             CancelNotReady
             AccountingInvalid
@@ -95,9 +101,9 @@ module EsNetworkSession:
             return outcome in {NetworkOutcome.Success, NetworkOutcome.DnsFailure, NetworkOutcome.TlsFailure, NetworkOutcome.TransportFailure, NetworkOutcome.Timeout, NetworkOutcome.ProtocolFailure, NetworkOutcome.StatusFailure, NetworkOutcome.DecodeFailure, NetworkOutcome.Cancelled}
 
 
-        def session_request_uses_tls(request: NetworkRequest&) -> bool error[NetworkSessionError]:
+        def session_url_uses_tls(url: sview) -> bool error[NetworkSessionError]:
             uses_tls: mutable bool = false
-            catch network_url_uses_tls(request.url):
+            catch network_url_uses_tls(url):
                 ok value:
                     uses_tls <- value
                 error failure:
@@ -115,33 +121,48 @@ module EsNetworkSession:
                 error failure:
                     valid_request <- false
             raise NetworkSessionError.InvalidRequest if not valid_request
-            uses_tls: bool = try session_request_uses_tls(session.request)
+            if session.state == NetworkSessionState.Planned:
+                raise NetworkSessionError.AccountingInvalid if session.current_url != ""
+            else:
+                raise NetworkSessionError.AccountingInvalid if session.current_url == ""
+            uses_tls: mutable bool = false
+            if session.state != NetworkSessionState.Planned:
+                uses_tls <- try session_url_uses_tls(session.current_url)
             raise NetworkSessionError.AttemptLimitExceeded if session.attempts > session.request.retry.max_attempts
             raise NetworkSessionError.RedirectLimitExceeded if session.redirects > Limits::REDIRECTS
             raise NetworkSessionError.PollLimitExceeded if session.polls > Limits::POLLS
-            raise NetworkSessionError.SendAccountingInvalid if session.sent_bytes > session.request.body.count
+            raise NetworkSessionError.SendAccountingInvalid if session.current_body_bytes > session.request.body.count or session.sent_bytes > session.current_body_bytes
             raise NetworkSessionError.ReceiveLimitExceeded if session.received_bytes > session.request.max_response_bytes
             raise NetworkSessionError.InvalidOutcome if not session_outcome_valid(session.outcome)
             raise NetworkSessionError.InvalidStatus if session.status != 0 and (session.status < 100 or session.status > 599)
             raise NetworkSessionError.AccountingInvalid if session_state_requires_attempt(session.state) and session.attempts == 0
             raise NetworkSessionError.AccountingInvalid if session_state_active(session.state) and (session.status != 0 or session.outcome != NetworkOutcome.Success)
             raise NetworkSessionError.AccountingInvalid if session.state == NetworkSessionState.Planned and (session.sent_bytes != 0 or session.received_bytes != 0 or session.status != 0 or session.outcome != NetworkOutcome.Success)
+            raise NetworkSessionError.AccountingInvalid if (session.state == NetworkSessionState.Resolving or session.state == NetworkSessionState.Connecting or session.state == NetworkSessionState.Securing or session.state == NetworkSessionState.Sending) and session.received_bytes != 0
+            raise NetworkSessionError.AccountingInvalid if (session.state == NetworkSessionState.Receiving or session.state == NetworkSessionState.Completed) and session.sent_bytes != session.current_body_bytes
             raise NetworkSessionError.AccountingInvalid if not uses_tls and (session.state == NetworkSessionState.Securing or session.tls_established)
             raise NetworkSessionError.AccountingInvalid if session.state in {NetworkSessionState.Planned, NetworkSessionState.Resolving, NetworkSessionState.Connecting, NetworkSessionState.Securing} and session.tls_established
             raise NetworkSessionError.AccountingInvalid if uses_tls and (session.state == NetworkSessionState.Sending or session.state == NetworkSessionState.Receiving or session.state == NetworkSessionState.Completed) and not session.tls_established
-            raise NetworkSessionError.AccountingInvalid if session.state == NetworkSessionState.Completed and (session.status < 100 or session.status > 599 or session.outcome == NetworkOutcome.Success and (session.status < 200 or session.status > 399) or session.outcome == NetworkOutcome.StatusFailure and session.status >= 200 and session.status <= 399 or session.outcome != NetworkOutcome.Success and session.outcome != NetworkOutcome.StatusFailure or session.sent_bytes != session.request.body.count)
+            if session.state != NetworkSessionState.Planned:
+                raise NetworkSessionError.AccountingInvalid if session.current_method != session.request.method and (session.current_method != NetworkMethod.Get or session.current_body_bytes != 0)
+                raise NetworkSessionError.AccountingInvalid if session.current_method != session.request.method and session.redirects == 0
+                raise NetworkSessionError.AccountingInvalid if session.current_method == session.request.method and session.current_body_bytes != session.request.body.count
+            raise NetworkSessionError.AccountingInvalid if session.state == NetworkSessionState.Completed and (session.status < 100 or session.status > 599 or session.outcome == NetworkOutcome.Success and (session.status < 200 or session.status > 399) or session.outcome == NetworkOutcome.StatusFailure and session.status >= 200 and session.status <= 399 or session.outcome != NetworkOutcome.Success and session.outcome != NetworkOutcome.StatusFailure)
             raise NetworkSessionError.AccountingInvalid if session.state == NetworkSessionState.Failed and (session.outcome == NetworkOutcome.Success or session.outcome == NetworkOutcome.Cancelled or session.outcome == NetworkOutcome.StatusFailure and (session.status < 100 or session.status > 599 or session.status >= 200 and session.status <= 399) or session.outcome != NetworkOutcome.StatusFailure and session.status != 0)
             raise NetworkSessionError.AccountingInvalid if (session.state == NetworkSessionState.Cancelling or session.state == NetworkSessionState.Cancelled) and (session.outcome != NetworkOutcome.Cancelled or session.status != 0)
             return true
 
 
-        def advance_network_session(session: mutable NetworkSession&, event: NetworkSessionEvent, bytes_delta: usize = 0, outcome: NetworkOutcome = NetworkOutcome.Success, status: u16 = 0) -> NetworkSessionState error[NetworkSessionError]:
+        def advance_network_session(session: mutable NetworkSession&, event: NetworkSessionEvent, bytes_delta: usize = 0, outcome: NetworkOutcome = NetworkOutcome.Success, status: u16 = 0, redirect_url: sview = "") -> NetworkSessionState error[NetworkSessionError]:
             try validate_network_session(session)
             raise NetworkSessionError.InvalidEvent if not session_event_valid(event)
             if event == NetworkSessionEvent.Begin:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Planned
                 raise NetworkSessionError.AttemptLimitExceeded if session.attempts >= session.request.retry.max_attempts
                 session.attempts <- session.attempts + 1
+                session.current_url <- session.request.url
+                session.current_method <- session.request.method
+                session.current_body_bytes <- session.request.body.count
                 session.sent_bytes <- 0
                 session.received_bytes <- 0
                 session.tls_established <- false
@@ -153,7 +174,7 @@ module EsNetworkSession:
                 session.state <- NetworkSessionState.Connecting
             elif event == NetworkSessionEvent.ConnectReady:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Connecting
-                uses_tls: bool = try session_request_uses_tls(session.request)
+                uses_tls: bool = try session_url_uses_tls(session.current_url)
                 session.state <- NetworkSessionState.Securing if uses_tls else NetworkSessionState.Sending
             elif event == NetworkSessionEvent.TlsReady:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Securing
@@ -161,11 +182,11 @@ module EsNetworkSession:
                 session.state <- NetworkSessionState.Sending
             elif event == NetworkSessionEvent.SendChunk:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Sending
-                raise NetworkSessionError.SendAccountingInvalid if bytes_delta > session.request.body.count - session.sent_bytes
+                raise NetworkSessionError.SendAccountingInvalid if bytes_delta > session.current_body_bytes - session.sent_bytes
                 session.sent_bytes <- session.sent_bytes + bytes_delta
             elif event == NetworkSessionEvent.SendComplete:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Sending
-                raise NetworkSessionError.SendAccountingInvalid if session.sent_bytes != session.request.body.count
+                raise NetworkSessionError.SendAccountingInvalid if session.sent_bytes != session.current_body_bytes
                 session.state <- NetworkSessionState.Receiving
             elif event == NetworkSessionEvent.ReceiveChunk:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Receiving
@@ -180,9 +201,29 @@ module EsNetworkSession:
             elif event == NetworkSessionEvent.Redirect:
                 raise NetworkSessionError.InvalidState if session.state != NetworkSessionState.Receiving
                 raise NetworkSessionError.RedirectNotAllowed if not session.request.follow_redirects
-                raise NetworkSessionError.InvalidRedirectStatus if status < 300 or status > 399
+                raise NetworkSessionError.InvalidRedirectStatus if status != 301 and status != 302 and status != 303 and status != 307 and status != 308
                 raise NetworkSessionError.RedirectLimitExceeded if session.redirects >= Limits::REDIRECTS
+                raise NetworkSessionError.InvalidRedirectTarget if redirect_url == ""
+                target_uses_tls: bool = false
+                catch network_url_uses_tls(redirect_url):
+                    ok value:
+                        target_uses_tls <- value
+                    error failure:
+                        raise NetworkSessionError.InvalidRedirectTarget
+                current_uses_tls: bool = try session_url_uses_tls(session.current_url)
+                raise NetworkSessionError.RedirectTlsDowngrade if current_uses_tls and not target_uses_tls
+                redirect_method: mutable NetworkMethod = session.current_method
+                redirect_body_bytes: mutable usize = session.current_body_bytes
+                if status == 303 and redirect_method != NetworkMethod.Get and redirect_method != NetworkMethod.Head:
+                    redirect_method <- NetworkMethod.Get
+                    redirect_body_bytes <- 0
+                elif (status == 301 or status == 302) and redirect_method == NetworkMethod.Post:
+                    redirect_method <- NetworkMethod.Get
+                    redirect_body_bytes <- 0
                 session.redirects <- session.redirects + 1
+                session.current_url <- redirect_url
+                session.current_method <- redirect_method
+                session.current_body_bytes <- redirect_body_bytes
                 session.sent_bytes <- 0
                 session.received_bytes <- 0
                 session.tls_established <- false
@@ -204,6 +245,9 @@ module EsNetworkSession:
             elif event == NetworkSessionEvent.Retry:
                 raise NetworkSessionError.RetryNotReady if session.state != NetworkSessionState.Failed
                 raise NetworkSessionError.AttemptLimitExceeded if session.attempts >= session.request.retry.max_attempts
+                session.current_url <- ""
+                session.current_method <- session.request.method
+                session.current_body_bytes <- session.request.body.count
                 session.sent_bytes <- 0
                 session.received_bytes <- 0
                 session.tls_established <- false
