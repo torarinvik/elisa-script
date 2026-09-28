@@ -666,8 +666,9 @@ document each enforce their own byte ceiling; a transport policy may use the
 global maximum while the document sets a smaller limit. The complete report,
 each frame ceiling, and the required frame count are checked before the
 transport is returned, so streaming cannot first discover one of those caps
-after a partial report has been written. The transport still does not perform
-OS writes or prove what an OS writer actually accepted.
+after a partial report has been written. Validation of any directly constructed
+`Planned` transport repeats this preflight before `Begin`, preventing public
+struct construction from bypassing the admission boundary.
 `EsOutputJunit` now provides a bounded whole-document JUnit serializer for a
 sealed `OutputDocument`. It validates UTF-8/XML characters, escapes XML text
 and attributes, maps failure/error/skip outcomes, retains flaky-pass metadata,
@@ -685,10 +686,20 @@ to the document's aggregate byte budget. Its JSON status names include `pass`,
 JUnit preserves crash and timeout types in `<error>` children and marks
 cancellation on the `<skipped>` child while keeping standard aggregate
 counters. `EsOutputTransport` hands hosts canonical owned
-Human/JSON/JUnit frame bytes;
-its checked payload acknowledgement rejects mutated or independently
-reformatted content before advancing. This still cannot prove what an OS writer
-actually accepted—the byte count remains the host adapter's acknowledgement.
+Human/JSON/JUnit frame bytes; its checked payload acknowledgement rejects
+mutated or independently reformatted content before advancing.
+The Darwin `EsOutputTransportPosix` adapter streams one owned frame at a
+time to a caller-owned descriptor, retries bounded `EINTR`, loops over positive
+short writes, and acknowledges a frame only after the complete payload is
+accepted by `write(2)`.
+It starts only from a `Planned` transport, preventing a partially emitted
+report from being resumed onto a different descriptor.
+On failure it marks the transport failed and reports bytes accepted in that
+invocation, including a partial current frame; previously acknowledged frames
+remain in transport accounting. It does not close the descriptor, suppress
+`SIGPIPE`, or provide a wall-clock deadline, so callers must define signal
+policy and supervise blocking sinks where needed. This is a concrete host
+adapter, not yet executed end-to-end parity evidence.
 The separate single-case differential JUnit renderer remains a different
 schema. `OutputStatus.Flaky` preserves successful retry classification in
 typed records while retaining the existing status ordinals.

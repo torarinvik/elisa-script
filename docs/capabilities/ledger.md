@@ -943,10 +943,12 @@ with overflow-safe per-record accumulation, shared output-budget enforcement,
 exact emitted-prefix reconciliation, and explicit failure/cancellation edges.
 `EsOutputTransport` adds a bounded renderer-to-host hand-off with exact
 frame-kind/index/sequence/byte acknowledgements and short-write, reorder, forge,
-and per-frame/total-limit rejection; it retains no borrowed text and performs no
-OS write. The focused IR fixture and check_output_renderer.sh audit are static
-evidence; concrete formatting and actual stdout/stderr writes remain host-adapter
-follow-ups.
+and per-frame/total-limit rejection; it retains no borrowed text. The Darwin
+`EsOutputTransportPosix` adapter writes canonical frame payloads to a
+caller-owned descriptor, handles bounded `EINTR`/short writes, and acknowledges
+only completed writes. The focused IR fixture and check_output_renderer.sh audit
+remain static evidence; end-to-end host behavior and CLI `--test` routing are
+unverified.
 
 ES-SCRIPT-004 | EsPackageRegistry supplies bounded candidate rows, semver-aware
 deterministic ordering (stable releases follow matching prereleases in only that direction), integrity admission, sealed-state lookup by PackageConstraint, and

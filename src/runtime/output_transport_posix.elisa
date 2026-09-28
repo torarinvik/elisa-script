@@ -1,0 +1,139 @@
+# Darwin POSIX writer for bounded, format-aware output transports.
+#
+# The transport validates the whole document before exposing the first frame.
+# This adapter writes one canonical payload at a time, retries interrupted
+# writes, acknowledges only complete frames, and marks the transport failed
+# after any partial or failed host write. The caller owns the descriptor and
+# remains responsible for SIGPIPE policy and any wall-clock supervision.
+
+module EsOutputTransportPosix:
+    using EsOutput
+    using EsOutputHuman
+    using EsOutputJson
+    using EsOutputJunit
+    using EsOutputRender
+    using EsOutputTransport
+    using EsRuntime
+
+    public:
+        const module Limits:
+            EINTR_RETRIES: usize = 8
+            WRITE_CALLS: usize = 1048576
+
+
+        error OutputTransportPosixError:
+            InvalidDescriptor
+            InvalidState
+            WriteFailed(errno: i32, bytes_accepted_this_call: usize)
+            InvalidWriteCount(bytes_accepted_this_call: usize)
+            WriteCallLimitExceeded(bytes_accepted_this_call: usize)
+            AcknowledgementFailed(bytes_accepted_this_call: usize)
+
+
+    private:
+        const enum OutputTransportPosixWriteState of u8:
+            NextFrame
+            WriteFrame
+            Acknowledge
+            Done
+            Failed
+
+
+        struct OutputTransportPosixWriteCursor:
+            state: mutable OutputTransportPosixWriteState = OutputTransportPosixWriteState.NextFrame
+            payload: mutable OutputTransportPayload = OutputTransportPayload{}
+            offset: mutable usize = 0
+            bytes_accepted_this_call: mutable usize = 0
+            write_calls: mutable usize = 0
+            eintr_retries: mutable usize = 0
+            failure_errno: mutable i32 = 0
+            invalid_write_count: mutable bool = false
+            call_limit_hit: mutable bool = false
+
+
+    public:
+        # Stream the complete sealed report to a caller-owned blocking file
+        # descriptor. On failure, transport.emitted_bytes counts bytes in
+        # completed frames; the typed error also reports bytes accepted from the
+        # current invocation, including a partial frame. This is deliberately
+        # one-shot from Planned so a suffix cannot be redirected to another fd.
+        def write_output_transport_fd(transport: mutable OutputTransport&, fd: int) -> usize error[OutputTransportError, OutputRenderError, OutputContractError, OutputHumanError, OutputJsonError, OutputJunitError, OutputTransportPosixError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise OutputTransportPosixError.InvalidDescriptor if fd < 0
+            raise OutputTransportPosixError.InvalidState if transport.state != OutputTransportState.Planned
+            _ = try advance_output_transport(transport, OutputTransportEvent.Begin)
+
+            cursor: mutable OutputTransportPosixWriteCursor = OutputTransportPosixWriteCursor{}
+            machine over cursor.state:
+                state Write
+                start Write
+
+                Write, OutputTransportPosixWriteState.NextFrame if transport.state == OutputTransportState.Complete:
+                    cursor.state <- OutputTransportPosixWriteState.Done
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.NextFrame:
+                    catch peek_output_transport_payload(transport):
+                        ok payload:
+                            cursor.payload <- payload
+                            cursor.offset <- 0
+                            cursor.eintr_retries <- 0
+                            cursor.state <- OutputTransportPosixWriteState.WriteFrame
+                        error failure:
+                            _ = try advance_output_transport(transport, OutputTransportEvent.Fail)
+                            raise failure
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.WriteFrame if cursor.offset >= cursor.payload.bytes.count:
+                    cursor.state <- OutputTransportPosixWriteState.Acknowledge
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.WriteFrame if cursor.write_calls >= Limits::WRITE_CALLS:
+                    cursor.call_limit_hit <- true
+                    cursor.state <- OutputTransportPosixWriteState.Failed
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.WriteFrame:
+                    remaining: usize = cursor.payload.bytes.count - cursor.offset
+                    next_bytes: mutable u8& = &cursor.payload.bytes[cursor.offset]
+                    amount: isize = elisascript_posix_write(fd, next_bytes.cast[void&], remaining)
+                    cursor.write_calls <- cursor.write_calls + 1
+                    if amount < 0:
+                        errno: mutable i32& = elisascript_posix_errno()
+                        cursor.failure_errno <- errno[0]
+                        if errno[0] == DarwinErrno::EINTR and cursor.eintr_retries < Limits::EINTR_RETRIES:
+                            cursor.eintr_retries <- cursor.eintr_retries + 1
+                            -> Write
+                        cursor.state <- OutputTransportPosixWriteState.Failed
+                        -> Write
+                    if amount == 0 or amount.usize() > remaining or cursor.bytes_accepted_this_call > transport.policy.max_bytes or amount.usize() > transport.policy.max_bytes - cursor.bytes_accepted_this_call:
+                        cursor.invalid_write_count <- true
+                        cursor.state <- OutputTransportPosixWriteState.Failed
+                        -> Write
+                    cursor.offset <- cursor.offset + amount.usize()
+                    cursor.bytes_accepted_this_call <- cursor.bytes_accepted_this_call + amount.usize()
+                    cursor.eintr_retries <- 0
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.Acknowledge:
+                    catch acknowledge_output_transport_payload(transport, cursor.payload, cursor.payload.bytes.count):
+                        ok state:
+                            _ = state
+                            cursor.payload <- OutputTransportPayload{}
+                            cursor.state <- OutputTransportPosixWriteState.NextFrame
+                        error failure:
+                            _ = try advance_output_transport(transport, OutputTransportEvent.Fail)
+                            _ = failure
+                            raise OutputTransportPosixError.AcknowledgementFailed(cursor.bytes_accepted_this_call)
+                    -> Write
+
+                Write, OutputTransportPosixWriteState.Done:
+                    break
+
+                Write, OutputTransportPosixWriteState.Failed:
+                    _ = try advance_output_transport(transport, OutputTransportEvent.Fail)
+                    break
+
+            raise OutputTransportPosixError.WriteCallLimitExceeded(cursor.bytes_accepted_this_call) if cursor.call_limit_hit
+            raise OutputTransportPosixError.InvalidWriteCount(cursor.bytes_accepted_this_call) if cursor.invalid_write_count
+            raise OutputTransportPosixError.WriteFailed(cursor.failure_errno, cursor.bytes_accepted_this_call) if cursor.state == OutputTransportPosixWriteState.Failed
+            return cursor.bytes_accepted_this_call

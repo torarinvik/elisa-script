@@ -7,14 +7,32 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 model="$repo_root/src/runtime/output_renderer_model.elisa"
 transport="$repo_root/src/runtime/output_transport_model.elisa"
+transport_posix="$repo_root/src/runtime/output_transport_posix.elisa"
 output_model="$repo_root/src/runtime/output_model.elisa"
 ir="$repo_root/src/ir/ir.elisa"
 fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$transport" "$output_model" "$ir" "$fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$transport" "$transport_posix" "$output_model" "$ir" "$fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'output renderer audit: missing %s\n' "$required_file" >&2; exit 1; }
+done
+
+for declaration in \
+    'module EsOutputTransportPosix:' \
+    'const module Limits:' \
+    'WRITE_CALLS: usize = 1048576' \
+    'error OutputTransportPosixError:' \
+    'def write_output_transport_fd(' \
+    'transport.state != OutputTransportState.Planned' \
+    'DarwinErrno::EINTR' \
+    'acknowledge_output_transport_payload(' \
+    'amount == 0 or amount.usize() > remaining' \
+    'OutputTransportPosixWriteState.Acknowledge' \
+    'OutputTransportEvent.Fail' \
+    'OutputTransportPosixError.WriteFailed(' \
+    'OutputTransportPosixError.WriteCallLimitExceeded'; do
+    rg -Fq "$declaration" "$transport_posix"
 done
 
 for declaration in \
@@ -74,6 +92,7 @@ for boundary in \
     'UnexpectedPayload' \
     'max_frame_bytes' \
     'output_transport_frame_matches' \
+    'output_transport_planned_preflight' \
     'output_transport_frame_is_empty_payload' \
     'OutputTransportState.Cancelling' \
     'OutputTransportState.Cancelled'; do
@@ -82,8 +101,11 @@ done
 
 rg -Fq 'include "../runtime/output_renderer_model.elisa"' "$ir"
 rg -Fq 'include "../runtime/output_transport_model.elisa"' "$ir"
+rg -Fq 'include "../runtime/output_transport_posix.elisa"' "$ir"
+rg -Fq 'include "../runtime/output_transport_posix.elisa"' "$repo_root/src/ir/execution.elisa"
 rg -Fq 'using EsOutputRender' "$fixture"
 rg -Fq 'using EsOutputTransport' "$fixture"
+rg -Fq 'using EsOutputTransportPosix' "$fixture"
 for fixture_pattern in \
     'typed_output_renderer_contract_is_ordered_escaped_and_cancelable' \
     'OutputRenderEvent.Emit' \
@@ -95,7 +117,10 @@ for fixture_pattern in \
     'extraneous_render_payload_rejected' \
     'typed_output_transport_binds_frames_to_exact_host_acknowledgements' \
     'OutputTransportEvent.Emit' \
-    'OutputTransportError.FrameMismatch'; do
+    'OutputTransportError.FrameMismatch' \
+    'OutputTransportPosixError.InvalidDescriptor' \
+    'forged_chunk_transport' \
+    'forged_transport_rejected'; do
     rg -Fq "$fixture_pattern" "$fixture"
 done
 rg -Fq 'OutputTransportError.UnexpectedPayload' "$fixture"
@@ -103,6 +128,7 @@ rg -Fq 'extraneous_transport_payload_rejected' "$fixture"
 
 rg -Fq 'EsOutputRender adds the renderer-side state machine' "$docs"
 rg -Fq '`EsOutputTransport` wraps that renderer' "$docs"
+rg -Fq '`EsOutputTransportPosix` adapter streams one owned frame at a' "$docs"
 rg -Fq 'ES-SCRIPT-003 | EsOutputRender' "$ledger"
 
-printf 'output renderer audit: sealed admission, ordered records, escaping budgets, framing, and cancellation are present\n'
+printf 'output renderer audit: bounded formatting, authenticated transport, and POSIX full-write adapter are present\n'
