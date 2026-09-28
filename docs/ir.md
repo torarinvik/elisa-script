@@ -2568,7 +2568,9 @@ Completions likewise preflight the completed case and any fail-fast
 cancellation records before consuming the attempt token. An over-limit
 selection, completion, infrastructure failure, or cancellation therefore
 remains intact—including retryable attempt evidence—and can be corrected
-without recovering a partially transitioned runner.
+without recovering a partially transitioned runner. Cancellation messages
+distinguish requests received before launch from those received while the
+runner is active.
 
 `EsScriptTest` supplies the in-process `@test` boundary used by the CLI's
 `ExecuteTests` workflow step. Discovery is ordered and bounded to 4,096 cases;
