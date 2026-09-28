@@ -1,8 +1,9 @@
 # Descriptor-relative file opening for the incremental build observer.
 #
 # This adapter resolves each path beneath a directory capability, hashes file
-# contents through the retained descriptor, and rejects observed mutation. A
-# missing file is data; permission, symlink, and I/O failures stay typed.
+# bytes plus POSIX permission bits through the retained descriptor, and rejects
+# observed mutation. A missing file is data; permission, symlink, and I/O
+# failures stay typed.
 
 module EsBuildIncrementalPosix:
     using EsBuild
@@ -16,6 +17,7 @@ module EsBuildIncrementalPosix:
             READ_EINTR_RETRIES: usize = 8
             READ_CALLS: usize = 1048576
             FILE_BYTES: usize = 268435456
+            FILE_PERMISSION_MASK: u16 = 4095
 
 
         struct OpenedFile:
@@ -24,6 +26,7 @@ module EsBuildIncrementalPosix:
             size: usize = 0
             device: u32 = 0
             inode: u64 = 0
+            permissions: u16 = 0
             modify_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
             change_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
 
@@ -34,6 +37,7 @@ module EsBuildIncrementalPosix:
             size: usize = 0
             device: u32 = 0
             inode: u64 = 0
+            permissions: u16 = 0
             modify_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
             change_time: ElisascriptStatTimespec = ElisascriptStatTimespec{}
 
@@ -158,6 +162,7 @@ module EsBuildIncrementalPosix:
             return (current.mode & DarwinStatMode::MASK) == DarwinStatMode::REGULAR
                 and current.device == opened.device
                 and current.inode == opened.inode
+                and (current.mode & Limits::FILE_PERMISSION_MASK) == opened.permissions
                 and current.size >= 0
                 and current.size.usize().i64() == current.size
                 and current.size.usize() == opened.size
@@ -171,6 +176,7 @@ module EsBuildIncrementalPosix:
             return left.present and right.present
                 and left.device == right.device
                 and left.inode == right.inode
+                and left.permissions == right.permissions
                 and left.size == right.size
                 and left.modify_time.seconds == right.modify_time.seconds
                 and left.modify_time.nanoseconds == right.modify_time.nanoseconds
@@ -234,7 +240,7 @@ module EsBuildIncrementalPosix:
                     if not close_ok:
                         _ = elisascript_posix_close(next_fd)
                         raise OpenError.CloseFailed(path)
-                    return OpenedFile{present: true, descriptor: next_fd, size: file_info.size.usize(), device: file_info.device, inode: file_info.inode, modify_time: file_info.modify_time, change_time: file_info.change_time}
+                    return OpenedFile{present: true, descriptor: next_fd, size: file_info.size.usize(), device: file_info.device, inode: file_info.inode, permissions: file_info.mode & Limits::FILE_PERMISSION_MASK, modify_time: file_info.modify_time, change_time: file_info.change_time}
 
                 directory_info: mutable ElisascriptStat = zeroed
                 if not build_incremental_posix_fstat(next_fd, directory_info) or (directory_info.mode & DarwinStatMode::MASK) != DarwinStatMode::DIRECTORY:
@@ -251,9 +257,10 @@ module EsBuildIncrementalPosix:
             raise OpenError.InvalidPath
 
 
-        # Hash exactly the bytes read from the retained descriptor. Temporary
-        # file contents live in the caller's scratch arena and are rewound
-        # before returning; no per-file read buffer accumulates across a build.
+        # Hash exactly the bytes read from the retained descriptor together
+        # with the descriptor's permission bits. Temporary file contents live
+        # in the caller's scratch arena and are rewound before returning; no
+        # per-file read buffer accumulates across a build.
         # Metadata is captured before and after reading, then the name is
         # reopened beneath the same root capability and matched to the retained
         # descriptor. This rejects ordinary mutation and path replacement
@@ -278,10 +285,10 @@ module EsBuildIncrementalPosix:
             fingerprint_word2: mutable u64 = 0
             fingerprint_word3: mutable u64 = 0
             if read_ok and stable and bytes.count == opened.size:
-                fingerprint <- EsIr::canonical_bytes_sha256_word(bytes, 0)
-                fingerprint_word1 <- EsIr::canonical_bytes_sha256_word(bytes, 1)
-                fingerprint_word2 <- EsIr::canonical_bytes_sha256_word(bytes, 2)
-                fingerprint_word3 <- EsIr::canonical_bytes_sha256_word(bytes, 3)
+                fingerprint <- EsIr::canonical_file_identity_sha256_word(bytes, opened.permissions, 0)
+                fingerprint_word1 <- EsIr::canonical_file_identity_sha256_word(bytes, opened.permissions, 1)
+                fingerprint_word2 <- EsIr::canonical_file_identity_sha256_word(bytes, opened.permissions, 2)
+                fingerprint_word3 <- EsIr::canonical_file_identity_sha256_word(bytes, opened.permissions, 3)
                 digest_ok <- true
             named_path_matches: mutable bool = false
             named_path_close_ok: mutable bool = true
@@ -303,7 +310,7 @@ module EsBuildIncrementalPosix:
             raise ObserveError.ReadIncomplete(path) if bytes.count != opened.size
             raise ObserveError.HashFailed(path) if not digest_ok
             raise ObserveError.ZeroFingerprint(path) if fingerprint == 0 and fingerprint_word1 == 0 and fingerprint_word2 == 0 and fingerprint_word3 == 0
-            stamp_out[0] <- BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, modify_time: opened.modify_time, change_time: opened.change_time}
+            stamp_out[0] <- BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, permissions: opened.permissions, modify_time: opened.modify_time, change_time: opened.change_time}
             return BuildIncrementalObservation{path: path, present: true, fingerprint: fingerprint, fingerprint_word1: fingerprint_word1, fingerprint_word2: fingerprint_word2, fingerprint_word3: fingerprint_word3}
 
 
@@ -313,15 +320,15 @@ module EsBuildIncrementalPosix:
 
 
         # Capture only the current descriptor-relative file identity for a
-        # cheap dispatch-time recheck. Content bytes are hashed separately
-        # during recipe admission; this snapshot compares inode, size, mtime,
-        # and ctime without rereading a large compiler for every target.
+        # cheap dispatch-time recheck. Content and permission bits are hashed
+        # during recipe admission; this snapshot compares inode, size, mode,
+        # mtime, and ctime without rereading a large compiler for every target.
         def observe_build_incremental_file_stamp_at(root_fd: int, path: sview) -> BuildIncrementalFileStamp error[OpenError] can[Blocking.IO, Unsafe.PointerCast]:
             opened: OpenedFile = try open_build_incremental_file_at(root_fd, path)
             return BuildIncrementalFileStamp{path: path} if not opened.present
             close_status: int = elisascript_posix_close(opened.descriptor)
             raise OpenError.CloseFailed(path) if close_status != 0
-            return BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, modify_time: opened.modify_time, change_time: opened.change_time}
+            return BuildIncrementalFileStamp{path: path, present: true, size: opened.size, device: opened.device, inode: opened.inode, permissions: opened.permissions, modify_time: opened.modify_time, change_time: opened.change_time}
 
 
         # Derive the recipe's toolchain identity from file bytes read through

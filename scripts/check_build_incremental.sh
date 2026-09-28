@@ -21,17 +21,18 @@ recipe_signature_fixture="$repo_root/test/runtime/build_recipe_signature_test.el
 cache_fixture="$repo_root/test/runtime/build_incremental_cache_test.elisa"
 cache_adapter_fixture="$repo_root/test/runtime/build_incremental_cache_adapter_test.elisa"
 executor_fixture="$repo_root/test/runtime/build_incremental_executor_test.elisa"
+install_source_adapter="$repo_root/src/runtime/install_source_posix.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$posix_executor_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$cache_adapter_fixture" "$executor_fixture" "$docs" "$ledger"; do
+for required_file in "$model" "$cache_model" "$build_model" "$executor_model" "$graph_model" "$posix_executor" "$install_source_adapter" "$ir" "$fixture" "$transition_fixture" "$posix_fixture" "$posix_executor_fixture" "$recipe_signature" "$recipe_signature_fixture" "$cache_fixture" "$cache_adapter_fixture" "$executor_fixture" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'incremental build audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
 for cache_declaration in \
     'module EsBuildIncrementalCache:' \
     'CACHE_BYTES: usize' \
-    'FORMAT_VERSION: u8 = 3' \
+    'FORMAT_VERSION: u8 = 4' \
     'def encode_build_incremental_cache(' \
     'def decode_build_incremental_cache(' \
     'BuildIncrementalCacheError.ChecksumMismatch' \
@@ -149,8 +150,15 @@ rg -Fq 'arena_rewind(scratch, mark)' "$repo_root/src/runtime/build_incremental_p
 rg -Fq 'def canonical_bytes_sha256_word(' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'schedule: mutable u64[64] = zeroed' "$repo_root/src/ir/serialize.elisa"
 rg -Fq 'constants: u64[64] = [' "$repo_root/src/ir/serialize.elisa"
-rg -Fq 'canonical_bytes_sha256_word(bytes, 3)' "$repo_root/src/runtime/build_incremental_posix.elisa"
+rg -Fq 'canonical_file_identity_sha256_word(bytes, opened.permissions, 3)' "$repo_root/src/runtime/build_incremental_posix.elisa"
 rg -Fq 'incremental_file_fingerprint_uses_complete_canonical_sha256' "$posix_fixture"
+rg -Fq 'canonical_file_identity_sha256_word(bytes, opened.permissions' "$repo_root/src/runtime/build_incremental_posix.elisa"
+rg -Fq 'permissions == observed.permissions' "$posix_executor"
+rg -Fq 'changed_mode' "$posix_executor_fixture"
+rg -Fq 'incremental_cache_codec_rejects_legacy_content_only_v3_records' "$cache_fixture"
+rg -Fq 'left.permissions == right.permissions' "$install_source_adapter"
+rg -Fq 'EsBuildIncrementalPosix::Limits::FILE_PERMISSION_MASK) == stamp.permissions' "$install_source_adapter"
+rg -Fq 'permissions: opened.permissions' "$install_source_adapter"
 rg -Fq 'fingerprint_word3' "$cache_model"
 rg -Fq 'DarwinOpenFlags::NOFOLLOW' "$repo_root/src/runtime/build_incremental_posix.elisa"
 rg -Fq 'include "../runtime/build_incremental_posix.elisa"' "$ir"

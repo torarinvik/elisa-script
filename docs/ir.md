@@ -885,7 +885,11 @@ final save/disable option.
 
 `EsBuildIncremental` is the pure CMake/Ninja-style stale-decision boundary over
 that graph. A bounded target manifest records the last successful recipe,
-input, and output fingerprints plus ordered target dependencies. `Phony` targets
+input, and output fingerprints plus ordered target dependencies. POSIX file
+fingerprints hash a versioned tag, permission/special mode bits, and file bytes,
+so chmod-only changes—including a removed executable bit—cannot authorize a
+stale cache hit. The cache wire version rejects older content-only fingerprints.
+`Phony` targets
 cover aggregate, test, and alias tasks that intentionally have no output file;
 validation rejects any phony target that declares an output, while accepting
 outputless phony targets whose recipe and dependency state is still classified.
@@ -923,7 +927,8 @@ checks that no set drifted while the others were being read. A file stamp
 (device, inode, size, mtime, and ctime) is captured during the content hash.
 Immediately before each dirty-node dispatch, the executor opens the executable
 and helper through the same directory capability and compares its stamp,
-avoiding a second full binary read for every target. Drift aborts with
+including permission bits, avoiding a second full binary read for every target.
+Drift aborts with
 `ToolchainChanged`. Because the process adapter still spawns by pathname,
 replacement in the narrow interval between that last observation and `exec`
 remains possible; descriptor-bound execution is required to close that race.
