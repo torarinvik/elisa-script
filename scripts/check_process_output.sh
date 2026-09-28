@@ -30,6 +30,7 @@ for declaration in \
     'struct ProcessOutputChunk:' \
     'struct ProcessOutputSession:' \
     'error ProcessOutputError:' \
+    'def process_output_destination_same_sink\(' \
     'def validate_process_output_session\(' \
     'def advance_process_output\('; do
     rg -q "$declaration" "$model"
@@ -43,6 +44,7 @@ for boundary in \
     'ProcessOutputDestinationKind.TruncateFile' \
     'ProcessOutputDestinationKind.AppendFile' \
     'ProcessOutputError.DuplicateDestination' \
+    'left_is_file and right_is_file and left.path == right.path' \
     'ProcessOutputError.ChunkOrderInvalid' \
     'ProcessOutputError.AccountingInvalid' \
     'session.next_sequence != session.chunk_count' \
@@ -55,6 +57,8 @@ for fixture_pattern in \
     'typed_process_output_contract_makes_redirection_and_tee_explicit' \
     'ProcessOutputDestinationKind.AppendFile' \
     'ProcessOutputError.DuplicateDestination' \
+    'conflicting_file_modes' \
+    'distinct_file_modes' \
     'ProcessOutputChunk'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done

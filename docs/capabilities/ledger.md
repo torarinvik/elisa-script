@@ -558,8 +558,9 @@ and SIGPIPE parity are still open.
 `EsProcessOutput` adds a bounded shell-redirection contract for inherit/null,
 capture, truncate, append, and explicit tee fan-out. Destination paths,
 duplicate routes, chunk sequencing, final markers, and output ceilings are
-validated under `error[ProcessOutputError]`; the focused IR fixture, namespace
-inclusion, documentation, and check_process_output.sh audit are static
+validated under `error[ProcessOutputError]`; the same exact file path cannot
+appear once in truncate mode and again in append mode. The focused IR fixture,
+namespace inclusion, documentation, and check_process_output.sh audit are static
 evidence, while descriptor writes and concurrent drains remain host work.
 `EsTask::TaskScope` and `TaskChannel` add bounded child accounting and
 message-level backpressure with explicit close/cancel acknowledgement edges;
