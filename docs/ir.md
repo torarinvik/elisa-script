@@ -2523,9 +2523,12 @@ current URL and TLS route, rejects HTTPS-to-HTTP downgrade, and sets a sticky
 names on later hops; the origin comparison is deliberately conservative about
 authority spellings. The session rewrites POST to
 GET on 301/302 and non-GET/HEAD methods to GET on 303, and preserves method/body
-for 307/308. Relative `Location` resolution remains the adapter's responsibility.
-Redirect adapters must recompute body-framing headers; the session tracks the
-effective method and body-byte budget but does not own serialized headers.
+for 307/308. `network_resolve_redirect_location` resolves absolute, scheme-relative,
+root-relative, path-relative (including `.`/`..`), query-only, fragment-only,
+and empty references into owned absolute URL bytes. Keep that byte buffer alive
+while `NetworkSession.current_url` borrows its view. Redirect adapters must
+recompute body-framing headers; the session tracks the effective method and
+body-byte budget but does not own serialized headers.
 Each redirect is an explicit `Receiving → Resolving` edge that clears
 transient request/response accounting before the next resolution. It preserves
 status failures as typed completed outcomes, and exposes retry/failure/cancellation edges without

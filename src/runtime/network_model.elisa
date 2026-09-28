@@ -180,6 +180,8 @@ module EsNetwork:
             SensitiveHeaderNameInvalid
             DuplicateSensitiveHeaderName
             HeaderLimitExceeded
+            InvalidRedirectLocation
+            RedirectTargetLimitExceeded
             BodyLimitExceeded
             InvalidTimeout
             InvalidResponseLimit
@@ -389,6 +391,63 @@ module EsNetwork:
             return true
 
 
+        def network_url_append_view(output: mutable darray[u8]&, value: sview) -> void error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            raise NetworkContractError.RedirectTargetLimitExceeded if output.count >= NETWORK_MAX_URL_BYTES
+            raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(value) > NETWORK_MAX_URL_BYTES - 1 - output.count
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def network_url_append_slice(output: mutable darray[u8]&, value: sview, start: usize, end: usize) -> void error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            raise NetworkContractError.InvalidRedirectLocation if start > end or end > sview_len(value)
+            try network_url_append_view(output, string_view_slice(value, start.i64(), end.i64()))
+
+
+        def network_url_reference_path_end(value: sview, start: usize) -> usize:
+            end: mutable usize = sview_len(value)
+            for index in start..<sview_len(value) |value, end|:
+                byte: u8 = sview_at(value, index)
+                end <- index if (byte == 63u8 or byte == 35u8) and end == sview_len(value)
+            return end
+
+
+        def network_url_fragment_start(value: sview, start: usize) -> usize:
+            fragment: mutable usize = sview_len(value)
+            for index in start..<sview_len(value) |value, fragment|:
+                fragment <- index if sview_at(value, index) == 35u8 and fragment == sview_len(value)
+            return fragment
+
+
+        def network_url_append_normalized_path(output: mutable darray[u8]&, path: sview) -> void error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+            raise NetworkContractError.InvalidRedirectLocation if path == ""
+            raise NetworkContractError.InvalidRedirectLocation if sview_at(path, 0) != 47u8
+            segments: mutable darray[sview] = []
+            segment_start: mutable usize = 1
+            for index in 1..<sview_len(path) |path, segment_start, segments|:
+                if sview_at(path, index) == 47u8:
+                    segment: sview = string_view_slice(path, segment_start.i64(), index.i64())
+                    if segment == "..":
+                        if segments.count != 0:
+                            _ = segments.pop()
+                    elif segment != ".":
+                        segments.push(segment)
+                    segment_start <- index + 1
+            final_segment: sview = string_view_slice(path, segment_start.i64(), sview_len(path).i64())
+            if final_segment == "..":
+                if segments.count != 0:
+                    _ = segments.pop()
+                segments.push("")
+            elif final_segment == ".":
+                segments.push("")
+            else:
+                segments.push(final_segment)
+            try network_url_append_view(output, "/")
+            for index in 0..<segments.count |segments, output|:
+                if index != 0:
+                    try network_url_append_view(output, "/")
+                try network_url_append_view(output, segments[index])
+
+
         public:
             def validate_network_stream(stream: NetworkStream&) -> bool error[NetworkContractError]:
                 raise NetworkContractError.InvalidStreamDirection if not network_stream_direction_valid(stream.direction)
@@ -557,6 +616,76 @@ module EsNetwork:
                 raise NetworkContractError.EmbeddedNul if sview_contains_byte(url, 0)
                 raise NetworkContractError.InvalidUrl if not network_url_valid(url)
                 return network_url_scheme_is_tls(url)
+
+
+            # Resolve a Location reference into owned absolute URL bytes. The
+            # caller must retain the returned buffer while a session borrows
+            # `bytes_view(buffer)` as its current URL.
+            def network_resolve_redirect_location(base_url: sview, location: sview) -> darray[u8] error[NetworkContractError] can[Memory.Allocate, Abort.Panic]:
+                base_uses_tls: bool = try network_url_uses_tls(base_url)
+                raise NetworkContractError.RedirectTargetLimitExceeded if sview_len(location) >= NETWORK_MAX_URL_BYTES
+                raise NetworkContractError.EmbeddedNul if sview_contains_byte(location, 0)
+                for index in 0..<sview_len(location) |location|:
+                    byte: u8 = sview_at(location, index)
+                    raise NetworkContractError.InvalidRedirectLocation if byte <= 32u8 or byte == 127u8 or byte == 92u8
+
+                is_absolute_http: bool = network_url_prefix_matches(location, "http://")
+                is_absolute_https: bool = network_url_prefix_matches(location, "https://")
+                if is_absolute_http or is_absolute_https:
+                    _ = try network_url_uses_tls(location)
+                    absolute: mutable darray[u8] = []
+                    try network_url_append_view(absolute, location)
+                    return absolute
+
+                location_path_end: usize = network_url_reference_path_end(location, 0)
+                first_segment_end: mutable usize = sview_len(location)
+                for index in 0..<sview_len(location) |location, first_segment_end|:
+                    byte: u8 = sview_at(location, index)
+                    first_segment_end <- index if (byte == 47u8 or byte == 63u8 or byte == 35u8) and first_segment_end == sview_len(location)
+                for index in 0..<first_segment_end |location|:
+                    raise NetworkContractError.InvalidRedirectLocation if sview_at(location, index) == 58u8
+
+                if sview_len(location) >= 2 and sview_at(location, 0) == 47u8 and sview_at(location, 1) == 47u8:
+                    scheme_end: usize = 6 if base_uses_tls else 5
+                    network_path: mutable darray[u8] = []
+                    try network_url_append_slice(network_path, base_url, 0, scheme_end)
+                    try network_url_append_view(network_path, location)
+                    _ = try network_url_uses_tls(bytes_view(network_path))
+                    return network_path
+
+                base_authority_start: usize = network_url_authority_start(base_url)
+                base_authority_end: usize = network_url_authority_end(base_url, base_authority_start)
+                base_path_end: usize = network_url_reference_path_end(base_url, base_authority_end)
+                if location_path_end == 0:
+                    suffix_base_end: mutable usize = network_url_fragment_start(base_url, base_path_end)
+                    if sview_len(location) != 0:
+                        if sview_at(location, 0) == 63u8:
+                            suffix_base_end <- base_path_end
+                    suffix_url: mutable darray[u8] = []
+                    try network_url_append_slice(suffix_url, base_url, 0, suffix_base_end)
+                    try network_url_append_view(suffix_url, location)
+                    _ = try network_url_uses_tls(bytes_view(suffix_url))
+                    return suffix_url
+
+                merged_path: mutable darray[u8] = []
+                if sview_at(location, 0) == 47u8:
+                    try network_url_append_slice(merged_path, location, 0, location_path_end)
+                else:
+                    if base_authority_end == base_path_end:
+                        try network_url_append_view(merged_path, "/")
+                    else:
+                        directory_end: mutable usize = base_authority_end
+                        for index in base_authority_end..<base_path_end |base_url, directory_end|:
+                            directory_end <- index + 1 if sview_at(base_url, index) == 47u8
+                        try network_url_append_slice(merged_path, base_url, base_authority_end, directory_end)
+                    try network_url_append_slice(merged_path, location, 0, location_path_end)
+
+                resolved: mutable darray[u8] = []
+                try network_url_append_slice(resolved, base_url, 0, base_authority_end)
+                try network_url_append_normalized_path(resolved, bytes_view(merged_path))
+                try network_url_append_slice(resolved, location, location_path_end, sview_len(location))
+                _ = try network_url_uses_tls(bytes_view(resolved))
+                return resolved
 
 
             # Authority comparison is intentionally conservative: it folds
