@@ -1,0 +1,134 @@
+# Bounded Git SHA-1 blob identity for reference-source consistency checks.
+# Git's object digest is SHA-1 over `blob <decimal-size>\0<bytes>`; callers
+# should use SHA-256 locks for new content and treat this only as compatibility
+# with an existing repository object ID, not as an adversarial signature.
+
+module EsGitBlobIdentity:
+    public:
+        const module Limits:
+            MAX_BLOB_BYTES: usize = 1048576
+
+
+        error GitBlobIdentityError:
+            ContentTooLarge
+            InvalidExpectedDigest
+
+
+    private:
+        const module Sha1:
+            WORD_MASK: u64 = 0xffffffffu64
+            ROUND_CONSTANTS: u64[4] = [0x5a827999u64, 0x6ed9eba1u64, 0x8f1bbcdcu64, 0xca62c1d6u64]
+            INITIAL_STATE: u64[5] = [0x67452301u64, 0xefcdab89u64, 0x98badcfeu64, 0x10325476u64, 0xc3d2e1f0u64]
+
+
+        def git_blob_sha1_mask(value: u64) -> u64:
+            return value & Sha1::WORD_MASK
+
+
+        def git_blob_sha1_rol(value: u64, shift: u64) -> u64:
+            return git_blob_sha1_mask((value << shift) | (value >> (32u64 - shift)))
+
+
+        def git_blob_sha1_hex_nibble(byte: u8) -> u8:
+            return byte - 48u8 if byte >= 48u8 and byte <= 57u8
+            return byte - 87u8 if byte >= 97u8 and byte <= 102u8
+            return 255u8
+
+
+        def git_blob_sha1_choice(round: usize, b: u64, c: u64, d: u64) -> u64:
+            return git_blob_sha1_mask((b & c) | ((~b) & d)) if round == 0
+            return b ^ c ^ d if round == 1 or round == 3
+            return (b & c) | (b & d) | (c & d)
+
+
+        def git_blob_sha1_compress(state: mutable u64[5]&, block: u8[64]&) -> void:
+            schedule: mutable u64[80] = zeroed
+            for index in 0..<16 |schedule, block|:
+                offset: usize = index * 4
+                schedule[index] <- (block[offset].u64() << 24) | (block[offset + 1].u64() << 16) | (block[offset + 2].u64() << 8) | block[offset + 3].u64()
+            for index in 16..<80 |schedule|:
+                schedule[index] <- git_blob_sha1_rol(schedule[index - 3] ^ schedule[index - 8] ^ schedule[index - 14] ^ schedule[index - 16], 1)
+
+            a: mutable u64 = state[0]
+            b: mutable u64 = state[1]
+            c: mutable u64 = state[2]
+            d: mutable u64 = state[3]
+            e: mutable u64 = state[4]
+            for index in 0..<80 |schedule, a, b, c, d, e|:
+                round: usize = index / 20
+                choice: u64 = git_blob_sha1_choice(round, b, c, d)
+                temp: u64 = git_blob_sha1_mask(git_blob_sha1_rol(a, 5) + choice + e + Sha1::ROUND_CONSTANTS[round] + schedule[index])
+                e <- d
+                d <- c
+                c <- git_blob_sha1_rol(b, 30)
+                b <- a
+                a <- temp
+            state[0] <- git_blob_sha1_mask(state[0] + a)
+            state[1] <- git_blob_sha1_mask(state[1] + b)
+            state[2] <- git_blob_sha1_mask(state[2] + c)
+            state[3] <- git_blob_sha1_mask(state[3] + d)
+            state[4] <- git_blob_sha1_mask(state[4] + e)
+
+
+        def git_blob_sha1_append_byte(state: mutable u64[5]&, block: mutable u8[64]&, block_length: mutable usize&, byte: u8) -> void:
+            block[block_length] <- byte
+            block_length <- block_length + 1
+            if block_length == 64:
+                git_blob_sha1_compress(state, block)
+                block_length <- 0
+
+
+    public:
+        # Compare content to a lowercase Git blob object ID. The byte view is
+        # streamed into fixed stack state; the input is never copied or grown.
+        def git_blob_sha1_matches(content: sview, expected_hex: sview) -> bool error[GitBlobIdentityError]:
+            raise GitBlobIdentityError.ContentTooLarge if sview_len(content) > Limits::MAX_BLOB_BYTES
+            raise GitBlobIdentityError.InvalidExpectedDigest if sview_len(expected_hex) != 40
+            for byte in expected_hex:
+                raise GitBlobIdentityError.InvalidExpectedDigest if git_blob_sha1_hex_nibble(byte) > 15u8
+
+            state: mutable u64[5] = Sha1::INITIAL_STATE
+            block: mutable u8[64] = zeroed
+            block_length: mutable usize = 0
+            for byte in "blob " |state, block, block_length|:
+                git_blob_sha1_append_byte(state, block, block_length, byte)
+
+            reverse_digits: mutable u8[20] = zeroed
+            digit_count: mutable usize = 0
+            remaining: mutable usize = sview_len(content)
+            if remaining == 0:
+                reverse_digits[0] <- 48u8
+                digit_count <- 1
+            while remaining != 0 |reverse_digits, digit_count, remaining|:
+                reverse_digits[digit_count] <- (remaining % 10).u8() + 48u8
+                digit_count <- digit_count + 1
+                remaining <- remaining / 10
+            while digit_count > 0 |reverse_digits, digit_count, state, block, block_length|:
+                digit_count <- digit_count - 1
+                git_blob_sha1_append_byte(state, block, block_length, reverse_digits[digit_count])
+            git_blob_sha1_append_byte(state, block, block_length, 0u8)
+            for byte in content |state, block, block_length|:
+                git_blob_sha1_append_byte(state, block, block_length, byte)
+
+            decimal_width: mutable usize = 1
+            decimal_value: mutable usize = sview_len(content)
+            while decimal_value >= 10 |decimal_width, decimal_value|:
+                decimal_value <- decimal_value / 10
+                decimal_width <- decimal_width + 1
+            bit_length: u64 = (6u64 + decimal_width.u64() + sview_len(content).u64()) * 8u64
+
+            git_blob_sha1_append_byte(state, block, block_length, 128u8)
+            while block_length != 56 |state, block, block_length|:
+                git_blob_sha1_append_byte(state, block, block_length, 0u8)
+            for shift in 0..<8 |state, block, block_length, bit_length|:
+                git_blob_sha1_append_byte(state, block, block_length, (bit_length >> (56 - shift * 8)).u8())
+
+            digest_index: mutable usize = 0
+            for word in state |expected_hex, digest_index|:
+                for shift in 0..<4 |word, expected_hex, digest_index|:
+                    digest_byte: u8 = ((word >> (24 - shift * 8)) & 255u64).u8()
+                    expected_high: u8 = git_blob_sha1_hex_nibble(sview_at(expected_hex, digest_index * 2))
+                    expected_low: u8 = git_blob_sha1_hex_nibble(sview_at(expected_hex, digest_index * 2 + 1))
+                    return false if digest_byte != expected_high * 16u8 + expected_low
+                    digest_index <- digest_index + 1
+            return digest_index == 20

@@ -113,8 +113,12 @@ stable `.git/HEAD` and, for the pinned `main` symbolic ref, the loose
 `.git/refs/heads/main` file; either must identify commit
 `a891c07857536c0f8b3c2ede3bf97385ba12f7c5`. This detects a moved checkout but
 does not authenticate the Git object database or every tracked worktree file.
-The source lock authenticates only the frontend and corpus bytes; tracked driver
-and harness blob checks plus executable identity remain outstanding.
+The adapter additionally reads the tracked Python driver through the stable
+descriptor path and checks its Git blob SHA-1 against
+`0c520694c81537e333b8204ab110155ce2c6d133`. The bounded SHA-1 routine exists
+only to interoperate with this existing Git object ID; it is not an adversarial
+signature. The source lock authenticates the frontend and corpus with SHA-256.
+Tracked C harness/shim blob checks and executable identity remain outstanding.
 The adapter and pure source tests
 (`test/runtime/lua_frontend_pinned_inputs_test.elisa` and
 `test/runtime/lua_frontend_pinned_inputs_posix_test.elisa`) have not been

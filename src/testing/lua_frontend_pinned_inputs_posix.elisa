@@ -5,6 +5,7 @@
 
 module EsLuaFrontendPinnedInputsPosix:
     using EsLuaFrontendPinnedInputs
+    using EsGitBlobIdentity
     using EsBuildIncrementalPosix
     using EsRuntime
 
@@ -38,6 +39,7 @@ module EsLuaFrontendPinnedInputsPosix:
             RootCloseFailed(path: sview)
             InvalidRootCapability(path: sview)
             ReferenceMetadataMissing(path: sview)
+            ReferenceDriverDigestMismatch(path: sview)
             ManifestMissing(path: sview)
             SourceMissing(path: sview)
             FileTooLarge(path: sview)
@@ -53,7 +55,10 @@ module EsLuaFrontendPinnedInputsPosix:
         const module ReferencePaths:
             HEAD: sview = ".git/HEAD"
             MAIN_REF: sview = ".git/refs/heads/main"
-            MAX_BYTES: usize = 1024
+            DRIVER: sview = "compiler/scripts/run_lua_frontend_differential.py"
+            DRIVER_BLOB_SHA1: sview = "0c520694c81537e333b8204ab110155ce2c6d133"
+            METADATA_MAX_BYTES: usize = 1024
+            DRIVER_MAX_BYTES: usize = 1048576
 
 
         const enum LuaFrontendPinReadState of u8:
@@ -312,17 +317,20 @@ module EsLuaFrontendPinnedInputsPosix:
         # Validate the tracked lock before opening any corpus file, then read
         # exactly its rows beneath the independently approved source root.
         # The caller keeps `a` alive while consuming the returned views.
-        def verify_lua_frontend_pinned_inputs_at(a: mutable Arena&, manifest_root_fd: int, manifest_path: sview, source_root_fd: int) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        def verify_lua_frontend_pinned_inputs_at(a: mutable Arena&, manifest_root_fd: int, manifest_path: sview, source_root_fd: int) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError, GitBlobIdentityError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             manifest_file: OpenedFile = try open_build_incremental_file_at(manifest_root_fd, manifest_path)
             raise LuaFrontendPinReadError.ManifestMissing(manifest_path) if not manifest_file.present
             manifest_text: sview = try lua_frontend_pin_posix_read_opened(a, manifest_root_fd, manifest_path, manifest_file, Limits::MANIFEST_BYTES)
             manifest: LuaFrontendPinManifest = try validate_lua_frontend_reference_manifest(manifest_text)
 
-            head_text: sview = try lua_frontend_pin_read_required_at(a, source_root_fd, ReferencePaths::HEAD, ReferencePaths::MAX_BYTES)
+            head_text: sview = try lua_frontend_pin_read_required_at(a, source_root_fd, ReferencePaths::HEAD, ReferencePaths::METADATA_MAX_BYTES)
             main_ref_text: mutable sview = ""
             if head_text == "ref: refs/heads/main\n":
-                main_ref_text <- try lua_frontend_pin_read_required_at(a, source_root_fd, ReferencePaths::MAIN_REF, ReferencePaths::MAX_BYTES)
+                main_ref_text <- try lua_frontend_pin_read_required_at(a, source_root_fd, ReferencePaths::MAIN_REF, ReferencePaths::METADATA_MAX_BYTES)
             _ = try validate_lua_frontend_reference_git_metadata(head_text, main_ref_text)
+            driver_source: sview = try lua_frontend_pin_read_required_at(a, source_root_fd, ReferencePaths::DRIVER, ReferencePaths::DRIVER_MAX_BYTES)
+            driver_matches: bool = try git_blob_sha1_matches(driver_source, ReferencePaths::DRIVER_BLOB_SHA1)
+            raise LuaFrontendPinReadError.ReferenceDriverDigestMismatch(ReferencePaths::DRIVER) if not driver_matches
 
             inputs: mutable darray[LuaFrontendPinSourceInput] = []
             total_source_bytes: mutable usize = 0
@@ -347,7 +355,7 @@ module EsLuaFrontendPinnedInputsPosix:
 
 
     public:
-        def verify_lua_frontend_pinned_inputs(a: mutable Arena&, manifest_root: LuaFrontendPinRootCapability, manifest_path: sview, source_root: LuaFrontendPinRootCapability) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        def verify_lua_frontend_pinned_inputs(a: mutable Arena&, manifest_root: LuaFrontendPinRootCapability, manifest_path: sview, source_root: LuaFrontendPinRootCapability) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError, GitBlobIdentityError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise LuaFrontendPinReadError.InvalidRootCapability(manifest_root.path) if not lua_frontend_pin_root_capability_valid(manifest_root)
             raise LuaFrontendPinReadError.InvalidRootCapability(source_root.path) if not lua_frontend_pin_root_capability_valid(source_root)
             return try verify_lua_frontend_pinned_inputs_at(a, manifest_root.descriptor, manifest_path, source_root.descriptor)
@@ -356,7 +364,7 @@ module EsLuaFrontendPinnedInputsPosix:
         # Own both root descriptors for the complete verification transaction.
         # This closes them on success and on every ordinary typed-error path;
         # the caller still owns `a`, which retains the returned exact byte views.
-        def verify_lua_frontend_pinned_inputs_from_roots(a: mutable Arena&, manifest_root_path: sview, manifest_path: sview, source_root_path: sview) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+        def verify_lua_frontend_pinned_inputs_from_roots(a: mutable Arena&, manifest_root_path: sview, manifest_path: sview, source_root_path: sview) -> LuaFrontendPinVerification error[LuaFrontendPinError, LuaFrontendPinReadError, OpenError, GitBlobIdentityError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             manifest_root: mutable LuaFrontendPinRootCapability = try open_lua_frontend_pin_root(manifest_root_path)
             source_root: mutable LuaFrontendPinRootCapability = LuaFrontendPinRootCapability{path: source_root_path}
             catch open_lua_frontend_pin_root(source_root_path):
