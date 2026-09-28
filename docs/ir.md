@@ -3580,7 +3580,10 @@ container kinds, ordinals, and inline-table keys in a structurally validated
 bounded graph;
 the format-neutral precedence view still preserves the original array/table
 spelling. A compatibility projection also provides flat `items`/`fields` for
-values representable by the former one-level subset. The graph is bounded to
+values representable by the former one-level subset; recursive arrays and
+inline tables are represented only in `nodes`/`children`. The recursive TOML
+schema checker validates array-item and inline-object types through that graph.
+The graph is bounded to
 16 MiB of source, 262,144 nodes, depth 128, and the existing aggregate array
 item/table-field limits. Basic strings decode TOML's quote, backslash, control, and
 Unicode scalar escapes. Simple single- or double-quoted key segments are

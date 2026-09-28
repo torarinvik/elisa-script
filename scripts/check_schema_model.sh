@@ -68,6 +68,9 @@ for fixture_pattern in \
     'wrong_item_rejected' \
     'wrong_nested_rejected' \
     'missing_nested_rejected' \
+    'nested_array_schema' \
+    'SchemaTypeNode{kind: SchemaValueKind.Array, array_item_type_index: 1}' \
+    'invalid_nested_array_rejected' \
     'duplicate_rejected' \
     'missing_inline_rejected' \
     'SchemaContractError.RequiredFieldMissing'; do
