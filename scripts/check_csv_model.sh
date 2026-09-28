@@ -15,6 +15,29 @@ for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
+# Keep the shell oracle within the same explicit resource envelope as the
+# bounded Elisascript candidate before invoking rg on any source.
+source_bytes() {
+    local source_path="$1"
+    local measured
+    if ! measured="$(/usr/bin/stat -f%z "$source_path" 2>/dev/null)"; then
+        return 1
+    fi
+    [[ "$measured" =~ ^[0-9]+$ ]] || return 1
+    printf '%s' "$measured"
+}
+
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs")
+total_bytes=0
+for source_path in "${source_paths[@]}"; do
+    source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
+    if (( source_size > 16777216 || source_size > 33554432 - total_bytes )); then
+        printf 'csv model audit: source exceeds audit limit: %s\n' "$source_path" >&2
+        exit 2
+    fi
+    total_bytes=$((total_bytes + source_size))
+done
+
 for declaration in \
     'module EsCsv:' \
     'using EsData' \
