@@ -234,6 +234,10 @@ rg -Fq 'descendant escaping the isolated process group is rejected' "$snapshot_f
 for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; do
     rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
     rg -q 'assert rss_guard == "active"' "$parity_test"
+    rg -q 'getenv\("ELISASCRIPT_VALIDATION_REAUTHORIZED"' "$parity_test"
+    rg -Fq 'assert reauthorized == "1"' "$parity_test"
+    rg -Fq '/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac' "$parity_test"
+    rg -q 'assert compiler == .*pinned_compiler_path\(\)' "$parity_test"
 done
 
 rg -q 'emergency-stop latch' "$stopper"
