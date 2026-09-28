@@ -475,11 +475,17 @@ form the selected record terminator; quoted cells may contain newline payload.
 Field and record ceilings are shared with `EsData`, including exact-limit
 inputs and cells, and a ready session must have clean source, field, record,
 and cursor accounting. An empty source can complete without spans or records;
-a terminator-only source still requires one zero-width field span and one
-record. Lookup returns only validated slices while the session
-is building or complete. Record starts are range-checked before subtraction.
-The incremental event API revalidates its ledger and is intended for small
-construction; a future large adapter should capture bounded parser batches.
+a terminator-only source is one zero-field record with no fabricated span.
+`EsCsvParser::parse_csv_materializer` now walks source bytes through the
+validated `EsCsv` state machine and constructs bounded field/record spans in
+one pass, preserving quoted delimiters, embedded newlines, blank rows, and
+CRLF boundaries without copying cell payloads. It reconciles the materialized
+field/record totals with parser counters, then validates the completed
+materializer once at the end instead of replaying the incremental ledger check
+for every field. Lookup returns only validated slices while the session is
+building or complete. Record starts are range-checked before subtraction.
+Direct event-by-event construction remains intended for small fixtures; large
+file streaming and external-spill aggregation still require host adapters.
 
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or

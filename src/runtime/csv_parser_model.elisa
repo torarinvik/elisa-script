@@ -1,0 +1,111 @@
+# Source-to-span CSV parser adapter.
+# It consumes each input byte through EsCsv's validated state machine and
+# materializes exact source spans for EsCsvMaterialize without copying cells.
+
+module EsCsvParser:
+    using EsCsv
+    using EsCsvMaterialize
+    using EsData
+
+    private:
+        const enum ParsePhase of u8:
+            ReadInput
+            FinishInput
+            Done
+
+
+        def append_field(materializer: mutable CsvMaterializer&, start: usize, end: usize, quoted: bool) -> void error[CsvMaterializerError] can[Memory.Allocate, Abort.Panic]:
+            raise CsvMaterializerError.FieldLimitExceeded if materializer.fields.count >= CSV_MATERIALIZER_MAX_FIELDS
+            raise CsvMaterializerError.FieldRangeInvalid if start > end or end > sview_len(materializer.source) or end - start > DATA_MAX_FIELD_BYTES
+            materializer.fields.push(CsvFieldSpan{start: start, end: end, quoted: quoted})
+            materializer.next_field <- materializer.next_field + 1
+
+
+        def append_record(materializer: mutable CsvMaterializer&, first_field: usize, field_count: usize) -> void error[CsvMaterializerError] can[Memory.Allocate, Abort.Panic]:
+            raise CsvMaterializerError.RecordLimitExceeded if materializer.records.count >= CSV_MATERIALIZER_MAX_RECORDS
+            raise CsvMaterializerError.RecordOrderInvalid if first_field != materializer.record_field_cursor
+            raise CsvMaterializerError.RecordOrderInvalid if first_field > materializer.fields.count
+            raise CsvMaterializerError.RecordOrderInvalid if field_count > materializer.fields.count - first_field
+            materializer.records.push(CsvRecordSpan{first_field: first_field, field_count: field_count})
+            materializer.record_field_cursor <- materializer.record_field_cursor + field_count
+
+
+        def finish_record(materializer: mutable CsvMaterializer&, first_field: usize, field_start: usize, field_end: usize, emit_field: bool, quoted: bool) -> usize error[CsvMaterializerError] can[Memory.Allocate, Abort.Panic]:
+            if emit_field:
+                try append_field(materializer, field_start, field_end, quoted)
+            field_count: usize = materializer.fields.count - first_field
+            try append_record(materializer, first_field, field_count)
+            return materializer.fields.count
+
+
+    public:
+        def parse_csv_materializer(source: sview, policy: CsvPolicy = CsvPolicy{}, limits: DataDecodeLimits = DataDecodeLimits{}) -> CsvMaterializer error[DataContractError, CsvContractError, CsvMaterializerError] can[Memory.Allocate, Abort.Panic]:
+            materializer: mutable CsvMaterializer = CsvMaterializer{source: source, policy: policy}
+            _ = try advance_csv_materializer(materializer, CsvMaterializerEvent.Begin)
+            stream: mutable CsvStream = CsvStream{policy: policy, limits: limits}
+            _ = try advance_csv_stream(stream, CsvStreamEvent.Begin)
+
+            input_bytes: usize = sview_len(source)
+            cursor: mutable usize = 0
+            field_start: mutable usize = 0
+            field_quoted: mutable bool = false
+            record_first_field: mutable usize = 0
+            phase: mutable ParsePhase = ParsePhase.ReadInput
+
+            machine over phase while phase != ParsePhase.Done:
+                state ParseInput
+                start ParseInput
+
+                ParseInput, ParsePhase.ReadInput:
+                    if cursor >= input_bytes:
+                        phase <- ParsePhase.FinishInput
+                        continue
+
+                    byte: u8 = sview_at(source, cursor)
+                    previous_state: CsvStreamState = stream.state
+                    previous_fields: usize = stream.fields_in_record
+                    previous_field_bytes: usize = stream.field_bytes
+                    previous_field_started: bool = stream.field_started
+                    _ = try advance_csv_stream(stream, CsvStreamEvent.Byte, byte)
+
+                    if previous_state == CsvStreamState.Unquoted and byte == policy.quote and previous_field_bytes == 0:
+                        field_quoted <- true
+
+                    if previous_state == CsvStreamState.Unquoted or previous_state == CsvStreamState.AfterQuote:
+                        if byte == policy.separator:
+                            try append_field(materializer, field_start, cursor, field_quoted)
+                            field_start <- cursor + 1
+                            field_quoted <- false
+                        elif byte == csv_policy_record_terminator_byte(policy, 0) and csv_policy_record_terminator_width(policy) == 1:
+                            has_field: bool = previous_fields != 0 or previous_field_started or previous_field_bytes != 0
+                            record_first_field <- try finish_record(materializer, record_first_field, field_start, cursor, has_field, field_quoted)
+                            field_start <- cursor + 1
+                            field_quoted <- false
+                    elif previous_state == CsvStreamState.PendingRecordTerminator:
+                        has_field: bool = previous_fields != 0 or previous_field_started or previous_field_bytes != 0
+                        record_first_field <- try finish_record(materializer, record_first_field, field_start, cursor - 1, has_field, field_quoted)
+                        field_start <- cursor + 1
+                        field_quoted <- false
+
+                    cursor <- cursor + 1
+                    -> ParseInput
+
+                ParseInput, ParsePhase.FinishInput:
+                    previous_records: usize = stream.records
+                    previous_fields: usize = stream.fields_in_record
+                    previous_field_bytes: usize = stream.field_bytes
+                    previous_field_started: bool = stream.field_started
+                    _ = try advance_csv_stream(stream, CsvStreamEvent.End)
+                    if stream.records > previous_records:
+                        has_field: bool = previous_fields != 0 or previous_field_started or previous_field_bytes != 0
+                        record_first_field <- try finish_record(materializer, record_first_field, field_start, input_bytes, has_field, field_quoted)
+                    raise CsvMaterializerError.FieldOrderInvalid if materializer.fields.count != stream.fields_total
+                    raise CsvMaterializerError.RecordOrderInvalid if materializer.records.count != stream.records
+                    _ = try advance_csv_materializer(materializer, CsvMaterializerEvent.End)
+                    phase <- ParsePhase.Done
+                    continue
+
+                ParseInput, ParsePhase.Done:
+                    break
+
+            return materializer
