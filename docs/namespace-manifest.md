@@ -42,26 +42,25 @@ outside this check and remain governed by `vendor/elisa-compiler/SOURCE.md`.
 It implements these same declaration, import, include, runtime visibility,
 renderer/reset, required-module, and TSV-manifest checks. It accepts an optional
 source root and parser-token source so both implementations can inspect the
-same fixtures. For byte-for-byte comparison, pass both paths explicitly: the
-shell script defaults relative to its own location, while the Elisascript
-candidate defaults to `src` and `vendor/elisa-compiler/src/parser/parser_tokens.elisa`
-relative to the caller's working directory.
+same fixtures. For byte-for-byte comparison, pass both paths explicitly. The
+shell script and Elisascript candidate both derive omitted paths from their own
+script locations, rather than the caller's working directory.
 
-The candidate bounds its input to 4,096 source files, 4,096 directories,
-65,536 visited entries, 16,384 entries in any one directory, 2 MiB per source
-file, 16 MiB aggregate source bytes, and 2 MiB for the separately supplied
-parser-token file. It walks iteratively through `Path.iterdir`, skips hidden
-components and symlinks, and does not apply ripgrep ignore-file rules; parity is
-therefore currently scoped to tracked, visible source roots without ignored
-`.elisa` files. The runtime materializes one directory listing before the
-candidate can apply its 16,384-entry policy; that individual listing is itself
-capped by the filesystem API at 262,144 entries / 64 MiB of names. The source
-must remain stable during the run: `file_size` preflights and `read_text` is
-checked afterward, but a concurrent replacement can still exceed the intended
-peak allocation before that post-read check. These differences and the fixtures
-are documented but not runtime-qualified; the candidate is not yet accepted as
-a replacement until its status/stdout/stderr and fixture matrix are executed
-through the public launcher after compiler validation is reauthorized.
+The candidate discovers source paths with a direct `rg --files --null
+--glob '*.elisa'` invocation. This preserves the shell reference's default
+hidden-file, ignore-file, and symlink behavior without constructing a shell
+command string. The captured path list is capped at 16 MiB and 30 seconds; the
+candidate also admits at most 4,096 source files, 2 MiB per source file, 16 MiB
+aggregate source bytes, and 2 MiB for the separately supplied parser-token
+file. Every admitted source is read through the shared bounded UTF-8 reader,
+which enforces the byte ceiling at the descriptor boundary and checks file
+identity/stability. A changing directory tree can still change between path
+discovery and file admission, so callers should audit a stable checkout.
+
+These differences and fixtures are documented but not runtime-qualified; the
+candidate is not yet accepted as a replacement until its status/stdout/stderr
+and the fixture matrix are executed through the public launcher after compiler
+validation is reauthorized.
 
 Every new public symbol must be added to its owning namespace deliberately and
 documented at the boundary. Tests should use public inspection APIs rather than
