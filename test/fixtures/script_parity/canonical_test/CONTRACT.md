@@ -141,7 +141,14 @@ Compare independently expected observations, not just reference/candidate
 agreement. Campaign may not be implemented by calling its original shell
 wrapper or by routing the candidate to the reference.
 
-For the wrapper-family wave, the public launcher also hashes the live neighboring
+The default three-case `CampaignOnly` wave isolates the smallest wrapper's
+forced-mode and argument-forwarding behavior. It stages both unchanged shell
+scripts because the reference campaign shim execs its sibling canonical wrapper,
+but stages only the campaign Elisascript entry point and shared implementation.
+It does not run lint ordinary, signal, or exec-failure cases. The broader
+`WrapperFamily` wave remains unchanged and explicit.
+
+For both wrapper waves, the public launcher also hashes the live neighboring
 `test_canonical.sh` and `test_campaign.sh` against the snapshot identities before
 setup and after cleanup. This prevents a stale fixture snapshot from silently
 standing in for a changed real reference. The hash check is an observation, not
