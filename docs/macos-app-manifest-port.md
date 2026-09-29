@@ -20,7 +20,10 @@ admission from `stage_resource()`: explicitly selected paths must exist, must
 not themselves be symlinks, and must be regular files or directories. The
 filesystem module does not yet copy notices or resources; directory traversal,
 Python `copy2` metadata behavior, and `copytree(symlinks=False)` handling are
-still unported. Its temp-directory fixtures are authored but unrun.
+still unported. The pure policy in
+`src/runtime/macos_app_asset_filter_model.elisa` now ports both the regular
+asset litter exclusions and the additional shader metadata exclusions; its
+fixture is authored but unrun.
 
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
