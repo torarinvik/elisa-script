@@ -509,6 +509,17 @@ model, not yet a POSIX file-reader adapter; the caller supplies and reads the
 chunks. The source fixture covers split quoted content, split CRLF, EOF flush,
 and fail-closed malformed input, but has not been run.
 
+`EsCsvRecordFilePosix::next_csv_record_file` connects that framer to a binary
+`FileStream`. It returns one owned raw record per call while reading fixed
+16 KiB chunks, bounds file input to the smaller of the caller's ceiling and the
+stream budget, and uses a one-byte probe to distinguish exact-limit EOF from
+an oversized source. EOF flushes the final unterminated row, and the reader
+uses the file stream's explicit commit/abort close guard. It does not retain
+the whole file or decode a schema; callers can materialize each returned row
+before requesting the next. Source fixtures describe empty input, a CRLF
+boundary at the chunk edge, a final unterminated row, exact-limit acceptance,
+and over-limit rejection, but no runtime or parity process has run.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate

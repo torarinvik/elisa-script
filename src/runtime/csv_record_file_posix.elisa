@@ -1,0 +1,206 @@
+# Bounded POSIX FileStream adapter for chunked CSV/TSV record reads.
+#
+# EsCsvRecordFramer owns CSV grammar and record boundaries. This layer reads
+# one fixed-size binary chunk at a time, buffers only completed records from
+# that chunk, and leaves row/schema interpretation to the caller.
+
+module EsCsvRecordFilePosix:
+    using EsCsv
+    using EsCsvRecordFramer
+    using EsData
+    using EsRuntime
+
+    public:
+        const CSV_RECORD_FILE_READER_FORMAT_VERSION: u8 = 1
+        const CSV_RECORD_FILE_CHUNK_BYTES: usize = CSV_RECORD_FRAMER_MAX_CHUNK_BYTES
+        const CSV_RECORD_FILE_MAX_INPUT_BYTES: usize = FILE_STREAM_DEFAULT_MAX_BYTES - 1
+
+
+        const enum CsvRecordFileReaderState of u8:
+            Reading
+            Complete
+            Failed
+            Closed
+
+
+        struct CsvRecordFileRead:
+            has_record: bool = false
+            bytes: darray[u8] = []
+
+
+        struct CsvRecordFileReader:
+            format_version: u8 = CSV_RECORD_FILE_READER_FORMAT_VERSION
+            file: FileStream
+            framer: CsvRecordFramer
+            chunk_buffer: darray[u8] = []
+            source_bytes_read: usize = 0
+            pending_records: darray[darray[u8]] = []
+            pending_index: usize = 0
+            cleanup: FileStreamCleanupGuard = FileStreamCleanupGuard{}
+            state: CsvRecordFileReaderState = CsvRecordFileReaderState.Reading
+
+
+        error CsvRecordFileError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidReadResult
+            InputLimitExceeded
+            AccountingInvalid
+
+
+    private:
+        const enum CsvRecordFileAction of u8:
+            ReturnPending
+            ReadChunk
+            ReturnComplete
+
+
+        def csv_record_file_min(left: usize, right: usize) -> usize:
+            return left if left < right else right
+
+
+        def csv_record_file_action(reader: CsvRecordFileReader&) -> CsvRecordFileAction:
+            return CsvRecordFileAction.ReturnPending if reader.pending_index < reader.pending_records.count
+            return CsvRecordFileAction.ReturnComplete if reader.state == CsvRecordFileReaderState.Complete
+            return CsvRecordFileAction.ReadChunk
+
+
+        def csv_record_file_chunk_view(reader: CsvRecordFileReader&, count: usize) -> sview:
+            data: u8& = (&reader.chunk_buffer[0]).cast[u8&]
+            return sview(data, 0, count.i64())
+
+
+        def csv_record_file_read_capacity(reader: CsvRecordFileReader&) -> usize error[CsvRecordFileError, FileStreamError]:
+            input_limit: usize = reader.framer.limits.input_bytes
+            raise CsvRecordFileError.InputLimitExceeded if reader.source_bytes_read > input_limit
+            raise CsvRecordFileError.AccountingInvalid if reader.file.bytes_read > reader.file.byte_budget
+            file_remaining: usize = reader.file.byte_budget - reader.file.bytes_read
+            if reader.source_bytes_read == input_limit:
+                raise CsvRecordFileError.AccountingInvalid if file_remaining == 0
+                return 1
+            input_remaining: usize = input_limit - reader.source_bytes_read
+            raise CsvRecordFileError.AccountingInvalid if file_remaining == 0
+            return csv_record_file_min(CSV_RECORD_FILE_CHUNK_BYTES, csv_record_file_min(input_remaining, file_remaining))
+
+
+        def csv_record_file_reader_state_valid(reader: CsvRecordFileReader&) -> bool error[CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError]:
+            raise CsvRecordFileError.InvalidFormatVersion if reader.format_version != CSV_RECORD_FILE_READER_FORMAT_VERSION
+            try validate_csv_record_framer(reader.framer)
+            raise CsvRecordFileError.AccountingInvalid if reader.framer.limits.input_bytes > CSV_RECORD_FILE_MAX_INPUT_BYTES
+            raise CsvRecordFileError.AccountingInvalid if reader.file.byte_budget != reader.framer.limits.input_bytes + 1
+            raise CsvRecordFileError.AccountingInvalid if reader.file.bytes_read > reader.file.byte_budget
+            raise CsvRecordFileError.AccountingInvalid if reader.source_bytes_read > reader.file.byte_budget
+            raise CsvRecordFileError.AccountingInvalid if reader.file.bytes_read != reader.source_bytes_read
+            raise CsvRecordFileError.AccountingInvalid if reader.chunk_buffer.count != CSV_RECORD_FILE_CHUNK_BYTES
+            raise CsvRecordFileError.AccountingInvalid if reader.pending_index > reader.pending_records.count or reader.pending_records.count > CSV_RECORD_FILE_CHUNK_BYTES
+            raise CsvRecordFileError.InvalidState if reader.file.pending_valid
+            raise CsvRecordFileError.InvalidState if reader.file.mode != FileStreamMode.ReadBinary or reader.file.encoding != FileStreamEncoding.Bytes
+            if reader.state == CsvRecordFileReaderState.Reading:
+                raise CsvRecordFileError.InvalidState if reader.framer.state != CsvRecordFramerState.Reading
+                raise CsvRecordFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise CsvRecordFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+                raise CsvRecordFileError.InvalidState if reader.source_bytes_read != reader.framer.stream.input_bytes
+            elif reader.state == CsvRecordFileReaderState.Complete:
+                raise CsvRecordFileError.InvalidState if reader.framer.state != CsvRecordFramerState.Complete
+                raise CsvRecordFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise CsvRecordFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+                raise CsvRecordFileError.InvalidState if reader.source_bytes_read != reader.framer.stream.input_bytes
+            elif reader.state == CsvRecordFileReaderState.Failed:
+                raise CsvRecordFileError.InvalidState if reader.file.state != FileStreamState.Open or reader.file.handle == null
+                raise CsvRecordFileError.InvalidState if reader.cleanup.state != FileStreamCleanupState.Armed
+            elif reader.state == CsvRecordFileReaderState.Closed:
+                raise CsvRecordFileError.InvalidState if reader.file.state != FileStreamState.Closed or reader.file.handle != null
+                raise CsvRecordFileError.InvalidState if reader.cleanup.state == FileStreamCleanupState.Armed
+            else:
+                raise CsvRecordFileError.InvalidState
+            return true
+
+
+        def csv_record_file_next_impl(reader: mutable CsvRecordFileReader&) -> CsvRecordFileRead error[CsvRecordFileError, FileStreamError, DataContractError, CsvContractError, CsvRecordFramerError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            result: mutable CsvRecordFileRead = CsvRecordFileRead{}
+            machine over csv_record_file_action(reader) while true:
+                state NextRecord
+                start NextRecord
+
+                NextRecord, CsvRecordFileAction.ReturnPending:
+                    result <- CsvRecordFileRead{has_record: true, bytes: reader.pending_records[reader.pending_index]}
+                    reader.pending_index <- reader.pending_index + 1
+                    -> NextRecord
+
+                NextRecord, CsvRecordFileAction.ReadChunk:
+                    capacity: usize = try csv_record_file_read_capacity(reader)
+                    buffer: mutable u8& = (&reader.chunk_buffer[0]).cast[mutable u8&]
+                    read: FileStreamRead = try file_stream_read_chunk(reader.file, buffer, capacity)
+                    raise CsvRecordFileError.InvalidReadResult if read.count > capacity or (read.eof and read.count != 0)
+                    if read.count != 0:
+                        raise CsvRecordFileError.AccountingInvalid if reader.source_bytes_read > reader.file.byte_budget - read.count
+                        reader.source_bytes_read <- reader.source_bytes_read + read.count
+                        raise CsvRecordFileError.InputLimitExceeded if reader.source_bytes_read > reader.framer.limits.input_bytes
+                        reader.pending_records <- try feed_csv_record_framer(reader.framer, csv_record_file_chunk_view(reader, read.count))
+                        reader.pending_index <- 0
+                        -> NextRecord
+                    raise CsvRecordFileError.InvalidReadResult if not read.eof
+                    reader.pending_records <- try finish_csv_record_framer(reader.framer)
+                    reader.pending_index <- 0
+                    reader.state <- CsvRecordFileReaderState.Complete
+                    -> NextRecord
+
+                NextRecord, CsvRecordFileAction.ReturnComplete:
+                    break
+            return result
+
+
+    public:
+        # `path` remains borrowed by FileStream and must outlive this reader.
+        # The input ceiling is the smaller of the caller's limit and the
+        # FileStream budget minus its one-byte overflow probe.
+        def begin_csv_record_file_reader(path: cstr, policy: CsvPolicy = CsvPolicy{}, limits: DataDecodeLimits = DataDecodeLimits{}, max_record_bytes: usize = DATA_MAX_INPUT_BYTES) -> CsvRecordFileReader error[FileStreamError, DataContractError, CsvContractError, CsvRecordFramerError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            try validate_data_decoder(DataDecoder{format: DataFormat.Csv, limits: limits})
+            effective_input_bytes: usize = csv_record_file_min(limits.input_bytes, CSV_RECORD_FILE_MAX_INPUT_BYTES)
+            effective_limits: mutable DataDecodeLimits = limits
+            effective_limits.input_bytes <- effective_input_bytes
+            framer: CsvRecordFramer = try begin_csv_record_framer(policy, effective_limits, max_record_bytes)
+            chunk_buffer: mutable darray[u8] = []
+            for _ in 0..<CSV_RECORD_FILE_CHUNK_BYTES |chunk_buffer|:
+                chunk_buffer.push(0u8)
+            file: FileStream = try file_stream_open(path, FileStreamMode.ReadBinary, effective_input_bytes + 1, FileStreamEncoding.Bytes)
+            return CsvRecordFileReader{file: file, framer: framer, chunk_buffer: chunk_buffer, cleanup: file_stream_cleanup_begin()}
+
+
+        def validate_csv_record_file_reader(reader: CsvRecordFileReader&) -> bool error[CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError]:
+            try csv_record_file_reader_state_valid(reader)
+            return true
+
+
+        def next_csv_record_file(reader: mutable CsvRecordFileReader&) -> CsvRecordFileRead error[CsvRecordFileError, FileStreamError, DataContractError, CsvContractError, CsvRecordFramerError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            try validate_csv_record_file_reader(reader)
+            raise CsvRecordFileError.InvalidState if reader.state == CsvRecordFileReaderState.Failed or reader.state == CsvRecordFileReaderState.Closed
+            catch csv_record_file_next_impl(reader):
+                ok result:
+                    return result
+                error failure:
+                    reader.state <- CsvRecordFileReaderState.Failed
+                    raise failure
+
+
+        def close_csv_record_file_reader(reader: mutable CsvRecordFileReader&) -> bool error[CsvRecordFileError, FileStreamError, DataContractError, CsvContractError, CsvRecordFramerError] can[Blocking.IO, Memory.Release]:
+            try validate_csv_record_file_reader(reader)
+            if reader.state == CsvRecordFileReaderState.Closed:
+                return true
+            if reader.state == CsvRecordFileReaderState.Complete:
+                catch file_stream_cleanup_commit(reader.cleanup, reader.file):
+                    ok closed:
+                        _ = closed
+                        reader.state <- CsvRecordFileReaderState.Closed
+                        return true
+                    error failure:
+                        reader.state <- CsvRecordFileReaderState.Closed if reader.file.state == FileStreamState.Closed
+                        raise failure
+            catch file_stream_cleanup_abort(reader.cleanup, reader.file):
+                ok closed:
+                    _ = closed
+                    reader.state <- CsvRecordFileReaderState.Closed
+                    return true
+                error failure:
+                    reader.state <- CsvRecordFileReaderState.Closed if reader.file.state == FileStreamState.Closed
+                    raise failure

@@ -2,6 +2,7 @@ include "../../src/ir/ir.elisa"
 
 using EsCsv
 using EsCsvRecordFramer
+using EsCsvRecordFilePosix
 using EsCsvMaterialize
 using EsCsvParser
 using EsCsvEncode
@@ -252,3 +253,95 @@ def csv_record_framer_preserves_quoted_content_and_split_crlf() -> void:
             assert failure == CsvContractError.UnexpectedQuote
             malformed_rejected <- true
     assert malformed_rejected and malformed_framer.state == CsvRecordFramerState.Failed
+
+
+@test
+def csv_record_file_reader_streams_rows_and_rejects_over_limit_input() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write:
+        path_text: static u8& = "/tmp/elisascript-csv-record-file-reader-test.csv"
+        file_path: Path = path(path_text)
+        _ = remove_file(path_text)
+        empty_source: darray[u8] = []
+        empty_written: usize = try write_bytes(file_path, empty_source) else err:
+            1u64
+        assert empty_written == 0
+        empty_reader: mutable CsvRecordFileReader = try begin_csv_record_file_reader(path_text) else err:
+            assert false
+            return
+        empty_result: CsvRecordFileRead = try next_csv_record_file(empty_reader) else err:
+            assert false
+            CsvRecordFileRead{}
+        assert not empty_result.has_record and empty_result.bytes.count == 0
+        assert close_csv_record_file_reader(empty_reader)
+
+        source: mutable darray[u8] = []
+        for _ in 0..<CSV_RECORD_FILE_CHUNK_BYTES - 1 |source|:
+            source.push(97u8)
+        source.push(13u8)
+        source.push(10u8)
+        for byte in "last,row" |source|:
+            source.push(byte)
+        written: usize = try write_bytes(file_path, source) else err:
+            0u64
+        assert written == source.count
+
+        policy: CsvPolicy = CsvPolicy{line_ending: CsvLineEndingMode.CrLf}
+        reader: mutable CsvRecordFileReader = try begin_csv_record_file_reader(path_text, policy) else err:
+            assert false
+            return
+        first: mutable CsvRecordFileRead = CsvRecordFileRead{}
+        second: mutable CsvRecordFileRead = CsvRecordFileRead{}
+        exhausted: mutable CsvRecordFileRead = CsvRecordFileRead{}
+        catch next_csv_record_file(reader):
+            ok value:
+                first <- value
+            error failure:
+                assert false
+        catch next_csv_record_file(reader):
+            ok value:
+                second <- value
+            error failure:
+                assert false
+        catch next_csv_record_file(reader):
+            ok value:
+                exhausted <- value
+            error failure:
+                assert false
+        assert first.has_record and first.bytes.count == CSV_RECORD_FILE_CHUNK_BYTES + 1
+        assert second.has_record and bytes_view(second.bytes) == "last,row" and not exhausted.has_record
+        first_materialized: CsvMaterializer = parse_csv_materializer(bytes_view(first.bytes), policy)
+        assert first_materialized.records.count == 1 and len(csv_materialized_field(first_materialized, 0)) == CSV_RECORD_FILE_CHUNK_BYTES - 1
+        assert close_csv_record_file_reader(reader)
+
+        exact_source: darray[u8] = [120u8, 44u8, 121u8]
+        exact_written: usize = try write_bytes(file_path, exact_source) else err:
+            0u64
+        assert exact_written == exact_source.count
+        exact_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: exact_source.count}
+        exact_reader: mutable CsvRecordFileReader = try begin_csv_record_file_reader(path_text, CsvPolicy{}, exact_limits) else err:
+            assert false
+            return
+        exact_row: CsvRecordFileRead = try next_csv_record_file(exact_reader) else err:
+            assert false
+            CsvRecordFileRead{}
+        assert exact_row.has_record and bytes_view(exact_row.bytes) == "x,y"
+        assert close_csv_record_file_reader(exact_reader)
+
+        oversized_source: darray[u8] = [97u8, 44u8, 98u8, 44u8, 99u8]
+        oversized_written: usize = try write_bytes(file_path, oversized_source) else err:
+            0u64
+        assert oversized_written == oversized_source.count
+        small_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 4}
+        bounded_reader: mutable CsvRecordFileReader = try begin_csv_record_file_reader(path_text, CsvPolicy{}, small_limits) else err:
+            assert false
+            return
+        limit_rejected: mutable bool = false
+        catch next_csv_record_file(bounded_reader):
+            ok unexpected:
+                _ = unexpected
+                assert false
+            error failure:
+                limit_rejected <- failure == CsvRecordFileError.InputLimitExceeded
+        assert limit_rejected and bounded_reader.state == CsvRecordFileReaderState.Failed
+        assert close_csv_record_file_reader(bounded_reader)
+        assert remove_file(path_text)

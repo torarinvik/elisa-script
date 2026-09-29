@@ -13,8 +13,9 @@ docs="$repo_root/docs/ir.md"
 parser="$repo_root/src/runtime/csv_parser_model.elisa"
 encoder="$repo_root/src/runtime/csv_encode_model.elisa"
 framer="$repo_root/src/runtime/csv_record_framer_model.elisa"
+file_reader="$repo_root/src/runtime/csv_record_file_posix.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -30,7 +31,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -137,6 +138,7 @@ done
 
 rg -Fq '`EsCsvEncode::encode_csv_record`' "$docs"
 rg -Fq '`EsCsvRecordFramer::feed_csv_record_framer`' "$docs"
+rg -Fq '`EsCsvRecordFilePosix::next_csv_record_file`' "$docs"
 
 for framer_pattern in \
     'module EsCsvRecordFramer:' \
@@ -159,4 +161,33 @@ for framer_fixture_pattern in \
     rg -Fq "$framer_fixture_pattern" "$runtime_fixture"
 done
 
-printf 'csv model audit: bounded chunked CSV framing and record encoding, source parsing, and explicit line endings are present\n'
+rg -Fq 'include "../runtime/csv_record_file_posix.elisa"' "$ir"
+for file_reader_pattern in \
+    'module EsCsvRecordFilePosix:' \
+    'using EsCsv' \
+    'CSV_RECORD_FILE_CHUNK_BYTES' \
+    'def begin_csv_record_file_reader(' \
+    'def next_csv_record_file(' \
+    'def close_csv_record_file_reader(' \
+    'FILE_STREAM_DEFAULT_MAX_BYTES - 1' \
+    'if reader.source_bytes_read == input_limit:' \
+    'return 1' \
+    'input_limit + 1' \
+    'file_stream_read_chunk(reader.file, buffer, capacity)' \
+    'reader.pending_records <- try finish_csv_record_framer(reader.framer)' \
+    'InputLimitExceeded'; do
+    rg -Fq "$file_reader_pattern" "$file_reader"
+done
+
+for file_reader_fixture_pattern in \
+    'csv_record_file_reader_streams_rows_and_rejects_over_limit_input' \
+    'using EsCsvRecordFilePosix' \
+    'not empty_result.has_record and empty_result.bytes.count == 0' \
+    'first.bytes.count == CSV_RECORD_FILE_CHUNK_BYTES + 1' \
+    'second.has_record and bytes_view(second.bytes)' \
+    'exact_row.has_record' \
+    'CsvRecordFileError.InputLimitExceeded'; do
+    rg -Fq "$file_reader_fixture_pattern" "$runtime_fixture"
+done
+
+printf 'csv model audit: bounded POSIX CSV reading, chunk framing, record encoding, and source parsing are present\n'
