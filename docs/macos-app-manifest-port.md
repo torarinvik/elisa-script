@@ -17,7 +17,10 @@ paths. `src/runtime/macos_app_manifest_file_posix.elisa` now reads a bounded
 UTF-8 `elisa.project.json`, uses Python-compatible last-key-wins JSON object
 handling, and returns owned decoded settings plus resource/notice selections;
 a temp-project fixture covers absent-manifest defaults and duplicate keys.
-It remains uncompiled and unrun. `src/runtime/macos_app_filesystem_posix.elisa` implements the notice
+The loader currently caps input at 16 MiB, unlike Python's unbounded
+`read_text()` path; raise or formally qualify that limit before claiming full
+input-domain parity. It remains uncompiled and unrun.
+`src/runtime/macos_app_filesystem_posix.elisa` implements the notice
 filesystem predicate: canonical containment, symlink-leaf rejection, regular
 file kind, and nonzero size. It also ports the selected-resource root
 admission from the packaging workflow: implicit all-assets mode requires the
