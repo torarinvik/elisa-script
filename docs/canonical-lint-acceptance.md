@@ -10,9 +10,12 @@ Neither is an accepted replacement yet. Keep originals and callers unchanged.
 `test/script_parity/canonical_lint_cases.elisa` owns the eleven ordinary
 reference expectations in a public typed module. Its separate pure fixtures pin
 every executable selection, normally returned status, ignored wrapper argument
-and fixed Ruff argv. They import neither the port nor the differential runner.
-This permits a small compilation target when compilation is explicitly
-reauthorized; the fixtures have not been compiled or run.
+and fixed Ruff argv. The companion and fixture now share the typed
+`lint_canonical_invocation.elisa` definition for default/empty executable
+selection and the four fixed command arguments; the oracle compares those values
+to independent literals. This is source alignment, not observed parity. The
+fixtures import neither the launcher nor the differential runner. They have not
+been compiled or run.
 
 The dormant launcher consumes those same expectations, pins the model's SHA-256
 before and after the matrix, and defaults to lint only. It does not construct
