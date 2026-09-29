@@ -15,10 +15,21 @@ for `base.c` and `64fe483989e56cbcc61c68298b5290b2c94892ef68cdbe86e253b60e81435d
 for `host_callbacks.c`; these record fixture identity, not observed execution.
 
 This is authored source, not accepted parity. The shape and file-golden fixtures
-are uncompiled and unrun. Before switching any caller, a separately authorized,
-RSS-bounded public-launcher matrix must pin the live Bash source and tool
-identities, run default/host-callbacks/ignored-argument cases with bounded
-stdout and stderr capture, admit independent expected status and bytes for the
-reference first, then compare the candidate exactly. Compiler provenance,
-artifact closure, runtime memory bound and cleanup remain open. Do not launch
-that matrix or a compiler under the current validation hold.
+are uncompiled and unrun. A dormant public-launcher matrix now pins the live
+Bash source, candidate/model, goldens, shared runner/reader/gate sources and
+tool identities. Its four cases cover default, host callbacks, an ignored first
+argument and an ignored trailing argument. A replacement child environment
+contains only PATH and LC_ALL. Each Bash observation must first complete with
+status zero, empty stderr/host-error text and exact independent golden bytes;
+only then can the candidate start and be compared exactly. Capture and wait
+polling are bounded. The entry fails closed without explicit reauthorization,
+an external active RSS-guard marker, a separately qualified native launcher,
+the pinned StructPy compiler selection and distinct executable digests. Native
+container headers are checked before any hash-tool child. The current dirty
+differential runner deliberately fails its committed-source pin.
+
+No Bash, candidate, compiler, hash-tool child or test fixture has been run for
+this port. Compiler provenance, executable dependency closure, a real outer
+memory cap, and source/bytecode runtime qualification remain external admission
+requirements. The matrix is not proof of any of those, and no caller should
+switch under the current validation hold.
