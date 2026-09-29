@@ -14,9 +14,12 @@ after the eight-space `const enum DiagnosticKind of u16:` declaration, stops at
 the next same-level enum/extend declaration, rejects missing/duplicate member
 sets, and renders the exact generated adapter format. It has explicit source,
 variant-count and output budgets. Pure synthetic fixtures cover indentation,
-order, stopping and duplicates. A bounded read-only fixture compares the
-projection of the real compiler enum to the checked-in generated adapter.
-All fixtures are authored but uncompiled and unrun.
+order, stopping and duplicates. `diagnostic_codes_cli_model.elisa` separately
+models the typed `--compiler-root`, `--output` and `--check` options; its pure
+fixtures cover defaults, last-value-wins behavior, unknown options and missing
+values. A bounded read-only fixture compares the projection of the real
+compiler enum to the checked-in generated adapter. All fixtures are authored
+but uncompiled and unrun.
 
 `generate_diagnostic_codes.elisascript` is an authored CLI companion for the
 ordinary `--compiler-root`, `--output` and `--check` forms. It reads the enum
@@ -34,7 +37,8 @@ identities. Its single read-only `--check` case uses an independent literal
 success message for 621 variants (the current source and adapter each have 621
 member rows), admits exact Python status/stdout/stderr first, then compares the
 candidate. Python bytecode writes are disabled in the replacement child
-environment. The matrix requires explicit reauthorization, separate launcher
+environment. The matrix pins the CLI model as well as the projection model and
+candidate, and requires explicit reauthorization, separate launcher
 qualification, the pinned local StructPy compiler selectors and an active
 *external* RSS guard. It is authored but uncompiled and unrun; the current dirty
 differential runner fails its committed-source pin.
