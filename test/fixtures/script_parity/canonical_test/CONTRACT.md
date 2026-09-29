@@ -148,11 +148,18 @@ but stages only the campaign Elisascript entry point and shared implementation.
 It does not run lint ordinary, signal, or exec-failure cases. The broader
 `WrapperFamily` wave remains unchanged and explicit.
 
-For both wrapper waves, the public launcher also hashes the live neighboring
-`test_canonical.sh` and `test_campaign.sh` against the snapshot identities before
-setup and after cleanup. This prevents a stale fixture snapshot from silently
-standing in for a changed real reference. The hash check is an observation, not
-an atomic lock against concurrent edits; no live script is executed by the check.
+The seven-case `CanonicalOnly` wave separately exercises the mode parser,
+forwarded pytest argv, and Python selection for the shared 26-line runner. It
+stages the canonical shell reference and its Elisascript entry/helper, without
+the campaign shim or lint assets. It also skips lint signal and exec-failure
+cases.
+
+Each wrapper wave hashes the live shell reference or references it uses against
+the unchanged snapshots before setup and after cleanup. `CanonicalOnly` checks
+`test_canonical.sh`; `CampaignOnly` and `WrapperFamily` check both the canonical
+and campaign wrappers. This prevents a stale fixture snapshot from silently
+standing in for a changed real reference. Hashing is observational, not an atomic
+lock against concurrent edits; no live script is executed by the check.
 
 ## Open parity gaps
 
