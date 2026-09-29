@@ -42,9 +42,12 @@ reference-ordered required-input list (executable, shader root, cooked output,
 selected resources, notices, then optional icon) and models the asymmetric
 project-root rule: an app inside the project is allowed unless it overlaps a
 required input, while an app that replaces or contains the project is rejected.
-It is not yet wired into app publication; filesystem canonicalization and
-end-to-end output checks remain open. All new fixtures remain uncompiled and
-unrun.
+`src/runtime/macos_app_path_plan_posix.elisa` now resolves existing POSIX path
+prefixes and retains missing suffixes, including following dangling symlink
+targets, before that pure overlap check. The resolver is a preflight snapshot,
+not race-free ownership; it is not yet wired into app publication. User-home
+expansion, exact error parity, adversarial filesystem races, and end-to-end
+output checks remain open. All new fixtures remain uncompiled and unrun.
 A file-level Darwin adapter in
 `src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
 POSIX-stat, and xattr flags while following source symlinks; a focused fixture

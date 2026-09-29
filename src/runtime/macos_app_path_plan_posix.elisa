@@ -1,0 +1,106 @@
+# POSIX path resolution for macOS app output preflight.
+# Existing prefixes are resolved through realpath; a missing suffix is retained
+# lexically, matching Path.resolve(strict=False) for ordinary filesystem state.
+
+module EsMacosAppPathPlanPosix:
+    public:
+        error MacosAppPathResolutionError:
+            InvalidPath
+            UnresolvablePath
+            TooManySymlinks
+            WorkLimitExceeded
+
+
+    private:
+        const module Limits:
+            COMPONENTS: usize = 4096
+            SYMLINKS: usize = 40
+            STEPS: usize = 167936
+
+
+        const enum ResolvePhase of u8:
+            FindExistingPrefix
+            RebuildMissingSuffix
+            Done
+
+
+        def macos_app_trim_final_separator(value: Path) -> Path can[Memory.Allocate, Abort.Panic]:
+            name: sview = path_name(value)
+            return value if name == ""
+            return path_join(path_parent(value), name)
+
+
+    public:
+        # Resolve every existing component, including dangling symlink targets,
+        # then retain the unresolved tail as a normalized absolute path. This
+        # is a preflight snapshot, not a race-free filesystem capability.
+        def resolve_macos_app_path_for_overlap(input_path: Path) -> Path error[MacosAppPathResolutionError] can[Blocking.IO, File.Read, Directory.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            absolute: mutable Path = input_path
+            if not path_is_absolute(input_path):
+                current: Path = try current_directory() else err:
+                    raise MacosAppPathResolutionError.UnresolvablePath
+                absolute <- path_join(current, input_path)
+            absolute <- macos_app_trim_final_separator(absolute)
+            normalized_check: Path = path_normalize(absolute)
+            raise MacosAppPathResolutionError.InvalidPath if normalized_check == path("") or not path_is_absolute(normalized_check)
+
+            cursor: mutable Path = absolute
+            pending_components: mutable darray[sview] = []
+            canonical_prefix: mutable Path = path("")
+            phase: mutable ResolvePhase = ResolvePhase.FindExistingPrefix
+            steps: mutable usize = 0
+            symlink_count: mutable usize = 0
+
+            machine over phase while phase != ResolvePhase.Done:
+                state Resolve
+                start Resolve
+
+                Resolve, ResolvePhase.FindExistingPrefix:
+                    raise MacosAppPathResolutionError.WorkLimitExceeded if steps >= Limits::STEPS
+                    steps <- steps + 1
+                    catch path_real(cursor):
+                        ok resolved:
+                            canonical_prefix <- resolved
+                            phase <- ResolvePhase.RebuildMissingSuffix
+                            continue
+                        error _:
+                            if is_symlink(cursor):
+                                raise MacosAppPathResolutionError.TooManySymlinks if symlink_count >= Limits::SYMLINKS
+                                target: Path = try readlink(cursor) else err:
+                                    raise MacosAppPathResolutionError.UnresolvablePath
+                                symlink_parent: Path = path_parent(cursor)
+                                cursor <- target if path_is_absolute(target) else path_join(symlink_parent, target)
+                                cursor <- macos_app_trim_final_separator(cursor)
+                                normalized_target: Path = path_normalize(cursor)
+                                raise MacosAppPathResolutionError.InvalidPath if normalized_target == path("") or not path_is_absolute(normalized_target)
+                                symlink_count <- symlink_count + 1
+                                -> Resolve
+
+                            raise MacosAppPathResolutionError.UnresolvablePath if path_exists(cursor)
+                            component: sview = path_name(cursor)
+                            raise MacosAppPathResolutionError.UnresolvablePath if component == ""
+                            raise MacosAppPathResolutionError.WorkLimitExceeded if pending_components.count >= Limits::COMPONENTS
+                            pending_components.push(component)
+                            missing_parent: Path = path_parent(cursor)
+                            raise MacosAppPathResolutionError.UnresolvablePath if missing_parent == cursor or missing_parent == path("")
+                            cursor <- missing_parent
+                            -> Resolve
+
+                Resolve, ResolvePhase.RebuildMissingSuffix:
+                    if pending_components.count == 0:
+                        phase <- ResolvePhase.Done
+                        continue
+                    component_index: usize = pending_components.count - 1
+                    candidate: Path = path_join(canonical_prefix, pending_components[component_index])
+                    normalized_candidate: Path = path_normalize(candidate)
+                    raise MacosAppPathResolutionError.InvalidPath if normalized_candidate == path("") or not path_is_absolute(normalized_candidate)
+                    canonical_prefix <- candidate
+                    pending_components.truncate(component_index)
+                    -> Resolve
+
+                Resolve, ResolvePhase.Done:
+                    break
+
+            result: Path = path_normalize(canonical_prefix)
+            raise MacosAppPathResolutionError.InvalidPath if result == path("") or not path_is_absolute(result)
+            return result
