@@ -387,9 +387,11 @@ serialization in record order; a separate pass reads a small corpus through
 the bounded JSONL file-stream adapter. The JSON Lines framing, parser, and
 file-adapter sources are also pinned. These are focused behavior slices, not
 full Python JSON compatibility, and the launcher has not been run under the
-validation hold. Both compiler-free JSON source audits also preflight these
-parity inputs and check the candidate, golden, and launcher safety markers, so
-a missing fixture cannot be reported as a complete JSON model audit.
+validation hold. A malformed JSON Lines row must fail in both implementations,
+without claiming Python-compatible exception text. Both compiler-free JSON
+source audits also preflight these parity inputs and check the candidate,
+golden, and launcher safety markers, so a missing fixture cannot be reported
+as a complete JSON model audit.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,

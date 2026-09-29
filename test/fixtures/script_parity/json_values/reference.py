@@ -27,6 +27,11 @@ def main():
         encoding="utf-8",
     ) as source:
         file_records = [json.loads(line) for line in source]
+    try:
+        json.loads('{"broken": }\n')
+        malformed_status = "accepted"
+    except json.JSONDecodeError:
+        malformed_status = "error"
     lines = [
         f"big={value['big']}",
         f"missing={'present' if 'absent' in value else 'missing'}",
@@ -49,6 +54,7 @@ def main():
             json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             for record in file_records
         ),
+        f"jsonl_malformed={malformed_status}",
     ]
     sys.stdout.write("\n".join(lines) + "\n")
 

@@ -11,7 +11,9 @@ The JSON Lines slice parses multiple records in memory, including an
 unterminated final record, and compares compact serialization in record order.
 A second path reads a checked-in `.jsonl` file through the bounded file-stream
 adapter and compares the same per-record output against Python. Both process
-outputs and the checked-in golden are compared.
+outputs and the checked-in golden are compared. One malformed record is also
+required to be rejected by both implementations; exception class wording and
+diagnostic text are intentionally not compared.
 
 This is a deliberately narrow behavior slice, not a claim of full Python
 `json` compatibility. Numeric conversion/formatting beyond the exact integer

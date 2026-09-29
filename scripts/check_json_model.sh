@@ -307,6 +307,8 @@ for parity_reference_pattern in \
     "value['duplicate']" \
     'json.loads(line)' \
     'JSON_LINES_SOURCE.splitlines()' \
+    'json.JSONDecodeError' \
+    '{"broken": }' \
     'records.jsonl' \
     'file_records = [json.loads(line) for line in source]'; do
     rg -Fq "$parity_reference_pattern" "$parity_reference"
@@ -319,6 +321,8 @@ for parity_candidate_pattern in \
     'json_values_append_jsonl_memory(output)' \
     'begin_json_lines_reader(Inputs::JSON_LINES_SOURCE)' \
     'next_json_lines_document(reader)' \
+    'MALFORMED_JSON_LINES_SOURCE' \
+    'json_values_jsonl_malformed_rejected()' \
     'begin_json_lines_file_reader(Inputs::JSON_LINES_PATH)' \
     'next_json_lines_file_document(reader)' \
     'encode_json_root(result.document, 0)' \
@@ -351,13 +355,15 @@ for parity_expected_pattern in \
     'duplicate=last' \
     'json={"big":1234567890123456789012345678901234567890,' \
     'jsonl={"id":1' \
-    'jsonl_file={"id":1'; do
+    'jsonl_file={"id":1' \
+    'jsonl_malformed=error'; do
     rg -Fq "$parity_expected_pattern" "$parity_expected"
 done
 
 rg -Fq 'compact UTF-8 JSON' "$parity_contract"
 rg -Fq 'unterminated final record' "$parity_contract"
 rg -Fq 'bounded file-stream' "$parity_contract"
+rg -Fq 'required to be rejected' "$parity_contract"
 rg -Fq '{"id":3,"payload":null}' "$parity_jsonl_input"
 rg -Fq 'not a claim of full Python' "$parity_contract"
 rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
