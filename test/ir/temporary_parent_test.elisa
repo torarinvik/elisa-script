@@ -1,0 +1,69 @@
+# Pure parser/lowering/verification fixtures. Never execute the allocation IR.
+include "../../src/ir/ir.elisa"
+
+using EsIr
+
+
+module EsTemporaryParentFixture:
+    public:
+        def lower(source: u8&) -> LowerResult can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            tokens: darray[Lexer::Token] = frontend_tokenize("temporary-parent.elisascript", source)
+            file: Ast::File = frontend_parser_parse_file(source, tokens)
+            assert file.errors.count == 0
+            return lower_file(file, "temporary-parent")
+
+
+        def module_for(parent_type: Type, count: u16 = 2) -> Module can[Memory.Allocate, Abort.Panic]:
+            prefix: Parameter = Parameter{value: 1, type: Type{kind: TypeKind.Text}, name: "prefix"}
+            parent: Parameter = Parameter{value: 2, type: parent_type, name: "parent"}
+            span: SourceSpan = SourceSpan{file: "temporary-parent.elisascript", line: 1, column: 1, end_line: 1, end_column: 2}
+            allocation: Instruction = Instruction{opcode: Opcode.CreateTemporary, result: 3, result_type: Type{kind: TypeKind.Named, name: "Path"}, integer: 1, operand_start: 0, operand_count: count, span: span}
+            block: Block = Block{id: 1, parameter_start: 0, parameter_count: 0, instruction_start: 0, instruction_count: 1, terminator: Terminator{kind: TerminatorKind.Return, span: span}}
+            function: Function = Function{name: "allocate", parameters: [prefix, parent], return_type: Type{kind: TypeKind.Void}, effects: ["File.Write"], errors: ["FileIoError"], operand_pool: [1,2,1], edge_arg_pool: [], block_parameter_pool: [], instruction_pool: [allocation], blocks: [block], entry: 1}
+            return Module{name: "temporary-parent", functions: [function]}
+
+
+@test
+def temporary_parent_registry_exposes_typed_effect_rows() -> void:
+    can Memory.Allocate, Abort.Panic:
+        for name in ["temp_directory_in", "temp_file_in"]:
+            spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec(name)
+            assert spec.known and spec.arity_min == 1 and spec.arity_max == 2
+            assert spec.argument_types == "Path,text" and spec.return_type == "Path"
+            assert spec.effects == "File.Write" and spec.effects_secondary == ""
+            assert spec.errors == "FileIoError" and spec.opcode == "CreateTemporary"
+            assert spec.lowering_mode == (1i64 if name == "temp_directory_in" else 0i64)
+            present: mutable bool = false
+            for listed in EsBuiltin::typed_builtin_names():
+                present <- true if listed == name
+            assert present
+
+
+@test
+def temporary_parent_source_lowers_prefix_and_parent_in_ordered_slots() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def directory(parent: Path) -> Path error[FileIoError] can[File.Write]:\n    return try temp_directory_in(parent, \"prefix-\")\n\ndef file(parent: Path) -> Path error[FileIoError] can[File.Write]:\n    return try temp_file_in(parent)\n"
+        lowered: LowerResult = EsTemporaryParentFixture::lower(source)
+        assert lowered.issues.count == 0 and lowered.module.functions.count == 2
+        assert verify(lowered.module).count == 0
+        count: mutable usize = 0
+        for function in lowered.module.functions |count|:
+            for instruction in function.instruction_pool |count|:
+                if instruction.opcode == Opcode.CreateTemporary:
+                    assert instruction.operand_count == 2
+                    assert function.operand_pool[instruction.operand_start.usize() + 1] == function.parameters[0].value
+                    assert instruction.integer == (1i64 if function.name == "directory" else 0i64)
+                    count <- count + 1
+        assert count == 2
+
+
+@test
+def temporary_parent_verifier_requires_path_parent_and_admitted_arity() -> void:
+    can Memory.Allocate, Abort.Panic:
+        valid: Module = EsTemporaryParentFixture::module_for(Type{kind: TypeKind.Named, name: "Path"})
+        assert verify(valid).count == 0
+        text_parent: Module = EsTemporaryParentFixture::module_for(Type{kind: TypeKind.Text})
+        assert verify(text_parent).count > 0
+        for count in [0u16, 3u16]:
+            invalid: Module = EsTemporaryParentFixture::module_for(Type{kind: TypeKind.Named, name: "Path"}, count)
+            assert verify(invalid).count > 0

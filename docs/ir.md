@@ -3200,6 +3200,25 @@ interpreter calls POSIX `mkstemp`/`mkdtemp` under `/tmp`; `mkstemp`'s descriptor
 closed before returning the permanent generated path. `temp_file`, `mktemp`,
 `temp_directory`, `temp_dir`, and `mkdtemp` are lowering aliases, and the
 operation remains on the direct bytecode filesystem path.
+`temp_directory_in(parent: Path, prefix: sview = "")` and
+`temp_file_in(parent: Path, prefix: sview = "")` extend the same operation with
+an optional second IR operand: `(Text prefix, Named(Path) parent) -> Named(Path)`.
+The source parent is evaluated before the prefix, although the IR preserves the
+legacy prefix slot first. Both arities require the same `File.Write` and
+`FileIoError` rows; allocation never implicitly reads the process environment.
+A caller can explicitly read `TMPDIR` under `Environment.Read` and supply its
+selected directory. Relative parents remain caller-cwd-relative; slashes, spaces
+and Unicode spelling are preserved rather than silently canonicalized.
+`EsTemporaryPath` checks the complete generated template against the 4 KiB
+C-string envelope before allocation/syscall; the parent's length reduces the
+available prefix budget. Both engines forward the verified parent to the same
+POSIX implementation. Existing one-operand artifacts keep their `/tmp` behavior;
+old engines reject the extended arity rather than gaining implicit TMPDIR reads.
+The direct-bytecode temporary-file adapter also supplies a nonzero open-handle
+resource policy before acquiring/closing the mkstemp descriptor.
+These paths have source-only template/lowering/verifier fixtures. They still
+require compiled host/bytecode and public-launcher qualification; no native/JIT
+lowering or runtime parity is proved by the registry/IR edits alone.
 The interpreter admits the caller prefix by length before scanning for NUL or
 `/`; the fixed `/tmp/elisascript-` prefix and six placeholders leave a 4,072-byte
 maximum prefix so the complete template, including its terminator, stays inside

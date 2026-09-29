@@ -1,4 +1,5 @@
 include "./runtime_model.elisa"
+include "../runtime/temporary_path_model.elisa"
 
 
 error InterpretError:
@@ -170,9 +171,8 @@ extend EsIr:
         # payloads.  A pathname component/operand must fit in the portable
         # host-side path envelope before any NUL scan, allocation, or syscall.
         const INTERPRET_MAX_PATH_BYTES: usize = 4096
-        # Temporary names are joined to the fixed `/tmp/elisascript-` prefix
-        # and six mkstemp/mkdtemp placeholders. Reserve the terminator too so
-        # the resulting template remains inside the same path envelope.
+        # The legacy /tmp spelling reserves a 4,072-byte prefix budget. Explicit
+        # parents share that cap and also validate the complete dynamic template.
         const INTERPRET_MAX_TEMPORARY_PREFIX_BYTES: usize = INTERPRET_MAX_PATH_BYTES - 1 - 17 - 6
         # Process argv vectors are copied into owned C strings before fork.
         # Bound the element count before reserve so a malformed runtime array
@@ -4997,8 +4997,8 @@ extend EsIr:
         # The returned Path is permanent, while the file descriptor from mkstemp is
         # closed before the operation succeeds; callers own cleanup through the
         # ordinary typed remove_path/remove_tree operations.
-        def evaluate_create_temporary(machine: mutable Machine&, prefix: RuntimeValue, directory: bool) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
-            if prefix.kind != RuntimeValueKind.Text:
+        def evaluate_create_temporary(machine: mutable Machine&, prefix: RuntimeValue, directory: bool, parent: RuntimeValue = runtime_text("/tmp")) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            if prefix.kind != RuntimeValueKind.Text or parent.kind != RuntimeValueKind.Text:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
             if sview_len(prefix.text) > INTERPRET_MAX_TEMPORARY_PREFIX_BYTES:
@@ -5007,14 +5007,15 @@ extend EsIr:
             if text_has_nul(prefix.text) or sview_contains_byte(prefix.text, 47):
                 interpret_set_failure(machine, InterpretFailure.FileIo)
                 return runtime_void()
-            template_length: usize = 17 + sview_len(prefix.text) + 6
+            spelling: sview = try EsTemporaryPath::template(parent.text, prefix.text) else err:
+                interpret_set_failure(machine, InterpretFailure.FileIo)
+                return runtime_void()
+            template_length: usize = sview_len(spelling)
             template: mutable dstr = ctx_fstr_alloc(template_length + 1)
             if template.items == null:
                 interpret_set_failure(machine, InterpretFailure.FileIo)
                 return runtime_void()
-            ctx_fstr_append(template, "/tmp/elisascript-", 17)
-            ctx_fstr_append(template, prefix.text.data, sview_len(prefix.text))
-            ctx_fstr_append(template, "XXXXXX", 6)
+            ctx_fstr_append(template, spelling.data, template_length)
             ctx_fstr_append(template, "\0", 1)
             template.count <- template_length
             template_items: mutable u8& = template.items
@@ -8041,7 +8042,8 @@ extend EsIr:
 
                             Opcode.CreateTemporary:
                                 prefix_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                                dispatch.value <- evaluate_create_temporary(machine, prefix_value, instruction.integer == 1)
+                                parent_value: RuntimeValue = runtime_text("/tmp") if instruction.operand_count == 1 else frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                                dispatch.value <- evaluate_create_temporary(machine, prefix_value, instruction.integer == 1, parent_value)
                                 break
 
                             Opcode.PathRelative:
@@ -8936,9 +8938,22 @@ extend EsIr:
             return value.text
 
 
-        def create_temporary_value(prefix: sview, directory: bool) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
-            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
-            value: RuntimeValue = evaluate_create_temporary(machine, runtime_text(prefix), directory)
+        def create_temporary_value(prefix: sview, directory: bool, parent: sview = "/tmp") -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            # Initialize every host policy field explicitly, including the
+            # descriptor budget used by the mkstemp acquire/close boundary.
+            policy: RuntimeResourcePolicy = RuntimeResourcePolicy{
+                steps: ES_RUNTIME_DEFAULT_MAX_STEPS,
+                elapsed_micros: ES_RUNTIME_DEFAULT_MAX_ELAPSED_MICROS,
+                memory_bytes: ES_RUNTIME_DEFAULT_MAX_MEMORY_BYTES,
+                open_handles: ES_RUNTIME_DEFAULT_MAX_OPEN_HANDLES,
+                processes: ES_RUNTIME_DEFAULT_MAX_PROCESSES,
+                output_bytes: ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES,
+                regex_work: ES_RUNTIME_DEFAULT_MAX_REGEX_WORK,
+                retained_traces: ES_RUNTIME_DEFAULT_MAX_RETAINED_TRACES,
+                concurrent_tasks: ES_RUNTIME_DEFAULT_MAX_CONCURRENT_TASKS
+            }
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, resource_policy: policy, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_create_temporary(machine, runtime_text(prefix), directory, runtime_text(parent))
             if machine.failure != InterpretFailure.None:
                 try raise_interpret_failure(machine.failure)
             return value.text

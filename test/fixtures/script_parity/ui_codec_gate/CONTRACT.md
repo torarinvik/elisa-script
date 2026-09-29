@@ -57,20 +57,23 @@ cleanup after successful allocation. These diagnostics are not Bash equivalents.
 
 The private cleanup helper receives only the directory allocated by this
 invocation; never feed it a project root, environment value or argument-derived
-path. It rejects nonabsolute/root-directory receipts before recursive removal.
+path. It requires the allocator's expected generated leaf prefix before removal;
+both absolute and caller-relative owned receipts are admitted.
 No temporary directory, compiler or cleanup is allocated/launched by a pure
 recipe fixture. The runtime recursive remover has a depth bound and is not a
 descriptor-sealed, race-proof deletion primitive. Use trusted compilers and
 stable owned directories; hostile/concurrent replacement requires stronger
 ownership/descriptor qualification, not an assertion that a pathname is a lease.
 
-The current interpreter's temporary allocator chooses `/tmp/elisascript-...`
-and does not honor `TMPDIR`; the shell reference delegates to the selected
-mktemp tool. Different temp-root selection/names, directory permissions and
-mktemp diagnostics remain real compatibility gaps, including ordinary macOS
-TMPDIR use. This port does not redefine them away. Qualify or implement a
-compatible temporary-directory host policy before adoption; do not accept a
-test that merely bypasses actual allocation through a mocked recipe.
+The legacy temporary allocator still chooses `/tmp/elisascript-...` without
+reading `TMPDIR`. The codec candidate now reads `TMPDIR` explicitly and uses the
+new `temp_directory_in(parent, prefix)` operation, selecting `/tmp` for unset/
+empty values and preserving relative parent spelling. That operation's registry,
+lowering, verifier, interpreter and direct-bytecode paths are authored, not run.
+The shell reference still delegates to its selected mktemp tool. Temp naming,
+directory modes, relative/trailing-slash normalization, host errors and exact
+TMPDIR behavior remain qualification gaps; no observed parity is claimed. Do not
+accept a test that bypasses actual allocation through a mocked recipe.
 
 Similarly, ordinary state-machine cleanup is not an EXIT trap on runtime panic,
 cancellation, process termination or every signal edge. Those paths require a
@@ -82,7 +85,10 @@ environment lookup failure versus absence, TTY behavior and cleanup diagnostics
 remain unqualified. The native backend's host behavior must be qualified too.
 
 The model admits at most 4,096 bytes per input text, rejects NUL, and requires
-absolute project/temp contexts. Derived paths can exceed that input budget.
+an absolute project context but permits a nonempty relative generated temp path.
+Derived output/include paths can exceed that input budget. The new allocator
+separately bounds its complete parent/prefix/random-suffix/C-terminator template
+to 4,096 bytes before invoking POSIX allocation.
 These are explicit admission policies, not OS PATH_MAX validation, arbitrary-
 input reference parity or a process RSS guard. A failure to remove an owned
 directory is reported with its path; cleanup failure may leave recoverable
