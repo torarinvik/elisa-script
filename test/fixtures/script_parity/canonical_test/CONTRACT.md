@@ -141,6 +141,12 @@ Compare independently expected observations, not just reference/candidate
 agreement. Campaign may not be implemented by calling its original shell
 wrapper or by routing the candidate to the reference.
 
+For the wrapper-family wave, the public launcher also hashes the live neighboring
+`test_canonical.sh` and `test_campaign.sh` against the snapshot identities before
+setup and after cleanup. This prevents a stale fixture snapshot from silently
+standing in for a changed real reference. The hash check is an observation, not
+an atomic lock against concurrent edits; no live script is executed by the check.
+
 ## Open parity gaps
 
 The current runner forks/waits instead of Bash exec, so PID identity,
