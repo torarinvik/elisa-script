@@ -130,8 +130,14 @@ parity and the public execution path are actually demonstrated.
 
 ## Dormant native qualification matrix (authored, not executed)
 
-`test/script_parity/skia_environment_cases.elisa` supplies ten independent
-literal ordinary cases; it imports no candidate lookup/printing implementation.
+`test/script_parity/skia_environment_cases.elisa` supplies fourteen independent
+ordinary cases; it imports no candidate lookup/printing implementation. Added
+coverage includes UTF-8 keys, punctuation/space/metacharacter keys, digit-leading
+keys, and a 32 KiB A-to-Z patterned value with an independently constructed
+expected output and one added LF. Environment names are literal POSIX keys, not
+shell identifiers. These cases remain authored, not executed. The larger value
+fits the 64 KiB capture budget but does not qualify the 1 MiB candidate boundary
+or the platform's maximum process environment size.
 `skia_environment_cases_test.elisa` checks that fixture surface without launching
 anything. `skia_environment_native_parity_test.elisascript` is a gated process
 matrix for a separately qualified, prebuilt native candidate. It never compiles
@@ -198,9 +204,9 @@ still require compilation and execution qualification.
 `test/script_parity/skia_environment_launcher_test.elisascript` targets the new
 interpreted companion through the public argv ABI: launcher executable, copied
 `.elisascript` filename, then the exact script arguments. It never invokes a
-compiler or compiles a candidate. The native candidate and its older matrix are
-unchanged. The expected-output module is shared by both matrices, imports neither
-candidate, and supplies ten literal ordinary cases. A reference must first match
+compiler or compiles a candidate. The native candidate remains unchanged; both
+matrices now pin the expanded shared oracle. That module imports neither
+candidate, and supplies fourteen ordinary cases. A reference must first match
 status 0, empty stderr and its literal stdout before the candidate can launch.
 
 The public entry gates filesystem/hash/child work on all of these inputs:
