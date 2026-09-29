@@ -27,6 +27,23 @@ selection, fixed literal arguments, project cwd, binary stdin/stdout/stderr and
 normal exit statuses. These are authored cases, not observed results.
 Normal probe exits 126/127 do not qualify missing/denied executable behavior.
 
+The gate additionally requires seven actual exec-failure plans from
+`canonical_lint_exec_failure_cases.elisa`: missing and denied targets each use
+relative, absolute and PATH names, followed by an absolute directory target.
+The denied target is a pinned probe copy with mode 0600, not an executable probe
+alias. Missing-name absence, denied-file mode/type/nonexecutability, directory
+type and absence of unintended PATH matches are checked before and after each
+run. The copy belongs to the temporary root's existing cleanup ledger. These
+checks are observations, not atomic protection against external mutation.
+
+Each reference must complete with the independently specified 126/127 status,
+empty stdout and nonempty stderr before the candidate may run. Exact stderr
+bytes then come from the pinned reference and must match without normalization;
+there is no separate literal diagnostic-byte oracle. The seven plans have small
+pure path/status fixtures; neither fixtures nor matrix have been compiled/run.
+Both available waves include these lint failure checks. Current missing exec
+diagnostics are an expected open gap, not a reason to skip these cases.
+
 Before switching a live caller, qualify the pinned local compiler, launcher,
 probe, native ABI, ownership/reaping and external time/RSS containment under
 explicit user authorization. Then observe every ordinary case through the

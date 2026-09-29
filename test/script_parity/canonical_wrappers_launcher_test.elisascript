@@ -1,10 +1,11 @@
-# Dormant ordinary-wrapper matrix with a prebuilt independent native probe.
+# Dormant wrapper matrix with ordinary probes and actual exec-failure cases.
 # Do not compile tools here. Run only through the bounded wrapper after explicit
 # user reauthorization and separate probe/launcher qualification.
 include "../../src/testing/differential.elisa"
 include "process_probe_model.elisa"
 include "canonical_wrapper_scope.elisa"
 include "canonical_lint_cases.elisa"
+include "canonical_lint_exec_failure_cases.elisa"
 
 using EsDifferential
 
@@ -34,6 +35,7 @@ module EsCanonicalWrappersLauncherParity:
             FAMILY_SOURCES: usize = 7
             LINT_CASES: usize = 8
             FAMILY_CASES: usize = 14
+            LINT_EXEC_FAILURES: usize = 7
 
 
         struct SourceCopy:
@@ -125,6 +127,7 @@ module EsCanonicalWrappersLauncherParity:
             return false if not has_hash(Tools::COMPILER, auth.compiler_hash) or not has_hash(auth.probe, auth.probe_hash) or not has_hash(auth.launcher, auth.launcher_hash) or not has_hash(Tools::BASH, Tools::BASH_SHA256)
             return false if not has_hash("test/fixtures/script_parity/process_probe/probe.c", "fbaf5b83b8ec226a980bfc52e0fca56380acb42b7a80dc6cf773533d550a0e8d") or not has_hash("test/script_parity/process_probe_model.elisa", "d7394a1583feafeba29046a24149a8760ac9219fd0786afe05942192ad46bbec")
             return false if not has_hash("test/script_parity/canonical_lint_cases.elisa", "87cb85d65ab59f7f323cf1bf3e9e7065ed47a793a2b1dc95c15e4c3ad874c9bb")
+            return false if not has_hash("test/script_parity/canonical_lint_exec_failure_cases.elisa", "a3b19ba6bfbcdc8482999509f5b945f0c1f20d2a14ac4755fa481f1285189608")
             sources: darray[SourceCopy] = source_set(wave)
             expected_count: usize = Coverage::LINT_SOURCES if wave == Wave.LintOnly else Coverage::FAMILY_SOURCES
             return false if sources.count != expected_count
@@ -184,12 +187,34 @@ module EsCanonicalWrappersLauncherParity:
             return has_hash(f"{target}", expected)
 
 
-        def pinned_copies(auth: Authorization, root: TemporaryRoot, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast, Console.Format]:
+        def exec_failure_fixture_ready(root: TemporaryRoot) -> bool can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read, Console.Format]:
+            return false if not root.ready or is_symlink(root.path) or not is_directory(root.path)
+            tools: Path = root.path.joinpath("tools")
+            scripts: Path = root.path.joinpath("scripts")
+            return false if is_symlink(tools) or not is_directory(tools) or is_symlink(scripts) or not is_directory(scripts)
+            denied: Path = tools.joinpath(EsCanonicalLintExecFailureCases::Fixture::DENIED_NAME)
+            return false if is_symlink(denied) or not is_file(denied) or is_executable(denied)
+            mode: u64 = try file_mode(denied) else err:
+                return false
+            return false if (mode & EsCanonicalLintExecFailureCases::Fixture::MODE_MASK) != EsCanonicalLintExecFailureCases::Fixture::DENIED_MODE
+            # Bash needs dirname from /usr/bin or /bin. Admit no accidental
+            # missing/denied-name executable in any searched directory.
+            for directory in [f"{tools}", "/usr/bin", "/bin"]:
+                missing: Path = path(directory).joinpath(EsCanonicalLintExecFailureCases::Fixture::MISSING_NAME)
+                return false if path_exists(missing) or is_symlink(missing)
+                if directory != f"{tools}":
+                    other: Path = path(directory).joinpath(EsCanonicalLintExecFailureCases::Fixture::DENIED_NAME)
+                    return false if path_exists(other) or is_symlink(other)
+            return true
+
+
+        def pinned_copies(auth: Authorization, root: TemporaryRoot, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
             for source in source_set(wave):
                 return false if not has_hash(f"{root.path.joinpath(source.destination)}", source.sha256)
             for destination in probes(wave):
                 return false if not has_hash(f"{root.path.joinpath(destination)}", auth.probe_hash)
-            return true
+            denied: Path = root.path.joinpath("tools").joinpath(EsCanonicalLintExecFailureCases::Fixture::DENIED_NAME)
+            return has_hash(f"{denied}", auth.probe_hash) and exec_failure_fixture_ready(root)
 
 
         def create_root(auth: Authorization, wave: Wave) -> TemporaryRoot can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast, Console.Format]:
@@ -215,6 +240,11 @@ module EsCanonicalWrappersLauncherParity:
             return root if probe_size == 0 or probe_size > Tools::PROBE_BYTES
             for destination in probes(wave):
                 return root if not copy_asset(root, auth.probe, destination, auth.probe_hash, true)
+            # This extra copy is data, never an executable probe alias.
+            denied_relative: sview = "tools/" + EsCanonicalLintExecFailureCases::Fixture::DENIED_NAME
+            return root if not copy_asset(root, auth.probe, denied_relative, auth.probe_hash, false)
+            denied_mode_set: bool = try chmod(root.path.joinpath(denied_relative), EsCanonicalLintExecFailureCases::Fixture::DENIED_MODE) else false
+            return root if not denied_mode_set
             root.ready <- true
             return root
 
@@ -294,13 +324,65 @@ module EsCanonicalWrappersLauncherParity:
             return normal_observation(reference_run, selected.status, expected) and normal_observation(candidate_run, selected.status, expected) and comparison.equal
 
 
+        def exec_failure_observation(run: DifferentialRun, status: i64) -> bool:
+            return run.outcome == DifferentialRunOutcome.Completed and run.exit_status == status and run.stdout == "" and run.stderr != ""
+
+
+        def exec_failure_case_matches(auth: Authorization, root: TemporaryRoot, selected: EsCanonicalLintExecFailureCases::Case) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
+            return false if not exec_failure_fixture_ready(root)
+            root_text: sview = f"{root.path}"
+            configured: sview = EsCanonicalLintExecFailureCases::executable_text(selected, root_text)
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: root_text + "/tools:/usr/bin:/bin"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "RUFF_BIN", value: configured},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Tools::COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Tools::COMPILER}
+            ]
+            input: darray[u8] = [0u8, 255u8, 10u8]
+            reference: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: selected.name + "-reference", target: Tools::BASH,
+                arguments: [root_text + "/scripts/lint_canonical.sh"], working_directory: "/",
+                environment: environment, environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                stdin_binary: true, stdin_bytes: input,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            candidate: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: selected.name + "-candidate", target: auth.launcher,
+                arguments: [root_text + "/scripts/lint_canonical.elisascript"], working_directory: "/",
+                environment: environment, environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                stdin_binary: true, stdin_bytes: input,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            reference_run: DifferentialRun = try run_differential_process(reference) else err:
+                return false
+            # Independent status/no-stdout/nonempty-diagnostic admission first.
+            # Exact error bytes are then compared to the pinned reference;
+            # they are not claimed to have a separate literal stderr oracle.
+            return false if not exec_failure_observation(reference_run, selected.status) or not exec_failure_fixture_ready(root)
+            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+                return false
+            return false if not exec_failure_observation(candidate_run, selected.status) or not exec_failure_fixture_ready(root)
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            return comparison.equal
+
+
+        def exec_failure_matrix(auth: Authorization, root: TemporaryRoot) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
+            required_cases: darray[EsCanonicalLintExecFailureCases::Case] = EsCanonicalLintExecFailureCases::required()
+            return false if required_cases.count != Coverage::LINT_EXEC_FAILURES
+            for selected in required_cases:
+                return false if not exec_failure_case_matches(auth, root, selected)
+            return true
+
+
         def matrix(auth: Authorization, root: TemporaryRoot, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
             selected_cases: darray[Case] = cases(wave)
             expected_count: usize = Coverage::LINT_CASES if wave == Wave.LintOnly else Coverage::FAMILY_CASES
             return false if selected_cases.count != expected_count
             for selected in selected_cases:
                 return false if not case_matches(auth, root, selected)
-            return true
+            # Both waves include lint: ordinary exits alone cannot accept it.
+            return exec_failure_matrix(auth, root)
 
     public:
         # The smallest script is the default acceptance wave. Wider coverage
@@ -324,6 +406,6 @@ module EsCanonicalWrappersLauncherParity:
 
 
 @test
-def canonical_lint_public_launcher_matches_independent_probe_observations() -> void:
+def canonical_lint_public_launcher_matches_probe_and_exec_failure_observations() -> void:
     can Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast, Console.Write, Console.Format:
         assert EsCanonicalWrappersLauncherParity::public_launcher_parity()
