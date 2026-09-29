@@ -28,9 +28,24 @@ not Python-traceback compatible: the candidate fails closed with a concise
 diagnostic and status 2, while the reference raises the host Python exception.
 Directory-enumeration behavior can also vary by Python version. The shared
 reader currently uses the Darwin POSIX adapter; invalid-UTF-8 filenames and
-platform-specific path collation are not qualified. No candidate, reference,
-compiler, or parity fixture has run. Before acceptance, add a gated public-
-launcher matrix with independent literal expectations for the plan, all roots,
-suffix edge cases, component-sort collisions, line boundaries, symlinks, and
-read/discovery errors; then qualify it explicitly under the existing execution
-authorization policy.
+platform-specific path collation are not qualified.
+
+`test/script_parity/elisa_engine_source_length_launcher_test.elisascript` adds
+a dormant public-launcher matrix. It pins the original Python file, a fixture
+snapshot, candidate/include closure, launcher roles, and tool identities; uses
+fresh sibling-project roots with spaces; reference-admits exact status/stdout/
+stderr before starting the candidate; then compares an independent literal
+observation. The process adapter's top-level source is pinned to its committed
+snapshot; its transitive test/compiler/runtime closure still needs independent
+operator qualification. Authored cases cover no oversized source (with only the staged
+short reference beneath `scripts`), a non-directory root, 600/601
+universal-newline boundaries, all configured roots, path-component
+ordering, every accepted suffix, excluded dot/uppercase/other suffixes, file
+and directory symlinks, ignored arguments, unrelated cwd, and exact output.
+Cleanup removes only ledgered files/links and known directories in reverse
+order, with recorded-parent checks. The entry requires explicit reauthorization,
+the active external RSS marker, the pinned local compiler selection, and a
+qualified public launcher; authorization markers/header checks are not runtime
+provenance or hard containment. The matrix and candidate remain uncompiled and
+unrun. Error parity, native qualification, external time/RSS containment, and
+observed results are still required before acceptance.
