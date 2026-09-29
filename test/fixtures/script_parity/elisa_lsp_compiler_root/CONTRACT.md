@@ -70,7 +70,8 @@ existing default sibling. The fixture root must be canonical and contain a
 created `Elisa-LSP/scripts` tree; its basename should contain a space. The
 relative case requires an isolated cwd with no matching directory. The
 symlink must point only to a recorded directory inside the fixture. Authored
-setup rechecks topology before and after each child, admits exact status, empty
+setup rechecks topology before and after each child, including absence of both
+missing override spellings and the default sibling (even as symlinks), admits exact status, empty
 stderr and literal stdout against the reference *first*, and checks a sentinel
 outside the staged LSP tree (but inside the temporary workspace). The case
 source SHA-256 is
