@@ -1,0 +1,104 @@
+# Narrow AWK-style shape validation for a curated SHA-256 manifest. This does
+# not compute hashes, normalize records, or interpret filenames as commands.
+module EsChecksumManifest:
+    public:
+        const module Limits:
+            INPUT_BYTES: usize = 4194304
+            RECORDS: usize = 65536
+            ISSUES: usize = 4096
+
+
+        error ValidationError:
+            InputLimit
+            RecordLimit
+            IssueLimit
+
+
+        def invalid_lines(contents: sview) -> darray[usize] error[ValidationError] can[Memory.Allocate, Abort.Panic]:
+            issues: mutable darray[usize] = []
+            cursor: mutable RecordCursor = RecordCursor{}
+            line: mutable usize = 1
+            records: mutable usize = 0
+            bytes_seen: mutable usize = 0
+            for byte in contents |issues, cursor, line, records, bytes_seen|:
+                raise ValidationError.InputLimit if bytes_seen >= Limits::INPUT_BYTES
+                bytes_seen <- bytes_seen + 1
+                if byte == 10u8:
+                    try finish_record(cursor, line, records, issues)
+                    cursor <- RecordCursor{}
+                    line <- line + 1
+                else:
+                    cursor.active <- true
+                    feed_record(byte, cursor)
+            # A final LF closes its record; it does not create another one.
+            try finish_record(cursor, line, records, issues) if cursor.active
+            return issues
+
+    private:
+        const enum FieldPhase of u8:
+            Leading
+            Checksum
+            BeforeFilename
+            Filename
+            Trailing
+            Extra
+
+
+        struct RecordCursor:
+            phase: mutable FieldPhase = FieldPhase.Leading
+            checksum_bytes: mutable usize = 0
+            checksum_hex: mutable bool = true
+            active: mutable bool = false
+
+
+        def blank(byte: u8) -> bool:
+            return byte == 32u8 or byte == 9u8
+
+
+        def hex_digit(byte: u8) -> bool:
+            return (byte >= 48u8 and byte <= 57u8) or (byte >= 65u8 and byte <= 70u8) or (byte >= 97u8 and byte <= 102u8)
+
+
+        def feed_record(byte: u8, cursor: mutable RecordCursor&) -> void:
+            machine over cursor.phase:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, FieldPhase.Leading:
+                    return if blank(byte)
+                    cursor.phase <- FieldPhase.Checksum
+                    cursor.checksum_bytes <- 1
+                    cursor.checksum_hex <- hex_digit(byte)
+                    return
+
+                Dispatch, FieldPhase.Checksum:
+                    if blank(byte):
+                        cursor.phase <- FieldPhase.BeforeFilename
+                        return
+                    cursor.checksum_bytes <- cursor.checksum_bytes + 1
+                    cursor.checksum_hex <- cursor.checksum_hex and hex_digit(byte)
+                    return
+
+                Dispatch, FieldPhase.BeforeFilename:
+                    cursor.phase <- FieldPhase.Filename if not blank(byte)
+                    return
+
+                Dispatch, FieldPhase.Filename:
+                    cursor.phase <- FieldPhase.Trailing if blank(byte)
+                    return
+
+                Dispatch, FieldPhase.Trailing:
+                    cursor.phase <- FieldPhase.Extra if not blank(byte)
+                    return
+
+                Dispatch, FieldPhase.Extra:
+                    return
+
+
+        def finish_record(cursor: RecordCursor, line: usize, records: mutable usize&, issues: mutable darray[usize]&) -> void error[ValidationError] can[Memory.Allocate, Abort.Panic]:
+            raise ValidationError.RecordLimit if records >= Limits::RECORDS
+            records <- records + 1
+            valid: bool = cursor.phase in {FieldPhase.Filename, FieldPhase.Trailing} and cursor.checksum_bytes == 64 and cursor.checksum_hex
+            return if valid
+            raise ValidationError.IssueLimit if issues.count >= Limits::ISSUES
+            issues.push(line)
