@@ -1,0 +1,99 @@
+# Companion for neighboring elisa-ui/scripts/check_utf8_utf16_codec.sh.
+# Preserve the original until public-launcher workflow parity is qualified.
+include "../src/runtime/ui_codec_build_model.elisa"
+
+module EsUiCodecGate:
+    private:
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr("codec gate: " + message + "\n")
+
+
+        def cleanup_owned(temporary: Path) -> bool can[File.Write, Console.Write, Console.Format]:
+            # This private helper receives only this invocation's allocator
+            # receipt. Never substitute a project root, env value or argv path.
+            if not path_is_absolute(temporary) or temporary == path("/"):
+                diagnostic("refusing invalid temporary-directory receipt")
+                return false
+            removed: bool = try remove_tree(temporary) else false
+            diagnostic(f"unable to clean temporary directory {temporary}") if not removed
+            return removed
+
+    public:
+        def run_root(project_root: Path) -> i64 can[Environment.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+            configured: sview = try getenv("CC", "") else err:
+                diagnostic("unable to read CC")
+                return 1i64
+            temporary: Path = try temp_directory(EsUiCodecBuild::Defaults::TEMP_PREFIX) else err:
+                diagnostic("unable to allocate temporary directory")
+                return 1i64
+            phase: mutable EsUiCodecBuild::Phase = EsUiCodecBuild::Phase.Prepare
+            selected_status: mutable i64 = 1
+            planned: mutable EsUiCodecBuild::Recipe = EsUiCodecBuild::Recipe{compiler: "", arguments: [], executable: ""}
+            compiler: mutable Executable = exe"clang"
+            machine over phase while phase != EsUiCodecBuild::Phase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, EsUiCodecBuild::Phase.Prepare:
+                    planned <- try EsUiCodecBuild::recipe(f"{project_root}", f"{temporary}", configured) else err:
+                        diagnostic("invalid build recipe")
+                        phase <- EsUiCodecBuild::Phase.Cleanup
+                        -> Dispatch
+                    compiler <- try executable(planned.compiler) else err:
+                        diagnostic("invalid compiler executable")
+                        phase <- EsUiCodecBuild::Phase.Cleanup
+                        -> Dispatch
+                    phase <- EsUiCodecBuild::Phase.Compile
+                    -> Dispatch
+
+                Dispatch, EsUiCodecBuild::Phase.Compile:
+                    # Inherit all streams and caller cwd/env. Do not use the
+                    # directory-aware run helper that discards captured output.
+                    selected_status <- try run_process(compiler, planned.arguments, EsUiCodecBuild::Defaults::TIMEOUT_MICROS) else err:
+                        diagnostic("unable to run compiler")
+                        phase <- EsUiCodecBuild::Phase.Cleanup
+                        -> Dispatch
+                    phase <- EsUiCodecBuild::after_compile(selected_status)
+                    -> Dispatch
+
+                Dispatch, EsUiCodecBuild::Phase.Run:
+                    test_executable: Executable = try executable(planned.executable) else err:
+                        diagnostic("invalid codec test executable")
+                        selected_status <- 1
+                        phase <- EsUiCodecBuild::Phase.Cleanup
+                        -> Dispatch
+                    selected_status <- try run_process(test_executable, [], EsUiCodecBuild::Defaults::TIMEOUT_MICROS) else err:
+                        diagnostic("unable to run codec test")
+                        selected_status <- 1
+                        phase <- EsUiCodecBuild::Phase.Cleanup
+                        -> Dispatch
+                    phase <- EsUiCodecBuild::Phase.Cleanup
+                    -> Dispatch
+
+                Dispatch, EsUiCodecBuild::Phase.Cleanup:
+                    cleaned: bool = cleanup_owned(temporary)
+                    selected_status <- EsUiCodecBuild::final_status(selected_status, cleaned)
+                    phase <- EsUiCodecBuild::Phase.Done
+                    -> Dispatch
+
+                Dispatch, EsUiCodecBuild::Phase.Done:
+                    break
+            return selected_status
+
+
+        def run_default() -> i64 can[File.Read, Environment.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+            script_directory: Path = try path_real(path_parent(Script::source_path())) else err:
+                diagnostic("unable to resolve script directory")
+                return 1i64
+            project_root: Path = try path_real(script_directory.parent().parent().joinpath("elisa-ui")) else err:
+                diagnostic("unable to resolve project root")
+                return 1i64
+            if not is_directory(project_root):
+                diagnostic("project root is not a directory")
+                return 1i64
+            return run_root(project_root)
+
+
+def main(arguments: darray[sview]) -> i64 can[File.Read, Environment.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+    _ = arguments
+    return EsUiCodecGate::run_default()
