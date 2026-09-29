@@ -740,3 +740,29 @@ but its full-facade include requires separate compiler/RSS qualification.
 It is authored only, uncompiled/unrun. Native timing, actual cleanup and public
 launcher parity remain unqualified; no default facade was wired or original
 script/caller changed. Compiler/process validation remains disabled.
+
+## Shared waiter interruption bounds (source-only)
+
+The existing interpreter waiter, shared by ordinary run/capture and the private
+prepared-launch adapter, now charges every native wait attempt before calling
+`waitpid`. Zero and EINTR both consume the fixed work budget. Pending zero and
+known interrupted observations use the same output/deadline/clock-failure and
+budget checks before any retry or poll sleep. The consecutive interruption cap
+still applies; exhausting it remains a Process failure unless another checked
+bound has already selected failure. Unknown negative/positive observations still
+retain uncertain ownership and never enter guessed-PID cleanup.
+
+A terminal observation on the final admitted attempt may still finish normally
+after the existing terminal deadline/output/group checks. A pending/interrupted
+final attempt selects timeout without another sleep or retry. The pure
+`EsProcessSpawnWait::take_poll` helper rejects zero/exhausted limits without
+mutation and cannot wrap the counter, including at u64 maximum. Authored pure
+fixtures cover mixed pending/interrupted work accounting and counter boundaries;
+they do not simulate native interruptions, clock/output calls or cleanup.
+
+The fixed poll cap is work accounting, not a duration. Timeout zero still skips
+clock reads but does not disable this existing safety cap. Native call duration,
+setup and cleanup can overrun; external process-tree RSS and wall-time containment
+are still required. No compiler, fixture, host wait or script parity ran. The
+child-only environment/inherited-stream source operation remains unwired, and
+the UI empty-exported-CC workflow gap is not closed by this waiter correction.
