@@ -10,6 +10,8 @@ here-documents. Independent `base.c` and `host_callbacks.c` file goldens pin
 the two emitted blocks; an authored bounded-read fixture compares the model
 against those exact bytes. Only the **first** argument selects `--host-callbacks`; any
 other first argument and all later arguments are ignored, as in the Bash script.
+The CLI uses the model's pure selector, whose four ordinary argument patterns
+have authored (unrun) assertions.
 The golden SHA-256 digests are `e8d4c7fe5118a52a5f9c007404601967c7130b070875a2e93ad5ed4b75466c5d`
 for `base.c` and `64fe483989e56cbcc61c68298b5290b2c94892ef68cdbe86e253b60e81435d22`
 for `host_callbacks.c`; these record fixture identity, not observed execution.
