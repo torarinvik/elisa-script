@@ -32,9 +32,26 @@ probe, native ABI, ownership/reaping and external time/RSS containment under
 explicit user authorization. Then observe every ordinary case through the
 public launcher. Also resolve and exercise actual exec failures, signals and
 descendants, cancellation, cwd/entry-path failures and wrapper-versus-exec process
-identity. The companion currently returns a generic status 1 on a process error;
-that does not match Bash's missing/denied-executable statuses. No full shell
-equivalence or accepted migration is claimed.
+identity. The companion returns a generic status 1 on a typed process error;
+that must not be confused with a legacy child returning after exec failed.
+No full shell equivalence or accepted migration is claimed.
+
+## Returned exec failures (source-only correction)
+
+The legacy interpreter previously exited 127 after every returned execvp call,
+including access denial. Its four launch paths now share a private helper that
+uses a C-width errno pointer borrowed in the parent before fork. Only a native
+-1 return admits the immediate errno sample: ENOENT/ENOTDIR select 127; access
+denial and other returned failures select 126. Unexpected/bridge returns select
+126 without consulting stale errno. Small pure fixtures cover the classification
+and invalid-return boundaries; they remain uncompiled/unrun.
+
+This does not publish launch-error receipts or emit Bash-compatible diagnostics.
+The parent still cannot distinguish exec failure from a tool normally returning
+126/127. libc execvp's text-file shell fallback, async-signal safety of the
+generated child call graph, inherited errno-pointer lifetime and native ABI also
+remain unqualified. The preferred explicit parent-prepared spawn path remains
+unwired; this narrow legacy correction neither enables it nor closes acceptance.
 
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
