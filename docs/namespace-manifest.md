@@ -11,6 +11,7 @@ Elisascript-owned implementation is divided into qualified namespaces:
 | `EsIrArtifact` | Artifact metadata helpers | Artifact construction and fingerprint correlation | Metadata validation internals |
 | `EsBytecode` | Direct bytecode lowering and execution | Capability reports, artifact envelope APIs, execution entry points | Dispatch cursors, packed-layout checks, VM frames and helpers |
 | `EsRuntime` | POSIX host bridge | Typed forwarding operations and host layout records | `@link_name` declarations and ABI symbols |
+| `EsProcessScalarAbi` | Selected 32-bit process scalar ABI admission | Range predicate, grouped limits/rejection sentinel and low-eight-bit exit conversion | No native symbols or handles |
 | `EsDriver` | Native CLI boundary | `EsDriver::run` | Argument collection, diagnostics, and parsing helpers |
 | `EsDifferential` | External-oracle and backend parity harness | Case/run/comparison APIs | Process staging, snapshot ownership, comparator state machines |
 

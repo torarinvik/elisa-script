@@ -460,3 +460,38 @@ signal-disposition assumptions, post-reap group identity, retained lifetime and
 cancellation remain qualification blockers for the smallest lint wrapper and
 new spawn path. No compiler, fixture, child, wait, kill or parity process ran;
 original scripts/callers and other agents' work remain unchanged.
+
+## Legacy process scalar ABI correction (source-only)
+
+Primary compiler source `backend/codegen_env.elisa::scalar_type_of_name` models
+Elisa `int` as signed 64-bit and `i32` as signed 32-bit. Extern declaration
+lowering uses those declared scalar widths; a linker name does not infer a libc
+signature. The installed Darwin SDK declares `__darwin_pid_t` as `__int32_t`,
+`waitpid` as `pid_t (pid_t, int *, int)`, and the process/error/status scalars
+in fork/exec/kill/setpgid/dup2/fileno/_exit as C int or pid_t. The legacy bridge
+previously declared these using Elisa `int`, including its borrowed wait status.
+
+`process_posix.elisa` now uses private i32 native signatures for these scalars,
+explicitly widens signed results to preserve the existing public int API, and
+passes waitpid a fresh mutable i32 status slot. A positive result copies the
+complete native status into the caller's int; zero/negative results leave the
+caller status unchanged and the waiter does not decode it as a fresh receipt.
+This avoids exposing the low half of an eight-byte slot to a four-byte C write.
+
+The raw-handle-free `EsProcessScalarAbi` model admits scalar arguments within
+the selected signed-32-bit range before narrowing. Outside-range arguments
+return bridge sentinel -2 without a native call or errno update, rather than
+silently targeting a wrapped PID/descriptor. This is not a libc return code:
+callers must treat it as admission failure and must not interpret stale errno.
+The wait-error model already quarantines -2 even if stale errno says EINTR.
+Exit inputs are reduced to their low eight bits before the native C-int call,
+preserving POSIX status behavior for negative and large Elisa values.
+
+Pure fixtures cover boundaries, signed widening, rejection versus stale EINTR,
+and exit-bit reduction. They contain no process bridge/native declaration and
+remain uncompiled/unrun. These source changes do not qualify generated native
+ABI, status-slot lifetime, platform symbol aliases, pointer tables, async-safety,
+exclusive reaping, signal handling or post-reap group identity. Native return/
+status-slot probes and smallest-wrapper public-launcher parity still require
+explicitly reauthorized contained validation. No compiler, native operation,
+fixture or parity process ran; originals, SSH and others' changes are untouched.
