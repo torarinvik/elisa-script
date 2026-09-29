@@ -1,0 +1,47 @@
+# Unwired native Darwin bridge. No global mutation and no fork/exec.
+# Caller MUST exclude every environment/vector mutation for the whole call.
+# Bounds do not prove borrowed pointer validity or establish an RSS guard.
+include "environment_snapshot_model.elisa"
+
+extend EsEnvironmentSnapshot:
+    private:
+        # Local SDK crt_externs.h declares char ***_NSGetEnviron(void).
+        # Each nullable layer is admitted before dereferencing the next layer:
+        # slot -> vector -> entry; entries end with a null pointer sentinel.
+        @link_name(_NSGetEnviron)
+        extern darwin_environment_slot() -> u8&?&?&? can[Environment.Read]
+
+
+        def copy_entry(pointer: u8&, remaining: usize) -> darray[u8] error[EsEnvironment::EnvironmentContractError] can[Environment.Read, Memory.Allocate, Abort.Panic]:
+            encoded: mutable darray[u8] = []
+            # remaining includes the entry's NUL. Never probe past the admitted
+            # aggregate bytes, even when the borrowed string is oversized.
+            for index in 0..<remaining |encoded|:
+                byte: u8 = pointer[index]
+                encoded.push(byte)
+                return encoded if byte == 0u8
+            raise EsEnvironment::EnvironmentContractError.TextLimitExceeded
+
+    public:
+        def snapshot_darwin() -> EsEnvironment::EnvironmentSnapshot error[SnapshotError, EsEnvironment::EnvironmentContractError] can[Environment.Read, Memory.Allocate, Abort.Panic]:
+            borrowed_slot: u8&?&?&? = darwin_environment_slot()
+            raise SnapshotError.MissingVector if borrowed_slot == null
+            slot: u8&?&?& = borrowed_slot
+            borrowed_vector: u8&?&? = slot[0]
+            raise SnapshotError.MissingVector if borrowed_vector == null
+            vector: u8&?& = borrowed_vector
+            snapshot: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Begin)
+            # One extra pointer is only a sentinel probe. A 257th live entry is
+            # rejected without reading or copying its string.
+            for index in 0..<(EsEnvironment::ENVIRONMENT_MAX_ENTRIES + 1) |snapshot|:
+                borrowed_entry: u8&? = vector[index]
+                if borrowed_entry == null:
+                    _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Seal)
+                    return snapshot
+                raise EsEnvironment::EnvironmentContractError.EntryLimitExceeded if index == EsEnvironment::ENVIRONMENT_MAX_ENTRIES
+                pointer: u8& = borrowed_entry
+                remaining: usize = EsEnvironment::ENVIRONMENT_MAX_TEXT_BYTES - snapshot.text_bytes
+                encoded: darray[u8] = try copy_entry(pointer, remaining)
+                try append_entry(snapshot, encoded)
+            raise EsEnvironment::EnvironmentContractError.EntryLimitExceeded

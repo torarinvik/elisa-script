@@ -92,3 +92,11 @@ closures, parent-state receipts and inherited binary stream behavior with the
 independent prebuilt probes under explicit user reauthorization and real
 process-tree RSS/wall-time containment. No compiler or parity run is authorized
 by this document. Originals, SSH and other agents' pending work remain untouched.
+
+A separate source-only Darwin bridge and shared owned-entry decoder are now
+authored in `environment_snapshot_darwin.elisa` and
+`environment_snapshot_model.elisa`. See [its contract](environment-snapshot-darwin.md)
+for the triple-pointer ABI, sentinel/aggregate-byte admission and exclusive
+borrow precondition. It is not wired into the runtime, qualified, or backed by
+an enforced concurrency guard; those remain prerequisites to integration.
+No native snapshot was executed.

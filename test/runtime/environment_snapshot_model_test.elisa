@@ -1,0 +1,139 @@
+# Pure owned-entry decoding. No native snapshot, environment read or child runs.
+include "../../src/runtime/environment_snapshot_model.elisa"
+
+using EsEnvironmentSnapshot
+
+module EsEnvironmentSnapshotFixture:
+    public:
+        def encoded(text: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable darray[u8] = []
+            for byte in text |bytes|:
+                bytes.push(byte)
+            bytes.push(0u8)
+            return bytes
+
+
+        def rejects(bytes: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic]:
+            catch decode_entry(bytes):
+                ok _:
+                    return false
+                error failure:
+                    return true
+
+
+@test
+def native_environment_decode_splits_only_the_first_equals_and_owns_bytes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        bytes: mutable darray[u8] = EsEnvironmentSnapshotFixture::encoded("CC=tools/clang=x")
+        entry: EsEnvironment::EnvironmentEntry = try decode_entry(bytes) else err:
+            assert false
+            return
+        assert entry.name == "CC" and entry.value == "tools/clang=x" and entry.present
+        bytes[0] <- 88u8
+        bytes[3] <- 88u8
+        assert entry.name == "CC" and entry.value == "tools/clang=x"
+        empty: darray[u8] = EsEnvironmentSnapshotFixture::encoded("EMPTY=")
+        empty_entry: EsEnvironment::EnvironmentEntry = try decode_entry(empty) else err:
+            assert false
+            return
+        assert empty_entry.name == "EMPTY" and empty_entry.value == ""
+
+
+@test
+def native_environment_decode_preserves_literal_non_shell_keys_and_utf8() -> void:
+    can Memory.Allocate, Abort.Panic:
+        bytes: darray[u8] = EsEnvironmentSnapshotFixture::encoded("9 key-$HOME;*=\xc3\xa9\n")
+        entry: EsEnvironment::EnvironmentEntry = try decode_entry(bytes) else err:
+            assert false
+            return
+        assert entry.name == "9 key-$HOME;*" and entry.value == "\xc3\xa9\n"
+        invalid_entries: darray[darray[u8]] = [[], [0u8], [65u8,0u8], [61u8,0u8], [65u8,61u8,66u8], [65u8,61u8,0u8,66u8,0u8], [65u8,0u8,61u8,0u8]]
+        for invalid in invalid_entries:
+            assert EsEnvironmentSnapshotFixture::rejects(invalid)
+
+
+@test
+def native_environment_snapshot_seals_order_and_exact_c_string_receipt() -> void:
+    can Memory.Allocate, Abort.Panic:
+        entries: darray[darray[u8]] = [EsEnvironmentSnapshotFixture::encoded("CC="), EsEnvironmentSnapshotFixture::encoded("PATH=:/bin:"), EsEnvironmentSnapshotFixture::encoded("VALUE=a=b")]
+        snapshot: EsEnvironment::EnvironmentSnapshot = try from_entries(entries) else err:
+            assert false
+            return
+        assert snapshot.state == EsEnvironment::EnvironmentState.Sealed
+        assert snapshot.entries.count == 3 and snapshot.text_bytes == 26
+        assert snapshot.entries[0].name == "CC" and snapshot.entries[0].value == ""
+        assert snapshot.entries[1].name == "PATH" and snapshot.entries[1].value == ":/bin:"
+        assert snapshot.entries[2].name == "VALUE" and snapshot.entries[2].value == "a=b"
+        empty: darray[darray[u8]] = []
+        empty_snapshot: EsEnvironment::EnvironmentSnapshot = try from_entries(empty) else err:
+            assert false
+            return
+        assert empty_snapshot.state == EsEnvironment::EnvironmentState.Sealed
+        assert empty_snapshot.entries.count == 0 and empty_snapshot.text_bytes == 0
+
+
+@test
+def native_environment_snapshot_rejects_duplicate_names_before_replacement() -> void:
+    can Memory.Allocate, Abort.Panic:
+        entries: darray[darray[u8]] = [EsEnvironmentSnapshotFixture::encoded("CC=first"), EsEnvironmentSnapshotFixture::encoded("CC=second")]
+        rejected: mutable bool = false
+        catch from_entries(entries):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == SnapshotError.DuplicateName
+        assert rejected
+
+
+@test
+def native_environment_snapshot_rejects_live_entry_overflow_before_decoding() -> void:
+    can Memory.Allocate, Abort.Panic:
+        entries: mutable darray[darray[u8]] = []
+        for index in 0..<(EsEnvironment::ENVIRONMENT_MAX_ENTRIES + 1) |entries|:
+            # Intentionally malformed entries: entry-count admission comes first.
+            entries.push([])
+        rejected: mutable bool = false
+        catch from_entries(entries):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == EsEnvironment::EnvironmentContractError.EntryLimitExceeded
+        assert rejected
+
+
+@test
+def native_environment_snapshot_admits_exact_entry_limit() -> void:
+    can Memory.Allocate, Abort.Panic:
+        entries: mutable darray[darray[u8]] = []
+        for index in 0..<EsEnvironment::ENVIRONMENT_MAX_ENTRIES |entries|:
+            entries.push([69u8, (65 + index / 26).u8(), (65 + index % 26).u8(), 61u8, 0u8])
+        snapshot: EsEnvironment::EnvironmentSnapshot = try from_entries(entries) else err:
+            assert false
+            return
+        assert snapshot.entries.count == 256 and snapshot.text_bytes == 1280
+        assert snapshot.state == EsEnvironment::EnvironmentState.Sealed
+
+
+@test
+def native_environment_rejected_append_preserves_the_building_snapshot() -> void:
+    can Memory.Allocate, Abort.Panic:
+        snapshot: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+        started: EsEnvironment::EnvironmentState = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Begin) else err:
+            assert false
+            return
+        assert started == EsEnvironment::EnvironmentState.Building
+        first: darray[u8] = EsEnvironmentSnapshotFixture::encoded("CC=first")
+        try append_entry(snapshot, first) else err:
+            assert false
+            return
+        duplicate: darray[u8] = EsEnvironmentSnapshotFixture::encoded("CC=second")
+        rejected: mutable bool = false
+        catch append_entry(snapshot, duplicate):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == SnapshotError.DuplicateName
+        assert rejected
+        assert snapshot.state == EsEnvironment::EnvironmentState.Building
+        assert snapshot.entries.count == 1 and snapshot.text_bytes == 9
+        assert snapshot.entries[0].name == "CC" and snapshot.entries[0].value == "first"

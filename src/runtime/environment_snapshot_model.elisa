@@ -1,0 +1,56 @@
+# Admission and owned decoding for a native null-terminated environment vector.
+# No raw pointers or host calls. Entry bytes include the terminal NUL.
+include "process_model.elisa"
+include "environment_model.elisa"
+
+module EsEnvironmentSnapshot:
+    public:
+        error SnapshotError:
+            MissingVector
+            MissingTerminator
+            EmbeddedNul
+            MissingEquals
+            EmptyName
+            DuplicateName
+
+
+        def decode_entry(encoded: darray[u8]&) -> EsEnvironment::EnvironmentEntry error[SnapshotError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            raise SnapshotError.MissingTerminator if encoded.count == 0 or encoded[encoded.count - 1] != 0u8
+            raise EsEnvironment::EnvironmentContractError.TextLimitExceeded if encoded.count > EsEnvironment::ENVIRONMENT_MAX_TEXT_BYTES
+            separator: mutable usize = encoded.count
+            for index in 0..<(encoded.count - 1) |separator|:
+                byte: u8 = encoded[index]
+                raise SnapshotError.EmbeddedNul if byte == 0u8
+                separator <- index if separator == encoded.count and byte == 61u8
+            raise SnapshotError.MissingEquals if separator == encoded.count
+            raise SnapshotError.EmptyName if separator == 0
+            name: mutable darray[u8] = []
+            value: mutable darray[u8] = []
+            for index in 0..<separator |name|:
+                name.push(encoded[index])
+            for index in (separator + 1)..<(encoded.count - 1) |value|:
+                value.push(encoded[index])
+            return EsEnvironment::EnvironmentEntry{name: bytes_view(name), value: bytes_view(value)}
+
+
+        # Set normally replaces a prior value. A native snapshot must instead
+        # reject duplicate entries rather than silently change host semantics.
+        def append_entry(snapshot: mutable EsEnvironment::EnvironmentSnapshot&, encoded: darray[u8]&) -> void error[SnapshotError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            _ = try EsEnvironment::validate_environment_snapshot(snapshot)
+            raise EsEnvironment::EnvironmentContractError.InvalidState if snapshot.state != EsEnvironment::EnvironmentState.Building
+            raise EsEnvironment::EnvironmentContractError.EntryLimitExceeded if snapshot.entries.count >= EsEnvironment::ENVIRONMENT_MAX_ENTRIES
+            raise EsEnvironment::EnvironmentContractError.TextLimitExceeded if encoded.count > EsEnvironment::ENVIRONMENT_MAX_TEXT_BYTES - snapshot.text_bytes
+            entry: EsEnvironment::EnvironmentEntry = try decode_entry(encoded)
+            for existing in snapshot.entries:
+                raise SnapshotError.DuplicateName if existing.name == entry.name
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
+
+
+        def from_entries(entries: darray[darray[u8]]&) -> EsEnvironment::EnvironmentSnapshot error[SnapshotError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            raise EsEnvironment::EnvironmentContractError.EntryLimitExceeded if entries.count > EsEnvironment::ENVIRONMENT_MAX_ENTRIES
+            snapshot: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Begin)
+            for encoded in entries |snapshot|:
+                try append_entry(snapshot, encoded)
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Seal)
+            return snapshot
