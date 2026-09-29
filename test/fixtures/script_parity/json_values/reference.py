@@ -44,6 +44,12 @@ def main():
         f"duplicate={value['duplicate']}",
         "json="
         + json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        "json_updated="
+        + json.dumps(
+            {**value, "duplicate": "updated"},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         "jsonl="
         + "|".join(
             json.dumps(json.loads(line), ensure_ascii=False, separators=(",", ":"))

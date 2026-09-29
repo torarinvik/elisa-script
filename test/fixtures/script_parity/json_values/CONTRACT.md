@@ -7,6 +7,8 @@ compact UTF-8 JSON. It covers an integer larger than
 missing member, and Python's default last-value-wins behavior for duplicate
 object keys. The output check also verifies duplicate normalization, insertion
 order, no-whitespace separators, exact integer spelling, and unescaped UTF-8.
+It also replaces an existing member during serialization using a separately
+parsed, sealed value document; the original document remains unchanged.
 The JSON Lines slice parses multiple records in memory, including an
 unterminated final record, and compares compact serialization in record order.
 A second path reads a checked-in `.jsonl` file through the bounded file-stream

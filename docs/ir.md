@@ -334,6 +334,13 @@ normalization changes ownership/references, not the contiguous payload ledger.
 an explicit output-byte ceiling. Its iterative container stack preserves
 member order and exact number lexemes, escapes quotes, backslashes, and control
 bytes, and never recurses on the host stack.
+`encode_json_root_replacing_member` provides a bounded immutable update slice:
+it replaces one existing key in a selected object with a value from a second
+sealed document while emitting the selected root. It preserves the key's
+insertion position, validates and encodes both documents, reports a missing
+target or a target outside the selected root, and leaves the input document
+unchanged. It does not yet insert missing keys, delete members, or mutate a
+document in place.
 Arrays index an explicit `JsonArrayChild`
 table; each edge names its array owner, value node, and ordinal. Objects index
 their own contiguous member ranges, and each `JsonMember` names its object owner,
@@ -392,6 +399,10 @@ without claiming Python-compatible exception text. Both compiler-free JSON
 source audits also preflight these parity inputs and check the candidate,
 golden, and launcher safety markers, so a missing fixture cannot be reported
 as a complete JSON model audit.
+The current C06 candidate and Python oracle additionally compare replacing an
+existing object member with a separately parsed value. The Elisa operation is
+serialization-time and immutable; inserting/deleting members and general
+mutable-DOM behavior remain open.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,

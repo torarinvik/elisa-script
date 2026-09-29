@@ -1,8 +1,10 @@
 # Bounded compact JSON encoding over the owned EsJson document model.
 #
-# Encoding consumes a sealed document only. It preserves exact number
+# Encoding consumes sealed documents only. It preserves exact number
 # lexemes, emits retained object members in order, and traverses containers
-# iteratively so document depth never consumes the host call stack.
+# iteratively so document depth never consumes the host call stack. A second
+# entry point can replace one existing member while encoding without mutating
+# either owned document.
 
 module EsJsonEncode:
     using EsData
@@ -20,6 +22,8 @@ module EsJsonEncode:
             NodeIndexInvalid
             FrameLimitExceeded
             OutputLimitExceeded
+            ReplacementMemberNotFound
+            ReplacementMemberOutsideRoot
 
 
     private:
@@ -112,8 +116,7 @@ module EsJsonEncode:
                 raise JsonEncodeError.InvalidDocument
 
 
-    public:
-        def encode_json_root(document: JsonDocument&, root_ordinal: usize, max_output_bytes: usize = JSON_ENCODE_MAX_OUTPUT_BYTES) -> darray[u8] error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+        def json_encode_root_impl(document: JsonDocument&, root_ordinal: usize, max_output_bytes: usize, replacement_member_index: usize, replacement_bytes: darray[u8]) -> darray[u8] error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
             valid_document: mutable bool = false
             catch validate_json_document(document):
                 ok value:
@@ -126,6 +129,7 @@ module EsJsonEncode:
 
             output: mutable darray[u8] = []
             frames: mutable darray[JsonEncodeFrame] = []
+            replacement_written: mutable bool = false
             root_index: usize = document.roots[root_ordinal]
             try json_encode_emit_node(document, root_index, output, frames, max_output_bytes)
             while frames.count != 0:
@@ -155,7 +159,32 @@ module EsJsonEncode:
                         member: JsonMember = document.members[member_index]
                         try json_encode_string(output, document.key_bytes, member.key_start, member.key_bytes, max_output_bytes)
                         try json_encode_byte(output, 58u8, max_output_bytes)
-                        try json_encode_emit_node(document, member.value_index, output, frames, max_output_bytes)
+                        if member_index == replacement_member_index:
+                            raise JsonEncodeError.OutputLimitExceeded if not json_encode_can_append(output, replacement_bytes.count, max_output_bytes)
+                            for byte in replacement_bytes |output, replacement_bytes|:
+                                output.push(byte)
+                            replacement_written <- true
+                        else:
+                            try json_encode_emit_node(document, member.value_index, output, frames, max_output_bytes)
                 else:
                     raise JsonEncodeError.InvalidDocument
+            raise JsonEncodeError.ReplacementMemberOutsideRoot if replacement_member_index != JSON_INDEX_NONE and not replacement_written
             return output
+
+
+    public:
+        def encode_json_root(document: JsonDocument&, root_ordinal: usize, max_output_bytes: usize = JSON_ENCODE_MAX_OUTPUT_BYTES) -> darray[u8] error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            return try json_encode_root_impl(document, root_ordinal, max_output_bytes, JSON_INDEX_NONE, [])
+
+
+        def encode_json_root_replacing_member(document: JsonDocument&, root_ordinal: usize, object_index: usize, key: sview, replacement_document: JsonDocument&, replacement_root_ordinal: usize, max_output_bytes: usize = JSON_ENCODE_MAX_OUTPUT_BYTES) -> darray[u8] error[JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            member_index: mutable usize = JSON_INDEX_NONE
+            catch json_object_member_index(document, object_index, key):
+                ok found:
+                    member_index <- found
+                error failure:
+                    _ = failure
+                    raise JsonEncodeError.InvalidDocument
+            raise JsonEncodeError.ReplacementMemberNotFound if member_index == JSON_INDEX_NONE
+            replacement_bytes: darray[u8] = try encode_json_root(replacement_document, replacement_root_ordinal, max_output_bytes)
+            return try json_encode_root_impl(document, root_ordinal, max_output_bytes, member_index, replacement_bytes)

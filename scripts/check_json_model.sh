@@ -127,6 +127,7 @@ for encoder_contract in \
     'module EsJsonEncode:' \
     'error JsonEncodeError:' \
     'def encode_json_root(' \
+    'def encode_json_root_replacing_member(' \
     'JSON_ENCODE_MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES' \
     'JSON_ENCODE_MAX_FRAMES: usize = 1025' \
     'return false if output.count > limit' \
@@ -136,7 +137,9 @@ for encoder_contract in \
     'JsonNodeKind.Object' \
     'if byte == 34u8 or byte == 92u8:' \
     'elif byte < 32u8:' \
-    'JsonEncodeError.OutputLimitExceeded'; do
+    'JsonEncodeError.OutputLimitExceeded' \
+    'JsonEncodeError.ReplacementMemberNotFound' \
+    'JsonEncodeError.ReplacementMemberOutsideRoot'; do
     rg -Fq "$encoder_contract" "$encoder"
 done
 
@@ -264,8 +267,14 @@ for fixture_pattern in \
     'missing_separator_rejected' \
     'typed_json_encoder_is_bounded_and_preserves_values' \
     'encode_json_root(document, 0)' \
+    'encode_json_root_replacing_member(document, 0, root_index, "duplicate", replacement_document, 0)' \
     'encoded_values: darray[u8] = encode_json_root(document, 0)' \
     'encoded_object: darray[u8] = encode_json_root(object_document, 0)' \
+    'encode_json_root_replacing_member(object_document' \
+    'unchanged_object: darray[u8] = encode_json_root(object_document, 0)' \
+    'JsonEncodeError.ReplacementMemberNotFound' \
+    'outside_root_rejected' \
+    'replacement_limit_rejected' \
     'encoded_nested: darray[u8] = encode_json_root(nested_document, 0)' \
     'encoded_empty: darray[u8] = encode_json_root(empty_document, 0)' \
     'encoded_null: darray[u8] = encode_json_root(null_document, 0)' \
@@ -308,6 +317,7 @@ for parity_reference_pattern in \
     'json.loads(line)' \
     'JSON_LINES_SOURCE.splitlines()' \
     'json.JSONDecodeError' \
+    'json_updated=' \
     '{"broken": }' \
     'records.jsonl' \
     'file_records = [json.loads(line) for line in source]'; do
@@ -355,6 +365,7 @@ for parity_expected_pattern in \
     'item.2=4' \
     'duplicate=last' \
     'json={"big":1234567890123456789012345678901234567890,' \
+    'json_updated={"big":1234567890123456789012345678901234567890,' \
     'jsonl={"id":1' \
     'jsonl_file={"id":1' \
     'jsonl_malformed=error'; do
@@ -365,6 +376,7 @@ rg -Fq 'compact UTF-8 JSON' "$parity_contract"
 rg -Fq 'unterminated final record' "$parity_contract"
 rg -Fq 'bounded file-stream' "$parity_contract"
 rg -Fq 'required to be rejected' "$parity_contract"
+rg -Fq 'replaces an existing member' "$parity_contract"
 rg -Fq '{"id":3,"payload":null}' "$parity_jsonl_input"
 rg -Fq 'not a claim of full Python' "$parity_contract"
 rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
