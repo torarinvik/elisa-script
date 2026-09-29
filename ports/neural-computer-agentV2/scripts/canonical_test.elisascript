@@ -1,0 +1,119 @@
+# Shared orchestration for the canonical/campaign test companions. Pytest is
+# an explicit host tool; neither original shell wrapper is invoked.
+module EsCanonicalTest:
+    private:
+        const module Defaults:
+            PYTHON: sview = ".venv/bin/python"
+            TIMEOUT_MICROS: i64 = 0
+
+
+        const enum RunPhase of u8:
+            EnterRoot
+            SelectTool
+            DecodeMode
+            Launch
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr("canonical test: " + message + "\n")
+
+    public:
+        const enum TestMode of u8:
+            Fast
+            Campaign
+            All
+
+
+        error UsageError:
+            InvalidMode
+
+
+        def mode_from_text(value: sview) -> TestMode error[UsageError]:
+            return TestMode.Fast if value == "" or value == "fast"
+            return TestMode.Campaign if value == "campaign"
+            return TestMode.All if value == "all"
+            raise UsageError.InvalidMode
+
+
+        def pytest_arguments(mode: TestMode, extra: darray[sview]) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            prefix: darray[sview] = when mode:
+                TestMode.Fast -> ["-m", "pytest", "-q", "-m", "not campaign"]
+                TestMode.Campaign -> ["-m", "pytest", "-q", "-m", "campaign"]
+                TestMode.All -> ["-m", "pytest", "-q"]
+            argv: mutable darray[sview] = []
+            for value in prefix:
+                argv.push(value)
+            for value in extra:
+                argv.push(value)
+            return argv
+
+
+        def canonical_arguments(arguments: darray[sview]) -> darray[sview] error[UsageError] can[Memory.Allocate, Abort.Panic]:
+            requested: sview = arguments[0] if arguments.count > 0 else "fast"
+            mode: TestMode = try mode_from_text(requested)
+            extra: mutable darray[sview] = []
+            start: usize = 1 if arguments.count > 0 else 0
+            for index in start..<arguments.count:
+                extra.push(arguments[index])
+            return pytest_arguments(mode, extra)
+
+
+        def campaign_arguments(arguments: darray[sview]) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            # test_campaign.sh prepends campaign. Its caller's first argument
+            # is a pytest argument, not another mode to parse or consume.
+            return pytest_arguments(TestMode.Campaign, arguments)
+
+
+        def run_root(project_root: Path, arguments: darray[sview], display_path: Path, campaign_only: bool = false) -> i64 can[Directory.Write, Environment.Read, Process.Run, Console.Write, Console.Format, Memory.Allocate, Abort.Panic]:
+            phase: mutable RunPhase = RunPhase.EnterRoot
+            configured: mutable sview = ""
+            argv: mutable darray[sview] = []
+            # Preserve Bash's failure order: cwd, environment selection, mode,
+            # then executable construction/launch. Invalid mode never launches.
+            machine over phase:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, RunPhase.EnterRoot:
+                    changed: bool = try change_directory(project_root) else err:
+                        diagnostic("unable to enter project root")
+                        return 1i64
+                    if not changed:
+                        diagnostic("unable to enter project root")
+                        return 1i64
+                    phase <- RunPhase.SelectTool
+                    -> Dispatch
+
+                Dispatch, RunPhase.SelectTool:
+                    configured <- try getenv("PYTHON_BIN", "") else err:
+                        diagnostic("unable to read PYTHON_BIN")
+                        return 1i64
+                    phase <- RunPhase.DecodeMode
+                    -> Dispatch
+
+                Dispatch, RunPhase.DecodeMode:
+                    if campaign_only:
+                        argv <- campaign_arguments(arguments)
+                    else:
+                        argv <- try canonical_arguments(arguments) else err:
+                            _ = write_stderr(f"usage: {display_path} [fast|campaign|all]\n")
+                            return 2i64
+                    phase <- RunPhase.Launch
+                    -> Dispatch
+
+                Dispatch, RunPhase.Launch:
+                    python: Executable = try executable(Defaults::PYTHON if configured == "" else configured) else err:
+                        diagnostic("invalid Python executable")
+                        return 1i64
+                    return try run_process(python, argv, Defaults::TIMEOUT_MICROS) else err:
+                        diagnostic("unable to run pytest")
+                        return 1i64
+            return 1i64
+
+
+        def run_default(arguments: darray[sview], campaign_only: bool = false) -> i64 can[File.Read, Directory.Write, Environment.Read, Process.Run, Console.Write, Console.Format, Memory.Allocate, Abort.Panic]:
+            script_path: Path = Script::source_path()
+            script_directory: Path = try path_real(path_parent(script_path)) else err:
+                diagnostic("unable to resolve script directory")
+                return 1i64
+            return run_root(script_directory.parent(), arguments, script_path, campaign_only)
