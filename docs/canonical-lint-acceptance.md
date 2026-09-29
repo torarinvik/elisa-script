@@ -197,17 +197,31 @@ raised data too; it is not evidence of host execution or native ownership.
 
 ## Diagnostic source investigation, not a qualified renderer
 
-Apple's published Bash sources separate `exec` lookup/path expansion from native
-failure handling. The exec builtin uses command lookup and full-path conversion;
-the lookup implementation uses filesystem status and an executable-preferred
-fallback. Native failure handling has a distinct directory branch, while error
-prefixes include script and executing-line context. See Apple's
-[exec builtin](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/exec.def),
-[command lookup](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/findcmd.c),
-[execution](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/execute_cmd.c)
-and [error prefix](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/error.c)
-sources. These links are mutable source references, not an immutable source/build
-provenance chain for our pinned `/bin/bash` hash or an observed byte oracle.
+The Apple OSS Bash 3.2 source separates `exec` lookup/path expansion from
+native failure handling. A command containing `/` bypasses PATH lookup; a
+slashless lookup with no PATH candidate reports command-not-found and selects
+status 127. PATH lookup prefers an executable non-directory even when an
+earlier entry is an existing non-executable file, and remembers the first
+existing entry as a fallback. It ultimately rejects that fallback if it is a
+directory; a leading directory can therefore shadow a later non-executable
+file when no executable candidate exists. After `execve` returns, the builtin
+has a distinct non-executable diagnostic/status-126 branch; other failures use
+`file_error`.
+The error prefix can contain the script name and executing line. See Apple's
+[exec builtin, lookup and failure branches](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/exec.def#L863-L983),
+[PATH candidate preference](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/findcmd.c#L2108-L2197),
+[command lookup](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/findcmd.c#L1817-L1924),
+and [error name/line prefix](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/error.c#L1208-L1278).
+These are mutable upstream links, not an immutable source/build provenance
+chain for the local `/bin/bash` hash or an observed byte oracle.
+
+`src/runtime/bash_exec_lookup_model.elisa` now models only that candidate
+preference from ordered filesystem observations, separately from native
+`execvp` retries. Its pure fixtures cover executable-over-denied precedence,
+first non-executable fallback, ignored directories/missing entries, and
+directory-fallback shadowing and impossible observations. They are uncompiled
+and unrun; no filesystem adapter, renderer, or local Bash source/build
+qualification is implied.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
