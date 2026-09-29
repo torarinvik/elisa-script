@@ -6,11 +6,16 @@ The original and its build/test callers remain unchanged. The companion
 `write_profiler_hook_fallbacks.elisascript` has no filesystem or process effect:
 it writes the generated C text to stdout. The pure model keeps the C lines in a
 private namespace and adds one LF to each, matching the two quoted Bash
-here-documents. Only the **first** argument selects `--host-callbacks`; any
+here-documents. Independent `base.c` and `host_callbacks.c` file goldens pin
+the two emitted blocks; an authored bounded-read fixture compares the model
+against those exact bytes. Only the **first** argument selects `--host-callbacks`; any
 other first argument and all later arguments are ignored, as in the Bash script.
+The golden SHA-256 digests are `e8d4c7fe5118a52a5f9c007404601967c7130b070875a2e93ad5ed4b75466c5d`
+for `base.c` and `64fe483989e56cbcc61c68298b5290b2c94892ef68cdbe86e253b60e81435d22`
+for `host_callbacks.c`; these record fixture identity, not observed execution.
 
-This is authored source, not accepted parity. The pure shape fixtures are
-uncompiled and unrun. Before switching any caller, a separately authorized,
+This is authored source, not accepted parity. The shape and file-golden fixtures
+are uncompiled and unrun. Before switching any caller, a separately authorized,
 RSS-bounded public-launcher matrix must pin the live Bash source and tool
 identities, run default/host-callbacks/ignored-argument cases with bounded
 stdout and stderr capture, admit independent expected status and bytes for the
