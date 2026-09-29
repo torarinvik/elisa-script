@@ -269,6 +269,7 @@ done
 for parity_candidate_pattern in \
     'module EsJsonValuesParityCandidate:' \
     'parse_json_document(lexed)' \
+    'encode_json_root(document, 0)' \
     'JsonDuplicateKeyPolicy.KeepLast' \
     'JSON_INDEX_NONE' \
     'blåbær'; do
@@ -279,7 +280,8 @@ for parity_launcher_pattern in \
     'json_value_projection_matches_python_reference_and_golden' \
     'ELISASCRIPT_VALIDATION_REAUTHORIZED' \
     'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' \
-    'SourceHashes::JSON_PARSER'; do
+    'SourceHashes::JSON_PARSER' \
+    'SourceHashes::JSON_ENCODER'; do
     rg -Fq "$parity_launcher_pattern" "$parity_launcher"
 done
 
@@ -288,11 +290,13 @@ for parity_expected_pattern in \
     'missing=missing' \
     'nullable=null' \
     'item.2=4' \
-    'duplicate=last'; do
+    'duplicate=last' \
+    'json={"big":1234567890123456789012345678901234567890,'; do
     rg -Fq "$parity_expected_pattern" "$parity_expected"
 done
 
+rg -Fq 'compact UTF-8 JSON' "$parity_contract"
 rg -Fq 'not a claim of full Python' "$parity_contract"
 rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
 
-printf 'json model audit: namespaced owned scalar/key arenas, lifecycle contracts, and Python value parity fixture are present\n'
+printf 'json model audit: namespaced owned scalar/key arenas, lifecycle contracts, and Python JSON value/encode parity fixture are present\n'

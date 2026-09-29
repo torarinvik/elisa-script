@@ -27,6 +27,8 @@ def main():
         f"item.1={'null' if items[1] is None else 'other'}",
         f"item.2={items[2]}",
         f"duplicate={value['duplicate']}",
+        "json="
+        + json.dumps(value, ensure_ascii=False, separators=(",", ":")),
     ]
     sys.stdout.write("\n".join(lines) + "\n")
 

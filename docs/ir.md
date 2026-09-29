@@ -377,13 +377,15 @@ while compact encoding is provided by `EsJsonEncode`.
 process-level C06 comparison against Python's standard `json` module. Its
 bounded value projection covers an integer larger than 64 bits, nested object
 and array values, Unicode, booleans, null versus a missing member, and
-last-value-wins duplicate keys. The Python executable, candidate, reference,
-golden, and directly consumed JSON model sources are digest-pinned. This is a
-focused behavior slice, not full Python JSON compatibility, and the launcher
-has not been run under the validation hold. Both compiler-free JSON source
-audits also preflight these parity inputs and check the candidate, golden, and
-launcher safety markers, so a missing fixture cannot be reported as a complete
-JSON model audit.
+last-value-wins duplicate keys. It also compactly serializes the parsed object
+to UTF-8 JSON and compares normalized duplicate handling, insertion order, and
+exact integer spelling against Python `json.dumps`. The Python executable,
+candidate, reference, golden, and directly consumed JSON model sources
+including the encoder are digest-pinned. This is a focused behavior slice, not
+full Python JSON compatibility, and the launcher has not been run under the
+validation hold. Both compiler-free JSON source audits also preflight these
+parity inputs and check the candidate, golden, and launcher safety markers, so
+a missing fixture cannot be reported as a complete JSON model audit.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,
