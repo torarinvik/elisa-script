@@ -10,6 +10,7 @@ module EsProcessEnvironmentPlan:
             PATH_VALUE_BYTES: usize = 65536
             SEARCH_CANDIDATES: usize = 4096
             SEARCH_BYTES: usize = 1048576
+            STORAGE_BYTES: usize = 68157440
 
 
         struct AbsentPath:
@@ -38,11 +39,14 @@ module EsProcessEnvironmentPlan:
             InvalidPathPolicy
             PathLimit
             SearchLimit
+            InvalidStorageBudget
+            StorageLimit
 
 
-        def prepare(ambient: EsEnvironment::EnvironmentSnapshot&, overlay: darray[EsEnvironment::EnvironmentEntry], executable: sview, absent_path: AbsentPath = AbsentPath{}) -> Prepared error[PlanError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+        def prepare(ambient: EsEnvironment::EnvironmentSnapshot&, overlay: darray[EsEnvironment::EnvironmentEntry], executable: sview, absent_path: AbsentPath = AbsentPath{}, max_storage_bytes: usize = Limits::STORAGE_BYTES) -> Prepared error[PlanError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
             try EsEnvironment::validate_environment_snapshot(ambient)
             raise PlanError.AmbientNotSealed if ambient.state != EsEnvironment::EnvironmentState.Sealed
+            raise PlanError.InvalidStorageBudget if max_storage_bytes > Limits::STORAGE_BYTES
             raise PlanError.OverlayLimit if overlay.count > EsEnvironment::ENVIRONMENT_MAX_ENTRIES
             for index in 0..<overlay.count:
                 raise PlanError.UnsupportedUnset if not overlay[index].present
@@ -61,6 +65,9 @@ module EsProcessEnvironmentPlan:
             for entry in overlay |merged|:
                 _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
             _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Seal)
+            # Reject before creating any encoded environment buffers. The
+            # remaining budget is also enforced before each search allocation.
+            raise PlanError.StorageLimit if merged.text_bytes > max_storage_bytes
 
             prepared: mutable Prepared = Prepared{}
             for entry in merged.entries |prepared|:
@@ -75,7 +82,7 @@ module EsProcessEnvironmentPlan:
             # and NUL. Keep an explicit receipt cross-check at the ABI boundary.
             assert prepared.environment_bytes == merged.text_bytes
             if sview_contains_byte(executable, 47):
-                try append_candidate(prepared, "", executable)
+                try append_candidate(prepared, "", executable, max_storage_bytes)
                 return prepared
 
             path_present: mutable bool = false
@@ -91,13 +98,13 @@ module EsProcessEnvironmentPlan:
             directory: mutable darray[u8] = []
             for byte in search_path |directory, prepared|:
                 if byte == 58u8:
-                    try append_candidate(prepared, bytes_view(directory), executable)
+                    try append_candidate(prepared, bytes_view(directory), executable, max_storage_bytes)
                     directory <- []
                 else:
                     raise PlanError.PathLimit if directory.count >= Limits::PATH_BYTES - 1
                     directory.push(byte)
             # Include the final empty component, including PATH="" or "dir:".
-            try append_candidate(prepared, bytes_view(directory), executable)
+            try append_candidate(prepared, bytes_view(directory), executable, max_storage_bytes)
             return prepared
 
     private:
@@ -106,10 +113,11 @@ module EsProcessEnvironmentPlan:
                 output.push(byte)
 
 
-        def append_candidate(prepared: mutable Prepared&, directory: sview, executable: sview) -> void error[PlanError] can[Memory.Allocate, Abort.Panic]:
+        def append_candidate(prepared: mutable Prepared&, directory: sview, executable: sview, max_storage_bytes: usize) -> void error[PlanError] can[Memory.Allocate, Abort.Panic]:
             count: usize = len(directory) + len(executable) + (1usize if directory != "" else 0usize)
             raise PlanError.PathLimit if count >= Limits::PATH_BYTES
             raise PlanError.SearchLimit if prepared.executable_candidates.count >= Limits::SEARCH_CANDIDATES or count + 1 > Limits::SEARCH_BYTES - prepared.search_bytes
+            raise PlanError.StorageLimit if count + 1 > max_storage_bytes - prepared.environment_bytes - prepared.search_bytes
             encoded: mutable darray[u8] = []
             append_text(encoded, directory)
             encoded.push(47u8) if directory != ""

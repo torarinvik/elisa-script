@@ -1,0 +1,55 @@
+# Parent-owned serialized launch storage; no raw pointers, fork or host mutation.
+include "process_environment_plan.elisa"
+
+module EsProcessLaunchStorage:
+    public:
+        const module Limits:
+            STORAGE_BYTES: usize = 67108864
+
+
+        struct Prepared:
+            environment: EsProcessEnvironmentPlan::Prepared
+            # argv[0] is the original executable spelling, not a PATH candidate.
+            # Every item owns its bytes and terminal NUL, including empty args.
+            arguments: darray[darray[u8]] = []
+            argument_bytes: usize = 0
+            storage_bytes: usize = 0
+
+
+        error StorageError:
+            InvalidBudget
+            ArgumentCount
+            InvalidArgument
+            StorageLimit
+
+
+        def prepare(ambient: EsEnvironment::EnvironmentSnapshot&, overlay: darray[EsEnvironment::EnvironmentEntry], executable: sview, arguments: darray[sview], absent_path: EsProcessEnvironmentPlan::AbsentPath = EsProcessEnvironmentPlan::AbsentPath{}, max_storage_bytes: usize = Limits::STORAGE_BYTES) -> Prepared error[StorageError, EsProcessEnvironmentPlan::PlanError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            raise StorageError.InvalidBudget if max_storage_bytes > Limits::STORAGE_BYTES
+            raise StorageError.ArgumentCount if arguments.count > EsProcess::PROCESS_COMMAND_MAX_ARGUMENTS
+            raise EsProcessEnvironmentPlan::PlanError.InvalidExecutable if executable == "" or len(executable) >= EsProcessEnvironmentPlan::Limits::PATH_BYTES or sview_contains_byte(executable, 0)
+            # Count all argv payloads and terminators before encoding anything.
+            # Admission uses subtraction, so arithmetic cannot wrap around.
+            argument_bytes: mutable usize = 0
+            try admit_argument(argument_bytes, executable, max_storage_bytes)
+            for argument in arguments |argument_bytes|:
+                try admit_argument(argument_bytes, argument, max_storage_bytes)
+            environment: EsProcessEnvironmentPlan::Prepared = try EsProcessEnvironmentPlan::prepare(ambient, overlay, executable, absent_path, max_storage_bytes - argument_bytes)
+            prepared: mutable Prepared = Prepared{environment: environment, argument_bytes: argument_bytes, storage_bytes: argument_bytes + environment.environment_bytes + environment.search_bytes}
+            prepared.arguments.push(encode(executable))
+            for argument in arguments |prepared|:
+                prepared.arguments.push(encode(argument))
+            return prepared
+
+    private:
+        def admit_argument(total: mutable usize&, argument: sview, limit: usize) -> void error[StorageError]:
+            raise StorageError.StorageLimit if total > limit or len(argument) >= limit - total
+            raise StorageError.InvalidArgument if sview_contains_byte(argument, 0)
+            total <- total + len(argument) + 1
+
+
+        def encode(argument: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            encoded: mutable darray[u8] = []
+            for byte in argument |encoded|:
+                encoded.push(byte)
+            encoded.push(0u8)
+            return encoded

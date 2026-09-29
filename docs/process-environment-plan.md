@@ -51,6 +51,37 @@ policies, not OS limits, arbitrary-input shell parity or a working RSS guard.
 The host must also budget snapshot + environment + argv + search allocations
 together; individual ceilings do not establish an aggregate memory bound.
 
+## Combined serialized launch storage
+
+`process_launch_storage.elisa` now provides a separate source-only
+`EsProcessLaunchStorage::prepare` entry. It first admits all argument payloads,
+terminators and the original executable spelling as argv[0], then passes the
+remaining budget into environment/search preparation. The environment planner
+checks merged bytes before encoding its entries and checks each candidate before
+allocating it. The launch layer encodes argv only after those checks succeed.
+An empty argument becomes a one-byte NUL buffer, never an omitted argument.
+Metacharacters and spaces are retained literally; no word splitting occurs.
+argv[0] is independent storage from each resolved executable candidate.
+
+The combined serialized limit defaults to 64 MiB and can be lowered, including
+zero (which rejects any nonempty launch). A larger caller budget is invalid.
+Receipts include argv, environment and search C-string bytes. The existing
+environment planner retains its prior default ceiling of 64 MiB environment
+plus 1 MiB search; its new optional lower budget bounds both together. Existing
+four-argument calls and PATH behavior are preserved.
+
+This is a payload-storage budget, **not** peak RSS or an OS exec-size guarantee.
+It excludes input snapshots, intermediate handles, array spare capacity,
+allocator metadata and ABI pointer tables. The executor must separately admit
+their aggregate cost and its argv/envp terminal pointer slots using the qualified
+target's pointer size, and preserve all storage until the child has crossed exec
+or terminated. No pointer vectors, fork, exec, builtin or runtime wiring are
+enabled by this layer. Public Prepared records and receipts can be forged;
+the host must use freshly admitted preparation results, not trust arbitrary
+constructors as authority. Fixtures for exact/one-byte-under budgets, empty args,
+literal bytes, independent buffers, ambient preservation and NUL/invalid-budget
+rejection are authored but uncompiled and unrun.
+
 ## CC policy for the fourteen-line UI gate
 
 `EsUiCodecBuild::compiler_environment(configured, present)` now models the
