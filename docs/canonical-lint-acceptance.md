@@ -212,6 +212,19 @@ comparison even when both windows look identical. Cleanup and all existing
 authorization/identity/containment prerequisites remain unchanged; no matrix,
 console diagnostic, fixture setup or native operation was executed by this work.
 
+Ordinary probe cases and the initial literal probe-golden check now use the same
+bounded evidence path. Ordinary labels contain the pinned reference filename
+and matrix index, distinguishing otherwise similar unset/empty selections.
+When the reference or direct probe fails its independent admission, expected
+stdout/stderr frame previews are labeled separately from observed streams.
+Runner errors have no fabricated receipt; candidate failures retain the admitted
+reference alongside candidate evidence. The reference still runs first, must
+match the independent status and full probe byte frame, and prevents candidate
+execution if it fails. Both ordinary observations and full comparison must pass;
+normally returned 126/127 still do not replace actual-exec failure coverage.
+The literal golden bytes, eight-case model, wider-wave selection, limits, pins
+and execution order are unchanged. This extension is source-only and unrun.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
