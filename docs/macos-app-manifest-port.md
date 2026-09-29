@@ -37,9 +37,14 @@ pre-existing entries while ordinary file resources overwrite like `copy2`.
 A new pure path-planning model compares absolute resolved paths by components,
 not textual prefix, and treats unresolved relative operands as overlapping
 (fail-closed). Its primitive fixtures cover equality, ancestor/descendant,
-common-prefix siblings, and relative operands. It is not yet wired into app
-publication; output canonicalization and the complete output-versus-input
-matrix remain open. All new fixtures remain uncompiled and unrun.
+common-prefix siblings, and relative operands. It now also builds the
+reference-ordered required-input list (executable, shader root, cooked output,
+selected resources, notices, then optional icon) and models the asymmetric
+project-root rule: an app inside the project is allowed unless it overlaps a
+required input, while an app that replaces or contains the project is rejected.
+It is not yet wired into app publication; filesystem canonicalization and
+end-to-end output checks remain open. All new fixtures remain uncompiled and
+unrun.
 A file-level Darwin adapter in
 `src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
 POSIX-stat, and xattr flags while following source symlinks; a focused fixture

@@ -2,6 +2,15 @@
 # Callers must resolve filesystem aliases before asking about overlap.
 
 module EsMacosAppPathPlan:
+    using EsMacosAppManifest
+
+    public:
+        error MacosAppPathPlanError:
+            UnresolvedPath
+            OutputReplacesProject
+            OutputOverlapsInput
+
+
     private:
         def macos_app_relative_has_parent(relative: Path) -> bool:
             cursor: mutable Path = relative
@@ -14,6 +23,29 @@ module EsMacosAppPathPlan:
 
 
     public:
+        # Reproduce package_app()'s ordered overlap inputs. `project_shaders`
+        # selects project/shaders when the caller omitted --shader-root;
+        # otherwise shader_root is the explicit CLI path. Resource and notice
+        # entries are project-relative, while executable, shader root, and
+        # icon are already interpreted command-line paths.
+        def macos_app_required_package_inputs(project: Path, executable: Path, shader_root: Path, project_shaders: bool, icon: Path, has_icon: bool, selection: MacosAppPathSelection) -> darray[Path] error[MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            try validate_macos_app_path_selection(selection)
+            inputs: mutable darray[Path] = []
+            inputs.push(executable)
+            inputs.push(project.joinpath("shaders") if project_shaders else shader_root)
+            inputs.push(project.joinpath("build").joinpath("cooked"))
+            if selection.resource_mode == MacosResourceMode.AllAssets:
+                inputs.push(project.joinpath("assets"))
+            else:
+                for resource in selection.resource_paths |project, inputs|:
+                    inputs.push(project.joinpath(bytes_view(resource)))
+            for notice in selection.notice_paths |project, inputs|:
+                inputs.push(project.joinpath(bytes_view(notice)))
+            if has_icon:
+                inputs.push(icon)
+            return inputs
+
+
         # `relative` is the result of a lexical relative-path calculation.
         # A leading parent component means the target is outside its base.
         def macos_app_relative_path_escapes(relative: Path) -> bool:
@@ -28,3 +60,17 @@ module EsMacosAppPathPlan:
             left_from_right: Path = path_relative(left, right)
             right_from_left: Path = path_relative(right, left)
             return not macos_app_relative_path_escapes(left_from_right) or not macos_app_relative_path_escapes(right_from_left)
+
+
+        # The reference rejects an app that replaces/contains the project,
+        # but permits an app directory inside the project. Required inputs use
+        # the stricter bidirectional overlap rule. All paths must already be
+        # absolute and canonicalized by the filesystem adapter.
+        def macos_app_validate_output_disjoint(project: Path, app: Path, required_inputs: darray[Path]) -> bool error[MacosAppPathPlanError] can[Memory.Allocate, Abort.Panic]:
+            raise MacosAppPathPlanError.UnresolvedPath if not path_is_absolute(project) or not path_is_absolute(app)
+            project_from_app: Path = path_relative(project, app)
+            raise MacosAppPathPlanError.OutputReplacesProject if not macos_app_relative_path_escapes(project_from_app)
+            for source in required_inputs |app|:
+                raise MacosAppPathPlanError.UnresolvedPath if not path_is_absolute(source)
+                raise MacosAppPathPlanError.OutputOverlapsInput if macos_app_paths_overlap(app, source)
+            return true
