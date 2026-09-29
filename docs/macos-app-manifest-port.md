@@ -15,8 +15,12 @@ packager's ignored metadata names; duplicate resource paths retain their first
 normalized occurrence. Notice syntax rejects absolute/parent/NUL and duplicate
 paths. `src/runtime/macos_app_filesystem_posix.elisa` implements the notice
 filesystem predicate: canonical containment, symlink-leaf rejection, regular
-file kind, and nonzero size. It does not stage or copy notices; its
-temp-directory fixture is authored but unrun.
+file kind, and nonzero size. It also ports the selected-resource root
+admission from `stage_resource()`: explicitly selected paths must exist, must
+not themselves be symlinks, and must be regular files or directories. The
+filesystem module does not yet copy notices or resources; directory traversal,
+Python `copy2` metadata behavior, and `copytree(symlinks=False)` handling are
+still unported. Its temp-directory fixtures are authored but unrun.
 
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
