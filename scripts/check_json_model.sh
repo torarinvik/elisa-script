@@ -323,6 +323,7 @@ for parity_candidate_pattern in \
     'next_json_lines_document(reader)' \
     'MALFORMED_JSON_LINES_SOURCE' \
     'json_values_jsonl_malformed_rejected()' \
+    'JsonParseError.ExpectedValue(11)' \
     'begin_json_lines_file_reader(Inputs::JSON_LINES_PATH)' \
     'next_json_lines_file_document(reader)' \
     'encode_json_root(result.document, 0)' \
