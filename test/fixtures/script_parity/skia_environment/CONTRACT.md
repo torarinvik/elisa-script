@@ -138,7 +138,7 @@ parity and the public execution path are actually demonstrated.
 
 ## Dormant native qualification matrix (authored, not executed)
 
-`test/script_parity/skia_environment_cases.elisa` supplies fourteen independent
+`test/script_parity/skia_environment_cases.elisa` supplies seventeen independent
 ordinary cases; it imports no candidate lookup/printing implementation. Added
 coverage includes UTF-8 keys, punctuation/space/metacharacter keys, digit-leading
 keys, and a 32 KiB A-to-Z patterned value with an independently constructed
@@ -178,6 +178,15 @@ shared differential runner currently has concurrent worktree edits: do not assum
 its included sources match an earlier qualified artifact. No gate is permission
 to resume execution without explicit user reauthorization.
 
+Native and launcher gates share pure role admission: bounded absolute paths,
+no NUL/LF/CR, valid lowercase SHA-256 strings, and no equal paths or equal digests
+between candidate, Python and compiler. The native matrix also preflights all
+three executable roles as bounded nonsymlink regular files with recognized
+four-byte ELF/Mach-O headers before starting any hash-tool child. Text wrappers
+are rejected. Header recognition and distinct identities do not establish
+trusted provenance, no-auto-build behavior, dependency closure, or actual
+containment. Every selected artifact still needs separate qualification.
+
 The fixture constructs a private temporary directory containing only a copied
 reference and copied native candidate, checks their hashes and modes, and uses
 that directory as cwd for both programs. Each child receives a fresh replacement
@@ -204,6 +213,11 @@ bounded wait polls, not a promised 10,000 milliseconds. The external RSS/time
 guard remains required. Cleanup removes only recorded temporary file paths in
 reverse order and then attempts the empty root directory; unexpected files are
 not recursively erased, and cleanup failure reports the recoverable root path.
+Before each recorded-file deletion and final root removal, cleanup rejects an
+observed symlink or missing/nondirectory fixture root and retains it for recovery.
+These observations also precede fixture membership checks. They are not atomic
+identity checks: concurrent replacement still requires descriptor-relative
+native cleanup and cannot be ruled out by path/hash/mode preflights.
 Partial setup is cleaned too. All matrix/gate/cleanup paths are source-only and
 still require compilation and execution qualification.
 
@@ -214,7 +228,7 @@ interpreted companion through the public argv ABI: launcher executable, copied
 `.elisascript` filename, then the exact script arguments. It never invokes a
 compiler or compiles a candidate. The native candidate remains unchanged; both
 matrices now pin the expanded shared oracle. That module imports neither
-candidate, and supplies fourteen ordinary cases. A reference must first match
+candidate, and supplies seventeen ordinary cases. A reference must first match
 status 0, empty stderr and its literal stdout before the candidate can launch.
 
 The public entry gates filesystem/hash/child work on all of these inputs:

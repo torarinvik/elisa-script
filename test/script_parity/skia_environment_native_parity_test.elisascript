@@ -3,6 +3,7 @@
 include "../../src/testing/differential.elisa"
 include "../../src/testing/checksum_record_model.elisa"
 include "skia_environment_cases.elisa"
+include "skia_environment_launcher_plan.elisa"
 
 using EsDifferential
 
@@ -10,7 +11,7 @@ using EsDifferential
 module EsSkiaEnvironmentNativeParity:
     private:
         const module Tools:
-            COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            COMPILER: sview = EsSkiaEnvironmentLauncherPlan::Pins::COMPILER
             HASH: sview = "/usr/bin/shasum"
             TIMEOUT_STEPS: u64 = 10000
             OUTPUT_BYTES: u64 = 65536
@@ -51,10 +52,7 @@ module EsSkiaEnvironmentNativeParity:
 
 
         def valid_hash(hash: sview) -> bool:
-            return false if len(hash) != 64
-            for byte in hash:
-                return false if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 97u8 and byte <= 102u8))
-            return true
+            return EsSkiaEnvironmentLauncherPlan::valid_hash(hash)
 
 
         def authorization() -> Authorization error[GateError] can[Environment.Read]:
@@ -63,8 +61,10 @@ module EsSkiaEnvironmentNativeParity:
             candidate: Identity = Identity{path: env("ELISASCRIPT_SKIA_ENV_NATIVE_BIN"), hash: env("ELISASCRIPT_SKIA_ENV_NATIVE_SHA256")}
             python: Identity = Identity{path: env("ELISASCRIPT_PARITY_PYTHON_BIN"), hash: env("ELISASCRIPT_PARITY_PYTHON_SHA256")}
             compiler_hash: sview = env("ELISASCRIPT_LOCAL_COMPILER_SHA256")
-            raise GateError.InvalidIdentity if not candidate.path.startswith("/") or not python.path.startswith("/") or candidate.path == python.path or candidate.path == Tools::COMPILER or python.path == Tools::COMPILER
-            raise GateError.InvalidIdentity if not valid_hash(candidate.hash) or not valid_hash(python.hash) or not valid_hash(compiler_hash)
+            try EsSkiaEnvironmentLauncherPlan::validate_roles(
+                EsSkiaEnvironmentLauncherPlan::Identity{path: candidate.path, hash: candidate.hash},
+                EsSkiaEnvironmentLauncherPlan::Identity{path: python.path, hash: python.hash}, compiler_hash) else err:
+                raise GateError.InvalidIdentity
             # Pairing hashes are an explicit qualification assertion, not a
             # proof that an arbitrary executable was built from these sources.
             raise GateError.InvalidIdentity if env("ELISASCRIPT_SKIA_ENV_SOURCE_SHA256") != "3ba61d4472d355f8a38dfce99033b0df4ca5db73d328f085d33ee7698978a1e7" or env("ELISASCRIPT_SKIA_ENV_MODEL_SHA256") != "e98c8629784b647c991c109bda877b429e83e346e58f28ecfd01df336c8b1110" or env("ELISASCRIPT_SKIA_ENV_ADAPTER_SHA256") != "70a846eb66a731be80abfa02372f20aab30749b593b391d4f8817502c0eca78f"
@@ -78,6 +78,7 @@ module EsSkiaEnvironmentNativeParity:
                 Identity{path: Tools::HASH, hash: "0812595f981a26f813d98dc380af14d4af427626c9339eda29eb849ae13de1e3"},
                 Identity{path: "src/testing/checksum_record_model.elisa", hash: "1b3cec1235d42076e50b15491d3d6b906f3841ea966937779dc665f1e8a59488"},
                 Identity{path: "src/testing/process_poll_budget_model.elisa", hash: "589d2f2fa733610987a91aa0f998374914e1e63f4569a34a994e0d00446c8589"},
+                Identity{path: "test/script_parity/skia_environment_launcher_plan.elisa", hash: "f48a705b1410537085a99bcc32c2ca6ab5dd837d45d5c38c6e83fd1691e7af44"},
                 Identity{path: "scripts/get_skia_environment.elisascript", hash: "3ba61d4472d355f8a38dfce99033b0df4ca5db73d328f085d33ee7698978a1e7"},
                 Identity{path: "src/runtime/environment_lookup_model.elisa", hash: "e98c8629784b647c991c109bda877b429e83e346e58f28ecfd01df336c8b1110"},
                 Identity{path: "src/runtime/environment_lookup_posix.elisa", hash: "70a846eb66a731be80abfa02372f20aab30749b593b391d4f8817502c0eca78f"},
@@ -101,21 +102,48 @@ module EsSkiaEnvironmentNativeParity:
             return try EsChecksumRecord::sha256_text_record_matches(run.stdout, identity.hash, identity.path) else false
 
 
+        def native_artifact(identity: Identity) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not EsSkiaEnvironmentLauncherPlan::absolute_identity_path(identity.path)
+            target: Path = path(identity.path)
+            return false if not is_file(target) or is_symlink(target) or not is_executable(target)
+            size: usize = try file_size(target) else 0usize
+            return false if size < 4 or size > Tools::ARTIFACT_BYTES
+            name: mutable darray[u8] = []
+            for byte in identity.path |name|:
+                name.push(byte)
+            name.push(0u8)
+            mode: darray[u8] = [114u8,98u8,0u8]
+            stream: mutable heap void&? = fopen(&name[0], &mode[0])
+            return false if stream == null
+            opened: mutable heap void& = stream
+            header: mutable darray[u8] = [0u8,0u8,0u8,0u8]
+            amount: usize = fread((&header[0]).cast[mutable void&], 1, 4, opened)
+            closed: int = fclose(opened)
+            return amount == 4 and closed == 0 and EsSkiaEnvironmentLauncherPlan::native_container_header(header) and not is_symlink(target)
+
+
         def pinned(auth: Authorization) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
-            return false if not is_executable(path(auth.candidate.path)) or not is_executable(path(auth.python.path)) or not is_executable(path(Tools::COMPILER))
+            # No hash-tool child until all three supplied roles reject text
+            # wrappers and have bounded, nonsymlink native-container preflights.
+            return false if not native_artifact(auth.candidate) or not native_artifact(auth.python)
+            return false if not native_artifact(Identity{path: Tools::COMPILER, hash: auth.compiler_hash})
             for identity in pins(auth):
                 return false if not has_hash(identity)
             return true
 
 
-        def cleanup(root: Root) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Write]:
+        def cleanup(root: Root) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write]:
             return true if not root.created
             cleaned: mutable bool = true
             for index in 0..<root.files.count |root, cleaned|:
+                # Observational fence only: concurrent replacement still
+                # requires a descriptor-relative native cleanup adapter.
+                return false if is_symlink(root.path) or not is_directory(root.path)
                 target: Path = root.files[root.files.count - index - 1]
                 if path_exists(target) or is_symlink(target):
                     removed: bool = try remove_path(target) else false
                     cleaned <- removed and cleaned
+            return false if is_symlink(root.path) or not is_directory(root.path)
             removed: bool = try remove_directory(root.path) else false
             return removed and cleaned
 
@@ -147,6 +175,7 @@ module EsSkiaEnvironmentNativeParity:
 
 
         def fixture_files_unchanged(root: Root, auth: Authorization) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
+            return false if not root.ready or is_symlink(root.path) or not is_directory(root.path)
             entries: darray[sview] = try list_directory(root.path) else err:
                 return false
             return false if entries.count != 2
