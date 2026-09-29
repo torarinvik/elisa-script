@@ -82,6 +82,42 @@ constructors as authority. Fixtures for exact/one-byte-under budgets, empty args
 literal bytes, independent buffers, ambient preservation and NUL/invalid-budget
 rejection are authored but uncompiled and unrun.
 
+## Native borrowed tables (unwired)
+
+`process_launch_vectors_model.elisa` revalidates public storage before pointer
+construction: nonempty argv[0], bounded vector counts, exactly one final NUL per
+buffer, no interior NUL, well-formed and unique environment names, bounded search
+strings, and recomputed argument/environment/search/total receipts. It then
+admits payload plus all three pointer tables, including a terminal null slot in
+argv, envp and the candidate list. Supported pointer widths are 4 and 8 bytes;
+slot multiplication follows subtraction/division budget admission. The combined
+payload/table limit defaults to 64 MiB and may be lowered.
+
+`process_launch_vectors_native.elisa` constructs nullable-byte-pointer arrays
+only after that admission. It derives pointer width from native size_of(uintptr),
+reserves all table slots in the parent and appends actual language null pointers.
+An empty argument still has a nonnull pointer to a one-byte NUL buffer. An empty
+environment is a one-slot null table. No memset placeholder, void-pointer cast,
+host syscall, environment mutation, fork or child allocation occurs here.
+
+The tables borrow storage. The caller must keep the original owning buffers
+alive and unchanged until all table use ends; it must not clear, replace,
+append/reallocate or mutate nested buffers while borrowed. Region/lifetime
+checking, nullable-pointer layout and uintptr width agreement remain unqualified.
+The host must not turn these records into detached executable capabilities.
+Shape validation is not proof that a caller-forged candidate list implements
+the intended PATH policy. A future executor must prepare fresh storage from
+validated inputs and retain it and the tables together for the whole spawn/wait
+lifetime. It must separately account for array capacity, allocator overhead,
+input/intermediate snapshots and process resource usage. The model's sum is not
+an RSS guarantee, nor evidence of OS exec-size admission.
+
+Pure admission fixtures and a separate dormant native pointer/sentinel fixture
+are authored, not compiled or run. The latter distinguishes an empty argument
+pointer from null and reads admitted bytes only while its original storage is
+live. ABI erasure at execve, inherited-stream execution, process/group/deadline
+handling, error/PATH policy, builtins and UI CC wiring are still pending.
+
 ## CC policy for the fourteen-line UI gate
 
 `EsUiCodecBuild::compiler_environment(configured, present)` now models the

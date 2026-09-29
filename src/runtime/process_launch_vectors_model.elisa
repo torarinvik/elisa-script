@@ -1,0 +1,92 @@
+# Pure admission for borrowed native launch tables. No pointer construction.
+include "process_launch_storage.elisa"
+
+module EsProcessLaunchVectors:
+    public:
+        struct Receipt:
+            argv_slots: usize
+            environment_slots: usize
+            candidate_slots: usize
+            pointer_bytes: usize
+            table_bytes: usize
+            total_bytes: usize
+
+
+        error VectorError:
+            InvalidBudget
+            UnsupportedPointerSize
+            InvalidShape
+            InvalidCString
+            InvalidEnvironment
+            DuplicateEnvironment
+            InvalidReceipt
+            StorageLimit
+
+
+        def admit(storage: EsProcessLaunchStorage::Prepared&, pointer_bytes: usize, max_total_bytes: usize = EsProcessLaunchStorage::Limits::STORAGE_BYTES) -> Receipt error[VectorError]:
+            raise VectorError.InvalidBudget if max_total_bytes > EsProcessLaunchStorage::Limits::STORAGE_BYTES
+            raise VectorError.UnsupportedPointerSize if pointer_bytes != 4 and pointer_bytes != 8
+            raise VectorError.InvalidShape if storage.arguments.count == 0 or storage.arguments.count > EsProcess::PROCESS_COMMAND_MAX_ARGUMENTS + 1
+            raise VectorError.InvalidShape if storage.environment.environment.count > EsEnvironment::ENVIRONMENT_MAX_ENTRIES
+            raise VectorError.InvalidShape if storage.environment.executable_candidates.count == 0 or storage.environment.executable_candidates.count > EsProcessEnvironmentPlan::Limits::SEARCH_CANDIDATES
+            argument_bytes: mutable usize = 0
+            for index in 0..<storage.arguments.count |argument_bytes|:
+                encoded: darray[u8] = storage.arguments[index]
+                try admit_c_string(encoded, index != 0, max_total_bytes)
+                raise VectorError.InvalidShape if index == 0 and encoded.count > EsProcessEnvironmentPlan::Limits::PATH_BYTES
+                try add_bytes(argument_bytes, encoded.count, max_total_bytes)
+            environment_bytes: mutable usize = 0
+            for index in 0..<storage.environment.environment.count |environment_bytes|:
+                encoded: darray[u8] = storage.environment.environment[index]
+                try admit_c_string(encoded, false, max_total_bytes)
+                separator: usize = try name_length(encoded)
+                for earlier in 0..<index:
+                    other: darray[u8] = storage.environment.environment[earlier]
+                    other_separator: usize = try name_length(other)
+                    raise VectorError.DuplicateEnvironment if separator == other_separator and same_prefix(encoded, other, separator)
+                try add_bytes(environment_bytes, encoded.count, max_total_bytes)
+            search_bytes: mutable usize = 0
+            for encoded in storage.environment.executable_candidates |search_bytes|:
+                try admit_c_string(encoded, false, EsProcessEnvironmentPlan::Limits::PATH_BYTES)
+                try add_bytes(search_bytes, encoded.count, EsProcessEnvironmentPlan::Limits::SEARCH_BYTES)
+            raise VectorError.InvalidReceipt if storage.argument_bytes != argument_bytes or storage.environment.environment_bytes != environment_bytes or storage.environment.search_bytes != search_bytes
+            payload_bytes: mutable usize = argument_bytes
+            try add_bytes(payload_bytes, environment_bytes, max_total_bytes)
+            try add_bytes(payload_bytes, search_bytes, max_total_bytes)
+            raise VectorError.InvalidReceipt if storage.storage_bytes != payload_bytes
+            # All tables include a terminal null pointer. The candidate sentinel
+            # is bookkeeping, not an extra executable to attempt.
+            argv_slots: usize = storage.arguments.count + 1
+            environment_slots: usize = storage.environment.environment.count + 1
+            candidate_slots: usize = storage.environment.executable_candidates.count + 1
+            slots: usize = argv_slots + environment_slots + candidate_slots
+            raise VectorError.StorageLimit if slots > (max_total_bytes - payload_bytes) / pointer_bytes
+            table_bytes: usize = slots * pointer_bytes
+            return Receipt{argv_slots: argv_slots, environment_slots: environment_slots, candidate_slots: candidate_slots, pointer_bytes: pointer_bytes, table_bytes: table_bytes, total_bytes: payload_bytes + table_bytes}
+
+    private:
+        def add_bytes(total: mutable usize&, amount: usize, limit: usize) -> void error[VectorError]:
+            raise VectorError.StorageLimit if total > limit or amount > limit - total
+            total <- total + amount
+
+
+        def admit_c_string(encoded: darray[u8]&, empty_allowed: bool, limit: usize) -> void error[VectorError]:
+            raise VectorError.InvalidCString if encoded.count == 0 or (not empty_allowed and encoded.count == 1)
+            raise VectorError.StorageLimit if encoded.count > limit
+            raise VectorError.InvalidCString if encoded[encoded.count - 1] != 0u8
+            for index in 0..<(encoded.count - 1):
+                raise VectorError.InvalidCString if encoded[index] == 0u8
+
+
+        def name_length(encoded: darray[u8]&) -> usize error[VectorError]:
+            for index in 0..<(encoded.count - 1):
+                if encoded[index] == 61u8:
+                    raise VectorError.InvalidEnvironment if index == 0
+                    return index
+            raise VectorError.InvalidEnvironment
+
+
+        def same_prefix(left: darray[u8]&, right: darray[u8]&, count: usize) -> bool:
+            for index in 0..<count:
+                return false if left[index] != right[index]
+            return true
