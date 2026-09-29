@@ -52,6 +52,17 @@ extend EsIr:
                 interpret_set_failure(machine, InterpretFailure.Panic)
                 rejected: EsProcessLaunchCompletion::Report = completion_report(launch, true)
                 return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, rejected, launch.failure)
+            # Sample before reservation/setup/search/spawn, not after the
+            # child is already running. This is a clock carrier only: PID 0
+            # is never passed to wait/signal helpers. Zero disables the clock.
+            clock: mutable ProcessWaiter = ProcessWaiter{pid: 0, status: 0, failed: false, timeout_micros: timeout_micros}
+            if not process_wait_clock_start(clock):
+                # No owner was acquired by this invocation. Still visit the
+                # fatal dispatcher in case Fresh phase hides stale ownership.
+                # Do not invent a launch receipt for a clock/admission error.
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                rejected: EsProcessLaunchCompletion::Report = completion_report(launch, true)
+                return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, rejected, launch.failure)
             launch_failed: mutable bool = false
             # The machine's existing usage/policy are shared with reservation
             # and completion. Do not create a fresh policy/counter for a child.
@@ -63,19 +74,19 @@ extend EsIr:
             report: EsProcessLaunchCompletion::Report = completion_report(launch, launch_failed)
             # Even a typed setup/search/cleanup error must visit this dispatcher:
             # a captured Running PID cannot be hidden by an early error return.
-            return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, report, launch.failure)
+            return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, report, launch.failure, clock.started_at, clock.clock_started)
 
 
-        def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report, diagnostic: mutable EsProcessLaunchFailure::Receipt&) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report, diagnostic: mutable EsProcessLaunchFailure::Receipt&, started_at: EsMonotonicTime::MonotonicTimestamp = EsMonotonicTime::MonotonicTimestamp{seconds: 0, nanoseconds: 0}, clock_started: bool = false) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             match EsProcessLaunchCompletion::route(child, budget.held, report):
                 EsProcessLaunchCompletion::Route.Wait:
-                    # Stale diagnostic state cannot bypass mandatory live-child
-                    # cleanup; it is an invariant error, not another launch.
-                    if not EsProcessLaunchFailure::is_pristine(diagnostic):
-                        return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true)
-                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, false)
+                    # Missing origin or stale diagnostic state cannot bypass
+                    # mandatory live-child cleanup or restart its timeout.
+                    if not clock_started or not EsProcessLaunchFailure::is_pristine(diagnostic):
+                        return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true, started_at, clock_started)
+                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, false, started_at, clock_started)
                 EsProcessLaunchCompletion::Route.TerminateThenPanic:
-                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true)
+                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true, started_at, clock_started)
                 EsProcessLaunchCompletion::Route.ProcessFailure:
                     if child.state == EsProcessSpawnOwner::State.NoChild:
                         catch EsProcessSpawnBudget::require_released_no_child(child, budget, ledger, owner_token):
@@ -113,7 +124,7 @@ extend EsIr:
         # canonical ledger and this machine's usage. Cleanup was attempted and
         # any error/uncertain outcome is represented by cleanup_failed. Never
         # call with a diagnostic PID from an Unknown spawn observation.
-        def await_spawned_process(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, cleanup_failed: bool) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        def await_spawned_process(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, cleanup_failed: bool, started_at: EsMonotonicTime::MonotonicTimestamp, clock_started: bool) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             catch EsProcessSpawnBudget::require_running(child, budget, ledger, machine.resource_usage, owner_token):
                 ok:
                     pass
@@ -122,7 +133,7 @@ extend EsIr:
                     # Retain state/capacity and prevent recoverable continuation.
                     interpret_set_failure(machine, InterpretFailure.Panic)
                     return runtime_void()
-            waiter: mutable ProcessWaiter = ProcessWaiter{pid: child.pid.int(), group_ready: true, status: 0, failed: cleanup_failed, timeout_micros: timeout_micros}
+            waiter: mutable ProcessWaiter = prepared_process_waiter(child.pid.int(), timeout_micros, cleanup_failed, started_at, clock_started)
             if cleanup_failed:
                 # A post-spawn attribute error must not throw away a live PID.
                 process_wait_terminate(waiter)
@@ -168,3 +179,9 @@ extend EsIr:
                 interpret_set_failure(machine, InterpretFailure.Panic)
                 return runtime_void()
             return runtime_int(status)
+
+
+        # Pure handoff: preserve the original origin and timeout together.
+        # Never turn an expired finite timeout into the disabled-zero sentinel.
+        def prepared_process_waiter(pid: int, timeout_micros: u64, cleanup_failed: bool, started_at: EsMonotonicTime::MonotonicTimestamp, clock_started: bool) -> ProcessWaiter:
+            return ProcessWaiter{pid: pid, group_ready: true, status: 0, failed: cleanup_failed, timeout_micros: timeout_micros, started_at: started_at, clock_started: clock_started}

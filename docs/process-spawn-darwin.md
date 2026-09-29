@@ -712,3 +712,31 @@ diagnostic selection/rendering and observed parity are still open. No new runtim
 value kind or generic catch rule was introduced. Codec/source-catch and separate
 opt-in real-Machine fixture bodies are authored only, uncompiled/unrun. No compiler,
 fixture, native operation or parity ran; originals and other agents' work are unchanged.
+
+## Setup-inclusive clock handoff (source-only)
+
+The dormant private prepared-launch entry now initializes its waiter clock
+before process reservation, attribute setup, executable search and spawn.
+Completion carries the original timestamp and the unchanged timeout into the
+owned child's waiter. It does not subtract elapsed time into a remaining-zero
+value, because zero means disabled, not expired. Missing clock initialization
+on the normal Wait route instead requires canonical cleanup and fatal return;
+it cannot silently restart the timer. Clock initialization failure also visits
+the fatal completion dispatcher, rather than skipping potentially stale child
+ownership or fabricating a native launch cause. The session is quarantined.
+
+Zero timeout still takes the existing no-clock branch, preserving the smallest
+lint wrapper's policy. The origin covers this private launch entry onward, not
+earlier caller-side environment/vector preparation or session preparation.
+Synchronous setup/spawn cannot be interrupted by this waiter: overrun is only
+detected once those operations return. This is not a hard wall-clock bound.
+Setup/search failures retain their launch cause; this change does not invent a
+timeout-precedence rule for failed launches that never create a child.
+
+The opt-in `test/fixtures/process_launch_error/clock_handoff.elisa` models a
+finite deadline already expired during setup, the disabled-zero sentinel and
+preservation of cleanup/missing-clock state. Its bodies make no native calls,
+but its full-facade include requires separate compiler/RSS qualification.
+It is authored only, uncompiled/unrun. Native timing, actual cleanup and public
+launcher parity remain unqualified; no default facade was wired or original
+script/caller changed. Compiler/process validation remains disabled.
