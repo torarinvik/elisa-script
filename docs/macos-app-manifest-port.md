@@ -21,7 +21,12 @@ project's `assets/` directory, while explicitly selected paths must exist,
 must not themselves be symlinks, and must be regular files or directories.
 The filesystem module does not yet copy notices or resources; directory
 traversal, Python `copy2` metadata behavior, and `copytree(symlinks=False)`
-handling are still unported. The pure policy in
+handling are still unported. A file-level Darwin adapter in
+`src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
+POSIX-stat, and xattr flags while following source symlinks; a focused fixture
+is authored but unrun. It is not yet integrated into recursive staging, and
+Python's best-effort xattr errors still need an explicit parity policy. The
+pure policy in
 `src/runtime/macos_app_asset_filter_model.elisa` now ports both the regular
 asset litter exclusions and the additional shader metadata exclusions; its
 fixture is authored but unrun.
