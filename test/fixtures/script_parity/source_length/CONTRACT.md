@@ -140,6 +140,25 @@ The bounded reader currently uses the Darwin POSIX adapter, not a proven
 cross-platform implementation. No resource ceiling or error divergence may be
 called exact Python parity.
 
+The shared reader now admits errno sampling/retry only after native -1 from
+open/stat/fstat/read. Other negative or unsupported positive status returns
+fail without consuming stale EINTR. Opened descriptor shapes must be within
+0..2147483647 for the selected Darwin C32 profile: zero and one remain valid
+file descriptors when caller stdio is closed, unlike child/group PID rules.
+Out-of-range positive descriptor returns are uncertain and never passed to
+fstat/read/close as guessed ownership. After a known admitted open, a rejected
+read still closes that owned descriptor and raises ReadFailed.
+
+`test/runtime/bounded_text_return_shape_test.elisa` calls the reader's private
+pure shape helpers through a module extension and covers negative, unsigned-
+looking, zero/one and signed-boundary returns without calling libc. Its full
+reader include still requires compiler/native ABI qualification; no fixture
+compiled or ran. Numeric admission is not a descriptor ownership proof or
+permission to infer that an uncertain open created no resource. Host fault
+injection and cleanup/provenance qualification remain necessary. This matrix's
+reader source pin is updated; other dormant matrices with the older pin remain
+fail-closed pending deliberate review, not automatically accepted or repinned.
+
 This records source work, not runtime evidence. The pure-counter, ordering, and
 public-launcher tests have not run. Compiler, audit, and parity execution
 remain disabled until explicitly reauthorized; the original stays authoritative.
