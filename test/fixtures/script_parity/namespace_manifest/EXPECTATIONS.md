@@ -41,6 +41,11 @@ each tuple against both programs and pins the public launcher's hash before
 and after the matrix. It is source-only and remains unexecuted while compiler
 validation is suspended.
 
+The positive source root contains `ignored.elisa`, which redeclares
+`EsRuntime`, and a local `.gitignore` that excludes it. The exact positive
+manifest therefore also checks that the candidate follows the reference's
+ripgrep ignore rules rather than auditing ignored source files.
+
 The added negative fixtures also cover a POSIX ABI declaration outside
 `EsRuntime`, both diagnostic renderer exhaustiveness checks, diagnostic reset
 completeness, and the required-module set. Full runtime parity remains
