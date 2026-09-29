@@ -547,3 +547,26 @@ exclusive reaping, group identity, child async-safety, capture/world quiescence,
 retained fatal ownership and external containment still need qualification
 before smallest-script parity execution. No compiler, fixture, child, wait,
 signal or parity operation ran; other agents' errno edits remain unstaged.
+
+## Dormant independent scalar ABI fixture
+
+`test/fixtures/native/process_scalar_abi/` now contains a small synthetic C
+oracle, its separately linked Elisa qualification source and an admission
+contract. The C object defines only uniquely prefixed fixture symbols, never
+interposing fork/waitpid/kill. It uses no allocation, I/O, process creation,
+wait or signal call. C static assertions select signed 32-bit int/pid_t and
+64-bit pointers. An independent C-to-C control checks literal results and guards.
+
+The Elisa fixture checks literal initial guard bytes, then calls private i32
+declarations and checks -1/INT_MIN/INT_MAX widening, status patterns, neighboring
+mutable guards and rejected request/option behavior. The scratch status patterns
+are not real waitpid receipts. This is future native evidence for the exercised
+scalar call/slot layout, not a replacement for actual bridge symbol/errno,
+pointer/lifetime/effect, process-group/reaper and retained-owner qualification.
+
+The source is deliberately outside ordinary *_test discovery. A future operator
+must first obtain explicit execution reauthorization, qualify the external
+RSS/time guard and local compiler, separately build/admit the C object and link
+only this selected fixture with recorded SDK/target/tool/source identities.
+Neither source has been compiled or run. No fixture, compiler, native call,
+process or parity operation was launched, and smallest lint parity remains open.
