@@ -1,0 +1,283 @@
+# Dormant, explicitly gated parity matrix. Run only through run_bounded_test.sh
+# after user reauthorization; never launch it against a live project tree.
+include "../../src/testing/differential.elisa"
+include "../../src/runtime/bounded_text_posix.elisa"
+
+using EsDifferential
+
+
+module EsSourceLengthLauncherParity:
+    private:
+        const module Tools:
+            PYTHON: sview = "/usr/bin/python3"
+            PYTHON_SHA256: sview = "34129c71a01a74f7f3b2443521519b2e5447553fa187f5fcafaaf8c42cc192e2"
+            SHA256: sview = "/usr/bin/shasum"
+            COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            PATH_VALUE: sview = "/usr/bin:/bin:/usr/sbin:/sbin"
+            TIMEOUT_STEPS: u64 = 10000
+            OUTPUT_BYTES: u64 = 65536
+            PIN_BYTES: usize = 67108864
+            COPY_BYTES: usize = 524288
+            TOTAL_COPY_BYTES: usize = 2097152
+
+
+        const module Paths:
+            REFERENCE: sview = "wasmbrowser-proof/scripts/check_source_length.py"
+            CANDIDATE: sview = "elisa-script/scripts/check_wasmbrowser_source_length.elisascript"
+            SOURCE_ROOT: sview = "wasmbrowser-proof/src"
+
+
+        struct SourceCopy:
+            source: sview
+            destination: sview
+            sha256: sview
+
+
+        struct TemporaryRoot:
+            path: Path
+            created: bool = false
+            ready: bool = false
+            files: darray[Path] = []
+            directories: darray[Path] = []
+
+
+        struct Authorization:
+            launcher: sview
+            launcher_sha256: sview
+            compiler_sha256: sview
+
+
+        error GateError:
+            Disabled
+            MissingGuard
+            WrongCompiler
+            MissingIdentity
+
+
+        def environment_value(name: sview) -> sview can[Environment.Read]:
+            return try getenv(name, "") else ""
+
+
+        def valid_sha256(value: sview) -> bool:
+            return false if len(value) != 64
+            for byte in value:
+                return false if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 97u8 and byte <= 102u8))
+            return true
+
+
+        def authorization() -> Authorization error[GateError] can[Environment.Read]:
+            raise GateError.Disabled if environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") != "1"
+            raise GateError.MissingGuard if environment_value("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD") != "active"
+            raise GateError.WrongCompiler if environment_value("ELISA_LOCAL_COMPILER") != Tools::COMPILER or environment_value("ELISACORE_BIN") != Tools::COMPILER
+            launcher: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER")
+            launcher_hash: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256")
+            compiler_hash: sview = environment_value("ELISASCRIPT_LOCAL_COMPILER_SHA256")
+            raise GateError.MissingIdentity if launcher == "" or not launcher.startswith("/") or not valid_sha256(launcher_hash) or not valid_sha256(compiler_hash)
+            return Authorization{launcher: launcher, launcher_sha256: launcher_hash, compiler_sha256: compiler_hash}
+
+
+        def sources() -> darray[SourceCopy] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SourceCopy{source: "test/fixtures/script_parity/source_length/reference.py", destination: Paths::REFERENCE, sha256: "d6d5a5c8d1dc2897fe176b87d2e1a3de9d2592337ae092283c986ad7748ab052"},
+                SourceCopy{source: "scripts/check_wasmbrowser_source_length.elisascript", destination: Paths::CANDIDATE, sha256: "3ab61a95affdb7b968a7f389afb7be1f392a039be3c064b9cc1098289a4d079b"},
+                SourceCopy{source: "src/runtime/source_length_model.elisa", destination: "elisa-script/src/runtime/source_length_model.elisa", sha256: "e557f6f68c5450d0e10d9798a0f8ef2d930ed56093e935f0ed47fc8278accd31"},
+                SourceCopy{source: "src/runtime/bounded_text_posix.elisa", destination: "elisa-script/src/runtime/bounded_text_posix.elisa", sha256: "f648d319aca3610e245452d681c21556cc58a774982ea8d0bbda2cca4f1823be"},
+                SourceCopy{source: "src/runtime/encoding.elisa", destination: "elisa-script/src/runtime/encoding.elisa", sha256: "67815c728730d891c2e5fc0cc53a33d672d0f40003cfd468de903c4fbfcd9a53"},
+                SourceCopy{source: "src/runtime/file_posix.elisa", destination: "elisa-script/src/runtime/file_posix.elisa", sha256: "14e1e3a9f0d95ee3e45509bd7d76c1ba2694992d5530f82edf8533d9cf149643"},
+                # Pin the committed bridge, not another agent's dirty edits.
+                SourceCopy{source: "src/runtime/directory_posix.elisa", destination: "elisa-script/src/runtime/directory_posix.elisa", sha256: "226121fabdb841e3f03e8d8e46848087677db8057571b9a544ef828093a97f92"},
+                SourceCopy{source: "src/runtime/stdio_posix.elisa", destination: "elisa-script/src/runtime/stdio_posix.elisa", sha256: "c02cac5eec931a2f2aa9131616482df4e17333948961c4b6d0d215b0ab0e766c"}
+            ]
+
+
+        def has_sha256(target: sview, expected: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not valid_sha256(expected) or not is_file(path(target))
+            size: usize = try file_size(path(target)) else err:
+                return false
+            return false if size == 0 or size > Tools::PIN_BYTES
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "source-length-identity",
+                target: Tools::SHA256, arguments: ["-a", "256", target],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            observed: DifferentialRun = try run_differential_process(runner) else err:
+                return false
+            return observed.outcome == DifferentialRunOutcome.Completed and observed.exit_status == 0 and observed.stderr == "" and observed.stdout == expected + "  " + target + "\n"
+
+
+        def pinned_inputs(auth: Authorization) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if is_symlink(path(Tools::COMPILER)) or not is_executable(path(Tools::COMPILER)) or not is_executable(path(auth.launcher))
+            return false if not has_sha256(Tools::PYTHON, Tools::PYTHON_SHA256) or not has_sha256(Tools::COMPILER, auth.compiler_sha256) or not has_sha256(auth.launcher, auth.launcher_sha256)
+            for source in sources():
+                return false if not has_sha256(source.source, source.sha256)
+            return true
+
+
+        def write_new(root: mutable TemporaryRoot&, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            target: Path = root.path.joinpath(relative)
+            root.files.push(target)
+            written: usize = try write_text(target, contents) else err:
+                return false
+            return written == len(contents)
+
+
+        def rewrite(root: TemporaryRoot, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            written: usize = try write_text(root.path.joinpath(relative), contents) else err:
+                return false
+            return written == len(contents)
+
+
+        def make_directory(root: mutable TemporaryRoot&, relative: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+            target: Path = root.path.joinpath(relative)
+            created: bool = try create_directory(target) else false
+            return false if not created
+            root.directories.push(target)
+            return true
+
+
+        def make_symlink(root: mutable TemporaryRoot&, relative: sview, target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            link: Path = root.path.joinpath(relative)
+            created: bool = try symlink(target, link) else false
+            return false if not created
+            root.files.push(link)
+            return true
+
+
+        def cleanup(root: TemporaryRoot) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+            return true if not root.created
+            cleaned: mutable bool = true
+            for index in 0..<root.files.count |root, cleaned|:
+                removed: bool = try remove_path(root.files[root.files.count - index - 1]) else false
+                cleaned <- removed and cleaned
+            for index in 0..<root.directories.count |root, cleaned|:
+                removed: bool = try remove_directory(root.directories[root.directories.count - index - 1]) else false
+                cleaned <- removed and cleaned
+            removed_root: bool = try remove_directory(root.path) else false
+            return removed_root and cleaned
+
+
+        def copy_sources(root: mutable TemporaryRoot&) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Unsafe.PointerCast]:
+            copied_bytes: mutable usize = 0
+            for source in sources() |root, copied_bytes|:
+                contents: sview = try EsBoundedText::read_utf8(path(source.source), Tools::COPY_BYTES) else err:
+                    return false
+                return false if contents == "" or len(contents) > Tools::TOTAL_COPY_BYTES - copied_bytes
+                return false if not write_new(root, source.destination, contents)
+                copied_bytes <- copied_bytes + len(contents)
+                # Detect source replacement between initial pinning and copying.
+                return false if not has_sha256(f"{root.path.joinpath(source.destination)}", source.sha256)
+            return true
+
+
+        def create_root() -> TemporaryRoot can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            allocated: Path = try temp_directory("elisascript source length parity ") else err:
+                return TemporaryRoot{path: path("."), created: false}
+            canonical: Path = try path_real(allocated) else err:
+                # Preserve the trusted allocation for centralized cleanup even
+                # when canonicalization fails; do not hide an orphaned root.
+                return TemporaryRoot{path: allocated, created: true}
+            root: mutable TemporaryRoot = TemporaryRoot{path: canonical, created: true}
+            for relative in ["elisa-script", "elisa-script/scripts", "elisa-script/src", "elisa-script/src/runtime", "wasmbrowser-proof", "wasmbrowser-proof/scripts"]:
+                if not make_directory(root, relative):
+                    return root
+            if not copy_sources(root):
+                return root
+            root.ready <- true
+            return root
+
+
+        def case_matches(auth: Authorization, root: TemporaryRoot, status: i64, stderr: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast]:
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: Tools::PATH_VALUE},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Tools::COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Tools::COMPILER}
+            ]
+            reference: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "python-source-length-reference",
+                target: Tools::PYTHON, arguments: ["-I", "-B", f"{root.path.joinpath(Paths::REFERENCE)}", "ignored argument"],
+                working_directory: "/", environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            candidate: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "public-source-length-candidate",
+                target: auth.launcher, arguments: [f"{root.path.joinpath(Paths::CANDIDATE)}", "ignored argument"],
+                working_directory: "/", environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            reference_run: DifferentialRun = try run_differential_process(reference) else err:
+                return false
+            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+                return false
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            return comparison.equal and reference_run.outcome == DifferentialRunOutcome.Completed and candidate_run.outcome == DifferentialRunOutcome.Completed and reference_run.exit_status == status and candidate_run.exit_status == status and reference_run.stdout == "" and candidate_run.stdout == "" and reference_run.stderr == stderr and candidate_run.stderr == stderr
+
+
+        def repeated(value: sview, count: usize) -> sview can[Memory.Allocate, Abort.Panic]:
+            result: mutable sview = ""
+            for _ in 0..<count |value, result|:
+                result <- result + value
+            return result
+
+
+        def matrix(auth: Authorization, root: mutable TemporaryRoot&) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            # Missing src and then an empty src must both accept without output.
+            return false if not case_matches(auth, root, 0, "")
+            return false if not make_directory(root, Paths::SOURCE_ROOT)
+            return false if not case_matches(auth, root, 0, "")
+            boundary: sview = Paths::SOURCE_ROOT + "/boundary.elisa"
+            return false if not write_new(root, boundary, repeated("\r\n", 600))
+            return false if not case_matches(auth, root, 0, "")
+
+            # 200 mixed-newline triples are 600 lines; Unicode separators,
+            # vertical tab, form feed and NUL form one final unterminated line.
+            mixed: sview = repeated("x\r\ny\rz\n", 200) + "\xc2\x85\xe2\x80\xa8\xe2\x80\xa9\x0b\x0c\0"
+            return false if not rewrite(root, boundary, mixed)
+            return false if not case_matches(auth, root, 1, "source file exceeds 600 lines: src/boundary.elisa (601)\n")
+            return false if not rewrite(root, boundary, repeated("\n", 600))
+
+            for directory in ["a", "a-", ".hidden"]:
+                return false if not make_directory(root, Paths::SOURCE_ROOT + "/" + directory)
+            for name in ["a.elisa", "a/z.elisa", "a-/z.elisa", ".hidden.elisa", ".hidden/child.elisa", "z.elisa", "\xc3\xa9.elisa"]:
+                return false if not write_new(root, Paths::SOURCE_ROOT + "/" + name, repeated("\n", 601))
+            return false if not write_new(root, Paths::SOURCE_ROOT + "/ignored.ELISA", repeated("\n", 601))
+            expected: sview = "source file exceeds 600 lines: src/.hidden/child.elisa (601)\nsource file exceeds 600 lines: src/.hidden.elisa (601)\nsource file exceeds 600 lines: src/a/z.elisa (601)\nsource file exceeds 600 lines: src/a-/z.elisa (601)\nsource file exceeds 600 lines: src/a.elisa (601)\nsource file exceeds 600 lines: src/z.elisa (601)\nsource file exceeds 600 lines: src/\xc3\xa9.elisa (601)\n"
+            return false if not case_matches(auth, root, 1, expected)
+
+            # A descendant directory symlink cycle must not be traversed; a
+            # matching file symlink must still be counted in pathname order.
+            return false if not make_symlink(root, Paths::SOURCE_ROOT + "/loop", root.path.joinpath(Paths::SOURCE_ROOT))
+            return false if not make_symlink(root, Paths::SOURCE_ROOT + "/m_link.elisa", root.path.joinpath(Paths::SOURCE_ROOT + "/a.elisa"))
+            with_link: sview = replace(expected, "source file exceeds 600 lines: src/z.elisa", "source file exceeds 600 lines: src/m_link.elisa (601)\nsource file exceeds 600 lines: src/z.elisa")
+            return case_matches(auth, root, 1, with_link)
+
+    public:
+        def public_launcher_parity() -> bool can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # This gate is inside the public entry, not just the @test wrapper.
+            auth: Authorization = try authorization() else err:
+                _ = write_stderr("source length parity: validation gate is not qualified\n")
+                return false
+            if not pinned_inputs(auth):
+                _ = write_stderr("source length parity: source/tool identity check failed\n")
+                return false
+            root: mutable TemporaryRoot = create_root()
+            return false if not root.created
+            # Even partially constructed roots reach the same cleanup path.
+            matched: bool = root.ready and matrix(auth, root)
+            cleaned: bool = cleanup(root)
+            if not cleaned:
+                _ = write_stderr(f"source length parity: cleanup failed at {root.path}\n")
+                return false
+            if not matched:
+                _ = write_stderr("source length parity: fixture setup or expected observation failed\n")
+                return false
+            return pinned_inputs(auth)
+
+
+@test
+def source_length_public_launcher_matches_pinned_python_reference() -> void:
+    can Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast, Console.Write, Console.Format:
+        assert EsSourceLengthLauncherParity::public_launcher_parity()

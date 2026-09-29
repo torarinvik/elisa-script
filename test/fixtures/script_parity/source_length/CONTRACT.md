@@ -11,8 +11,8 @@ fixtures are in `test/script_parity/source_length_order_test.elisascript`.
 The candidate lives in elisa-script and selects its neighboring
 `wasmbrowser-proof` project using its own resolved source directory. It is not
 installed in that project, and neither the original Python script nor its
-`scripts/test.sh` caller has changed. A future public-launcher fixture must
-copy these siblings under one temporary workspace:
+`scripts/test.sh` caller has changed. The authored public-launcher fixture
+copies these siblings under one temporary workspace:
 
 ```text
 workspace/
@@ -64,7 +64,41 @@ valid UTF-8 POSIX filenames. Size diagnostics are withheld until every source
 read succeeds, matching the reference's collection-before-printing structure.
 Extra command-line arguments are ignored by both scripts.
 
-## Required public-launcher matrix (not yet implemented or executed)
+## Authored public-launcher matrix (not executed)
+
+`test/script_parity/source_length_launcher_test.elisascript` creates an isolated
+sibling-project workspace with spaces in its name and launches both programs
+from `/`. It covers missing src, empty src, the 600-CRLF boundary, a 601-line
+mixed-terminator/Unicode/control-byte source, seven oversized hidden/Unicode/
+prefix-colliding paths in exact diagnostic order, case-sensitive suffix
+filtering, a file symlink, and a descendant directory-symlink cycle. Each run
+asserts independently expected status/stdout/stderr as well as agreement.
+Extra wrapper arguments are supplied to both programs and must be ignored.
+
+The public fixture entry performs authorization checks itself, before any hash
+tool or program starts; these are not only checks in the @test caller. In
+addition to the existing wrapper-provided opt-in/RSS marker and pinned compiler
+path, it requires `ELISASCRIPT_LOCAL_COMPILER_SHA256` and the public launcher's
+path/SHA-256 variables. Reference Python (`/usr/bin/python3`), source files, and
+the include closure have recorded pins. Copied assets are rehashed before use,
+and original source/tool identities are checked again after cleanup. The
+directory bridge pin deliberately names committed source, not concurrent dirty
+edits, so today's modified bridge must fail closed pending explicit
+qualification. A compiler update or source change requires deliberate repinning;
+do not weaken identity checks to make the test pass.
+
+Fixture sources are copied through the bounded UTF-8 reader with 512 KiB per
+asset and 2 MiB total; hash targets have a 64 MiB size admission limit. Process
+captures are capped at 64 KiB with 10,000 bounded wait polls per invocation.
+The outer wrapper supplies the separate elapsed-time/RSS containment. Its
+`active` environment marker is a prerequisite, not proof of an OS hard cap.
+Python runs with `-I -B` to isolate imports/environment and avoid bytecode cache
+writes. Cleanup unlinks only recorded fixture files/symlinks and removes known
+directories in reverse order; it never recursively deletes a live project.
+Partially constructed roots also reach cleanup. These bounds and authored
+checks are not observed test results or proof of race-free execution.
+
+## Full acceptance matrix (partly authored, all unexecuted)
 
 - Empty and missing src; a regular file named src; no matching source files.
 - Empty file, 599/600/601 lines, and final lines with/without a terminator.
@@ -106,6 +140,6 @@ The bounded reader currently uses the Darwin POSIX adapter, not a proven
 cross-platform implementation. No resource ceiling or error divergence may be
 called exact Python parity.
 
-This records source work, not runtime evidence. The pure-counter tests and
-public-launcher matrix have not run. Compiler, audit, and parity execution
+This records source work, not runtime evidence. The pure-counter, ordering, and
+public-launcher tests have not run. Compiler, audit, and parity execution
 remain disabled until explicitly reauthorized; the original stays authoritative.
