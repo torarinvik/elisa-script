@@ -3,6 +3,9 @@
 Reference: `../wasmbrowser-proof/scripts/check_source_length.py`. The unchanged
 snapshot in `reference.py` has SHA-256
 `d6d5a5c8d1dc2897fe176b87d2e1a3de9d2592337ae092283c986ad7748ab052`.
+The public launcher checks that the live neighboring reference has this exact
+hash both before and after its matrix, so local fixture drift cannot silently
+turn the test into parity against a stale Python snapshot.
 Candidate: `scripts/check_wasmbrowser_source_length.elisascript`, with a pure
 counter in `src/runtime/source_length_model.elisa` and authored regression
 tests in `test/runtime/source_length_model_test.elisa`. Component-wise ordering
@@ -109,7 +112,8 @@ match, intact recorded parents, observed file/link shape and successful unlink;
 failures retain the entry for centralized cleanup. This is an observational
 fence, not atomic ownership. No unlink, setup or case has executed.
 
-The fixture source is pinned before/after the matrix. Failure reports the
+The fixture sources and the live neighboring Python reference are pinned
+before/after the matrix. Failure reports the
 fixed fixture label without dumping child output. Pure assertions in
 `test/runtime/source_length_cases_test.elisa` compare the actual counter to the
 literal line metadata and check byte boundaries/diagnostic fields. They have
