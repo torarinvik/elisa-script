@@ -5,6 +5,9 @@ Real source: `../Elisa-LSP/scripts/compiler_root_env.sh` (18 lines), SHA-256
 It is a sourced Bash function, not an executable program. The original and
 `../Elisa-LSP/test/compiler_root_env_test.sh` remain unchanged.
 `reference.sh` is a byte-for-byte fixture snapshot, not a rewritten function.
+The dormant matrix also requires the live sibling-repository helper to retain
+that exact digest; source drift fails admission rather than silently testing an
+obsolete snapshot. This requires the current sibling checkout layout.
 `reference_observe.sh` is a separate, authored Bash wrapper that sources only
 that snapshot, calls the function with one explicit LSP root argument, then
 prints the exported value plus LF as a projection comparable to the candidate
