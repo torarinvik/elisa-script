@@ -20,6 +20,7 @@ module EsMacosAppPathPlanPosix:
 
         error MacosAppPathResolutionError:
             InvalidPath
+            NamedUserExpansionUnsupported
             UnresolvablePath
             TooManySymlinks
             WorkLimitExceeded
@@ -45,6 +46,27 @@ module EsMacosAppPathPlanPosix:
 
 
     public:
+        # Expand the current user's Python-style `~` and `~/...` forms from a
+        # caller-supplied HOME path. Named-user forms require a passwd lookup
+        # and fail explicitly rather than silently becoming relative paths.
+        def macos_app_expanduser_path(value: Path, home_directory: Path) -> Path error[MacosAppPathResolutionError] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            value_text: sview = f"{value}"
+            if value_text == "~":
+                raise MacosAppPathResolutionError.InvalidPath if not path_is_absolute(home_directory)
+                return home_directory
+            if value_text.startswith("~/"):
+                raise MacosAppPathResolutionError.InvalidPath if not path_is_absolute(home_directory)
+                suffix_start: mutable usize = 2
+                while suffix_start < sview_len(value_text) and sview_at(value_text, suffix_start) == 47 |value_text, suffix_start|:
+                    suffix_start <- suffix_start + 1
+                suffix: sview = string_view_slice(value_text, suffix_start.i64(), sview_len(value_text).i64())
+                expanded: Path = path_join(home_directory, suffix)
+                raise MacosAppPathResolutionError.InvalidPath if expanded == path("")
+                return expanded
+            raise MacosAppPathResolutionError.NamedUserExpansionUnsupported if value_text.startswith("~")
+            return value
+
+
         # Resolve every existing component, including dangling symlink targets,
         # then retain the unresolved tail as a normalized absolute path. This
         # is a preflight snapshot, not a race-free filesystem capability.
@@ -124,15 +146,24 @@ module EsMacosAppPathPlanPosix:
         # reference-derived overlap policy. This plan is ready for a caller to
         # use, but it does not reserve paths against concurrent filesystem
         # mutation and does not create or publish any bundle files.
-        def prepare_macos_app_path_plan(project: Path, output: Path, executable: Path, shader_root: Path, project_shaders: bool, icon: Path, has_icon: bool, selection: MacosAppPathSelection) -> PreparedMacosAppPathPlan error[MacosAppPathPreflightError, MacosAppPathResolutionError, MacosAppPathPlanError, MacosAppManifestError] can[Blocking.IO, File.Read, Directory.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            canonical_project: Path = try path_real(project) else err:
+        def prepare_macos_app_path_plan(project: Path, home_directory: Path, output: Path, executable: Path, shader_root: Path, project_shaders: bool, icon: Path, has_icon: bool, selection: MacosAppPathSelection) -> PreparedMacosAppPathPlan error[MacosAppPathPreflightError, MacosAppPathResolutionError, MacosAppPathPlanError, MacosAppManifestError] can[Blocking.IO, File.Read, Directory.Read, Memory.Allocate, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            expanded_project: Path = try macos_app_expanduser_path(project, home_directory)
+            canonical_project: Path = try path_real(expanded_project) else err:
                 raise MacosAppPathPreflightError.ProjectUnavailable
             project_is_directory: bool = try is_directory(canonical_project) else false
             raise MacosAppPathPreflightError.ProjectNotDirectory if not project_is_directory
 
-            app_spelling: Path = output if output.suffix() == ".app" else output.with_suffix(".app")
+            expanded_output: Path = try macos_app_expanduser_path(output, home_directory)
+            expanded_executable: Path = try macos_app_expanduser_path(executable, home_directory)
+            expanded_shader_root: mutable Path = shader_root
+            if not project_shaders:
+                expanded_shader_root <- try macos_app_expanduser_path(shader_root, home_directory)
+            expanded_icon: mutable Path = icon
+            if has_icon:
+                expanded_icon <- try macos_app_expanduser_path(icon, home_directory)
+            app_spelling: Path = expanded_output if expanded_output.suffix() == ".app" else expanded_output.with_suffix(".app")
             canonical_app: Path = try resolve_macos_app_path_for_overlap(app_spelling)
-            raw_inputs: darray[Path] = try macos_app_required_package_inputs(canonical_project, executable, shader_root, project_shaders, icon, has_icon, selection)
+            raw_inputs: darray[Path] = try macos_app_required_package_inputs(canonical_project, expanded_executable, expanded_shader_root, project_shaders, expanded_icon, has_icon, selection)
             canonical_inputs: mutable darray[Path] = []
             for source in raw_inputs |canonical_inputs|:
                 resolved_source: Path = try resolve_macos_app_path_for_overlap(source)
