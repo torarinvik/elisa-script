@@ -91,6 +91,15 @@ terminator at the exact value boundary and rejects the next payload byte. These
 are model policies, not an OS limit, arbitrary-input reference parity or an RSS
 guard. Native platform restrictions on environment sizes still apply.
 
+Owned value validation now checks the 1 MiB view length before scanning payload
+bytes. An oversized present value raises `LookupError.ValueLimit` even with
+NUL at either end; an in-budget NUL remains `EmbeddedNulValue`. Forged absence
+with nonempty bytes still raises `InvalidAbsentValue` first. This prevents a
+content-dependent error from bypassing envelope admission and keeps printing
+from constructing a newline-appended oversized result. Pure boundary fixtures
+also assert that an exactly 1 MiB admitted value gets one additional LF. These
+are authored policy checks, not a native environment-size qualification.
+
 The no-argument case returns status 1 with a stable candidate diagnostic instead
 of Python's version/path-dependent IndexError traceback. Output faults likewise
 use candidate diagnostics rather than Python's traceback/flush behavior. These
