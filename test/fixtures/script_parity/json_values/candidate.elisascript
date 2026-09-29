@@ -1,18 +1,22 @@
-# Bounded C06 JSON value projection candidate.
+# Bounded C06 JSON value and JSON Lines file-stream parity candidate.
 
 include "../../../../src/runtime/encoding.elisa"
+include "../../../../src/runtime/runtime.elisa"
+include "../../../../src/runtime/stream_posix.elisa"
 include "../../../../src/runtime/data_model.elisa"
 include "../../../../src/runtime/json_model.elisa"
 include "../../../../src/runtime/json_lexer_model.elisa"
 include "../../../../src/runtime/json_parse_model.elisa"
 include "../../../../src/runtime/json_stream_model.elisa"
 include "../../../../src/runtime/jsonl_parse_model.elisa"
+include "../../../../src/runtime/jsonl_file_posix.elisa"
 include "../../../../src/runtime/json_encode_model.elisa"
 
 using EsData
 using EsJson
 using EsJsonEncode
 using EsJsonLex
+using EsJsonLinesFilePosix
 using EsJsonLinesParse
 using EsJsonParse
 using EsJsonStream
@@ -23,6 +27,7 @@ module EsJsonValuesParityCandidate:
         const module Inputs:
             SOURCE: sview = "{\"big\":1234567890123456789012345678901234567890,\"nullable\":null,\"nested\":{\"label\":\"blåbær\",\"items\":[true,null,4]},\"duplicate\":\"first\",\"duplicate\":\"last\"}"
             JSON_LINES_SOURCE: sview = "{\"id\":1,\"name\":\"blå\"}\n{\"id\":2,\"ok\":true}\n{\"id\":3,\"payload\":null}"
+            JSON_LINES_PATH: cstr = "test/fixtures/script_parity/json_values/records.jsonl"
 
 
         error JsonParityError:
@@ -63,8 +68,7 @@ module EsJsonValuesParityCandidate:
             Done
 
 
-        def json_values_append_jsonl(output: mutable darray[u8]&) -> void error[DataContractError, JsonStreamError, JsonLinesParseError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
-            reader: mutable JsonLinesReader = try begin_json_lines_reader(Inputs::JSON_LINES_SOURCE)
+        def json_values_read_jsonl(reader: mutable JsonLinesReader&, output: mutable darray[u8]&) -> void error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
             phase: mutable JsonLinesRenderPhase = JsonLinesRenderPhase.ReadRecord
             record_count: mutable usize = 0
             machine over phase while phase != JsonLinesRenderPhase.Done:
@@ -87,7 +91,50 @@ module EsJsonValuesParityCandidate:
                     break
 
 
-        def json_values_render() -> darray[u8] error[DataContractError, JsonStreamError, JsonLinesParseError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError, JsonParityError] can[Memory.Allocate, Abort.Panic]:
+        def json_values_append_jsonl_memory(output: mutable darray[u8]&) -> void error[JsonLinesParseError, JsonStreamError, DataContractError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError] can[Memory.Allocate, Abort.Panic]:
+            reader: mutable JsonLinesReader = try begin_json_lines_reader(Inputs::JSON_LINES_SOURCE)
+            try json_values_read_jsonl(reader, output)
+
+
+        def json_values_read_jsonl_file(reader: mutable JsonLinesFileReader&, output: mutable darray[u8]&) -> void error[FileStreamError, JsonLinesFileError, DataContractError, JsonStreamError, JsonLinesParseError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            phase: mutable JsonLinesRenderPhase = JsonLinesRenderPhase.ReadRecord
+            record_count: mutable usize = 0
+            machine over phase while phase != JsonLinesRenderPhase.Done:
+                state ReadNext
+                start ReadNext
+
+                ReadNext, JsonLinesRenderPhase.ReadRecord:
+                    result: JsonLinesReadResult = try next_json_lines_file_document(reader)
+                    if result.has_document:
+                        if record_count != 0:
+                            json_values_append_text(output, "|")
+                        encoded: darray[u8] = try encode_json_root(result.document, 0)
+                        json_values_append_bytes(output, encoded)
+                        record_count <- record_count + 1
+                        -> ReadNext
+                    phase <- JsonLinesRenderPhase.Done
+                    continue
+
+                ReadNext, JsonLinesRenderPhase.Done:
+                    break
+
+
+        def json_values_append_jsonl_file(output: mutable darray[u8]&) -> void error[FileStreamError, JsonLinesFileError, DataContractError, JsonStreamError, JsonLinesParseError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            reader: mutable JsonLinesFileReader = try begin_json_lines_file_reader(Inputs::JSON_LINES_PATH)
+            catch json_values_read_jsonl_file(reader, output):
+                ok completed:
+                    _ = completed
+                error failure:
+                    catch close_json_lines_file_reader(reader):
+                        ok closed:
+                            _ = closed
+                        error close_failure:
+                            _ = close_failure
+                    raise failure
+            _ = try close_json_lines_file_reader(reader)
+
+
+        def json_values_render() -> darray[u8] error[FileStreamError, JsonLinesFileError, DataContractError, JsonStreamError, JsonLinesParseError, JsonLexError, JsonParseError, JsonContractError, JsonEncodeError, JsonParityError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
             policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast}
             lexed: JsonLexedSource = try lex_json(Inputs::SOURCE, DataDecodeLimits{}, policy)
             document: JsonDocument = try parse_json_document(lexed)
@@ -151,13 +198,17 @@ module EsJsonValuesParityCandidate:
             json_values_append_text(output, "\n")
 
             json_values_append_text(output, "jsonl=")
-            try json_values_append_jsonl(output)
+            try json_values_append_jsonl_memory(output)
+            json_values_append_text(output, "\n")
+
+            json_values_append_text(output, "jsonl_file=")
+            try json_values_append_jsonl_file(output)
             json_values_append_text(output, "\n")
             return output
 
 
     public:
-        def run(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format]:
             if arguments.count != 0:
                 print("usage: json_values_candidate")
                 return 2i64
@@ -168,5 +219,5 @@ module EsJsonValuesParityCandidate:
             return 0i64
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format]:
     return EsJsonValuesParityCandidate::run(arguments)

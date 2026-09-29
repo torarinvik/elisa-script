@@ -383,12 +383,13 @@ exact integer spelling against Python `json.dumps`. The Python executable,
 candidate, reference, golden, and directly consumed JSON model sources
 including the encoder are digest-pinned. A companion JSON Lines slice parses
 multiple records, including an unterminated final record, and compares compact
-serialization in record order; the JSON Lines framing/parser sources are also
-pinned. These are focused behavior slices, not full Python JSON compatibility,
-and the launcher has not been run under the validation hold. Both
-compiler-free JSON source audits also preflight these parity inputs and check
-the candidate, golden, and launcher safety markers, so a missing fixture
-cannot be reported as a complete JSON model audit.
+serialization in record order; a separate pass reads a small corpus through
+the bounded JSONL file-stream adapter. The JSON Lines framing, parser, and
+file-adapter sources are also pinned. These are focused behavior slices, not
+full Python JSON compatibility, and the launcher has not been run under the
+validation hold. Both compiler-free JSON source audits also preflight these
+parity inputs and check the candidate, golden, and launcher safety markers, so
+a missing fixture cannot be reported as a complete JSON model audit.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,

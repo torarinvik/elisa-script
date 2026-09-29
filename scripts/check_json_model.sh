@@ -27,15 +27,19 @@ lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 parser="$repo_root/src/runtime/json_parse_model.elisa"
 json_stream="$repo_root/src/runtime/json_stream_model.elisa"
 json_lines_parser="$repo_root/src/runtime/jsonl_parse_model.elisa"
+runtime="$repo_root/src/runtime/runtime.elisa"
+stream_posix="$repo_root/src/runtime/stream_posix.elisa"
+json_lines_file="$repo_root/src/runtime/jsonl_file_posix.elisa"
 docs="$repo_root/docs/ir.md"
 parity_reference="$repo_root/test/fixtures/script_parity/json_values/reference.py"
 parity_candidate="$repo_root/test/fixtures/script_parity/json_values/candidate.elisascript"
 parity_expected="$repo_root/test/fixtures/script_parity/json_values/expected.txt"
 parity_contract="$repo_root/test/fixtures/script_parity/json_values/CONTRACT.md"
 parity_launcher="$repo_root/test/script_parity/json_values_launcher_test.elisascript"
+parity_jsonl_input="$repo_root/test/fixtures/script_parity/json_values/records.jsonl"
 
 total_source_bytes=0
-for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$json_stream" "$json_lines_parser" "$docs" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
+for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$json_stream" "$json_lines_parser" "$runtime" "$stream_posix" "$json_lines_file" "$docs" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher" "$parity_jsonl_input"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
     size_output="$(wc -c < "$required_file")"
     source_size="${size_output//[[:space:]]/}"
@@ -97,6 +101,26 @@ for json_lines_parser_contract in \
     'def next_json_lines_document(' \
     'JsonLinesParseError'; do
     rg -Fq "$json_lines_parser_contract" "$json_lines_parser"
+done
+
+for runtime_stream_contract in \
+    'module EsRuntime:'; do
+    rg -Fq "$runtime_stream_contract" "$runtime"
+done
+
+for stream_posix_contract in \
+    'struct FileStream:' \
+    'def file_stream_open('; do
+    rg -Fq "$stream_posix_contract" "$stream_posix"
+done
+
+for json_lines_file_contract in \
+    'module EsJsonLinesFilePosix:' \
+    'def begin_json_lines_file_reader(' \
+    'def next_json_lines_file_document(' \
+    'def close_json_lines_file_reader(' \
+    'JSON_LINES_FILE_CHUNK_BYTES'; do
+    rg -Fq "$json_lines_file_contract" "$json_lines_file"
 done
 
 for encoder_contract in \
@@ -278,11 +302,13 @@ done
 rg -Fq '`EsJson` is the namespaced owned-document boundary' "$docs"
 
 for parity_reference_pattern in \
-    'Python json oracle' \
+    'Python JSON/JSONL oracle' \
     'json.loads(SOURCE)' \
     "value['duplicate']" \
     'json.loads(line)' \
-    'JSON_LINES_SOURCE.splitlines()'; do
+    'JSON_LINES_SOURCE.splitlines()' \
+    'records.jsonl' \
+    'file_records = [json.loads(line) for line in source]'; do
     rg -Fq "$parity_reference_pattern" "$parity_reference"
 done
 
@@ -290,8 +316,11 @@ for parity_candidate_pattern in \
     'module EsJsonValuesParityCandidate:' \
     'parse_json_document(lexed)' \
     'encode_json_root(document, 0)' \
+    'json_values_append_jsonl_memory(output)' \
     'begin_json_lines_reader(Inputs::JSON_LINES_SOURCE)' \
     'next_json_lines_document(reader)' \
+    'begin_json_lines_file_reader(Inputs::JSON_LINES_PATH)' \
+    'next_json_lines_file_document(reader)' \
     'encode_json_root(result.document, 0)' \
     'JsonDuplicateKeyPolicy.KeepLast' \
     'JSON_INDEX_NONE' \
@@ -306,6 +335,10 @@ for parity_launcher_pattern in \
     'SourceHashes::JSON_PARSER' \
     'SourceHashes::JSON_STREAM' \
     'SourceHashes::JSON_LINES_PARSER' \
+    'SourceHashes::RUNTIME' \
+    'SourceHashes::STREAM_POSIX' \
+    'SourceHashes::JSON_LINES_FILE' \
+    'SourceHashes::JSON_LINES_INPUT' \
     'SourceHashes::JSON_ENCODER'; do
     rg -Fq "$parity_launcher_pattern" "$parity_launcher"
 done
@@ -317,12 +350,15 @@ for parity_expected_pattern in \
     'item.2=4' \
     'duplicate=last' \
     'json={"big":1234567890123456789012345678901234567890,' \
-    'jsonl={"id":1'; do
+    'jsonl={"id":1' \
+    'jsonl_file={"id":1'; do
     rg -Fq "$parity_expected_pattern" "$parity_expected"
 done
 
 rg -Fq 'compact UTF-8 JSON' "$parity_contract"
 rg -Fq 'unterminated final record' "$parity_contract"
+rg -Fq 'bounded file-stream' "$parity_contract"
+rg -Fq '{"id":3,"payload":null}' "$parity_jsonl_input"
 rg -Fq 'not a claim of full Python' "$parity_contract"
 rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
 

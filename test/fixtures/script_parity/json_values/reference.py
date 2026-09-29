@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Python json oracle for a bounded C06 value-semantics slice."""
+"""Python JSON/JSONL oracle for a bounded C06 value and file-stream slice."""
 
 import json
 import sys
@@ -22,6 +22,11 @@ def main():
     value = json.loads(SOURCE)
     nested = value["nested"]
     items = nested["items"]
+    with open(
+        "test/fixtures/script_parity/json_values/records.jsonl",
+        encoding="utf-8",
+    ) as source:
+        file_records = [json.loads(line) for line in source]
     lines = [
         f"big={value['big']}",
         f"missing={'present' if 'absent' in value else 'missing'}",
@@ -38,6 +43,11 @@ def main():
         + "|".join(
             json.dumps(json.loads(line), ensure_ascii=False, separators=(",", ":"))
             for line in JSON_LINES_SOURCE.splitlines()
+        ),
+        "jsonl_file="
+        + "|".join(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            for record in file_records
         ),
     ]
     sys.stdout.write("\n".join(lines) + "\n")
