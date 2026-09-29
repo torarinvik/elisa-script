@@ -221,9 +221,15 @@ also models the non-AFS Bash 3.2 permission-bit check from a stat mode and an
 explicit effective-credential snapshot: owner, primary/supplementary group,
 other, and root's any-execute-bit cases. This intentionally does not substitute
 `access(X_OK)` or claim ACL behavior. The caller must still supply trustworthy
-stat and credential facts. Pure fixtures cover both selection and permission
-classification; they are uncompiled and unrun. No filesystem/identity adapter,
-renderer, or local Bash source/build qualification is implied.
+stat and credential facts. Its bounded PATH planner preserves direct-name
+bypass, empty/interior component behavior, and source-observed omission of a
+trailing empty component. Named directories are retained as owned PATH byte
+spans; leading-tilde expansion is marked but not performed. Inputs over 64 KiB
+PATH or 4,096 components fail explicitly, so those bounds are a runtime policy,
+not a claim about unrestricted Bash behavior. Pure fixtures cover selection,
+permission classification, and these path-plan rules; they are uncompiled and
+unrun. No filesystem/identity adapter, tilde expansion, renderer, or local Bash
+source/build qualification is implied.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.

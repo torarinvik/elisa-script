@@ -1,6 +1,5 @@
-# Pure model of Bash 3.2's PATH candidate preference for the `exec` builtin.
-# This is separate from native execvp retry policy and requires filesystem
-# observations from a caller before it can identify a concrete diagnostic path.
+# Pure, source-derived model of Bash 3.2 `exec` PATH lookup policy.
+# Native execvp retry behavior and host filesystem observations are separate.
 
 module EsBashExecLookup:
     public:
@@ -10,6 +9,16 @@ module EsBashExecLookup:
             NonExecutableFallback
 
 
+        const enum SearchMode of u8:
+            DirectName
+            PathDirectories
+
+
+        const enum PathDirectoryKind of u8:
+            NamedDirectory
+            CurrentDirectory
+
+
         const module ExecuteMode:
             OWNER: u16 = 0o100u16
             GROUP: u16 = 0o010u16
@@ -17,10 +26,29 @@ module EsBashExecLookup:
             ANY: u16 = 0o111u16
 
 
+        const module Limits:
+            COMMAND_BYTES: usize = 4096
+            PATH_BYTES: usize = 65536
+            PATH_ENTRIES: usize = 4096
+
+
         struct CredentialSnapshot:
             effective_user: u32 = 0
             effective_group: u32 = 0
             supplementary_groups: darray[u32] = []
+
+
+        struct PathDirectory:
+            kind: PathDirectoryKind = PathDirectoryKind.NamedDirectory
+            start: usize = 0
+            length: usize = 0
+            tilde_expansion_candidate: bool = false
+
+
+        struct PathSearchPlan:
+            mode: SearchMode = SearchMode.DirectName
+            path_bytes: darray[u8] = []
+            directories: darray[PathDirectory] = []
 
 
         struct PathCandidate:
@@ -36,6 +64,11 @@ module EsBashExecLookup:
 
         error LookupError:
             InvalidCandidateState
+            InvalidSearchPlan
+            SearchInputContainsNul
+            CommandLimitExceeded
+            PathLimitExceeded
+            PathEntryLimitExceeded
 
 
         # Model the non-AFS Bash 3.2 file_status permission-bit check. This
@@ -50,6 +83,59 @@ module EsBashExecLookup:
             if bash_group_member(file_group, credentials):
                 return (mode & ExecuteMode::GROUP) != 0u16
             return (mode & ExecuteMode::OTHER) != 0u16
+
+
+        # Preserve Bash 3.2's search-input rules without observing the
+        # filesystem: slash-containing commands and empty/unset PATH go
+        # directly to the command spelling. For a non-empty PATH, each
+        # interior empty component denotes '.', while a final empty component
+        # is omitted by the source loop. Named components remain byte spans
+        # into the caller's PATH snapshot and mark leading-tilde candidates for
+        # the eventual host expansion adapter.
+        def plan_path_search(command: sview, path_value: sview) -> PathSearchPlan error[LookupError]:
+            command_length: usize = sview_len(command)
+            raise LookupError.CommandLimitExceeded if command_length > Limits::COMMAND_BYTES
+            raise LookupError.SearchInputContainsNul if sview_contains_byte(command, 0u8)
+
+            has_slash: mutable bool = false
+            for index in 0..<command_length |command, has_slash|:
+                has_slash <- true if sview_at(command, index) == 47u8
+            return PathSearchPlan{} if has_slash
+
+            path_length: usize = sview_len(path_value)
+            raise LookupError.PathLimitExceeded if path_length > Limits::PATH_BYTES
+            raise LookupError.SearchInputContainsNul if sview_contains_byte(path_value, 0u8)
+            return PathSearchPlan{} if path_length == 0
+
+            plan: mutable PathSearchPlan = PathSearchPlan{mode: SearchMode.PathDirectories}
+            for byte in path_value |plan|:
+                plan.path_bytes.push(byte)
+            cursor: mutable usize = 0
+            while cursor < path_length |path_value, plan, cursor|:
+                start: usize = cursor
+                while cursor < path_length and sview_at(path_value, cursor) != 58u8 |path_value, cursor|:
+                    cursor <- cursor + 1
+                length: usize = cursor - start
+                raise LookupError.PathEntryLimitExceeded if plan.directories.count >= Limits::PATH_ENTRIES
+                if length == 0:
+                    plan.directories.push(PathDirectory{kind: PathDirectoryKind.CurrentDirectory})
+                else:
+                    plan.directories.push(PathDirectory{kind: PathDirectoryKind.NamedDirectory, start: start, length: length, tilde_expansion_candidate: sview_at(path_value, start) == 126u8})
+                cursor <- cursor + 1 if cursor < path_length
+            return plan
+
+
+        def path_directory_spelling(plan: PathSearchPlan&, index: usize) -> sview error[LookupError]:
+            raise LookupError.InvalidSearchPlan if plan.mode != SearchMode.PathDirectories or index >= plan.directories.count
+            path_value: sview = bytes_view(plan.path_bytes)
+            raise LookupError.InvalidSearchPlan if sview_len(path_value) > Limits::PATH_BYTES or sview_contains_byte(path_value, 0u8)
+            directory: PathDirectory = plan.directories[index]
+            if directory.kind == PathDirectoryKind.CurrentDirectory:
+                raise LookupError.InvalidSearchPlan if directory.start != 0 or directory.length != 0 or directory.tilde_expansion_candidate
+                return "."
+            raise LookupError.InvalidSearchPlan if directory.kind != PathDirectoryKind.NamedDirectory or directory.length == 0 or directory.start > sview_len(path_value) or directory.length > sview_len(path_value) - directory.start
+            raise LookupError.InvalidSearchPlan if directory.tilde_expansion_candidate != (sview_at(path_value, directory.start) == 126u8)
+            return string_view_slice(path_value, directory.start.i64(), (directory.start + directory.length).i64())
 
 
     private:
