@@ -67,6 +67,14 @@ fixture is authored but unrun. Directory timestamps/xattrs and Python's
 best-effort xattr error behavior still need parity treatment. The app-package
 entrypoint and transactional publication remain unported.
 
+`src/runtime/macos_app_launcher_model.elisa` now renders the reference launcher
+script as owned bytes, including environment defaults, shader exports, an
+optional stderr build identity, and `shlex.quote`-compatible title/identity
+escaping. It rejects binary names outside the sanitized bundle-name-plus-`.bin`
+domain before embedding the name in a quoted shell word. Static golden fixtures
+cover default output, apostrophe/command-substitution quoting, and rejected
+shell syntax; they remain uncompiled and unrun.
+
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
 against the project, linked-library closure,
