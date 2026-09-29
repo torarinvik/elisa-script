@@ -1,0 +1,70 @@
+# Unwired private parent search. Caller retains storage/tables and both owners.
+# No public runner, waiter, environment mutation or automatic cleanup is added.
+include "process_spawn_attributes_darwin.elisa"
+include "process_spawn_owner_model.elisa"
+include "process_launch_vectors_native.elisa"
+
+extend EsProcessSpawnDarwin:
+    private:
+        def reserve_child(owner: mutable EsProcessSpawnOwner::Owner&, ledger: mutable EsResource::ResourceLedger&, id: u64, owner_token: u64) -> void error[EsProcessSpawnOwner::OwnerError, EsResource::ResourceContractError] can[Memory.Allocate, Abort.Panic]:
+            raise EsProcessSpawnOwner::OwnerError.InvalidState if owner.state != EsProcessSpawnOwner::State.Fresh or owner.resource_id != 0 or owner.owner_token != 0 or owner.pid != 0 or owner.diagnostic_pid != 0 or owner.code != 0 or owner.attempts != 0 or owner.saw_denied
+            _ = try EsResource::resource_ledger_acquire(ledger, id, EsResource::ResourceKind.Process, owner_token)
+            owner.resource_id <- id
+            owner.owner_token <- owner_token
+            owner.state <- EsProcessSpawnOwner::State.Reserved
+
+
+        def require_child_reservation(owner: EsProcessSpawnOwner::Owner&, ledger: EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnOwner::OwnerError, EsResource::ResourceContractError]:
+            raise EsProcessSpawnOwner::OwnerError.WrongOwner if owner_token == 0 or owner.owner_token != owner_token
+            lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, owner.resource_id, owner_token)
+            raise EsProcessSpawnOwner::OwnerError.WrongResourceKind if lease.kind != EsResource::ResourceKind.Process
+            raise EsProcessSpawnOwner::OwnerError.ResourceNotAcquired if lease.state != EsResource::ResourceLeaseState.Acquired
+            raise EsProcessSpawnOwner::OwnerError.InvalidState if not EsProcessSpawnOwner::can_attempt(owner)
+
+
+        def spawn_prepared_candidates(owner: mutable EsProcessSpawnOwner::Owner&, attributes: AttributeOwner&, ledger: EsResource::ResourceLedger&, owner_token: u64, storage: EsProcessLaunchStorage::Prepared&, tables: EsProcessLaunchVectors::BorrowedTables&) -> void error[EsProcessSpawnOwner::OwnerError, EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError, EsProcessLaunchVectors::VectorError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
+            try require_child_reservation(owner, ledger, owner_token)
+            raise EsProcessSpawnOwner::OwnerError.InvalidState if owner.attempts != 0 or owner.saw_denied
+            _ = try EsProcessLaunchVectors::validate_native_bindings(storage, tables)
+            argv: void& = (&tables.argv[0]).cast[void&]
+            environment: void& = (&tables.environment[0]).cast[void&]
+            for index in 0..<storage.environment.executable_candidates.count |owner|:
+                try require_child_reservation(owner, ledger, owner_token)
+                borrowed: u8&? = tables.candidates[index]
+                raise EsProcessLaunchVectors::VectorError.InvalidBinding if borrowed == null
+                candidate: u8& = borrowed
+                attempt: EsProcessSpawnAttempt::Attempt = try spawn_configured_candidate(attributes, ledger, owner_token, candidate.cast[cstr], argv, environment)
+                # Capture into caller-held state immediately, before any
+                # destroy, wait, ledger mutation or fallible subsequent call.
+                decision: EsProcessSpawnAttempt::Decision = EsProcessSpawnOwner::observe(owner, attempt)
+                match decision:
+                    EsProcessSpawnAttempt::Decision.NextCandidate:
+                        pass
+                    EsProcessSpawnAttempt::Decision.NextDenied:
+                        pass
+                    EsProcessSpawnAttempt::Decision.AdoptChild:
+                        return
+                    EsProcessSpawnAttempt::Decision.StopNoChild:
+                        return
+                    EsProcessSpawnAttempt::Decision.StopUncertain:
+                        return
+            EsProcessSpawnOwner::exhausted(owner)
+
+
+        def release_no_child(owner: EsProcessSpawnOwner::Owner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnOwner::OwnerError, EsResource::ResourceContractError]:
+            raise EsProcessSpawnOwner::OwnerError.WrongOwner if owner_token == 0 or owner.owner_token != owner_token
+            raise EsProcessSpawnOwner::OwnerError.InvalidState if not EsProcessSpawnOwner::can_release_without_wait(owner)
+            lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, owner.resource_id, owner_token)
+            raise EsProcessSpawnOwner::OwnerError.WrongResourceKind if lease.kind != EsResource::ResourceKind.Process
+            raise EsProcessSpawnOwner::OwnerError.ResourceNotAcquired if lease.state != EsResource::ResourceLeaseState.Acquired
+            _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.BeginClose)
+            _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.CompleteClose)
+
+
+        def release_unstarted(owner: mutable EsProcessSpawnOwner::Owner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnOwner::OwnerError, EsResource::ResourceContractError]:
+            try require_child_reservation(owner, ledger, owner_token)
+            raise EsProcessSpawnOwner::OwnerError.InvalidState if owner.attempts != 0 or owner.diagnostic_pid != 0 or owner.code != 0 or owner.saw_denied
+            # This helper is only for setup rollback before any spawn call.
+            # Running/Unknown or a partially observed search never enters it.
+            owner.state <- EsProcessSpawnOwner::State.NoChild
+            try release_no_child(owner, ledger, owner_token)

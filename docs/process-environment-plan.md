@@ -194,3 +194,9 @@ NativeAttribute ledger reservations, owner/kind/state checks, guarded configured
 spawn and begin-close-before-destroy receipts. See its contract for stale-copy
 gating and uncertain release handling. Parent PID adoption, process budgets,
 existing waiter/deadline integration and native qualification remain pending.
+
+The preferred backend also now has an unwired private parent candidate-search
+step with retained-buffer binding checks, caller-held PID capture, canonical
+process reservations and no-child/unstarted release. It does not wait, signal or
+expose a runnable API. Runtime process-counter pairing, post-spawn cleanup/reap,
+waiter/deadline/source/bytecode/UI integration and qualification remain open.

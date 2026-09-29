@@ -1,0 +1,70 @@
+# Parent-held spawn receipts. Pure data is not native PID ownership authority.
+include "process_spawn_attempt_model.elisa"
+
+module EsProcessSpawnOwner:
+    public:
+        const module Limits:
+            ATTEMPTS: usize = 4096
+
+
+        const enum State of u8:
+            Fresh
+            Reserved
+            Running
+            NoChild
+            Unknown
+
+
+        struct Owner:
+            resource_id: u64 = 0
+            owner_token: u64 = 0
+            state: State = State.Fresh
+            pid: i32 = 0
+            diagnostic_pid: i32 = 0
+            code: i32 = 0
+            attempts: usize = 0
+            saw_denied: bool = false
+
+
+        error OwnerError:
+            InvalidState
+            WrongOwner
+            WrongResourceKind
+            ResourceNotAcquired
+
+
+        def can_attempt(owner: Owner) -> bool:
+            return owner.state == State.Reserved and owner.pid == 0 and owner.resource_id != 0 and owner.owner_token != 0 and owner.attempts < Limits::ATTEMPTS
+
+
+        # Called immediately after the native return. No error, allocation,
+        # cleanup or ledger operation can hide a newly reported child PID.
+        def observe(owner: mutable Owner&, attempt: EsProcessSpawnAttempt::Attempt) -> EsProcessSpawnAttempt::Decision:
+            return EsProcessSpawnAttempt::Decision.StopUncertain if owner.state != State.Reserved or owner.pid != 0
+            decision: EsProcessSpawnAttempt::Decision = EsProcessSpawnAttempt::decide(attempt)
+            owner.diagnostic_pid <- attempt.pid
+            owner.code <- attempt.code
+            owner.attempts <- owner.attempts + 1 if owner.attempts < Limits::ATTEMPTS
+            match decision:
+                EsProcessSpawnAttempt::Decision.AdoptChild:
+                    owner.pid <- attempt.pid
+                    owner.state <- State.Running
+                EsProcessSpawnAttempt::Decision.NextCandidate:
+                    pass
+                EsProcessSpawnAttempt::Decision.NextDenied:
+                    owner.saw_denied <- true
+                EsProcessSpawnAttempt::Decision.StopNoChild:
+                    owner.state <- State.NoChild
+                EsProcessSpawnAttempt::Decision.StopUncertain:
+                    owner.state <- State.Unknown
+            return decision
+
+
+        def exhausted(owner: mutable Owner&) -> void:
+            return if owner.state != State.Reserved or owner.pid != 0
+            owner.state <- State.NoChild
+            owner.code <- EsProcessExecSearch::DarwinErrno::EACCES if owner.saw_denied else EsProcessExecSearch::DarwinErrno::ENOENT
+
+
+        def can_release_without_wait(owner: Owner) -> bool:
+            return owner.state == State.NoChild and owner.pid == 0

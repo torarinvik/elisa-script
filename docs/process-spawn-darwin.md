@@ -121,3 +121,46 @@ copy, once-only close and failed-release fixtures are authored but unrun. Native
 slot ABI, actual init/set/destroy behavior, allocator accounting and failure
 injection still need controlled qualification. No attribute object or spawn was
 created here, and UI/package/source/IR/bytecode wiring remains unfinished.
+
+## Parent candidate search and PID adoption (source-only)
+
+`process_spawn_parent_darwin.elisa` now provides private reservation, prepared
+candidate search and no-child release operations. A Process lease is acquired
+under the caller's token before the workflow. The parent requires that canonical
+lease and the configured attribute owner before native attempts. Storage is
+readmitted and tables must bind exactly to its retained argv/environment/search
+buffers, including all sentinel slots and recomputed receipts. Equal bytes in a
+different buffer do not substitute for the original binding.
+
+Each fresh native attempt is immediately observed into a caller-held
+`EsProcessSpawnOwner::Owner`. A confirmed PID enters Running before any cleanup,
+ledger mutation or wait call can fail. Missing/denied candidates reuse the same
+reservation; fatal no-child errors and exhausted search enter NoChild. Unknown
+API outcomes retain the reservation and diagnostic PID without granting signaling
+rights to that PID. No search or no-child release may erase a Running receipt.
+Search count is bounded to the admitted non-sentinel candidates, at most 4096.
+
+No-child release checks the canonical Process lease and begins/completes close.
+A separate rollback handles pristine reservations before any spawn attempt,
+for example attribute setup failure. It rejects Running/Unknown or partially
+observed search. A setup exception after only known no-child candidate returns
+can still leave Reserved state; its typed coordinator must preserve and resolve
+that observation rather than guess it is an unstarted reservation. This layer
+does not implement a complete coordinator/finalizer or recover every panic.
+
+Pure observation fixtures cover adoption, denial/exhaustion, unknown reports,
+non-signaling diagnostic PIDs, bounded attempt fields and preservation of an
+already captured PID. A dormant native fixture checks storage/table bindings.
+These are uncompiled/unrun source fixtures, not observed native adoption or
+launch parity. Public model records remain data, not ownership capabilities.
+Only the private controller's fresh qualified API observations and canonical
+ledger are relevant authority; exclusive owner/ledger/storage access is required.
+
+The outer runtime must still acquire its process-budget counter before launch,
+retain both owners and buffers, destroy attributes after PID capture, and hand
+the Running child to the existing waiter with the qualified new-group contract.
+Attribute cleanup failure must terminate/reap the captured child rather than
+throw away its PID. No-child outcomes release the unused process budget; Unknown
+outcomes must not release it as if no child could exist. Reap/group/deadline/
+signal/finalization, runtime counter pairing, source/IR/bytecode integration and
+actual UI/package wiring are still missing. No process ran while authoring this.
