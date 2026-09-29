@@ -514,3 +514,36 @@ uncompiled/unrun, and this does not qualify actual errno access, post-fork safet
 generated ABI, group identity, external reaping or differential waiter ownership.
 No compiler, fixture, signal, process or parity operation ran. Only these isolated
 helper changes are committed; concurrent errno/clock edits remain unstaged.
+
+## Differential wait and binary receipt admission (source-only)
+
+The differential process loop now requires an exact terminal child report before
+finishing. Known stopped/continued reports trigger best-effort owned cleanup and
+reject the observation; malformed or mismatched positive reports reject without
+further PID/group signaling. Non-EINTR negative reports likewise reject without
+guessed cleanup. TERM-grace and final-reap helpers share the pure uncertainty and
+exact-terminal checks; they no longer treat any positive PID or a nonterminal
+exact-PID report as confirmed reaping. Bounded EINTR handling remains.
+
+`EsProcessWaitResult` now decodes the selected terminal status into a separate
+bounded binary observation receipt. The former adapter sent differential bytes
+through `validate_process_result`, whose general text-only schema rejects NUL
+and requires signaled results to have no ordinary exit code. The independent
+parity probe contains NUL bytes, while DifferentialRun represents signals as
+Crash with normalized `128 + signal`; that former adapter was incompatible with
+both contracts. The new receipt preserves arbitrary stream bytes and normalized
+signal observations without loosening the general ProcessResult schema. It
+rejects nonterminal/malformed statuses and bounds combined stream lengths by
+the existing process capture ceiling using subtraction-before-addition checks.
+The invocation's own tighter output budget still applies during capture.
+
+Pure receipt fixtures cover normal/reserved-looking exits, signals/core reports,
+binary bytes, exact stream preservation, rejected status forms and combined-byte
+boundaries. They import no differential facade or native bridge and remain
+uncompiled/unrun. These changes are not proof of a safe supervisor: the existing
+differential helper has no durable unresolved-child owner/session receipt, and
+fatal error recovery must not silently launch replacement children. Native ABI,
+exclusive reaping, group identity, child async-safety, capture/world quiescence,
+retained fatal ownership and external containment still need qualification
+before smallest-script parity execution. No compiler, fixture, child, wait,
+signal or parity operation ran; other agents' errno edits remain unstaged.
