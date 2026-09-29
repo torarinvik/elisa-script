@@ -218,27 +218,32 @@ chain for the local `/bin/bash` hash or an observed byte oracle.
 `src/runtime/bash_exec_lookup_model.elisa` models candidate preference from
 ordered filesystem observations, separately from native `execvp` retries. It
 also models the non-AFS Bash 3.2 permission-bit check from a stat mode and an
-explicit effective-credential snapshot: owner, primary/supplementary group,
-other, and root's any-execute-bit cases. This intentionally does not substitute
-`access(X_OK)` or claim ACL behavior. The caller must still supply trustworthy
-stat and credential facts. Its bounded PATH planner preserves direct-name
-bypass, empty/interior component behavior, and source-observed omission of a
-trailing empty component. Named directories are retained as owned PATH byte
-spans; leading-tilde expansion is marked but not performed. Inputs over 64 KiB
-PATH or 4,096 components fail explicitly, so those bounds are a runtime policy,
-not a claim about unrestricted Bash behavior. Pure fixtures cover selection,
-permission classification, and these path-plan rules; they are uncompiled and
-unrun. No credential acquisition, tilde expansion, renderer, or local Bash
-source/build qualification is implied.
+explicit credential snapshot: effective UID, real/effective GIDs and
+supplementary groups. This preserves Bash's owner, group, other, and root
+execute-bit cases; Bash's `group_member` checks both real and effective GIDs
+before its supplementary list ([Apple Bash 3.2 `general.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/general.c#L3577-L3724)).
+This intentionally does not substitute `access(X_OK)` or claim ACL behavior.
+Its bounded PATH planner preserves direct-name bypass, empty/interior component
+behavior, and source-observed omission of a trailing empty component. Named
+directories are retained as owned PATH byte spans; leading-tilde expansion is
+marked but not performed. Inputs over 64 KiB PATH or 4,096 components fail
+explicitly, so those bounds are runtime policy, not a claim about unrestricted
+Bash behavior. Pure fixtures cover selection, permission classification, and
+these path-plan rules; they are uncompiled and unrun. Tilde expansion, a
+renderer, and local Bash source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
-converts one caller-supplied candidate pathname and credential snapshot into
-the model's filesystem observation. It performs one `stat`, follows symlinks,
-maps every `stat` failure to absence, and treats directories as present but
-non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
-It is not yet connected to the PATH plan: candidate joining, tilde expansion,
-credential acquisition, ordered collection, and local Bash qualification
-remain open. The adapter has not been compiled or exercised.
+captures effective UID, real and effective GIDs, and the supplementary group
+list, then converts one caller-supplied candidate pathname plus that snapshot
+into the model's filesystem observation. A failed supplementary-group query
+leaves that list empty, preserving Bash's fallback to real/effective GIDs;
+counts above the 1,024-entry bound fail explicitly. The stat adapter follows
+symlinks, maps every stat failure to absence, and treats directories as present
+but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
+Neither adapter is yet connected to the PATH plan: candidate joining, tilde
+expansion, ordered collection, and local Bash qualification remain open. This
+source has not been compiled or exercised; the caller must prevent concurrent
+credential changes during capture.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.

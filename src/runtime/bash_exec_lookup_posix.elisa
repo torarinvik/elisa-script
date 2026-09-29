@@ -9,11 +9,55 @@ module EsBashExecLookupPosix:
     public:
         const module Limits:
             CANDIDATE_PATH_BYTES: usize = EsBashExecLookup::Limits::PATH_BYTES + EsBashExecLookup::Limits::COMMAND_BYTES + 1
+            SUPPLEMENTARY_GROUPS: usize = 1024
 
 
         error ObservationError:
             CandidatePathLimitExceeded
             CandidatePathContainsNul
+            CredentialGroupLimitExceeded
+            CredentialGroupObservationInvalid
+
+
+    private:
+        @link_name(geteuid)
+        extern bash_lookup_effective_user() -> u32
+
+        @link_name(getgid)
+        extern bash_lookup_real_group() -> u32
+
+        @link_name(getegid)
+        extern bash_lookup_effective_group() -> u32
+
+        @link_name(getgroups)
+        extern bash_lookup_getgroups(count: i32, groups: mutable u32&?) -> i32 can[Blocking.IO]
+
+
+    public:
+        # Capture the ids Bash 3.2 uses around group membership plus the
+        # supplementary list returned by getgroups(2). Bash falls back to
+        # real/effective GIDs when getgroups fails; preserve that behavior with
+        # an empty list, while rejecting impossible ABI counts explicitly.
+        # Callers must keep process credentials stable during this snapshot.
+        def current_credentials() -> EsBashExecLookup::CredentialSnapshot error[ObservationError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            effective_user: u32 = bash_lookup_effective_user()
+            real_group: u32 = bash_lookup_real_group()
+            effective_group: u32 = bash_lookup_effective_group()
+            group_count: i32 = bash_lookup_getgroups(0, null)
+            supplementary: mutable darray[u32] = []
+
+            if group_count > 0:
+                raise ObservationError.CredentialGroupLimitExceeded if group_count.usize() > Limits::SUPPLEMENTARY_GROUPS
+                supplementary.reserve(group_count.usize())
+                for _ in 0..<group_count.usize() |supplementary|:
+                    supplementary.push(0u32)
+                supplementary_pointer: mutable u32& = (&supplementary[0]).cast[mutable u32&]
+                observed_count: i32 = bash_lookup_getgroups(group_count, supplementary_pointer)
+                raise ObservationError.CredentialGroupObservationInvalid if observed_count > group_count
+                supplementary.truncate(observed_count.usize()) if observed_count >= 0
+                supplementary.truncate(0) if observed_count < 0
+
+            return EsBashExecLookup::CredentialSnapshot{effective_user: effective_user, real_group: real_group, effective_group: effective_group, supplementary_groups: supplementary}
 
 
         # Bash 3.2 file_status follows symlinks with stat(), treats every
