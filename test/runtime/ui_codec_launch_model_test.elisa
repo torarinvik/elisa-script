@@ -1,0 +1,125 @@
+# Pure serialized launch fixtures. No compiler, test executable, temp allocator,
+# host environment mutation, process runner or public launcher is imported.
+include "../../src/runtime/ui_codec_launch_model.elisa"
+
+module EsUiCodecLaunchFixture:
+    private:
+        def sealed(entries: darray[EsEnvironment::EnvironmentEntry]) -> EsEnvironment::EnvironmentSnapshot error[EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            snapshot: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Begin)
+            for entry in entries |snapshot|:
+                _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
+            _ = try EsEnvironment::advance_environment_snapshot(snapshot, EsEnvironment::EnvironmentEvent.Seal)
+            return snapshot
+
+    public:
+        @test
+        def ui_codec_launch_empty_exported_cc_is_replaced_for_both_children_only() -> void:
+            can Memory.Allocate, Abort.Panic:
+                ambient: EsEnvironment::EnvironmentSnapshot = try sealed([
+                    EsEnvironment::EnvironmentEntry{name: "CC", value: ""},
+                    EsEnvironment::EnvironmentEntry{name: "PATH", value: "/tools"},
+                    EsEnvironment::EnvironmentEntry{name: "KEEP", value: " $HOME * ; "}
+                ]) else failure:
+                    assert false
+                    return
+                compile: mutable EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(ambient, EsUiCodecBuild::Phase.Compile, "/project", "/temp/generated") else failure:
+                    assert false
+                    return
+                run: EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(ambient, EsUiCodecBuild::Phase.Run, "/project", "/temp/generated") else failure:
+                    assert false
+                    return
+                assert compile.arguments.count == 12 and bytes_view(compile.arguments[0]) == "clang\0"
+                assert bytes_view(compile.arguments[1]) == "-std=c11\0"
+                assert bytes_view(compile.arguments[8]) == "-I/project/src/platform/common\0"
+                assert bytes_view(compile.arguments[11]) == "/temp/generated/utf8_utf16_codec_test\0"
+                assert bytes_view(compile.environment.executable_candidates[0]) == "/tools/clang\0"
+                assert run.arguments.count == 1 and bytes_view(run.arguments[0]) == "/temp/generated/utf8_utf16_codec_test\0"
+                assert bytes_view(run.environment.executable_candidates[0]) == "/temp/generated/utf8_utf16_codec_test\0"
+                assert compile.environment.environment.count == 3 and run.environment.environment.count == 3
+                assert bytes_view(compile.environment.environment[0]) == "CC=clang\0"
+                assert bytes_view(run.environment.environment[0]) == "CC=clang\0"
+                assert bytes_view(run.environment.environment[2]) == "KEEP= $HOME * ; \0"
+                assert ambient.entries[0].value == "" and ambient.state == EsEnvironment::EnvironmentState.Sealed
+                compile.environment.environment[0][0] <- 88u8
+                assert bytes_view(run.environment.environment[0]) == "CC=clang\0" and ambient.entries[0].name == "CC"
+
+
+        @test
+        def ui_codec_launch_absent_cc_stays_absent_and_nonempty_cc_stays_literal() -> void:
+            can Memory.Allocate, Abort.Panic:
+                absent: EsEnvironment::EnvironmentSnapshot = try sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: "/tools"}]) else failure:
+                    assert false
+                    return
+                defaults: EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(absent, EsUiCodecBuild::Phase.Compile, "/project", "relative/generated") else failure:
+                    assert false
+                    return
+                assert defaults.environment.environment.count == 1
+                assert bytes_view(defaults.environment.environment[0]) == "PATH=/tools\0"
+                assert bytes_view(defaults.arguments[0]) == "clang\0"
+                configured: EsEnvironment::EnvironmentSnapshot = try sealed([EsEnvironment::EnvironmentEntry{name: "CC", value: "tools/clang $HOME ; *"}]) else failure:
+                    assert false
+                    return
+                literal: EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(configured, EsUiCodecBuild::Phase.Compile, "/project", "relative/generated") else failure:
+                    assert false
+                    return
+                assert bytes_view(literal.arguments[0]) == "tools/clang $HOME ; *\0"
+                assert literal.environment.executable_candidates.count == 1
+                assert bytes_view(literal.environment.executable_candidates[0]) == "tools/clang $HOME ; *\0"
+                assert bytes_view(literal.environment.environment[0]) == "CC=tools/clang $HOME ; *\0"
+                assert bytes_view(literal.arguments[11]) == "relative/generated/utf8_utf16_codec_test\0"
+                literal_run: EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(configured, EsUiCodecBuild::Phase.Run, "/project", "relative/generated") else failure:
+                    assert false
+                    return
+                assert literal_run.arguments.count == 1
+                assert bytes_view(literal_run.environment.environment[0]) == "CC=tools/clang $HOME ; *\0"
+
+
+        @test
+        def ui_codec_launch_cc_tombstone_does_not_export_a_stale_value() -> void:
+            can Memory.Allocate, Abort.Panic:
+                ambient: mutable EsEnvironment::EnvironmentSnapshot = try sealed([
+                    EsEnvironment::EnvironmentEntry{name: "CC", value: "stale"},
+                    EsEnvironment::EnvironmentEntry{name: "PATH", value: "/tools"}
+                ]) else failure:
+                    assert false
+                    return
+                # Public metadata may carry a validated tombstone. It is not
+                # evidence of a real host environment or mutation authority.
+                ambient.entries[0].present <- false
+                planned: EsProcessLaunchStorage::Prepared = try EsUiCodecLaunch::prepare(ambient, EsUiCodecBuild::Phase.Compile, "/project", "/temp") else failure:
+                    assert false
+                    return
+                assert bytes_view(planned.arguments[0]) == "clang\0"
+                assert planned.environment.environment.count == 1
+                assert bytes_view(planned.environment.environment[0]) == "PATH=/tools\0"
+
+
+        @test
+        def ui_codec_launch_rejects_unsealed_snapshot_invalid_phase_and_zero_storage() -> void:
+            can Memory.Allocate, Abort.Panic:
+                unsealed: EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+                rejected: mutable bool = false
+                catch EsUiCodecLaunch::prepare(unsealed, EsUiCodecBuild::Phase.Compile, "/project", "/temp"):
+                    ok prepared:
+                        assert false
+                    error failure:
+                        rejected <- true
+                assert rejected
+                ambient: EsEnvironment::EnvironmentSnapshot = try sealed([]) else failure:
+                    assert false
+                    return
+                rejected <- false
+                catch EsUiCodecLaunch::prepare(ambient, EsUiCodecBuild::Phase.Cleanup, "/project", "/temp"):
+                    ok prepared:
+                        assert false
+                    error failure:
+                        rejected <- true
+                assert rejected
+                rejected <- false
+                catch EsUiCodecLaunch::prepare(ambient, EsUiCodecBuild::Phase.Run, "/project", "/temp", EsProcessEnvironmentPlan::AbsentPath{}, 0):
+                    ok prepared:
+                        assert false
+                    error failure:
+                        rejected <- true
+                assert rejected

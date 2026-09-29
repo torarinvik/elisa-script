@@ -51,6 +51,13 @@ the existing capture-and-discard environment runner. The pure child-CC policy
 and parent-prepared environment/PATH layer are now authored; see
 `docs/process-environment-plan.md`. A streaming host executor and candidate
 wiring are still required, so this gap is not marked fixed.
+The new `src/runtime/ui_codec_launch_model.elisa` composes those layers for
+Compile/Run phases from one validated sealed ambient snapshot, with owned
+argv/env/search buffers and no parent-env mutation. Pure composition fixtures
+check empty CC for both children, absent/nonempty/tombstoned CC, exact recipe
+arguments, literal executable spelling and independent storage. This data-only
+composition is uncompiled/unrun and does not change the current candidate or
+qualify streams, temp ownership, native launch or compiler-success admission.
 Both reference root resolution and
 mktemp capture happen in command substitutions, not a parent-shell `cd`.
 Both compiler and test inherit stdin/stdout/stderr with no script-imposed deadline.

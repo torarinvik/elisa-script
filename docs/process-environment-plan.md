@@ -53,6 +53,32 @@ together; individual ceilings do not establish an aggregate memory bound.
 
 ## Combined serialized launch storage
 
+`ui_codec_launch_model.elisa` now composes the small codec gate's exact recipe,
+child-CC policy and serialized launch preparation. It accepts only Compile/Run
+phases and derives CC presence/value together from a validated sealed ambient
+snapshot. An inherited empty CC supplies a child-only `CC=clang` overlay for
+both stages. Missing/tombstoned CC remains unexported while selecting clang as
+the compiler; nonempty CC remains one literal executable and unchanged child
+environment data. Unrelated entries survive and the ambient snapshot is not
+mutated. Compiler argv contains the eleven recipe arguments; test argv contains
+only its generated executable. Returned C-string buffers are independently owned.
+
+This composition performs no host lookup, mutation, temp allocation, launch or
+stream capture. The host must retain the same originating snapshot and stable
+project/temp context across stages, require an observed successful compiler
+completion before running the test, and use inherited stdin/stdout/stderr. A
+public phase/Prepared constructor is not permission or an execution receipt.
+Each preparation has the shared serialized-storage limit; simultaneous plans,
+input snapshots, recipe intermediates and pointer tables require separate
+aggregate lifetime/RSS accounting. No absent-PATH policy is invented.
+
+Pure composition fixtures cover empty/absent/nonempty/tombstoned CC, both stages,
+fixed argv and literal executable selection, unrelated environment preservation,
+independent storage and malformed phase/snapshot/zero-budget rejection. They are
+authored only, uncompiled/unrun. The public codec port still uses ordinary
+inherited-environment run_process; its empty-CC gap is not fixed by an unwired
+data plan. Streaming executor/API wiring and actual wrapper parity remain open.
+
 `process_launch_storage.elisa` now provides a separate source-only
 `EsProcessLaunchStorage::prepare` entry. It first admits all argument payloads,
 terminators and the original executable spelling as argv[0], then passes the
