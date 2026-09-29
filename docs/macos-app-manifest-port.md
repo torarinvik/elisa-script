@@ -21,8 +21,13 @@ The loader currently caps input at 16 MiB, unlike Python's unbounded
 `read_text()` path; raise or formally qualify that limit before claiming full
 input-domain parity. It remains uncompiled and unrun.
 `src/runtime/macos_app_filesystem_posix.elisa` implements the notice
-filesystem predicate: canonical containment, symlink-leaf rejection, regular
-file kind, and nonzero size. It also ports the selected-resource root
+filesystem predicate: canonical containment (including symlinked parent
+directories escaping the project), symlink-leaf rejection, regular file kind,
+and nonzero size. The containment check interprets `Path.relative_to` as a
+lexical relative path and rejects a leading `..` component; that operation by
+itself does not enforce ancestry. A regression fixture covers an in-project
+notice reached through a directory symlink to a similarly prefixed sibling.
+It also ports the selected-resource root
 admission from the packaging workflow: implicit all-assets mode requires the
 project's `assets/` directory, while explicitly selected paths must exist,
 must not themselves be symlinks, and must be regular files or directories.
