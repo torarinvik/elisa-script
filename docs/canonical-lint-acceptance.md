@@ -85,6 +85,16 @@ survives session reuse. This does not publish a script error variant or change
 catch behavior. Requested/resolved executable context, typed frame publication
 and diagnostic rendering are still open, and all new fixtures remain unrun.
 
+The parent-held spawn owner also retains one-based first/last access-denied
+attempt numbers, without allocating or borrowing candidate paths after a native
+return. Later missing candidates, exhaustion or a successful launch do not erase
+these observations. Admission, accounting, retirement and failure projection
+reject inconsistent histories. Pure fixtures cover multiple denials and invalid
+history without releasing a live child's capacity; they are uncompiled/unrun.
+This is evidence for future diagnostic context, not a choice of which candidate
+the shell reports. Intermediate denial indices are not retained, paths still
+need a checked owned snapshot, and the primitive cause payload is unchanged.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains

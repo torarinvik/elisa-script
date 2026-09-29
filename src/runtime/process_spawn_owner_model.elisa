@@ -25,6 +25,10 @@ module EsProcessSpawnOwner:
             code: i32 = 0
             attempts: usize = 0
             saw_denied: bool = false
+            # One-based observed attempts; zero means no denied candidate.
+            # No path/view is borrowed, and capture cannot allocate or raise.
+            first_denied_attempt: usize = 0
+            last_denied_attempt: usize = 0
 
 
         error OwnerError:
@@ -35,7 +39,13 @@ module EsProcessSpawnOwner:
 
 
         def can_attempt(owner: Owner) -> bool:
-            return owner.state == State.Reserved and owner.pid == 0 and owner.resource_id != 0 and owner.owner_token != 0 and owner.attempts < Limits::ATTEMPTS
+            return owner.state == State.Reserved and owner.pid == 0 and owner.resource_id != 0 and owner.owner_token != 0 and owner.attempts < Limits::ATTEMPTS and denial_history_valid(owner)
+
+
+        def denial_history_valid(owner: Owner&) -> bool:
+            return false if owner.attempts > Limits::ATTEMPTS
+            return owner.first_denied_attempt == 0 and owner.last_denied_attempt == 0 if not owner.saw_denied
+            return owner.first_denied_attempt > 0 and owner.first_denied_attempt <= owner.last_denied_attempt and owner.last_denied_attempt <= owner.attempts
 
 
         # Called immediately after the native return. No error, allocation,
@@ -53,6 +63,8 @@ module EsProcessSpawnOwner:
                 EsProcessSpawnAttempt::Decision.NextCandidate:
                     pass
                 EsProcessSpawnAttempt::Decision.NextDenied:
+                    owner.first_denied_attempt <- owner.attempts if not owner.saw_denied
+                    owner.last_denied_attempt <- owner.attempts
                     owner.saw_denied <- true
                 EsProcessSpawnAttempt::Decision.StopNoChild:
                     owner.state <- State.NoChild
@@ -68,13 +80,14 @@ module EsProcessSpawnOwner:
 
 
         def can_release_without_wait(owner: Owner) -> bool:
-            return owner.state == State.NoChild and owner.pid == 0
+            return owner.state == State.NoChild and owner.pid == 0 and denial_history_valid(owner)
 
 
         # Only a private synchronous controller may use this after a typed
         # error BEFORE its next native attempt. Public fields are not proof.
         # Keep the last native error distinct from full PATH exhaustion.
         def stop_retrying_before_next_attempt(owner: mutable Owner&) -> bool:
+            return false if not denial_history_valid(owner)
             return false if owner.state != State.Reserved or owner.pid != 0 or owner.diagnostic_pid != 0 or owner.resource_id == 0 or owner.owner_token == 0 or owner.attempts == 0 or owner.attempts > Limits::ATTEMPTS
             decision: EsProcessExecSearch::Action = EsProcessExecSearch::after_failure(owner.code)
             return false if decision != EsProcessExecSearch::Action.Next and decision != EsProcessExecSearch::Action.NextDenied
