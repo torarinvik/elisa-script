@@ -37,12 +37,27 @@ run. The copy belongs to the temporary root's existing cleanup ledger. These
 checks are observations, not atomic protection against external mutation.
 
 Each reference must complete with the independently specified 126/127 status,
-empty stdout and nonempty stderr before the candidate may run. Exact stderr
+empty host-error text, empty stdout and nonempty stderr before the candidate may run. Exact stderr
 bytes then come from the pinned reference and must match without normalization;
 there is no separate literal diagnostic-byte oracle. The seven plans have small
 pure path/status fixtures; neither fixtures nor matrix have been compiled/run.
 Both available waves include these lint failure checks. Current missing exec
 diagnostics are an expected open gap, not a reason to skip these cases.
+
+Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
+share a private completed-status predicate requiring `Completed`, the exact
+expected status, and empty `error_text`. Matching streams/status cannot admit
+a contradictory host-error record. The ordinary gate still requires exact
+binary probe stdout/stderr; the exec-failure gate still requires empty stdout,
+nonempty stderr, separately checked failure fixtures and exact comparison with
+the reference. This does not infer exec failure from a normal exit of 126/127.
+
+Data-only assertion bodies in the launcher file cover accepted ordinary
+statuses (including normal 126/127), wrong statuses, truncated/extra binary
+streams, host-error text and all six non-completed outcome variants. Failure
+assertions cover missing diagnostics, extra stdout and the same host/outcome
+rejections. The full file also contains a gated native matrix and must not be
+auto-run merely to execute these assertions. None has compiled or run.
 
 Before switching a live caller, qualify the pinned local compiler, launcher,
 probe, native ABI, ownership/reaping and external time/RSS containment under
