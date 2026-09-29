@@ -529,6 +529,19 @@ for a header-only file; empty input remains an empty stream. The reusable
 row uses it. Source fixtures cover header alias reordering, exact integer
 conversion, and an unterminated final row; these changes have not been run.
 
+`EsCsvRecordFileWriterPosix::write_csv_record_file` encodes one complete row
+within the remaining total-output budget before writing it to a binary
+`FileStream`. Replace mode truncates at open; append mode counts only the bytes
+this writer appends. Encoding failures do not poison the writer, while any
+host-write failure does because a row prefix may already be present. Finish
+syncs the file and closes it; abort only closes it. This direct-file API is
+bounded but deliberately not transactional: it cannot roll back partial
+output, atomically replace an existing file, or guarantee parent-directory
+durability. A file-lock/stage-proof workflow is required for those guarantees.
+Source fixtures cover exact total-output limits, append behavior, and reading
+the emitted records back; validation remains disabled under the compiler
+safety hold.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate

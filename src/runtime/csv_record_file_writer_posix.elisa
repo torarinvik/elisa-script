@@ -1,0 +1,194 @@
+# Bounded POSIX CSV/TSV record writer over FileStream.
+#
+# Each row is encoded completely before any of its bytes are written. A failed
+# host write makes the writer terminal because FileStream may have emitted a
+# prefix. This adapter writes directly to the destination: abort closes it but
+# cannot roll back bytes or restore a replaced file.
+
+module EsCsvRecordFileWriterPosix:
+    using EsCsv
+    using EsCsvEncode
+    using EsData
+    using EsRuntime
+
+    public:
+        const module Limits:
+            FORMAT_VERSION: u8 = 1
+            MAX_OUTPUT_BYTES: usize = FILE_STREAM_DEFAULT_MAX_BYTES
+
+
+        const enum CsvRecordFileWriterMode of u8:
+            Replace
+            Append
+
+
+        const enum CsvRecordFileWriterState of u8:
+            Writing
+            Failed
+            Finished
+            Aborted
+
+
+        struct CsvRecordFileWriter:
+            format_version: u8 = Limits::FORMAT_VERSION
+            file: FileStream
+            policy: CsvPolicy
+            max_output_bytes: usize
+            records_written: usize = 0
+            cleanup: FileStreamCleanupGuard = FileStreamCleanupGuard{}
+            state: CsvRecordFileWriterState = CsvRecordFileWriterState.Writing
+
+
+        error CsvRecordFileWriterError:
+            InvalidFormatVersion
+            InvalidState
+            InvalidMode
+            InvalidOutputLimit
+            OutputLimitExceeded
+            AccountingInvalid
+            InvalidWriteResult
+
+
+    private:
+        def csv_record_file_writer_state_valid(writer: CsvRecordFileWriter&) -> bool error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError]:
+            raise CsvRecordFileWriterError.InvalidFormatVersion if writer.format_version != Limits::FORMAT_VERSION
+            try validate_csv_policy(writer.policy)
+            raise CsvRecordFileWriterError.InvalidOutputLimit if writer.max_output_bytes == 0 or writer.max_output_bytes > Limits::MAX_OUTPUT_BYTES
+            raise CsvRecordFileWriterError.AccountingInvalid if writer.file.byte_budget != writer.max_output_bytes or writer.file.bytes_written > writer.file.byte_budget
+            raise CsvRecordFileWriterError.AccountingInvalid if writer.records_written > writer.file.bytes_written
+            raise CsvRecordFileWriterError.InvalidState if writer.file.mode != FileStreamMode.WriteBinary and writer.file.mode != FileStreamMode.AppendBinary
+            raise CsvRecordFileWriterError.InvalidState if writer.file.encoding != FileStreamEncoding.Bytes or writer.file.pending_valid
+            if writer.state == CsvRecordFileWriterState.Writing or writer.state == CsvRecordFileWriterState.Failed:
+                raise CsvRecordFileWriterError.InvalidState if writer.file.state != FileStreamState.Open or writer.file.handle == null
+                raise CsvRecordFileWriterError.InvalidState if writer.cleanup.state != FileStreamCleanupState.Armed
+            elif writer.state == CsvRecordFileWriterState.Finished:
+                raise CsvRecordFileWriterError.InvalidState if writer.file.state != FileStreamState.Closed or writer.file.handle != null
+                raise CsvRecordFileWriterError.InvalidState if writer.cleanup.state != FileStreamCleanupState.Closed
+            elif writer.state == CsvRecordFileWriterState.Aborted:
+                raise CsvRecordFileWriterError.InvalidState if writer.file.state != FileStreamState.Closed or writer.file.handle != null
+                raise CsvRecordFileWriterError.InvalidState if writer.cleanup.state != FileStreamCleanupState.Aborted
+            else:
+                raise CsvRecordFileWriterError.InvalidState
+            return true
+
+
+    public:
+        # `path` remains borrowed by FileStream for the writer's lifetime.
+        # `Replace` truncates immediately; `Append` writes after existing bytes.
+        # The limit accounts only for bytes emitted by this writer, not bytes
+        # already present when appending.
+        def begin_csv_record_file_writer(path: cstr, policy: CsvPolicy = CsvPolicy{}, mode: CsvRecordFileWriterMode = CsvRecordFileWriterMode.Replace, max_output_bytes: usize = Limits::MAX_OUTPUT_BYTES) -> CsvRecordFileWriter error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError] can[Blocking.IO, Memory.Allocate, Memory.Release]:
+            try validate_csv_policy(policy)
+            raise CsvRecordFileWriterError.InvalidOutputLimit if max_output_bytes == 0 or max_output_bytes > Limits::MAX_OUTPUT_BYTES
+            raise CsvRecordFileWriterError.InvalidMode if mode != CsvRecordFileWriterMode.Replace and mode != CsvRecordFileWriterMode.Append
+            file_mode: FileStreamMode = FileStreamMode.WriteBinary if mode == CsvRecordFileWriterMode.Replace else FileStreamMode.AppendBinary
+            file: FileStream = try file_stream_open(path, file_mode, max_output_bytes, FileStreamEncoding.Bytes)
+            return CsvRecordFileWriter{file: file, policy: policy, max_output_bytes: max_output_bytes, cleanup: file_stream_cleanup_begin()}
+
+
+        def validate_csv_record_file_writer(writer: CsvRecordFileWriter&) -> bool error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError]:
+            try csv_record_file_writer_state_valid(writer)
+            return true
+
+
+        # Encoding errors leave the writer usable. Once a host write is
+        # attempted, any error is terminal because the destination may hold a
+        # prefix of that row.
+        def write_csv_record_file(writer: mutable CsvRecordFileWriter&, fields: darray[sview]) -> usize error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError, CsvEncodeError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            try validate_csv_record_file_writer(writer)
+            raise CsvRecordFileWriterError.InvalidState if writer.state != CsvRecordFileWriterState.Writing
+            raise CsvRecordFileWriterError.OutputLimitExceeded if writer.file.bytes_written >= writer.max_output_bytes
+            remaining: usize = writer.max_output_bytes - writer.file.bytes_written
+            encoded: mutable darray[u8] = []
+            catch encode_csv_record(fields, writer.policy, remaining):
+                ok bytes:
+                    encoded <- bytes
+                error failure:
+                    raise CsvRecordFileWriterError.OutputLimitExceeded if failure == CsvEncodeError.OutputLimitExceeded
+                    raise failure
+            raise CsvRecordFileWriterError.InvalidWriteResult if encoded.count == 0 or encoded.count > remaining
+            buffer: mutable u8& = (&encoded[0]).cast[mutable u8&]
+            catch file_stream_write_chunk(writer.file, buffer, encoded.count):
+                ok written:
+                    if written.count != encoded.count:
+                        writer.state <- CsvRecordFileWriterState.Failed
+                        raise CsvRecordFileWriterError.InvalidWriteResult
+                    writer.records_written <- writer.records_written + 1
+                    return written.count
+                error failure:
+                    writer.state <- CsvRecordFileWriterState.Failed
+                    raise failure
+
+
+        # A successful finish synchronizes file contents and closes the file.
+        # It is not an atomic publication: a crash or error may leave a prefix
+        # at the destination, and no parent-directory durability is promised.
+        def finish_csv_record_file_writer(writer: mutable CsvRecordFileWriter&) -> bool error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError] can[Blocking.IO, Memory.Release]:
+            try validate_csv_record_file_writer(writer)
+            machine over writer.state while true:
+                state Finish
+                start Finish
+
+                Finish, CsvRecordFileWriterState.Writing:
+                    catch file_stream_sync(writer.file):
+                        ok synced:
+                            _ = synced
+                        error failure:
+                            writer.state <- CsvRecordFileWriterState.Failed
+                            raise failure
+                    catch file_stream_cleanup_commit(writer.cleanup, writer.file):
+                        ok closed:
+                            _ = closed
+                            writer.state <- CsvRecordFileWriterState.Finished
+                            break
+                        error failure:
+                            writer.state <- CsvRecordFileWriterState.Aborted if writer.file.state == FileStreamState.Closed
+                            raise failure
+
+                Finish, CsvRecordFileWriterState.Failed:
+                    raise CsvRecordFileWriterError.InvalidState
+
+                Finish, CsvRecordFileWriterState.Finished:
+                    break
+
+                Finish, CsvRecordFileWriterState.Aborted:
+                    raise CsvRecordFileWriterError.InvalidState
+
+            return true
+
+
+        # Abort only closes the stream. Direct output is non-transactional, so
+        # any bytes already written remain at the destination.
+        def abort_csv_record_file_writer(writer: mutable CsvRecordFileWriter&) -> bool error[CsvRecordFileWriterError, FileStreamError, DataContractError, CsvContractError] can[Blocking.IO, Memory.Release]:
+            try validate_csv_record_file_writer(writer)
+            machine over writer.state while true:
+                state Abort
+                start Abort
+
+                Abort, CsvRecordFileWriterState.Writing:
+                    catch file_stream_cleanup_abort(writer.cleanup, writer.file):
+                        ok closed:
+                            _ = closed
+                            writer.state <- CsvRecordFileWriterState.Aborted
+                            break
+                        error failure:
+                            writer.state <- CsvRecordFileWriterState.Aborted if writer.file.state == FileStreamState.Closed
+                            raise failure
+
+                Abort, CsvRecordFileWriterState.Failed:
+                    catch file_stream_cleanup_abort(writer.cleanup, writer.file):
+                        ok closed:
+                            _ = closed
+                            writer.state <- CsvRecordFileWriterState.Aborted
+                            break
+                        error failure:
+                            writer.state <- CsvRecordFileWriterState.Aborted if writer.file.state == FileStreamState.Closed
+                            raise failure
+
+                Abort, CsvRecordFileWriterState.Finished:
+                    break
+
+                Abort, CsvRecordFileWriterState.Aborted:
+                    break
+
+            return true

@@ -16,8 +16,9 @@ framer="$repo_root/src/runtime/csv_record_framer_model.elisa"
 file_reader="$repo_root/src/runtime/csv_record_file_posix.elisa"
 schema_csv="$repo_root/src/runtime/schema_csv_materializer.elisa"
 schema_file_reader="$repo_root/src/runtime/schema_csv_file_posix.elisa"
+file_writer="$repo_root/src/runtime/csv_record_file_writer_posix.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -33,7 +34,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -143,6 +144,7 @@ rg -Fq '`EsCsvRecordFramer::feed_csv_record_framer`' "$docs"
 rg -Fq '`EsCsvRecordFilePosix::next_csv_record_file`' "$docs"
 rg -Fq '`EsSchemaCsvFilePosix::next_schema_csv_file_record`' "$docs"
 rg -Fq '`EsSchemaCsv::prepare_csv_schema_projection`' "$docs"
+rg -Fq '`EsCsvRecordFileWriterPosix::write_csv_record_file`' "$docs"
 
 for framer_pattern in \
     'module EsCsvRecordFramer:' \
@@ -152,6 +154,31 @@ for framer_pattern in \
     'def finish_csv_record_framer(' \
     'CsvStreamEvent.Byte'; do
     rg -Fq "$framer_pattern" "$framer"
+done
+
+rg -Fq 'include "../runtime/csv_record_file_writer_posix.elisa"' "$ir"
+for file_writer_pattern in \
+    'module EsCsvRecordFileWriterPosix:' \
+    'const module Limits:' \
+    'MAX_OUTPUT_BYTES: usize = FILE_STREAM_DEFAULT_MAX_BYTES' \
+    'enum CsvRecordFileWriterMode of u8:' \
+    'enum CsvRecordFileWriterState of u8:' \
+    'def begin_csv_record_file_writer(' \
+    'def write_csv_record_file(' \
+    'def finish_csv_record_file_writer(' \
+    'def abort_csv_record_file_writer(' \
+    'file_stream_sync(writer.file)' \
+    'writer.state <- CsvRecordFileWriterState.Failed'; do
+    rg -Fq "$file_writer_pattern" "$file_writer"
+done
+
+for file_writer_fixture_pattern in \
+    'csv_record_file_writer_streams_bounded_records_and_supports_append' \
+    'using EsCsvRecordFileWriterPosix' \
+    'CsvRecordFileWriterError.OutputLimitExceeded' \
+    'CsvRecordFileWriterMode.Append' \
+    'appended == 5 and finish_csv_record_file_writer(append_writer)'; do
+    rg -Fq "$file_writer_fixture_pattern" "$runtime_fixture"
 done
 
 for framer_fixture_pattern in \
@@ -227,4 +254,4 @@ for schema_file_fixture_pattern in \
     rg -Fq "$schema_file_fixture_pattern" "$runtime_fixture"
 done
 
-printf 'csv model audit: bounded POSIX CSV reading, schema-aware row streaming, chunk framing, and record encoding are present\n'
+printf 'csv model audit: bounded POSIX CSV reading and writing, schema-aware row streaming, chunk framing, and record encoding are present\n'
