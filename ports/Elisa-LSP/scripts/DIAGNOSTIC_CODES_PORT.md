@@ -16,10 +16,11 @@ sets, and renders the exact generated adapter format. It has explicit source,
 variant-count and output budgets. Pure synthetic fixtures cover indentation,
 order, stopping and duplicates. `diagnostic_codes_cli_model.elisa` separately
 models the typed `--compiler-root`, `--output` and `--check` options; its pure
-fixtures cover defaults, last-value-wins behavior, unknown options and missing
-values. A bounded read-only fixture compares the projection of the real
-compiler enum to the checked-in generated adapter. All fixtures are authored
-but uncompiled and unrun.
+fixtures cover defaults, last-value-wins behavior, separated and `=` values,
+explicit empty compiler roots, a bare `--`, unknown options, missing values and
+option-looking values. A bounded read-only fixture compares the projection of
+the real compiler enum to the checked-in generated adapter. All fixtures are
+authored but uncompiled and unrun.
 
 `generate_diagnostic_codes.elisascript` is an authored CLI companion for the
 ordinary `--compiler-root`, `--output` and `--check` forms. It reads the enum
@@ -43,8 +44,8 @@ qualification, the pinned local StructPy compiler selectors and an active
 *external* RSS guard. It is authored but uncompiled and unrun; the current dirty
 differential runner fails its committed-source pin.
 
-Python `argparse` help/error wording, malformed arguments, Unicode whitespace
-accepted by its regex, generation-mode file mutation and failure parity,
-dependency closure, and real memory/timeout enforcement remain open. The
-original and callers remain unchanged. Do not run a compiler or parity
-validation under the current hold.
+Python `argparse` help/error wording and long-option abbreviation, remaining
+malformed-argument edge cases, Unicode whitespace accepted by its regex,
+generation-mode file mutation and failure parity, dependency closure, and real
+memory/timeout enforcement remain open. The original and callers remain
+unchanged. Do not run a compiler or parity validation under the current hold.
