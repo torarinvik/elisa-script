@@ -44,8 +44,11 @@ project-root rule: an app inside the project is allowed unless it overlaps a
 required input, while an app that replaces or contains the project is rejected.
 `src/runtime/macos_app_path_plan_posix.elisa` now resolves existing POSIX path
 prefixes and retains missing suffixes, including following dangling symlink
-targets, before that pure overlap check. The resolver is a preflight snapshot,
-not race-free ownership; it is not yet wired into app publication. User-home
+targets, before that pure overlap check. Its `prepare_macos_app_path_plan`
+entry composes the project canonicalization, `.app` suffix rule, reference-
+ordered inputs, path resolution, and overlap validation before output-parent
+creation. The resolver is a preflight snapshot, not race-free ownership; the
+entry is not yet called by a package CLI or publication workflow. User-home
 expansion, exact error parity, adversarial filesystem races, and end-to-end
 output checks remain open. All new fixtures remain uncompiled and unrun.
 A file-level Darwin adapter in
