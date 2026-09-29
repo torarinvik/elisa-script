@@ -808,3 +808,29 @@ closing parent streams or returning an error is not quiescence, resource release
 or containment. Native ABI/ownership/cleanup qualification and the external
 process-tree supervisor remain required. No compiler, fixture, wait, signal or
 parity process ran; original scripts and callers remain unchanged.
+
+## Legacy wide-PID admission (source-only)
+
+`EsProcessPid` admits child-number shapes only in 2..2147483647 for the selected
+signed-C32 Darwin profile. Signal-number shapes admit those positive children
+and their exact negative group selectors. Zero, PID 1, broadcast -1, C32 minimum
+and wider values are rejected before native use; negative i64 minimum cannot
+reach negation. These are arithmetic shapes, not ownership or permission.
+
+The legacy interpreter checks shape before parent setpgid, waits, cleanup
+signals and group probes. An invalid waiter marks failed/ownership-uncertain
+before clock sampling or a host wait, retaining unconfirmed capacity. Group
+probes reject invalid shapes as unproved quiescence. The differential adapter
+also rejects invalid positive fork output before group setup or waiting and
+applies the shape checks to its cleanup/signal/probe helpers. Neither path turns
+an invalid PID into a known no-child outcome or guesses another signal target.
+The private spawn records already use i32 PID carriers and reject zero/one;
+these checks close the wider legacy-call boundary instead of inventing ownership.
+
+Exact-reap and uncertain-positive-wait pure admission now use the same child
+shape. Authored fixtures cover both signed boundaries, wide/negative/zero/one
+values, direct/group selectors and mismatched receipts without native calls.
+Native PID width/ABI, actual exclusive ownership, PID/group reuse after reaping,
+descendant containment and resource retirement still need qualification. Even a
+shape-valid group number can be stale or unrelated; this is not a permanent
+group lease or sandbox. No compiler, fixture, wait, signal or parity ran.
