@@ -1,0 +1,42 @@
+# Darwin filesystem observation adapter for the pure Bash 3.2 lookup model.
+# This remains opt-in: callers own the credential snapshot and candidate path.
+include "directory_posix.elisa"
+include "bash_exec_lookup_model.elisa"
+
+using EsRuntime
+
+module EsBashExecLookupPosix:
+    public:
+        const module Limits:
+            CANDIDATE_PATH_BYTES: usize = EsBashExecLookup::Limits::PATH_BYTES + EsBashExecLookup::Limits::COMMAND_BYTES + 1
+
+
+        error ObservationError:
+            CandidatePathLimitExceeded
+            CandidatePathContainsNul
+
+
+        # Bash 3.2 file_status follows symlinks with stat(), treats every
+        # stat failure as absent, and treats directories as present but not
+        # executable. For all other file kinds, its non-AFS executable bit
+        # decision is delegated to the pure mode/credential model.
+        def observe_candidate(path: sview, credentials: EsBashExecLookup::CredentialSnapshot) -> EsBashExecLookup::PathCandidate error[ObservationError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            path_length: usize = sview_len(path)
+            raise ObservationError.CandidatePathLimitExceeded if path_length > Limits::CANDIDATE_PATH_BYTES
+            raise ObservationError.CandidatePathContainsNul if sview_contains_byte(path, 0u8)
+
+            native_path: mutable darray[u8] = []
+            native_path.reserve(path_length + 1)
+            for index in 0..<path_length |path, native_path|:
+                native_path.push(sview_at(path, index))
+            native_path.push(0u8)
+
+            information: mutable ElisascriptStat = zeroed
+            path_pointer: cstr = (&native_path[0]).cast[cstr]
+            return EsBashExecLookup::PathCandidate{} if elisascript_posix_stat(path_pointer, information) < 0
+
+            is_directory: bool = (information.mode & DarwinStatMode::MASK) == DarwinStatMode::DIRECTORY
+            executable: bool = false
+            if not is_directory:
+                executable <- EsBashExecLookup::mode_allows_execution(information.mode, information.user, information.group, credentials)
+            return EsBashExecLookup::PathCandidate{exists: true, executable: executable, directory: is_directory}
