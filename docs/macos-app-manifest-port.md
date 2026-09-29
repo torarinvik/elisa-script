@@ -34,6 +34,12 @@ must not themselves be symlinks, and must be regular files or directories.
 The filesystem module now stages selected resources and notices. Directory
 traversal uses the per-entry ignore policy; notice destinations reject
 pre-existing entries while ordinary file resources overwrite like `copy2`.
+A new pure path-planning model compares absolute resolved paths by components,
+not textual prefix, and treats unresolved relative operands as overlapping
+(fail-closed). Its primitive fixtures cover equality, ancestor/descendant,
+common-prefix siblings, and relative operands. It is not yet wired into app
+publication; output canonicalization and the complete output-versus-input
+matrix remain open. All new fixtures remain uncompiled and unrun.
 A file-level Darwin adapter in
 `src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
 POSIX-stat, and xattr flags while following source symlinks; a focused fixture
