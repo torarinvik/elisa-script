@@ -42,6 +42,13 @@ temporary project trees. Record exact argv as length-prefixed bytes, physical
 cwd, selected environment values, stdin bytes, stdout/stderr bytes, and status.
 Do not test by actually linting or altering the live training project.
 
+The authored native probe source/protocol is in
+`test/fixtures/script_parity/process_probe/`, with an independent Elisa
+expected-frame model in `test/script_parity/process_probe_model.elisa`.
+Qualification and wrapper-launcher integration remain unexecuted. Its complete
+binary frame needs more than a 64 KiB capture budget at the largest admitted
+input; use the protocol's combined-stream bound.
+
 | Case | Required observation |
 | --- | --- |
 | RUFF_BIN unset | Probe named `ruff` on fixture PATH is selected |

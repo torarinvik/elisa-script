@@ -62,7 +62,13 @@ metacharacters, `--`, and campaign forwarding. Those tests do not execute a
 tool. They are authored, not passing runtime evidence.
 
 For the future gated public-launcher matrix, use the same deterministic native
-executable probe in independent temporary project trees, not actual pytest:
+executable probe in independent temporary project trees, not actual pytest.
+
+The authored probe source/protocol and independent Elisa expected-frame model
+are under `test/fixtures/script_parity/process_probe/` and
+`test/script_parity/process_probe_model.elisa`. They are not yet qualified
+binaries or passing tests. Budget captures for the complete binary frame, not
+just the human-readable argv prefix.
 
 - Record exact length-framed argv, physical cwd, selected environment values,
   stdin bytes, stdout/stderr bytes, and status for all pure cases above.
