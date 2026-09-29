@@ -371,8 +371,11 @@ coverage that exercises every non-printable range boundary and representative
 interior values. Prefer one generated/shared Unicode-property range source over
 continuing to grow the diagnostic's ad-hoc exception list. A
 candidate-only generated input also
-exercises rejection of 4,097 parameters before creating `Parameter` records,
-without entering Python. A candidate-only generated input also puts five
+exercises rejection of 4,097 parameters before storing the excess parameter
+slice or creating `Parameter` records, without entering Python. The bounded
+top-level splitter stops as soon as the next nonempty part would exceed the
+per-export ceiling, rather than materializing the full parameter list first.
+A candidate-only generated input also puts five
 exports at 4,096, 4,096, 4,096, 4,096, and one parameter respectively to check
 the aggregate ceiling of 16,384 without entering the unbounded Python parser.
 Another candidate-only filesystem case creates a

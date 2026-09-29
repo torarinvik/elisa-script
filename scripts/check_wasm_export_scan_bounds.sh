@@ -31,7 +31,10 @@ rg -Fq 'TOTAL_PARAMETERS: usize = 16384' "$candidate"
 rg -Fq 'FLATTEN_PAYLOAD_OPTION: sview = "--flatten-payload"' "$candidate"
 rg -Fq 'BUILD_COMPONENT_PAYLOAD_OPTION: sview = "--build-component-payload"' "$candidate"
 rg -Fq 'COMPONENT_OPTION: sview = "--component"' "$candidate"
-rg -Fq 'parameter_slices.count > Limits::PARAMETERS_PER_EXPORT' "$candidate"
+rg -Fq 'def split_top_level(text: sview, delimiter: u8, maximum_parts: usize) -> TopLevelSplit' "$candidate"
+rg -Fq 'if parts.count >= maximum_parts:' "$candidate"
+rg -Fq 'parameter_split.exceeded_limit' "$candidate"
+rg -Fq 'split_top_level(header.parameters, 44u8, Limits::PARAMETERS_PER_EXPORT)' "$candidate"
 rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$candidate"
 rg -Fq 'explicit.row.parameters.count > Limits::TOTAL_PARAMETERS - total_parameters' "$candidate"
 rg -Fq 'implicit.row.parameters.count > Limits::TOTAL_PARAMETERS - total_parameters' "$candidate"
@@ -130,9 +133,19 @@ if [ "$line_guard_count" != 2 ]; then
     printf 'W09 bounds audit: both source-line append sites must enforce the metadata cap\n' >&2
     exit 1
 fi
-parameter_guard_count="$(rg -F -c 'if parameter_slices.count > Limits::PARAMETERS_PER_EXPORT:' "$candidate" || true)"
+split_guard_count="$(rg -F -c 'if parts.count >= maximum_parts:' "$candidate" || true)"
+if [ "$split_guard_count" != 2 ]; then
+    printf 'W09 bounds audit: separator and final parameter slices must be rejected before append\n' >&2
+    exit 1
+fi
+split_call_count="$(rg -F -c 'split_top_level(header.parameters, 44u8, Limits::PARAMETERS_PER_EXPORT)' "$candidate" || true)"
+if [ "$split_call_count" != 2 ]; then
+    printf 'W09 bounds audit: explicit and implicit exports must use the per-export split limit\n' >&2
+    exit 1
+fi
+parameter_guard_count="$(rg -F -c 'if parameter_split.exceeded_limit:' "$candidate" || true)"
 if [ "$parameter_guard_count" != 2 ]; then
-    printf 'W09 bounds audit: explicit and implicit exports must enforce the parameter cap\n' >&2
+    printf 'W09 bounds audit: explicit and implicit exports must enforce the parameter cap before slice materialization\n' >&2
     exit 1
 fi
 
