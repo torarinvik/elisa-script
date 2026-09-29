@@ -47,6 +47,17 @@ pure path/status fixtures; neither fixtures nor matrix have been compiled/run.
 Both available waves include these lint failure checks. Current missing exec
 diagnostics are an expected open gap, not a reason to skip these cases.
 
+The matrix also stages `test/fixtures/script_parity/canonical_lint/signal_probe.sh`
+as an executable `RUFF_BIN`. It terminates its own PID with SIGTERM. The
+independent reference contract is a signaled `Crash` with status 143 and empty
+streams; a candidate that completes normally with integer 143 is rejected. The
+reference is admitted before the candidate. This case is authored and unrun;
+source inspection predicts that today's fork/wait candidate returns a completed
+status instead of replacing its process. It exposes the D11 gap without
+pretending that status arithmetic proves signal parity. It runs after the
+eleven ordinary lint cases and before the seven actual exec-failure cases, so
+the lint wave has nineteen observations total.
+
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
 expected status, and empty `error_text`. Matching streams/status cannot admit

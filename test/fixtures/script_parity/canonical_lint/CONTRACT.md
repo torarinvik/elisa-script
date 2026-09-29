@@ -62,6 +62,7 @@ input; use the protocol's combined-stream bound.
 | Probe exits 0, 1, 2, 23, 126, 127, or 255 | Exact normal status, no wrapper-added output |
 | Binary stdin/stdout/stderr, including NUL and no final newline | Exact inherited bytes, no framing or newline added |
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
+| Ruff stand-in replaces itself with a process terminated by SIGTERM | Reference is signaled (`Crash`, status 143, empty streams); candidate must match the terminal outcome, not merely complete with status 143 |
 
 ## Known gaps: do not claim full exec parity
 
@@ -70,6 +71,13 @@ of replacing the wrapper process. PID identity, job control, interactive TTY
 signals, cancellation, and externally observed signal termination therefore
 need separate design and qualification. Returning `128 + signal` is not the
 same as the wrapper itself being killed by that signal.
+
+`signal_probe.sh` is staged as executable `RUFF_BIN` and sends SIGTERM to its
+own PID. The dormant matrix admits the reference first against the literal
+`Crash`/143/empty-stream contract, then requires the candidate to match that
+outcome. Source inspection predicts the current child-waiting candidate returns
+`Completed`/143 instead; this is an authored regression case, not an observed
+run. No signal or fixture was executed while validation remains disabled.
 
 Bash emits its own diagnostics and uses statuses 126/127 for execution
 failures. The current runner's child uses 127 for any failed exec and emits no
@@ -80,7 +88,7 @@ need dedicated cases; launcher source-path normalization is not proof of
 equivalence to `dirname "$0"`.
 
 `test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors
-eight ordinary lint cases before the test-wrapper family: unset/empty RUFF_BIN,
+eleven ordinary lint cases before the test-wrapper family: unset/empty RUFF_BIN,
 relative/absolute probe paths and a bare PATH-searched name with spaces, ignored
 extras (including empty strings, glob/variable/semicolon literals and options),
 binary streams, marker inheritance, and normal statuses 0/1/2/23/126/127/255.
@@ -92,18 +100,25 @@ The reference must meet its independent expected observation before the
 candidate is launched for that case.
 The probe is checked first against literal golden stdout. A shared isolated
 read-only fixture is used for these dummy-tool cases; source/probe copies are
-hashed before and after the matrix. This does not provide independent mutable
-filesystem worlds for future tools that write files.
+hashed before and after the matrix. The SIGTERM case and seven actual
+exec-failure cases run after ordinary cases. This does not provide independent
+mutable filesystem worlds for future tools that write files.
 
 The dormant entry now defaults to `EsCanonicalWrapperScope::Wave.LintOnly`:
-only the two lint sources are identity-checked and copied, only the two Ruff
-probe aliases are installed, and exactly eight lint cases are selected. No
+the lint reference, candidate, shared invocation model and signal probe are
+identity-checked and copied; three Ruff probe aliases are installed, and
+exactly eleven lint cases are selected. No
 canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
-wave. Source/case count checks reject silently empty or reduced selections.
-The wider fourteen-case suite remains available through an explicit
+wave. These eleven are ordinary argv/status cases; the matrix additionally
+runs one signal-termination case and seven exec-failure cases, for nineteen
+observations total in the lint wave. Source/case count checks reject silently
+empty or reduced selections. The wider twenty-one ordinary-case selection
+remains available through an explicit
 `public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
-the default test does not advance to it automatically. Wave selection does not
-grant execution authorization or prove that a preceding wave passed.
+with the same signal and exec-failure checks, that wave has twenty-nine
+observations. The default test does not advance to it automatically. Wave
+selection does not grant execution authorization or prove that a preceding
+wave passed.
 Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`
 and import no native runner. They have not been compiled or run.
 
@@ -111,7 +126,7 @@ Delivery order is lint first, then the nine-line environment query, then the
 fourteen-line codec gate and larger wrappers. Keep working on a small script's
 own blockers and shared dependencies rather than treating a source port as an
 accepted replacement. Full exec parity still requires the failure/signal policy
-above, not just the ordinary eight cases.
+above, not just the ordinary eleven cases.
 
 This is a source-only candidate and authored automated fixture, not a passing
 replacement or complete parity suite. Compiler, launcher, lint, and parity execution remain
