@@ -86,11 +86,14 @@ data rows is observed host behavior.
 dormant public-launcher matrix. Its entry requires explicit reauthorization,
 a separate LSP-root launcher qualification marker, the outer RSS-guard marker,
 both compiler selectors pinned to the approved local StructPy compiler, and
-distinct bounded candidate/Bash/compiler path+digest roles. The three
-executables preflight as nonsymlink regular files with native container headers
-before any hash-tool child. Pinned sources include the Bash snapshot/observer,
-candidate/model, independent cases, bounded reader, committed differential
-runner, shared role/checksum models, Bash, compiler, launcher and hash utility.
+distinct bounded candidate/Bash/compiler path+digest roles. Bash, compiler,
+launcher and the hash script's Perl interpreter preflight as nonsymlink regular
+files with native container headers; the hash script must also have a fixed
+Perl shebang before any hash-tool child. Their digests are pinned, but Perl
+module/dynamic-library closure remains unproven. Pinned sources include the
+Bash snapshot/observer, candidate/model, independent cases, bounded reader,
+committed differential runner, shared role/checksum models, Bash, compiler,
+launcher and hash utility.
 The committed runner pin deliberately fails against current concurrent dirty
 edits; only reviewed source plus separate artifact/closure qualification may
 authorize a new pin. No compiler is invoked or rebuilt by this fixture.

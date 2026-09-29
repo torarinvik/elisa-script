@@ -25,8 +25,10 @@ only then can the candidate start and be compared exactly. Capture and wait
 polling are bounded. The entry fails closed without explicit reauthorization,
 an external active RSS-guard marker, a separately qualified native launcher,
 the pinned StructPy compiler selection and distinct executable digests. Native
-container headers are checked before any hash-tool child. The current dirty
-differential runner deliberately fails its committed-source pin.
+container headers for Bash, cat, Perl, compiler and launcher, plus the hash
+script's fixed Perl shebang, are checked before any hash-tool child. Their
+digests are pinned; Perl module/dynamic-library closure remains unproven. The
+current dirty differential runner deliberately fails its committed-source pin.
 
 No Bash, candidate, compiler, hash-tool child or test fixture has been run for
 this port. Compiler provenance, executable dependency closure, a real outer
