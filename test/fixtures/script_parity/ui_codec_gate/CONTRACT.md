@@ -105,7 +105,15 @@ remain unqualified. The native backend's host behavior must be qualified too.
 
 The model admits at most 4,096 bytes per input text, rejects NUL, and requires
 an absolute project context but permits a nonempty relative generated temp path.
-Derived output/include paths can exceed that input budget. The new allocator
+Before constructing derived arguments, it also requires each complete include,
+source and output pathname to fit 4,096 bytes **including** a C terminator.
+The compiler spelling must likewise be shorter than 4,096 bytes, agreeing with
+the prepared launcher rather than accepting a compiler in the recipe that its
+launch preparation must reject. Input envelopes are checked before byte scans;
+suffix admission uses subtraction, not unchecked added path lengths. The `-I`
+option prefix is not part of its pathname budget. These policies do not split,
+normalize or expand any path, and do not probe whether it exists.
+The new allocator
 separately bounds its complete parent/prefix/random-suffix/C-terminator template
 to 4,096 bytes before invoking POSIX allocation.
 These are explicit admission policies, not OS PATH_MAX validation, arbitrary-
@@ -120,6 +128,17 @@ CC defaulting, literal CC values/paths with spaces/metacharacters, zero deadline
 compile-failure skip policy, cleanup status preservation and invalid/NUL inputs.
 They have not compiled/run; they do not prove compiler invocation, skip behavior,
 cleanup execution or codec correctness.
+
+`test/runtime/ui_codec_path_budget_test.elisa` adds independent literal boundary
+checks: a 4,066-byte project root yields a 4,095-byte source pathname; a
+4,073-byte absolute or relative temporary receipt yields a 4,095-byte output
+pathname; and a 4,095-byte compiler spelling is admitted by recipe and child-CC
+policy. One additional payload byte produces the corresponding typed recipe
+error. These are string-model assertions, not real host path admission or proof
+of atomic temp ownership. A separate pure composition assertion checks that
+both prepared launch phases serialize the boundary output path as 4,095
+payload bytes plus one terminal NUL, and that the run phase has exactly one
+absolute executable candidate. They have not compiled/run.
 
 For source-only provenance, the reviewed real codec inputs currently hash to:
 
