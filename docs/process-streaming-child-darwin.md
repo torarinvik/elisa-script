@@ -43,9 +43,53 @@ platform execvp equivalence. Qualify actual errors and diagnostics separately.
 The pure fixtures cover classifications, denied-then-missing order, exhaustion
 and fatal statuses. They have not run. No native failure or successful exec is
 claimed. Child-exit 126/127 is indistinguishable from a successfully launched
-tool returning those statuses: a parent-visible close-on-exec error channel is
-still needed to report typed spawn failures and group-admission failure. Do not
-publish this kernel as a checked process API without that distinction.
+tool returning those statuses without a separate failure record. A source-only
+record codec and child writer are now authored below, but parent pipe creation,
+collection and lifecycle qualification are still needed. Do not publish this
+kernel as a checked process API without those parts.
+
+## Failure record and writer (source-only)
+
+`process_spawn_failure_model.elisa` defines a fixed 16-byte local record: four
+32-bit fields for ESF1 magic, phase, nonnegative errno and candidate ordinal.
+The pure codec uses explicit little-endian bytes. The child writes a stack Frame
+directly only under the future parent's qualified Darwin64 little-endian ABI
+profile: 32-bit integer fields, expected offsets, sizeof(Frame)=16 and pointer
+width eight. That profile is not currently enforced by a parent entry. A dormant
+native-layout fixture and independent literal golden are authored but unrun.
+
+Phases distinguish invalid preparation, group setup, a fatal exec candidate and
+search exhaustion. Only a fatal exec record carries an ordinal less than the
+admitted candidate count. Exhaustion reports a summary ENOENT/EACCES with the
+no-candidate sentinel; it does not falsely attribute a remembered permission
+denial to the last missing candidate. The parser rejects malformed magic,
+phase/errno/ordinal combinations, negative wire errno, truncated records and
+extra payload. The future parent reads at most 17 bytes to detect a 17th byte.
+
+The child receives a private error-pipe write fd at least three, so no record
+can overwrite inherited stdin/out/err. The parent must create it before fork,
+set close-on-exec before any child can inherit it, retain the sole reader, close
+the parent's writer and prevent unrelated writers/forks or fd rebinding during
+setup. If initially closed stdio yields pipe fds 0/1/2, relocate them above two
+and restore the original closed routes before fork. Pipe/close-on-exec creation
+and owned descriptor/resource receipts are not implemented by this kernel.
+
+The writer emits fixed stack data through write, with bounded short-write/EINTR
+progress (at most 65 calls), no dynamic strings or allocations. Its ssize_t
+carrier is isize. The record is below the local SDK's 512-byte PIPE_BUF, but this
+does not prove pipe ownership, stack layout or runtime call-graph safety. Full
+reporting failures exit 125; complete records preserve selected 126/127 statuses.
+If the reader vanishes, SIGPIPE may terminate the child instead; no signal policy
+is changed here. Host/report faults, partial records and asynchronous death need
+typed parent handling rather than guessed success.
+
+Empty EOF is explicitly PayloadState.Empty, **not exec confirmation**. A child
+can die before reporting, and an unreported failure using status 125 collides
+with a tool normally returning 125. The future parent must preserve unknown/
+protocol-failure outcomes and define this conservative ambiguity explicitly;
+it must not claim full status parity from EOF or reserve a tool status silently.
+This source layer does not yet solve every exec-confirmation failure mode.
+Pure fixtures cover record admission and goldens, not native pipe behavior.
 
 ## Remaining integration
 

@@ -3,11 +3,13 @@
 # before fork. Only the eventual executor in this namespace may call the kernel.
 include "process_exec_search_model.elisa"
 include "process_launch_vectors_model.elisa"
+include "process_spawn_failure_model.elisa"
 
 module EsProcessStreamingDarwin:
     private:
         const module ChildLimits:
             GROUP_EINTR_RETRIES: usize = 64
+            REPORT_ATTEMPTS: usize = 65
 
 
         @link_name(__error)
@@ -22,6 +24,34 @@ module EsProcessStreamingDarwin:
         @link_name(_exit)
         extern native_exit(status: i32) -> void can[Blocking.IO]
 
+        @link_name(write)
+        extern native_write_failure(fd: i32, data: void&, bytes: usize) -> isize can[Blocking.IO]
+
+
+        def child_report(fd: i32, frame: EsProcessSpawnFailure::Frame, errno_location: mutable i32&) -> bool can[Blocking.IO, Unsafe.PointerCast]:
+            # Parent qualifies sizeof/field offsets/endianness BEFORE fork and
+            # provides one private, empty pipe with a retained reader. The
+            # record is fixed stack data, not a darray/string allocation.
+            data: u8& = (&frame).cast[u8&]
+            offset: mutable usize = 0
+            attempts: mutable usize = 0
+            while offset < EsProcessSpawnFailure::Protocol::BYTES and attempts < ChildLimits::REPORT_ATTEMPTS |offset, attempts|:
+                buffer: u8& = &data[offset]
+                amount: isize = native_write_failure(fd, buffer.cast[void&], EsProcessSpawnFailure::Protocol::BYTES - offset)
+                attempts <- attempts + 1
+                if amount < 0:
+                    return false if errno_location[0] != EsProcessExecSearch::DarwinErrno::EINTR
+                elif amount == 0 or amount.usize() > EsProcessSpawnFailure::Protocol::BYTES - offset:
+                    return false
+                else:
+                    offset <- offset + amount.usize()
+            return offset == EsProcessSpawnFailure::Protocol::BYTES
+
+
+        def child_fail(fd: i32, frame: EsProcessSpawnFailure::Frame, status: i32, errno_location: mutable i32&) -> void can[Blocking.IO, Unsafe.PointerCast]:
+            reported: bool = child_report(fd, frame, errno_location)
+            native_exit(status if reported else EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
+
 
         def child_group(errno_location: mutable i32&) -> bool can[Blocking.IO]:
             retries: mutable usize = 0
@@ -32,12 +62,17 @@ module EsProcessStreamingDarwin:
             return false
 
 
-        def child_exec(candidates: u8&?&, candidate_count: usize, argv: void&, environment: void&, errno_location: mutable i32&) -> void can[Blocking.IO, Unsafe.PointerCast]:
+        def child_exec(candidates: u8&?&, candidate_count: usize, argv: void&, environment: void&, failure_fd: i32, errno_location: mutable i32&) -> void can[Blocking.IO, Unsafe.PointerCast]:
+            if failure_fd < 3:
+                # Never write a protocol record over inherited stdin/out/err.
+                native_exit(EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
+                return
             if candidate_count == 0 or candidate_count > EsProcessEnvironmentPlan::Limits::SEARCH_CANDIDATES:
-                native_exit(EsProcessExecSearch::fatal_status())
+                child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Prepared}, EsProcessExecSearch::fatal_status(), errno_location)
                 return
             if not child_group(errno_location):
-                native_exit(EsProcessExecSearch::fatal_status())
+                failure: i32 = errno_location[0]
+                child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Group, errno: failure}, EsProcessExecSearch::fatal_status(), errno_location)
                 return
             saw_denied: mutable bool = false
             index: mutable usize = 0
@@ -46,7 +81,7 @@ module EsProcessStreamingDarwin:
             while index < candidate_count |index, saw_denied|:
                 borrowed: u8&? = candidates[index]
                 if borrowed == null:
-                    native_exit(EsProcessExecSearch::fatal_status())
+                    child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Prepared}, EsProcessExecSearch::fatal_status(), errno_location)
                     return
                 candidate: u8& = borrowed
                 _ = native_execve(candidate.cast[cstr], argv, environment)
@@ -59,6 +94,7 @@ module EsProcessStreamingDarwin:
                         saw_denied <- true
                         index <- index + 1
                     EsProcessExecSearch::Action.Stop:
-                        native_exit(EsProcessExecSearch::fatal_status())
+                        child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Exec, errno: failure, candidate: index.u32()}, EsProcessExecSearch::fatal_status(), errno_location)
                         return
-            native_exit(EsProcessExecSearch::exhausted_status(saw_denied))
+            failure: i32 = EsProcessExecSearch::DarwinErrno::EACCES if saw_denied else EsProcessExecSearch::DarwinErrno::ENOENT
+            child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Exhausted, errno: failure}, EsProcessExecSearch::exhausted_status(saw_denied), errno_location)

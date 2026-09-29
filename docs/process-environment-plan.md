@@ -174,3 +174,9 @@ with no post-fork environment mutation, allocation or shell fallback. Its exec
 search failure policy is explicit and has source-only pure fixtures. It does
 not fork or expose a runnable API; parent error reporting, resource/group/wait/
 deadline integration and all native qualification remain pending.
+
+The child kernel now has a fixed failure-record codec and bounded stack-data
+writer. See its contract for stage/errno/candidate validation, the unwired
+close-on-exec pipe requirements and why empty EOF is not proof of exec success.
+Parent descriptor setup, collection, typed unknown outcomes and lifecycle
+integration remain unfinished; no record, pipe or child has run.

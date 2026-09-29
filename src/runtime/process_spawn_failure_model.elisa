@@ -1,0 +1,92 @@
+# Fixed local failure record. Native Darwin64 little-endian layout must be
+# qualified before the child writer can use the struct as wire bytes.
+include "process_exec_search_model.elisa"
+
+module EsProcessSpawnFailure:
+    public:
+        const module Protocol:
+            BYTES: usize = 16
+            READ_LIMIT: usize = 17
+            MAGIC: u32 = 826692421u32
+            NO_CANDIDATE: u32 = 4294967295u32
+            MAX_CANDIDATES: usize = 4096
+            UNREPORTED_STATUS: i32 = 125
+
+
+        const module Phase:
+            Prepared: u32 = 1
+            Group: u32 = 2
+            Exec: u32 = 3
+            Exhausted: u32 = 4
+
+
+        struct Frame:
+            magic: u32 = Protocol::MAGIC
+            phase: u32
+            errno: i32 = 0
+            candidate: u32 = Protocol::NO_CANDIDATE
+
+
+        const enum PayloadState of u8:
+            Empty
+            Complete
+            Invalid
+
+
+        error ProtocolError:
+            Size
+            Magic
+            Phase
+            Errno
+            Candidate
+            CandidateCount
+
+
+        # Empty means no failure bytes, NOT proof that exec succeeded.
+        def payload_state(bytes: usize) -> PayloadState:
+            return PayloadState.Empty if bytes == 0
+            return PayloadState.Complete if bytes == Protocol::BYTES
+            return PayloadState.Invalid
+
+
+        def validate(frame: Frame, candidate_count: usize) -> void error[ProtocolError]:
+            raise ProtocolError.CandidateCount if candidate_count > Protocol::MAX_CANDIDATES
+            raise ProtocolError.Magic if frame.magic != Protocol::MAGIC
+            if frame.phase == Phase::Prepared:
+                raise ProtocolError.Errno if frame.errno != 0
+                raise ProtocolError.Candidate if frame.candidate != Protocol::NO_CANDIDATE
+            elif frame.phase == Phase::Group:
+                raise ProtocolError.Errno if frame.errno <= 0
+                raise ProtocolError.Candidate if frame.candidate != Protocol::NO_CANDIDATE
+            elif frame.phase == Phase::Exec:
+                raise ProtocolError.Errno if frame.errno <= 0 or EsProcessExecSearch::after_failure(frame.errno) != EsProcessExecSearch::Action.Stop
+                raise ProtocolError.Candidate if frame.candidate >= candidate_count
+            elif frame.phase == Phase::Exhausted:
+                raise ProtocolError.Errno if frame.errno != EsProcessExecSearch::DarwinErrno::ENOENT and frame.errno != EsProcessExecSearch::DarwinErrno::EACCES
+                raise ProtocolError.Candidate if candidate_count == 0 or frame.candidate != Protocol::NO_CANDIDATE
+            else:
+                raise ProtocolError.Phase
+
+
+        def decode(bytes: darray[u8]&, candidate_count: usize) -> Frame error[ProtocolError]:
+            raise ProtocolError.Size if bytes.count != Protocol::BYTES
+            unsigned_errno: u32 = word(bytes, 8)
+            raise ProtocolError.Errno if unsigned_errno > 2147483647u32
+            frame: Frame = Frame{magic: word(bytes, 0), phase: word(bytes, 4), errno: unsigned_errno.i32(), candidate: word(bytes, 12)}
+            try validate(frame, candidate_count)
+            return frame
+
+
+        def encode(frame: Frame, candidate_count: usize) -> darray[u8] error[ProtocolError] can[Memory.Allocate, Abort.Panic]:
+            try validate(frame, candidate_count)
+            bytes: mutable darray[u8] = []
+            for value in [frame.magic, frame.phase, frame.errno.u32(), frame.candidate] |bytes|:
+                bytes.push((value & 255u32).u8())
+                bytes.push(((value >> 8) & 255u32).u8())
+                bytes.push(((value >> 16) & 255u32).u8())
+                bytes.push(((value >> 24) & 255u32).u8())
+            return bytes
+
+    private:
+        def word(bytes: darray[u8]&, offset: usize) -> u32:
+            return bytes[offset].u32() | (bytes[offset + 1].u32() << 8) | (bytes[offset + 2].u32() << 16) | (bytes[offset + 3].u32() << 24)
