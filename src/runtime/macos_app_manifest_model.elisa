@@ -1,0 +1,259 @@
+# Typed manifest policy used by the Elisa Engine macOS app packager.
+#
+# The returned text fields are owned UTF-8 byte arrays. Filesystem path
+# expansion/resolution and bundle publication belong to the host adapter.
+
+module EsMacosAppManifest:
+    using EsData
+    using EsJson
+
+    public:
+        struct MacosAppSettings:
+            name: darray[u8]
+            bundle_id: darray[u8]
+            output_setting: darray[u8]
+            window_title: darray[u8]
+            window_width: usize
+            window_height: usize
+
+
+        error MacosAppManifestError:
+            InvalidJsonPolicy
+            InvalidManifestRoot
+            InvalidApplication
+            InvalidTextField
+            InvalidApplicationName
+            InvalidOutput
+            InvalidWindowDimension
+
+
+    private:
+        const module JsonKey:
+            NAME: sview = "name"
+            APPLICATION: sview = "application"
+            TITLE: sview = "title"
+            BUNDLE_ID: sview = "bundle_id"
+            OUTPUT: sview = "output"
+            WIDTH: sview = "width"
+            HEIGHT: sview = "height"
+
+
+        const module ApplicationDefaults:
+            WINDOW_WIDTH: usize = 1280
+            WINDOW_HEIGHT: usize = 720
+            MAX_WINDOW_DIMENSION: usize = 16384
+
+
+        struct RootIndexes:
+            name: usize = JSON_INDEX_NONE
+            application: usize = JSON_INDEX_NONE
+            output: usize = JSON_INDEX_NONE
+
+
+        struct ApplicationIndexes:
+            title: usize = JSON_INDEX_NONE
+            bundle_id: usize = JSON_INDEX_NONE
+            width: usize = JSON_INDEX_NONE
+            height: usize = JSON_INDEX_NONE
+
+
+        def app_manifest_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != sview_len(key)
+            for offset in 0..<member.key_bytes |document, member, key|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        def app_manifest_root_indexes(document: JsonDocument&, root: JsonNode) -> RootIndexes:
+            indexes: mutable RootIndexes = RootIndexes{}
+            member_end: usize = root.member_start + root.member_count
+            for member_index in root.member_start..<member_end |document, indexes|:
+                member: JsonMember = document.members[member_index]
+                if app_manifest_key_equals(document, member, JsonKey::NAME):
+                    indexes.name <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::APPLICATION):
+                    indexes.application <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::OUTPUT):
+                    indexes.output <- member.value_index
+            return indexes
+
+
+        def app_manifest_application_indexes(document: JsonDocument&, application: JsonNode) -> ApplicationIndexes:
+            indexes: mutable ApplicationIndexes = ApplicationIndexes{}
+            member_end: usize = application.member_start + application.member_count
+            for member_index in application.member_start..<member_end |document, indexes|:
+                member: JsonMember = document.members[member_index]
+                if app_manifest_key_equals(document, member, JsonKey::TITLE):
+                    indexes.title <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::BUNDLE_ID):
+                    indexes.bundle_id <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::WIDTH):
+                    indexes.width <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::HEIGHT):
+                    indexes.height <- member.value_index
+            return indexes
+
+
+        def app_manifest_text_view(document: JsonDocument&, node_index: usize) -> sview error[JsonContractError, MacosAppManifestError]:
+            raise MacosAppManifestError.InvalidTextField if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise MacosAppManifestError.InvalidTextField if node.kind != JsonNodeKind.Text
+            raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+            raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            end: usize = node.scalar_start + node.scalar_bytes
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), end.i64())
+
+
+        def app_manifest_copy_text(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            bytes: mutable darray[u8] = []
+            for offset in 0..<sview_len(value) |value, bytes|:
+                bytes.push(sview_at(value, offset))
+            return bytes
+
+
+        def app_manifest_byte_allowed_in_name(byte: u8) -> bool:
+            return byte >= 48 and byte <= 57 or byte >= 65 and byte <= 90 or byte >= 97 and byte <= 122 or byte == 32 or byte == 46 or byte == 95 or byte == 45
+
+
+        def app_manifest_safe_name(value: sview) -> darray[u8] error[MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            filtered: mutable darray[u8] = []
+            for byte in value |filtered|:
+                if app_manifest_byte_allowed_in_name(byte):
+                    filtered.push(byte)
+            start: mutable usize = 0
+            end: mutable usize = filtered.count
+            while start < end and (filtered[start] == 32 or filtered[start] == 46) |filtered, start, end|:
+                start <- start + 1
+            while end > start and (filtered[end - 1] == 32 or filtered[end - 1] == 46) |filtered, start, end|:
+                end <- end - 1
+            raise MacosAppManifestError.InvalidApplicationName if start == end
+            result: mutable darray[u8] = []
+            for offset in start..<end |filtered, result|:
+                result.push(filtered[offset])
+            return result
+
+
+        def app_manifest_default_bundle_id(name: darray[u8]) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            slug: mutable darray[u8] = []
+            pending_separator: mutable bool = false
+            for byte in name |slug, pending_separator|:
+                lower: u8 = byte + 32 if byte >= 65 and byte <= 90 else byte
+                if (lower >= 97 and lower <= 122) or (lower >= 48 and lower <= 57):
+                    if pending_separator and slug.count > 0:
+                        slug.push(45)
+                    slug.push(lower)
+                    pending_separator <- false
+                else:
+                    pending_separator <- true
+            result: mutable darray[u8] = [111, 114, 103, 46, 101, 108, 105, 115, 97, 46]
+            if slug.count == 0:
+                for byte in "application" |result|:
+                    result.push(byte)
+            else:
+                for byte in slug |result|:
+                    result.push(byte)
+            return result
+
+
+        def app_manifest_utf8_space_width(value: sview, offset: usize) -> usize:
+            length: usize = sview_len(value)
+            first: u8 = sview_at(value, offset)
+            if (first >= 9 and first <= 13) or (first >= 28 and first <= 32):
+                return 1
+            if first == 194 and offset + 1 < length:
+                second: u8 = sview_at(value, offset + 1)
+                return 2 if second == 133 or second == 160
+            if offset + 2 < length:
+                second: u8 = sview_at(value, offset + 1)
+                third: u8 = sview_at(value, offset + 2)
+                return 3 if first == 225 and second == 154 and third == 128
+                return 3 if first == 226 and second == 128 and (third >= 128 and third <= 138 or third == 168 or third == 169 or third == 175)
+                return 3 if first == 226 and second == 129 and third == 159
+                return 3 if first == 227 and second == 128 and third == 128
+            return 0
+
+
+        def app_manifest_text_has_non_whitespace(value: sview) -> bool:
+            cursor: mutable usize = 0
+            while cursor < sview_len(value) |value, cursor|:
+                whitespace_bytes: usize = app_manifest_utf8_space_width(value, cursor)
+                return true if whitespace_bytes == 0
+                cursor <- cursor + whitespace_bytes
+            return false
+
+
+        def app_manifest_window_dimension(document: JsonDocument&, node_index: usize, default_value: usize) -> usize error[MacosAppManifestError, JsonContractError]:
+            return default_value if node_index == JSON_INDEX_NONE
+            raise MacosAppManifestError.InvalidWindowDimension if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise MacosAppManifestError.InvalidWindowDimension if node.kind != JsonNodeKind.Number
+            raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+            raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            raise MacosAppManifestError.InvalidWindowDimension if node.scalar_bytes == 0
+            width: mutable usize = 0
+            for offset in 0..<node.scalar_bytes |document, node, width|:
+                byte: u8 = document.scalar_data[node.scalar_start + offset]
+                raise MacosAppManifestError.InvalidWindowDimension if byte < 48 or byte > 57
+                raise MacosAppManifestError.InvalidWindowDimension if width > ApplicationDefaults::MAX_WINDOW_DIMENSION / 10
+                width <- width * 10 + (byte - 48).usize()
+                raise MacosAppManifestError.InvalidWindowDimension if width > ApplicationDefaults::MAX_WINDOW_DIMENSION
+            raise MacosAppManifestError.InvalidWindowDimension if width == 0
+            return width
+
+
+    public:
+        # Mirrors manifest_application() and manifest_window() in the Python
+        # packager. output_setting remains unresolved for the path adapter.
+        def decode_macos_app_settings(document: JsonDocument&, project_name: sview) -> MacosAppSettings error[JsonContractError, MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise MacosAppManifestError.InvalidJsonPolicy if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast or document.policy.trailing_commas != JsonTrailingCommaPolicy.Reject or document.policy.allow_comments
+            raise MacosAppManifestError.InvalidManifestRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise MacosAppManifestError.InvalidManifestRoot if root_index >= document.nodes.count
+            root: JsonNode = document.nodes[root_index]
+            raise MacosAppManifestError.InvalidManifestRoot if root.kind != JsonNodeKind.Object
+            root_indexes: RootIndexes = app_manifest_root_indexes(document, root)
+
+            application_indexes: ApplicationIndexes = ApplicationIndexes{}
+            if root_indexes.application != JSON_INDEX_NONE:
+                raise MacosAppManifestError.InvalidApplication if root_indexes.application >= document.nodes.count
+                application: JsonNode = document.nodes[root_indexes.application]
+                raise MacosAppManifestError.InvalidApplication if application.kind != JsonNodeKind.Object
+                application_indexes <- app_manifest_application_indexes(document, application)
+
+            title: sview = project_name
+            if application_indexes.title != JSON_INDEX_NONE:
+                title <- try app_manifest_text_view(document, application_indexes.title)
+            elif root_indexes.name != JSON_INDEX_NONE:
+                title <- try app_manifest_text_view(document, root_indexes.name)
+            raise MacosAppManifestError.InvalidTextField if not app_manifest_text_has_non_whitespace(title)
+            clean_name: darray[u8] = try app_manifest_safe_name(title)
+
+            output_setting: darray[u8] = []
+            if root_indexes.output == JSON_INDEX_NONE:
+                default_output: sview = "build/" + bytes_view(clean_name)
+                output_setting <- app_manifest_copy_text(default_output)
+            else:
+                raw_output: sview = try app_manifest_text_view(document, root_indexes.output)
+                raise MacosAppManifestError.InvalidOutput if sview_len(raw_output) == 0 or sview_contains_byte(raw_output, 0)
+                output_setting <- app_manifest_copy_text(raw_output)
+
+            bundle_id: darray[u8] = []
+            if application_indexes.bundle_id == JSON_INDEX_NONE:
+                bundle_id <- app_manifest_default_bundle_id(clean_name)
+            else:
+                raw_bundle_id: sview = try app_manifest_text_view(document, application_indexes.bundle_id)
+                bundle_id <- app_manifest_copy_text(raw_bundle_id) if sview_len(raw_bundle_id) != 0 else app_manifest_default_bundle_id(clean_name)
+
+            width: usize = try app_manifest_window_dimension(document, application_indexes.width, ApplicationDefaults::WINDOW_WIDTH)
+            height: usize = try app_manifest_window_dimension(document, application_indexes.height, ApplicationDefaults::WINDOW_HEIGHT)
+            return MacosAppSettings{
+                name: clean_name,
+                bundle_id: bundle_id,
+                output_setting: output_setting,
+                window_title: app_manifest_copy_text(title),
+                window_width: width,
+                window_height: height
+            }

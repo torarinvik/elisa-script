@@ -1,0 +1,17 @@
+# macOS app manifest model port
+
+`src/runtime/macos_app_manifest_model.elisa` ports the pure settings logic from
+`../elisa-engine/scripts/package_macos_app.py`: the application title/name,
+safe bundle name, default or explicit bundle identifier, output setting, and
+window title/size. It consumes a sealed JSON document, requires Python's
+last-value-wins duplicate-key behavior, and owns the returned text bytes so
+settings do not borrow storage from the JSON document.
+
+This is a component of a future `package_macos_app.elisascript`, not a package
+replacement. The output remains a raw path setting; `expanduser()`, resolution
+against the project, resource/notices selection, file staging, linked-library
+closure, `otool`/`install_name_tool`/`codesign`, plist writing, and transactional
+bundle publication are still unported. Python's non-standard `NaN`/`Infinity`
+JSON acceptance is also not represented by the standards-conforming JSON
+front end. The authored model fixture has not been compiled or run under the
+explicit execution hold.
