@@ -766,3 +766,21 @@ setup and cleanup can overrun; external process-tree RSS and wall-time containme
 are still required. No compiler, fixture, host wait or script parity ran. The
 child-only environment/inherited-stream source operation remains unwired, and
 the UI empty-exported-CC workflow gap is not closed by this waiter correction.
+
+## Shared bounded sleep return admission (source-only)
+
+Ordinary interpreter sleeps, process polling, termination grace and descendant
+quiescence waits now use one `bounded_usleep` implementation. It borrows the
+C-width errno slot before calling the bridge, accepts only zero as success,
+and reads errno only after a native `-1` result. Bridge rejection (`-2`) and
+unsupported positive/other negative returns stop without consuming stale EINTR.
+Only native `-1` plus the selected Darwin EINTR value retries, with the unchanged
+bounded retry count. Cleanup no longer maintains a separate weaker sleep loop.
+
+The existing pure scalar ABI fixtures cover native `-1` admission versus bridge
+rejection and unsupported returns. They do not execute this sleep helper or
+prove TLS/pointer/native ABI behavior. Native timing, interruptions, failed
+sleeps and cleanup still need separately authorized contained qualification.
+Retrying usleep requests the full interval again, not a measured remainder, so
+this does not promise exact elapsed duration or a hard cleanup deadline. No
+compiler, test, host sleep or process ran; original scripts/callers are unchanged.
