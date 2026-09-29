@@ -1,6 +1,6 @@
-# Descriptor-verified, bounded UTF-8 scanner for source-length audits.
-# Unlike EsBoundedText::read_utf8, this reader retains only its fixed-size
-# chunk and the newline/UTF-8 cursors, not the complete file contents.
+# Descriptor-verified, streaming UTF-8 scanner for source-length audits.
+# Unlike a whole-file text API, this reader retains only its fixed-size chunk
+# and the newline/UTF-8 cursors, not the complete file contents.
 
 include "encoding.elisa"
 include "file_posix.elisa"
@@ -15,14 +15,7 @@ using EsSourceLength
 
 module EsSourceLengthFile:
     public:
-        # Shared policy boundary: the script and reader must enforce the same
-        # inclusive per-file maximum rather than duplicating a magic number.
-        const module Policy:
-            MAX_FILE_BYTES: usize = 16777216
-
-
         struct ScanResult:
-            bytes_read: usize = 0
             lines: usize = 0
 
 
@@ -30,13 +23,11 @@ module EsSourceLengthFile:
             InvalidPath
             ReadFailed
             Changed
-            LimitExceeded
             InvalidUtf8
 
 
     private:
         const module Limits:
-            PATH_BYTES: usize = 4096
             READ_CHUNK_BYTES: usize = 16384
             READ_EINTR_RETRIES: usize = 4
             MAX_DESCRIPTOR: int = 2147483647
@@ -106,12 +97,9 @@ module EsSourceLengthFile:
     public:
         # Follows file symlinks like Python's open(), but verifies the named
         # object before/after open and the opened descriptor before/after read.
-        # maximum_bytes is inclusive; one extra probe byte distinguishes an
-        # exactly-at-limit file from an oversized one without buffering it.
-        def read_utf8_line_count(input_path: Path, maximum_bytes: usize) -> ScanResult error[ReadError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            raise ReadError.LimitExceeded if maximum_bytes > Policy::MAX_FILE_BYTES
+        def read_utf8_line_count(input_path: Path) -> ScanResult error[ReadError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             path_text: sview = f"{input_path}"
-            raise ReadError.InvalidPath if path_text == "" or len(path_text) >= Limits::PATH_BYTES or sview_contains_byte(path_text, 0)
+            raise ReadError.InvalidPath if path_text == "" or sview_contains_byte(path_text, 0)
             path_bytes: mutable darray[u8] = []
             for byte in path_text |path_bytes|:
                 path_bytes.push(byte)
@@ -135,7 +123,6 @@ module EsSourceLengthFile:
             chunk.reserve(Limits::READ_CHUNK_BYTES)
             for _ in 0..<Limits::READ_CHUNK_BYTES |chunk|:
                 chunk.push(0u8)
-            bytes_read: mutable usize = 0
             lines: mutable UniversalLineCounter = new_universal_line_counter()
             utf8: mutable Utf8Cursor = Utf8Cursor{}
             utf8_valid: mutable bool = true
@@ -147,9 +134,7 @@ module EsSourceLengthFile:
                 start ReadChunk
 
                 ReadChunk, ReadPhase.ReadChunk:
-                    remaining: usize = maximum_bytes - bytes_read
-                    probe_capacity: usize = remaining + 1
-                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                    capacity: usize = chunk.count
                     chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
                     amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
                     if amount < 0:
@@ -169,14 +154,10 @@ module EsSourceLengthFile:
                     if read_count > capacity:
                         _ = elisascript_posix_close(descriptor)
                         raise ReadError.ReadFailed
-                    if read_count > remaining:
-                        _ = elisascript_posix_close(descriptor)
-                        raise ReadError.LimitExceeded
                     if utf8_valid and not utf8_validate(chunk_pointer, read_count, utf8):
                         utf8_valid <- false
                     for offset in 0..<read_count |chunk, lines|:
                         feed_universal_line_byte(chunk[offset], lines)
-                    bytes_read <- bytes_read + read_count
                     interrupted <- 0
                     -> ReadChunk
 
@@ -191,4 +172,4 @@ module EsSourceLengthFile:
             raise ReadError.ReadFailed if close_status != 0
             raise ReadError.Changed if not stable
             raise ReadError.InvalidUtf8 if not utf8_valid
-            return ScanResult{bytes_read: bytes_read, lines: finish_universal_line_count(lines)}
+            return ScanResult{lines: finish_universal_line_count(lines)}

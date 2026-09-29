@@ -12,11 +12,11 @@ streaming UTF-8 reader in `src/runtime/source_length_stream_posix.elisa`.
 Authored model fixtures are in `test/runtime/source_length_model_test.elisa`.
 The counter exposes a typed feed/finalize API that preserves CRLF state across
 arbitrary chunks; the whole-buffer helper delegates to that state machine. The
-candidate now counts and validates UTF-8 incrementally with a fixed-size buffer
-while retaining per-file and aggregate byte ceilings. This reduces file-content
-memory from up to 16 MiB per file to a 16 KiB read buffer, but the reader and
-public-launcher parity matrix remain uncompiled and unqualified. Component-wise
-ordering fixtures are in `test/script_parity/source_length_order_test.elisascript`.
+candidate counts and validates UTF-8 incrementally with a fixed-size buffer and
+has no per-file or aggregate byte ceiling. File-content memory stays at one
+16 KiB read buffer regardless of file size. The reader and public-launcher
+parity matrix remain uncompiled and unqualified. Component-wise ordering
+fixtures are in `test/script_parity/source_length_order_test.elisascript`.
 
 The candidate lives in elisa-script and selects its neighboring
 `wasmbrowser-proof` project using its own resolved source directory. It is not
@@ -58,7 +58,7 @@ changing the default root selection, not an unqualified copy of this file.
 
 ## Exact ordinary-tree contract
 
-For a stable, readable tree within the limits below, compare status and exact
+For a stable, readable tree, compare status and exact
 stdout/stderr bytes. Empty/missing/non-directory `src` and all files with at
 most 600 lines produce status 0 and no output. More than 600 lines produces
 status 1, no stdout, and one stderr line for every oversized file:
@@ -108,8 +108,9 @@ candidate counter nor a host adapter. It covers an empty file, BOM-only content,
 fixture data, not produced by the candidate. Missing/empty roots and multi-file
 ordering/symlink cases remain separate. Two additional single-file cases put a
 CRLF pair and a two-byte UTF-8 scalar across the scanner's 16 KiB read boundary.
-There are 21 ordinary case invocations in total, each with reference-first
-admission and exact empty stdout.
+There are 22 ordinary case invocations in total, each with reference-first
+admission and exact empty stdout. The final case descends 65 directories,
+beyond the prior depth limit.
 
 Before creating the ordinary source directory, the harness writes a 601-line
 regular file named `src` and expects silent status 0. It then makes `src` a
@@ -166,8 +167,12 @@ checks are not observed test results or proof of race-free execution.
   cycle (not followed); source root symlink; matching directory `.elisa`.
 - An earlier oversized file followed by unreadable/invalid UTF-8 input:
   no partial oversized-file diagnostics may escape.
-- File and aggregate byte limits, directory/entry/depth/path limits, and a file
-  changing during read. Keep resource-limit failures separate from parity.
+- Files larger than the previous 16 MiB candidate cap and aggregate source data
+  above the previous 64 MiB cap; the candidate no longer imposes either limit.
+- More than 64 nested directories (the ordinary gated matrix already exercises
+  depth 65).
+- A file changing during read. Keep host/error cases separate from ordinary
+  parity.
 
 Pin the reference, candidate, include closure, qualified launcher, and local
 compiler identities. Use the existing explicit opt-in and bounded RSS guard,
@@ -227,23 +232,22 @@ entries and failed directory removal, with an independently retained outside
 sentinel proving it is not modified/deleted. No filesystem fixture or cleanup
 ran; the harness is not a sandbox for untrusted children.
 
-## Bounded behavior and open gaps
+## Remaining behavior gaps and resource characteristics
 
-The candidate reads at most 16 MiB per file and 64 MiB in aggregate, processing
-one source at a time. This is not a guarantee that interpreter-owned arenas
-release a prior source immediately. Discovery permits 8,192 matching paths, 4,096 directories,
-depth 64 below src, 16,384 entries per directory, 65,536 total entries, paths
-shorter than 4,096 bytes, and 16 MiB of enumerated path bytes. Path.iterdir's own
-runtime materialization bound applies before the per-directory check. These
-logical budgets are not a hard process RSS guarantee.
+The candidate has no explicit per-file, aggregate-byte, file-count, entry-count,
+directory-depth, or enumerated-path-byte ceiling. It reads source contents with
+one fixed 16 KiB buffer, while discovery retains directory and matching-path
+metadata until deterministic sorting/diagnostic collection is complete. This is
+not a hard process RSS guarantee; the isolated parity harness still needs its
+separate external RSS/time containment.
 
-Unreadable, changing, non-regular, invalid UTF-8, and over-limit inputs produce
-a candidate-specific diagnostic and status 2, not Python's traceback/status 1.
+Unreadable, changing, non-regular, and invalid UTF-8 inputs produce a
+candidate-specific diagnostic and status 2, not Python's traceback/status 1.
 Directory-enumeration errors are fail-closed rather than relying on pathlib's
 version-dependent suppression. Filesystem races, invalid-UTF-8 filenames, and
 platform-specific pathlib collation are outside current exact acceptance.
-The bounded reader currently uses the Darwin POSIX adapter, not a proven
-cross-platform implementation. No resource ceiling or error divergence may be
+The streaming reader currently uses the Darwin POSIX adapter, not a proven
+cross-platform implementation. Remaining host/error divergence may not be
 called exact Python parity.
 
 The shared reader now admits errno sampling/retry only after native -1 from
