@@ -1,6 +1,7 @@
 include "./runtime_model.elisa"
 include "../runtime/temporary_path_model.elisa"
 include "../runtime/environment_read_budget_model.elisa"
+include "../runtime/stdin_read_budget_model.elisa"
 include "../runtime/process_spawn_wait_model.elisa"
 include "../runtime/process_exec_search_model.elisa"
 
@@ -368,9 +369,7 @@ extend EsIr:
 
 
         def stdio_read_append_fits(reader: StdioReader&, additional: usize) -> bool:
-            current: u64 = reader.consumed
-            return false if current > reader.limit
-            return additional.u64() <= reader.limit - current
+            return EsStdinReadBudget::payload_fits(reader.consumed, reader.limit, additional)
 
 
         struct InstructionDispatch:
@@ -7187,20 +7186,16 @@ extend EsIr:
 
         def stdio_read_next(reader: mutable StdioReader&) -> StdioReadState can[Memory.Allocate, Abort.Panic]:
             chunk: mutable u8[4096] = zeroed
-            current: u64 = reader.consumed
-            if current > reader.limit:
-                reader.failed <- true
-                return StdioReadState.Error
-            remaining: u64 = reader.limit - current
-            capacity: mutable usize = 4096
-            if remaining < capacity.u64():
-                capacity <- remaining.usize()
+            capacity: usize = EsStdinReadBudget::read_capacity(reader.consumed, reader.limit, 4096usize)
             if capacity == 0:
                 reader.failed <- true
                 return StdioReadState.Error
             can Blocking.IO:
                 amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], capacity)
                 if amount < 0:
+                    if not EsProcessScalarAbi::native_errno_failure(amount.i64()):
+                        reader.failed <- true
+                        return StdioReadState.Error
                     errno: mutable int& = elisascript_posix_errno()
                     if errno[0] == EsRuntime::DarwinErrno::EINTR and reader.eintr_retries < PosixRetry::EINTR_RETRIES:
                         reader.eintr_retries <- reader.eintr_retries + 1
@@ -7225,12 +7220,17 @@ extend EsIr:
 
         def stdio_read_line_next(reader: mutable StdioReader&) -> StdioLineReadState can[Memory.Allocate, Abort.Panic]:
             chunk: mutable u8[1] = zeroed
-            if not stdio_read_append_fits(reader, 1):
+            # At the exact limit, only EOF may finish the final unterminated
+            # line. A positive probe (including LF) still exceeds input bytes.
+            if EsStdinReadBudget::read_capacity(reader.consumed, reader.limit, 1usize) == 0usize:
                 reader.failed <- true
                 return StdioLineReadState.Error
             can Blocking.IO:
                 amount: isize = elisascript_posix_read(0, (&chunk[0]).cast[mutable void&], 1)
                 if amount < 0:
+                    if not EsProcessScalarAbi::native_errno_failure(amount.i64()):
+                        reader.failed <- true
+                        return StdioLineReadState.Error
                     errno: mutable int& = elisascript_posix_errno()
                     if errno[0] == EsRuntime::DarwinErrno::EINTR and reader.eintr_retries < PosixRetry::EINTR_RETRIES:
                         reader.eintr_retries <- reader.eintr_retries + 1
@@ -7240,7 +7240,7 @@ extend EsIr:
                 if amount == 0:
                     return StdioLineReadState.End
                 reader.eintr_retries <- 0
-                if amount > 1:
+                if amount > 1 or not stdio_read_append_fits(reader, 1):
                     reader.failed <- true
                     return StdioLineReadState.Error
                 reader.consumed <- reader.consumed + 1
