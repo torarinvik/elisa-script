@@ -1,0 +1,114 @@
+# Exact declarative recipe for elisa-pkg/scripts/build.sh after its directory
+# contexts are resolved by a host adapter. No filesystem/environment mutation
+# or process launch occurs here; executor qualification is still required.
+module EsPkgBuildPlan:
+    using EsProcess
+
+    public:
+        const module Limits:
+            # Model input budget, not PATH_MAX. Derived suffixes can make paths
+            # longer; a host adapter must report actual filesystem failures.
+            TEXT_BYTES: usize = 4096
+
+
+        struct Inputs:
+            project_root: sview
+            compiler_root: sview
+            caller_directory: sview
+            stage1_override: sview = ""
+            wrapper_override: sview = ""
+            runtime_override: sview = ""
+            stale_override: sview = ""
+
+
+        struct Plan:
+            command: ProcessCommand
+            stage1: sview
+            runtime_object: sview
+            build_directory: sview
+            output: sview
+            success_stdout: sview
+
+
+        struct Availability:
+            wrapper_executable: bool
+            stage1_executable: bool
+            runtime_regular_file: bool
+
+
+        const enum PreflightIssue of u8:
+            Ready
+            WrapperNotExecutable
+            Stage1NotExecutable
+            RuntimeMissing
+
+
+        struct PreflightDiagnostic:
+            issue: PreflightIssue
+            status: i64
+            stderr: sview
+
+
+        error PlanError:
+            CompilerRootUnset
+            InvalidResolvedContext
+            InvalidOverride
+
+
+        def plan(input: Inputs) -> Plan error[PlanError] can[Memory.Allocate, Abort.Panic]:
+            raise PlanError.CompilerRootUnset if input.compiler_root == ""
+            raise PlanError.InvalidResolvedContext if not absolute_context(input.project_root) or not absolute_context(input.compiler_root) or not absolute_context(input.caller_directory)
+            raise PlanError.InvalidOverride if not admitted(input.stage1_override) or not admitted(input.wrapper_override) or not admitted(input.runtime_override) or not admitted(input.stale_override)
+            stage1: sview = input.compiler_root + "/bin/elisac-stage1" if input.stage1_override == "" else input.stage1_override
+            wrapper: sview = input.compiler_root + "/scripts/elisac_stage1.sh" if input.wrapper_override == "" else input.wrapper_override
+            runtime_object: sview = input.compiler_root + "/build/runtime/elisacore_runtime.o" if input.runtime_override == "" else input.runtime_override
+            build_directory: sview = input.project_root + "/build"
+            output: sview = build_directory + "/elisapkg"
+            command: ProcessCommand = ProcessCommand{
+                executable: wrapper,
+                arguments: ["-emit", "exe", "-o", output, input.project_root + "/src/main.elisa"],
+                # Both reference cd operations are command substitutions. The
+                # actual compiler command runs in the original caller cwd.
+                working_directory: input.caller_directory,
+                environment: [
+                    "ELISA_STAGE1_BIN", stage1,
+                    "ELISA_ALLOW_STALE_STAGE1", "0" if input.stale_override == "" else input.stale_override,
+                    "ELISA_RUNTIME_OBJ", runtime_object
+                ],
+                environment_mode: ProcessEnvironmentMode.Inherit,
+                stdin_mode: ProcessStdioMode.Inherit,
+                stdout_mode: ProcessStdioMode.Inherit,
+                stderr_mode: ProcessStdioMode.Inherit,
+                timeout_micros: 0,
+                failure_mode: ProcessFailureMode.Allow
+            }
+            return Plan{command: command, stage1: stage1, runtime_object: runtime_object, build_directory: build_directory, output: output, success_stdout: "built " + output + "\n"}
+
+
+        def preflight(recipe: Plan, facts: Availability) -> PreflightDiagnostic can[Memory.Allocate, Abort.Panic]:
+            return PreflightDiagnostic{issue: PreflightIssue.WrapperNotExecutable, status: 2, stderr: "error: compiler wrapper is not executable: " + recipe.command.executable + "\n"} if not facts.wrapper_executable
+            return PreflightDiagnostic{issue: PreflightIssue.Stage1NotExecutable, status: 2, stderr: "error: stage1 compiler is not executable: " + recipe.stage1 + "\nnote: seed the compiler first or set ELISA_STAGE1_BIN\n"} if not facts.stage1_executable
+            return PreflightDiagnostic{issue: PreflightIssue.RuntimeMissing, status: 2, stderr: "error: Elisa runtime object is missing: " + recipe.runtime_object + "\n"} if not facts.runtime_regular_file
+            return PreflightDiagnostic{issue: PreflightIssue.Ready, status: 0, stderr: ""}
+
+
+        def missing_compiler_root_stderr() -> sview:
+            return "error: set ELISA_COMPILER_ROOT to an Elisa compiler checkout\n"
+
+    private:
+        def admitted(value: sview) -> bool:
+            count: mutable usize = 0
+            for byte in value |count|:
+                return false if byte == 0u8 or count >= Limits::TEXT_BYTES
+                count <- count + 1
+            return true
+
+
+        # The adapter supplies Bash-resolved directory spellings. Do not
+        # normalize their symlink/double-slash spelling or resolve relative
+        # executable/object overrides against a different base directory.
+        def absolute_context(value: sview) -> bool:
+            return false if not admitted(value)
+            for byte in value:
+                return byte == 47u8
+            return false

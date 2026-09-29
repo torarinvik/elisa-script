@@ -1,0 +1,137 @@
+# Pure recipe fixtures: no compiler, wrapper, mkdir, or environment mutation.
+include "../../src/runtime/process_model.elisa"
+include "../../src/runtime/elisa_pkg_build_model.elisa"
+
+using EsPkgBuildPlan
+using EsProcess
+
+
+@test
+def elisa_pkg_default_build_plan_preserves_caller_cwd_and_child_overlay() -> void:
+    can Memory.Allocate, Abort.Panic:
+        recipe: Plan = try plan(Inputs{project_root: "/project with spaces", compiler_root: "/compiler root", caller_directory: "/caller"}) else err:
+            assert false
+            return
+        assert recipe.command.executable == "/compiler root/scripts/elisac_stage1.sh"
+        assert recipe.stage1 == "/compiler root/bin/elisac-stage1"
+        assert recipe.runtime_object == "/compiler root/build/runtime/elisacore_runtime.o"
+        assert recipe.command.working_directory == "/caller"
+        assert recipe.command.arguments.count == 5
+        assert recipe.command.arguments[0] == "-emit" and recipe.command.arguments[1] == "exe"
+        assert recipe.command.arguments[2] == "-o"
+        assert recipe.command.arguments[3] == "/project with spaces/build/elisapkg"
+        assert recipe.command.arguments[4] == "/project with spaces/src/main.elisa"
+        assert recipe.command.environment.count == 6
+        assert recipe.command.environment[0] == "ELISA_STAGE1_BIN" and recipe.command.environment[1] == recipe.stage1
+        assert recipe.command.environment[2] == "ELISA_ALLOW_STALE_STAGE1" and recipe.command.environment[3] == "0"
+        assert recipe.command.environment[4] == "ELISA_RUNTIME_OBJ" and recipe.command.environment[5] == recipe.runtime_object
+        assert recipe.command.environment_mode == ProcessEnvironmentMode.Inherit
+        assert recipe.command.stdin_mode == ProcessStdioMode.Inherit
+        assert recipe.command.stdout_mode == ProcessStdioMode.Inherit and recipe.command.stderr_mode == ProcessStdioMode.Inherit
+        assert recipe.command.timeout_micros == 0
+        assert recipe.command.failure_mode == ProcessFailureMode.Allow
+        assert recipe.build_directory == "/project with spaces/build"
+        assert recipe.success_stdout == "built /project with spaces/build/elisapkg\n"
+
+
+@test
+def elisa_pkg_explicit_relative_overrides_remain_caller_relative() -> void:
+    can Memory.Allocate, Abort.Panic:
+        recipe: Plan = try plan(Inputs{project_root: "/project", compiler_root: "/compiler", caller_directory: "/caller", stage1_override: "tools/stage1", wrapper_override: "tools/wrapper with spaces", runtime_override: "objects/runtime.o", stale_override: "not-a-boolean"}) else err:
+            assert false
+            return
+        assert recipe.command.executable == "tools/wrapper with spaces"
+        assert recipe.stage1 == "tools/stage1" and recipe.runtime_object == "objects/runtime.o"
+        assert recipe.command.working_directory == "/caller"
+        assert recipe.command.environment[3] == "not-a-boolean"
+
+
+@test
+def elisa_pkg_preflight_reports_first_failure_and_stage1_note() -> void:
+    can Memory.Allocate, Abort.Panic:
+        recipe: Plan = try plan(Inputs{project_root: "/project", compiler_root: "/compiler", caller_directory: "/caller"}) else err:
+            assert false
+            return
+        wrapper: PreflightDiagnostic = preflight(recipe, Availability{wrapper_executable: false, stage1_executable: false, runtime_regular_file: false})
+        assert wrapper.issue == PreflightIssue.WrapperNotExecutable and wrapper.status == 2
+        assert wrapper.stderr == "error: compiler wrapper is not executable: /compiler/scripts/elisac_stage1.sh\n"
+        stage1: PreflightDiagnostic = preflight(recipe, Availability{wrapper_executable: true, stage1_executable: false, runtime_regular_file: false})
+        assert stage1.issue == PreflightIssue.Stage1NotExecutable and stage1.status == 2
+        assert stage1.stderr == "error: stage1 compiler is not executable: /compiler/bin/elisac-stage1\nnote: seed the compiler first or set ELISA_STAGE1_BIN\n"
+        runtime: PreflightDiagnostic = preflight(recipe, Availability{wrapper_executable: true, stage1_executable: true, runtime_regular_file: false})
+        assert runtime.issue == PreflightIssue.RuntimeMissing and runtime.status == 2
+        assert runtime.stderr == "error: Elisa runtime object is missing: /compiler/build/runtime/elisacore_runtime.o\n"
+        ready: PreflightDiagnostic = preflight(recipe, Availability{wrapper_executable: true, stage1_executable: true, runtime_regular_file: true})
+        assert ready.issue == PreflightIssue.Ready and ready.status == 0 and ready.stderr == ""
+
+
+@test
+def elisa_pkg_build_plan_rejects_missing_and_invalid_context() -> void:
+    can Memory.Allocate, Abort.Panic:
+        missing: mutable bool = false
+        catch plan(Inputs{project_root: "/project", compiler_root: "", caller_directory: "/caller"}):
+            ok _:
+                assert false
+            error failure:
+                missing <- failure == PlanError.CompilerRootUnset
+        assert missing
+        assert missing_compiler_root_stderr() == "error: set ELISA_COMPILER_ROOT to an Elisa compiler checkout\n"
+        invalid: mutable bool = false
+        catch plan(Inputs{project_root: "relative", compiler_root: "/compiler", caller_directory: "/caller"}):
+            ok _:
+                assert false
+            error failure:
+                invalid <- failure == PlanError.InvalidResolvedContext
+        assert invalid
+
+
+@test
+def elisa_pkg_empty_overrides_and_root_spelling_are_preserved() -> void:
+    can Memory.Allocate, Abort.Panic:
+        recipe: Plan = try plan(Inputs{project_root: "/", compiler_root: "/", caller_directory: "/", stage1_override: "", wrapper_override: "", runtime_override: "", stale_override: ""}) else err:
+            assert false
+            return
+        assert recipe.command.executable == "//scripts/elisac_stage1.sh"
+        assert recipe.stage1 == "//bin/elisac-stage1"
+        assert recipe.runtime_object == "//build/runtime/elisacore_runtime.o"
+        assert recipe.command.arguments[3] == "//build/elisapkg"
+        assert recipe.command.arguments[4] == "//src/main.elisa"
+        assert recipe.command.environment[3] == "0"
+        assert recipe.success_stdout == "built //build/elisapkg\n"
+
+
+@test
+def elisa_pkg_overrides_are_literal_and_reject_nul() -> void:
+    can Memory.Allocate, Abort.Panic:
+        recipe: Plan = try plan(Inputs{project_root: "/project ; $HOME", compiler_root: "/compiler", caller_directory: "/caller", wrapper_override: "tools/* $(ignored)", stale_override: "first\nsecond"}) else err:
+            assert false
+            return
+        assert recipe.command.executable == "tools/* $(ignored)"
+        assert recipe.command.arguments[3] == "/project ; $HOME/build/elisapkg"
+        assert recipe.command.environment[3] == "first\nsecond"
+        rejected: mutable bool = false
+        catch plan(Inputs{project_root: "/project", compiler_root: "/compiler", caller_directory: "/caller", wrapper_override: "wrapper\0suffix"}):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == PlanError.InvalidOverride
+        assert rejected
+
+
+@test
+def elisa_pkg_override_budget_accepts_boundary_and_rejects_overflow() -> void:
+    can Memory.Allocate, Abort.Panic:
+        text: mutable sview = ""
+        for _ in 0..<4096 |text|:
+            text <- text + "x"
+        recipe: Plan = try plan(Inputs{project_root: "/project", compiler_root: "/compiler", caller_directory: "/caller", stale_override: text}) else err:
+            assert false
+            return
+        assert recipe.command.environment[3] == text
+        rejected: mutable bool = false
+        catch plan(Inputs{project_root: "/project", compiler_root: "/compiler", caller_directory: "/caller", stale_override: text + "x"}):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == PlanError.InvalidOverride
+        assert rejected
