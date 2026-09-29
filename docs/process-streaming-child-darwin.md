@@ -5,6 +5,13 @@ It provides no public launcher, scripting builtin or fork operation. Existing
 run_process and capture/environment helpers remain unchanged. No compiler,
 child, native probe, fixture or parity run was launched while authoring it.
 
+The preferred Darwin integration is now the separate
+[posix_spawn backend](process-spawn-darwin.md), based on the installed SDK's
+documented synchronous no-child-on-error contract. This private fork/error-pipe
+path remains unwired; do not enable both paths or claim its EOF/report-loss
+ambiguity has been solved by the codec. Its source can support later bounded
+fallback research without determining the preferred scripting backend.
+
 `process_streaming_child_darwin.elisa` defines a private kernel in
 EsProcessStreamingDarwin for the eventual inherited-stream executor. C int and
 pid_t carriers are explicit i32; execve receives C-string and pointer-vector

@@ -180,3 +180,11 @@ writer. See its contract for stage/errno/candidate validation, the unwired
 close-on-exec pipe requirements and why empty EOF is not proof of exec success.
 Parent descriptor setup, collection, typed unknown outcomes and lifecycle
 integration remain unfinished; no record, pipe or child has run.
+
+The [preferred Darwin parent backend](process-spawn-darwin.md) now uses a private
+plain-posix_spawn ABI and pure return-admission layer. Its installed SDK contract
+reports errors synchronously without a child, avoiding error-pipe EOF inference
+for this platform. It still uses our precomputed merged-PATH candidates and
+explicit owned envp, not posix_spawnp or parent mutation. Attribute ownership,
+resource/group/wait/deadline integration and every native qualification remain
+open; the fork/error-record path stays unwired.
