@@ -1,0 +1,69 @@
+# Source/IR fixtures only. No host environment lookup or mutation is executed.
+include "../../src/ir/ir.elisa"
+
+using EsIr
+
+
+module EsEnvironmentPresenceFixture:
+    public:
+        def lower(source: u8&) -> LowerResult can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            tokens: darray[Lexer::Token] = frontend_tokenize("environment-presence.elisascript", source)
+            file: Ast::File = frontend_parser_parse_file(source, tokens)
+            assert file.errors.count == 0
+            return lower_file(file, "environment-presence")
+
+
+        def module_for(mode: i64, result_type: Type) -> Module can[Memory.Allocate, Abort.Panic]:
+            span: SourceSpan = SourceSpan{file: "environment-presence.elisascript", line: 1, column: 1, end_line: 1, end_column: 2}
+            name: Parameter = Parameter{value: 1, type: Type{kind: TypeKind.Text}, name: "name"}
+            read: Instruction = Instruction{opcode: Opcode.GetEnvironment, result: 2, result_type: result_type, integer: mode, operand_start: 0, operand_count: 1, span: span}
+            block: Block = Block{id: 1, parameter_start: 0, parameter_count: 0, instruction_start: 0, instruction_count: 1, terminator: Terminator{kind: TerminatorKind.Return, span: span}}
+            function: Function = Function{name: "read", parameters: [name], return_type: Type{kind: TypeKind.Void}, effects: ["Environment.Read"], errors: ["EnvironmentError"], operand_pool: [1], edge_arg_pool: [], block_parameter_pool: [], instruction_pool: [read], blocks: [block], entry: 1}
+            return Module{name: "environment-presence", functions: [function]}
+
+
+@test
+def environment_presence_verifier_matches_mode_and_result_type() -> void:
+    can Memory.Allocate, Abort.Panic:
+        text: Module = EsEnvironmentPresenceFixture::module_for(0, Type{kind: TypeKind.Text})
+        presence: Module = EsEnvironmentPresenceFixture::module_for(1, Type{kind: TypeKind.Bool})
+        assert verify(text).count == 0 and verify(presence).count == 0
+        wrong_presence: Module = EsEnvironmentPresenceFixture::module_for(1, Type{kind: TypeKind.Text})
+        wrong_read: Module = EsEnvironmentPresenceFixture::module_for(0, Type{kind: TypeKind.Bool})
+        unknown_mode: Module = EsEnvironmentPresenceFixture::module_for(2, Type{kind: TypeKind.Text})
+        assert verify(wrong_presence).count > 0
+        assert verify(wrong_read).count > 0
+        assert verify(unknown_mode).count > 0
+
+
+@test
+def environment_presence_builtin_has_explicit_read_effect_and_errors() -> void:
+    spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec("has_environment")
+    assert spec.known and spec.arity_min == 1 and spec.arity_max == 1
+    assert spec.return_type == "bool" and spec.lowering_mode == 1
+    assert spec.effects == "Environment.Read" and spec.errors == "EnvironmentError"
+
+
+@test
+def environment_fallback_uses_one_name_evaluation_and_no_broad_error_guard() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def key() -> sview:\n    return \"ELISASCRIPT_PARITY_ENV_VALUE\"\n\ndef lookup() -> sview:\n    return getenv(key(), \"fallback\")\n\ndef present(name: sview) -> bool:\n    return has_environment(name)\n"
+        lowered: LowerResult = EsEnvironmentPresenceFixture::lower(source)
+        assert lowered.issues.count == 0 and verify(lowered.module).count == 0
+        function: Function = lowered.module.functions[1]
+        calls: mutable usize = 0
+        presence: mutable usize = 0
+        reads: mutable usize = 0
+        guards: mutable usize = 0
+        name_id: mutable u32 = 0
+        for instruction in function.instruction_pool |calls, presence, reads, guards, name_id|:
+            if instruction.opcode == Opcode.Call and instruction.symbol == "key":
+                calls <- calls + 1
+                name_id <- instruction.result
+            if instruction.opcode == Opcode.GetEnvironment:
+                assert function.operand_pool[instruction.operand_start.usize()] == name_id
+                presence <- presence + 1 if instruction.integer == 1
+                reads <- reads + 1 if instruction.integer == 0
+            guards <- guards + 1 if instruction.opcode == Opcode.ErrorGuardPush or instruction.opcode == Opcode.ErrorGuardPop
+        assert calls == 1 and presence == 1 and reads == 1 and guards == 0
+        assert lowered.module.functions[2].return_type.kind == TypeKind.Bool

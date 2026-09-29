@@ -3664,15 +3664,28 @@ interpreter and direct bytecode path share the same bounded POSIX `usleep`
 implementation, retry interrupted chunks through the bounded `EINTR` policy,
 and reject negative or non-finite durations.
 `GetEnvironment`, `SetEnvironment`, and `UnsetEnvironment` operate on `Text`
-operands. Reads produce owned `Text` under `Environment.Read`; mutations produce
+operands. Value reads produce owned `Text` under `Environment.Read`; mutations produce
 `Bool` under `Environment.Write`. All three require `EnvironmentError`, reject C
 string truncation hazards and names containing `=`, admit each operand by the
 shared process-text byte ceiling before scanning it, and execute through explicit
 exhaustive opcode arms.
-The scripting-profile `get_environment_or(name, fallback)` lowers to the same
-`GetEnvironment` operation wrapped by `ErrorGuardPush`/`ErrorGuardPop` and a typed
-merge block, so a missing variable follows the fallback edge without evaluating the
-fallback on successful reads.
+`GetEnvironment` mode 0 produces text; mode 1 backs `has_environment(name)` and
+produces `Bool` presence without reading/copying the variable's value. The verifier
+requires the matching result type and rejects unknown modes. An absent variable
+is false in presence mode; invalid names and host/admission failures remain typed
+errors. A present empty value is true, not absence.
+The scripting-profile `get_environment_or(name, fallback)` and its aliases now
+evaluate the name once, branch on presence, read the value only on the present
+edge, and merge typed text values. The fallback is lazy and selected only for
+absence. It no longer wraps the read in a broad error guard that would hide
+malformed names, oversized values or host/allocation failures. This is an
+intentional correctness change; callers needing to recover from all errors must
+say so explicitly with `try ... else ...`.
+Presence and value are separate host observations, not an atomic environment
+snapshot. Concurrent setenv/unsetenv/putenv must be excluded during the borrowed
+host reads; disappearance between presence and value is an error, not fallback.
+Both modes and the corrected fallback have source-only verifier/lowering fixtures;
+host, bytecode and public-launcher runtime behavior remain unqualified.
 
 EsEnvironment provides the child-facing data boundary for those operations.
 EnvironmentEntry names are validated and unique, values remain NUL-free and

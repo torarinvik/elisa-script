@@ -53,13 +53,20 @@ also observes the live C environment, while Python's `os.environ` is initialized
 as a mapping at interpreter startup: changes outside that mapping, duplicate keys
 and embedded-host use remain outside the ordinary fresh-process contract.
 
-The existing interpreter environment operation returns an undifferentiated
-`Environment` failure for missing variables, invalid names and bounded-host-read
-failures. Its fallback lowering catches that error edge, so using a default string
-would hide failures as absence. This adapter intentionally does not do that.
-It still needs a native build qualification and a presence-aware interpreted/
-bytecode operation or equivalent qualified host bridge. Do not assume that adding
-an extern declaration automatically enables the public interpreted launcher.
+The text-read interpreter operation still reports `Environment` failures for
+missing variables, invalid names and bounded-host-read failures. A new source-only
+presence mode now backs `has_environment(name)` and reports false only for true
+absence; defaulted getters branch on that presence instead of broadly swallowing
+lookup failures. Its registry/lowering/verifier/interpreter/direct-bytecode paths
+and pure fixtures are authored, not executed. Presence/value reads are separate
+host observations, not an atomic snapshot.
+
+This native candidate still needs build qualification. Its adapter bounds value
+copying to 1 MiB before appending bytes, whereas the generic interpreted getter
+has the wider runtime ceiling. A qualified explicit value-copy budget and public-
+launcher integration are still needed before migrating this exact candidate away
+from its native adapter. Do not assume that adding an extern declaration or a
+presence registry row automatically enables an equivalent public interpreted port.
 
 ## Explicit differences, not accepted parity
 
