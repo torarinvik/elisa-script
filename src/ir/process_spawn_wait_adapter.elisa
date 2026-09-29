@@ -1,11 +1,38 @@
 # Unwired private waiter handoff. Include only after interpret.elisa defines
 # Machine/ProcessWaiter and its host helpers. No default facade includes this.
 include "process_spawn_budget_model.elisa"
+include "process_spawn_budget_darwin.elisa"
 include "../runtime/process_spawn_wait_model.elisa"
 include "../runtime/process_launch_completion_model.elisa"
 
 extend EsIr:
     private:
+        # Called only by a qualified host entry with caller-held launch storage.
+        # It remains reachable only inside EsIr; no source primitive or public
+        # launcher includes this file. In particular, a fatal unresolved owner
+        # must outlive this return rather than be discarded by a stack wrapper.
+        def evaluate_prepared_launch(machine: mutable Machine&, launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, process_id: u64, attribute_id: u64, owner_token: u64, timeout_micros: u64, storage: EsProcessLaunchStorage::Prepared&, tables: EsProcessLaunchVectors::BorrowedTables&) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            if machine.failure != InterpretFailure.None or launch.phase != LaunchPhase.Fresh:
+                # Do not start a second workflow from a failed machine or reuse
+                # a consumed native owner. Still dispatch any already captured
+                # Running child for mandatory cleanup before fatal return.
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                rejected: EsProcessLaunchCompletion::Report = completion_report(launch, true)
+                return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, rejected)
+            launch_failed: mutable bool = false
+            # The machine's existing usage/policy are shared with reservation
+            # and completion. Do not create a fresh policy/counter for a child.
+            catch launch_prepared_budgeted(launch, ledger, machine.resource_usage, machine.resource_policy, process_id, attribute_id, owner_token, storage, tables):
+                ok:
+                    pass
+                error failure:
+                    launch_failed <- true
+            report: EsProcessLaunchCompletion::Report = completion_report(launch, launch_failed)
+            # Even a typed setup/search/cleanup error must visit this dispatcher:
+            # a captured Running PID cannot be hidden by an early error return.
+            return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, report)
+
+
         def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             match EsProcessLaunchCompletion::route(child, budget.held, report):
                 EsProcessLaunchCompletion::Route.Wait:

@@ -235,3 +235,11 @@ uncertainty remains fatal even after child reaping; canonical Released leases
 are required before recoverable no-child classification. Pure report/dispatch
 fixtures are authored but unrun. Namespace entry/retained-owner/native lifetime
 qualification and actual public source/bytecode/UI wiring remain open.
+
+The private Darwin host workflow now shares EsIr's host-execution namespace with
+the waiter, keeping native storage and C declarations private. A connected
+private entry always dispatches retained outcomes after typed coordinator errors,
+without resetting machine budgets or exporting raw slots. No facade includes
+it. A small namespace/default/projection fixture is authored but unrun; session
+storage/lifetime, fatal finalization, native/deadline/group qualification and
+actual public source/bytecode/tiny UI CC integration remain open.

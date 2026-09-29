@@ -339,3 +339,36 @@ retaining owners and excluding mutation. No public launcher includes this seam.
 Native/callback lifetime qualification, deadline origin, group identity, panic/
 cancellation finalization and source/bytecode/tiny UI CC wiring remain open. No
 compiler, fixture, attribute operation, spawn, signal or parity run occurred.
+
+## Private host namespace and connected entry (source-only)
+
+The raw Darwin bridge, opaque attribute owner, parent search and budgeted native
+workflow now extend the interpreter host's private `EsIr` namespace. Their pure
+models remain separate public-data modules. This resolves the former private
+native-module/private-waiter boundary without exporting handles, private storage
+types, callbacks carrying native slots, or guessed opaque-layout serialization.
+The flag constants use the specific private `ProcessSpawnFlags` const module.
+The native bridge includes the type-only IR model, not an execution facade.
+
+`evaluate_prepared_launch` is a private connected entry: it invokes the native
+coordinator with the same machine usage/policy and caller-held launch storage,
+captures whether a typed error occurred, projects the retained report, and always
+visits `finish_prepared_launch`. A captured child cannot be bypassed by an early
+typed-error return. Failed-machine or consumed-owner reentry starts no new native
+workflow; it preserves Panic and dispatches any already owned Running child for
+mandatory cleanup. The helper is not a public source primitive or installed
+launcher operation, and no default facade includes the seam.
+
+The caller must retain the launch/ledger/buffers across the operation and preserve
+unresolved owners after fatal return. A stack wrapper that discards an unreaped
+child or uncertain opaque slot would violate this contract. Session-owned storage,
+panic/cancellation finalization, pre-launch deadline origin, post-reap group
+identity, host ABI and generated lifetime/effect qualification are still pending
+before public source/bytecode/UI wiring. No unsafe private-type inference or
+compiler visibility loophole is used as ownership authority.
+
+A small dormant fixture includes the native ownership/model seam without the
+full IR execution facade. Its public test entry runs inside EsIr and observes
+private defaults/constants and public report routing only; it does not call any
+native function. It remains uncompiled/unrun, as does the connected entry. No
+compiler, attribute, child, waiter, signal or parity process was launched here.
