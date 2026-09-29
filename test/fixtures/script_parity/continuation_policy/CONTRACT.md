@@ -21,6 +21,11 @@ each of the eight silent source predicates, missing paths in every preflight
 position, and multi-defect cases that pin first-failure ordering. Run each case
 against an isolated copied repository; do not mutate live compiler sources.
 
+`test/script_parity/continuation_policy_audit_launcher_test.elisascript` is a
+gated public-launcher smoke seed, not that complete matrix: it checks the clean
+case, one policy-term diagnostic, and one silent verifier-predicate failure.
+Expand it before claiming full acceptance.
+
 The candidate adds fail-closed UTF-8 read bounds of 1.5 MiB per source and 3
 MiB total. Those limits are not part of the shell reference contract. Invalid
 UTF-8, unreadable files, and over-limit sources are therefore outside parity
