@@ -150,6 +150,27 @@ requires separate operator/tool qualification. Filesystem identity checks remain
 observational and do not prevent concurrent replacement. No reference, candidate,
 preflight, hash child, fixture or compiler ran.
 
+Fixture setup, later rewrites and case boundaries now reject observed symlinks
+or missing/nondirectory roots and recorded parents before writing or launching.
+New files/directories/links refuse observed existing entries (including dangling
+links); rewrites refuse an observed symlink/non-file final entry. Creation
+records ancestors before descendants. Cleanup rechecks all recorded parents
+before each reverse file unlink, then the required parent prefix before each
+reverse directory removal and the root before its final removal. Failed-copy
+entries that never appeared are skipped, while dangling final symlinks are
+unlinked. Unrecorded entries are never recursively erased: nonempty-directory
+removal fails and the harness reports its fixture path.
+
+These checks are observational, not exclusive creation, inode leases,
+descriptor-relative traversal/deletion, hardlink containment or atomic
+no-follow rewrites. Replacement after a check can still race an operation.
+The reported path is diagnostic, not proof that the original root inode remains
+reachable there. Native qualification must cover partial setup, missing files,
+dangling links, root/nested-parent replacement, final-file replacement, unexpected
+entries and failed directory removal, with an independently retained outside
+sentinel proving it is not modified/deleted. No filesystem fixture or cleanup
+ran; the harness is not a sandbox for untrusted children.
+
 ## Bounded behavior and open gaps
 
 The candidate reads at most 16 MiB per file and 64 MiB in aggregate, processing

@@ -145,50 +145,77 @@ module EsSourceLengthLauncherParity:
             return true
 
 
-        def write_new(root: mutable TemporaryRoot&, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+        def write_new(root: mutable TemporaryRoot&, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read]:
+            return false if not parents_intact(root, root.directories.count)
             target: Path = root.path.joinpath(relative)
+            return false if path_exists(target) or is_symlink(target)
             root.files.push(target)
             written: usize = try write_text(target, contents) else err:
                 return false
             return written == len(contents)
 
 
-        def rewrite(root: TemporaryRoot, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
-            written: usize = try write_text(root.path.joinpath(relative), contents) else err:
+        def rewrite(root: TemporaryRoot, relative: sview, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read]:
+            return false if not parents_intact(root, root.directories.count)
+            target: Path = root.path.joinpath(relative)
+            return false if is_symlink(target) or not is_file(target)
+            written: usize = try write_text(target, contents) else err:
                 return false
             return written == len(contents)
 
 
-        def make_directory(root: mutable TemporaryRoot&, relative: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+        def make_directory(root: mutable TemporaryRoot&, relative: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write]:
+            return false if not parents_intact(root, root.directories.count)
             target: Path = root.path.joinpath(relative)
+            return false if path_exists(target) or is_symlink(target)
             created: bool = try create_directory(target) else false
             return false if not created
             root.directories.push(target)
             return true
 
 
-        def make_symlink(root: mutable TemporaryRoot&, relative: sview, target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+        def make_symlink(root: mutable TemporaryRoot&, relative: sview, target: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read]:
+            return false if not parents_intact(root, root.directories.count)
             link: Path = root.path.joinpath(relative)
+            return false if path_exists(link) or is_symlink(link)
             created: bool = try symlink(target, link) else false
             return false if not created
             root.files.push(link)
             return true
 
 
-        def cleanup(root: TemporaryRoot) -> bool can[Memory.Allocate, Abort.Panic, File.Write, Directory.Write]:
+        # Creation records ancestors before descendants. During reverse
+        # cleanup, only the still-retained prefix must remain intact. This is
+        # an observational path fence, not atomic identity or native authority.
+        def parents_intact(root: TemporaryRoot, remaining: usize) -> bool can[Memory.Allocate, Abort.Panic, File.Read, Directory.Read]:
+            return false if remaining > root.directories.count or is_symlink(root.path) or not is_directory(root.path)
+            for index in 0..<remaining:
+                directory: Path = root.directories[index]
+                return false if is_symlink(directory) or not is_directory(directory)
+            return true
+
+
+        def cleanup(root: TemporaryRoot) -> bool can[Memory.Allocate, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write]:
             return true if not root.created
             cleaned: mutable bool = true
             for index in 0..<root.files.count |root, cleaned|:
-                removed: bool = try remove_path(root.files[root.files.count - index - 1]) else false
-                cleaned <- removed and cleaned
+                return false if not parents_intact(root, root.directories.count)
+                target: Path = root.files[root.files.count - index - 1]
+                # Registration precedes writes, so partial setup may leave a
+                # missing file. Dangling final symlinks must still be unlinked.
+                if path_exists(target) or is_symlink(target):
+                    removed: bool = try remove_path(target) else false
+                    cleaned <- removed and cleaned
             for index in 0..<root.directories.count |root, cleaned|:
+                return false if not parents_intact(root, root.directories.count - index)
                 removed: bool = try remove_directory(root.directories[root.directories.count - index - 1]) else false
                 cleaned <- removed and cleaned
+            return false if not parents_intact(root, 0)
             removed_root: bool = try remove_directory(root.path) else false
             return removed_root and cleaned
 
 
-        def copy_sources(root: mutable TemporaryRoot&) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Unsafe.PointerCast]:
+        def copy_sources(root: mutable TemporaryRoot&) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Unsafe.PointerCast]:
             copied_bytes: mutable usize = 0
             for source in sources() |root, copied_bytes|:
                 contents: sview = try EsBoundedText::read_utf8(path(source.source), Tools::COPY_BYTES) else err:
@@ -219,6 +246,7 @@ module EsSourceLengthLauncherParity:
 
 
         def case_matches(auth: Authorization, root: TemporaryRoot, status: i64, stderr: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast]:
+            return false if not root.ready or not parents_intact(root, root.directories.count)
             environment: darray[DifferentialEnvironmentEntry] = [
                 DifferentialEnvironmentEntry{name: "PATH", value: Tools::PATH_VALUE},
                 DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"}
@@ -239,11 +267,11 @@ module EsSourceLengthLauncherParity:
             }
             reference_run: DifferentialRun = try run_differential_process(reference) else err:
                 return false
-            return false if not expected_observation(reference_run, status, stderr)
+            return false if not expected_observation(reference_run, status, stderr) or not parents_intact(root, root.directories.count)
             candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
                 return false
             comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
-            return comparison.equal and expected_observation(candidate_run, status, stderr)
+            return comparison.equal and expected_observation(candidate_run, status, stderr) and parents_intact(root, root.directories.count)
 
 
         def expected_observation(run: DifferentialRun, status: i64, stderr: sview) -> bool:
