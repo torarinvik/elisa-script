@@ -7,6 +7,22 @@ Its BSD license is retained in `LICENSE`, matching the original Skia license
 SHA-256 `5f787c1dee3c56547f09ccc2906ab5f5293c4d8dd6c8654e573216c38e908dbd`.
 Original scripts/callers are unchanged.
 
+## Observed production caller boundary
+
+`../elisa-skia/infra/bots/recipe_modules/vars/api.py` calls this script from
+`VarsApi.getenv` as `python3 <resource> <var>`, then strictly decodes captured
+stdout as UTF-8 and applies `rstrip()`. The observed call sites request
+`SWARMING_BOT_ID` and `SWARMING_TASK_ID`; therefore the no-argument traceback is
+not part of those caller paths, though it remains a standalone CLI difference.
+The recipe API has no platform-specific branch around this call, and checked-in
+Windows recipe expectations also include the resource. Consequently, the
+current POSIX environment adapters and POSIX parity matrices are only a
+platform slice: they do not establish replacement parity for Skia's Windows
+recipe execution. That requires a Windows environment backend and a
+platform-specific qualification path, or an explicitly agreed exclusion before
+any Skia caller is migrated. A future integration comparison must include the
+caller boundary as well as the script's direct stdout contract.
+
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and
 private libc ABI, not Python, a shell, a subprocess or the original script.
