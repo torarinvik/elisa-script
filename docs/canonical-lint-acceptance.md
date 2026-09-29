@@ -147,6 +147,39 @@ The public launcher, default interpreter/bytecode dispatch and lint port still
 do not include the prepared-spawn seam. No diagnostic text or shell-equivalence
 claim follows from this private publication step.
 
+The paired payload decoder now validates exact arity and runtime kinds, signed
+count/code bounds before narrowing, pool ranges, non-NUL u8 cells, aggregate
+bytes and denial/search consistency before allocating owned byte copies. A
+returned snapshot survives later payload/pool reuse and never contains a view
+into that pool. It reuses cause validation, so an interrupted search still has
+no native failure cause. Authored malformed-field/range/byte/identity and reuse
+fixtures remain uncompiled/unrun. Decoding accepts structurally valid explicitly
+raised data too; it is not evidence of host execution or native ownership.
+
+## Diagnostic source investigation, not a qualified renderer
+
+Apple's published Bash sources separate `exec` lookup/path expansion from native
+failure handling. The exec builtin uses command lookup and full-path conversion;
+the lookup implementation uses filesystem status and an executable-preferred
+fallback. Native failure handling has a distinct directory branch, while error
+prefixes include script and executing-line context. See Apple's
+[exec builtin](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/exec.def),
+[command lookup](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/findcmd.c),
+[execution](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/execute_cmd.c)
+and [error prefix](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/error.c)
+sources. These links are mutable source references, not an immutable source/build
+provenance chain for our pinned `/bin/bash` hash or an observed byte oracle.
+
+Consequently, retained access-denied attempt numbers alone do not identify a
+shell-selected pathname or distinguish a directory from a nonexecutable file.
+Before implementing exact lint diagnostics, qualify the pinned shell's source,
+patch/build profile and observations, then supply appropriate filesystem facts,
+physical-cwd/full-path behavior and wrapper/line context. Do not substitute a
+hardcoded errno message or silently change the matrix's authored status
+expectations based on an unmatched source checkout. The seven failure plans
+retain exact reference/candidate comparison, without normalization, and remain
+unrun. Execution authorization and external RSS/time containment are still required.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains

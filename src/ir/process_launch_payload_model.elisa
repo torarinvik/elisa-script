@@ -26,6 +26,7 @@ module EsProcessLaunchPayload:
 
         error PayloadError:
             StorageLimit
+            InvalidPayload
 
 
         # Arrays refer into the caller's same run-long flat RuntimeValue pool.
@@ -53,7 +54,86 @@ module EsProcessLaunchPayload:
             payloads.push(EsIr::runtime_int(saved.context_bytes.i64()))
             return payloads
 
+
+        # Erased runtime inputs may be malformed or explicitly raised by user
+        # code. Decode to owned bytes, not views into a soon-reused value pool.
+        # This validates data only; it cannot prove a host launch occurred.
+        def decode(payloads: darray[EsIr::RuntimeValue]&, storage: darray[EsIr::RuntimeValue]&) -> EsProcessLaunchDiagnostic::Snapshot error[PayloadError, EsProcessLaunchDiagnostic::ContextError, EsProcessLaunchFailure::ReceiptError] can[Memory.Allocate, Abort.Panic]:
+            raise PayloadError.InvalidPayload if payloads.count != Schema::FIELDS
+            for index in 0..<Schema::FIELDS:
+                if index == Schema::SAW_DENIED:
+                    raise PayloadError.InvalidPayload if payloads[index].kind != EsIr::RuntimeValueKind.Bool
+                elif index >= Schema::REQUESTED and index <= Schema::LAST_DENIED:
+                    raise PayloadError.InvalidPayload if payloads[index].kind != EsIr::RuntimeValueKind.Array
+                else:
+                    raise PayloadError.InvalidPayload if payloads[index].kind != EsIr::RuntimeValueKind.Int
+            cause: EsProcessLaunchFailure::Payload = EsProcessLaunchFailure::Payload{
+                stage: payloads[Schema::STAGE].integer, code: payloads[Schema::CODE].integer,
+                attempts: payloads[Schema::ATTEMPTS].integer, saw_denied: payloads[Schema::SAW_DENIED].boolean
+            }
+            receipt: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_payload(cause)
+            first: usize = try decode_count(payloads[Schema::FIRST_DENIED_ATTEMPT], EsProcessSpawnOwner::Limits::ATTEMPTS)
+            last: usize = try decode_count(payloads[Schema::LAST_DENIED_ATTEMPT], EsProcessSpawnOwner::Limits::ATTEMPTS)
+            candidates: usize = try decode_count(payloads[Schema::CANDIDATE_COUNT], EsProcessEnvironmentPlan::Limits::SEARCH_CANDIDATES)
+            context_bytes: usize = try decode_count(payloads[Schema::CONTEXT_BYTES], EsProcessLaunchDiagnostic::Limits::BYTES)
+            raise PayloadError.InvalidPayload if candidates == 0 or receipt.attempts > candidates
+            if receipt.saw_denied:
+                raise PayloadError.InvalidPayload if first == 0 or first > last or last > receipt.attempts
+            else:
+                raise PayloadError.InvalidPayload if first != 0 or last != 0
+            if receipt.stage == EsProcessLaunchFailure::Stage.Spawn:
+                raise PayloadError.InvalidPayload if EsProcessExecSearch::after_failure(receipt.code) != EsProcessExecSearch::Action.Stop and receipt.attempts != candidates
+            total: mutable usize = 0
+            for index in Schema::REQUESTED..<(Schema::LAST_DENIED + 1) |total|:
+                value: EsIr::RuntimeValue = payloads[index]
+                raise PayloadError.InvalidPayload if not EsIr::runtime_array_range_valid(storage, value)
+                count: usize = value.array_count.usize()
+                raise PayloadError.InvalidPayload if count >= EsProcessEnvironmentPlan::Limits::PATH_BYTES or count > EsProcessLaunchDiagnostic::Limits::BYTES - total
+                total <- total + count
+                for offset in 0..<count:
+                    byte: EsIr::RuntimeValue = storage[value.array_start.usize() + offset]
+                    raise PayloadError.InvalidPayload if byte.kind != EsIr::RuntimeValueKind.Int or byte.integer <= 0 or byte.integer > 255
+            raise PayloadError.InvalidPayload if total != context_bytes or payloads[Schema::REQUESTED].array_count == 0
+            raise PayloadError.InvalidPayload if (receipt.attempts == 0) != (payloads[Schema::LAST_ATTEMPTED].array_count == 0)
+            if receipt.saw_denied:
+                raise PayloadError.InvalidPayload if payloads[Schema::FIRST_DENIED].array_count == 0 or payloads[Schema::LAST_DENIED].array_count == 0
+                raise PayloadError.InvalidPayload if first == last and not same_bytes(storage, payloads[Schema::FIRST_DENIED], payloads[Schema::LAST_DENIED])
+                raise PayloadError.InvalidPayload if last == receipt.attempts and not same_bytes(storage, payloads[Schema::LAST_DENIED], payloads[Schema::LAST_ATTEMPTED])
+            else:
+                raise PayloadError.InvalidPayload if payloads[Schema::FIRST_DENIED].array_count != 0 or payloads[Schema::LAST_DENIED].array_count != 0
+            # All scalar widths, ranges, byte cells, cross-field identities and
+            # aggregate copy sizes are admitted before allocating byte copies.
+            saved: EsProcessLaunchDiagnostic::Snapshot = EsProcessLaunchDiagnostic::Snapshot{
+                cause: cause, requested: copy_bytes(storage, payloads[Schema::REQUESTED]),
+                last_attempted: copy_bytes(storage, payloads[Schema::LAST_ATTEMPTED]),
+                first_denied: copy_bytes(storage, payloads[Schema::FIRST_DENIED]),
+                last_denied: copy_bytes(storage, payloads[Schema::LAST_DENIED]),
+                first_denied_attempt: first, last_denied_attempt: last,
+                candidate_count: candidates, context_bytes: context_bytes
+            }
+            try EsProcessLaunchDiagnostic::validate_snapshot(saved)
+            return saved
+
     private:
+        def decode_count(value: EsIr::RuntimeValue&, limit: usize) -> usize error[PayloadError]:
+            raise PayloadError.InvalidPayload if value.integer < 0 or value.integer > limit.i64()
+            return value.integer.usize()
+
+
+        def same_bytes(storage: darray[EsIr::RuntimeValue]&, left: EsIr::RuntimeValue&, right: EsIr::RuntimeValue&) -> bool:
+            return false if left.array_count != right.array_count
+            for offset in 0..<left.array_count.usize():
+                return false if storage[left.array_start.usize() + offset].integer != storage[right.array_start.usize() + offset].integer
+            return true
+
+
+        def copy_bytes(storage: darray[EsIr::RuntimeValue]&, value: EsIr::RuntimeValue&) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[u8] = []
+            for offset in 0..<value.array_count.usize() |copied|:
+                copied.push(storage[value.array_start.usize() + offset].integer.u8())
+            return copied
+
+
         def append_bytes(storage: mutable darray[EsIr::RuntimeValue]&, text: darray[u8]&) -> EsIr::RuntimeValue can[Memory.Allocate, Abort.Panic]:
             start: u32 = storage.count.u32()
             for byte in text |storage|:

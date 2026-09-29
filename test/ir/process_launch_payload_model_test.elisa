@@ -9,6 +9,14 @@ module EsLaunchPayloadFixture:
                 requested: [255u8,36u8,32u8,116u8], candidate_count: 1, context_bytes: 4
             }
 
+
+        def assert_invalid(payloads: darray[EsIr::RuntimeValue]&, storage: darray[EsIr::RuntimeValue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            catch EsProcessLaunchPayload::decode(payloads, storage):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchPayload::PayloadError.InvalidPayload
+
     public:
         @test
         def launch_payload_pins_twelve_typed_fields_in_run_owned_storage() -> void:
@@ -99,3 +107,132 @@ module EsLaunchPayloadFixture:
                 assert storage.count == 4 and payload.count == 12
                 assert payload[0].integer == 4 and payload[1].integer == 13 and payload[3].boolean
                 assert payload[8].integer == 1 and payload[9].integer == 1
+
+
+        @test
+        def launch_payload_decoder_copies_raw_bytes_before_runtime_pool_reuse() -> void:
+            can Memory.Allocate, Abort.Panic:
+                saved: EsProcessLaunchDiagnostic::Snapshot = admission()
+                storage: mutable darray[EsIr::RuntimeValue] = [EsIr::runtime_int(77)]
+                payloads: mutable darray[EsIr::RuntimeValue] = try EsProcessLaunchPayload::encode(saved, storage) else failure:
+                    assert false
+                    return
+                decoded: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchPayload::decode(payloads, storage) else failure:
+                    assert false
+                    return
+                assert decoded.cause.stage == 1 and decoded.cause.code == 0 and decoded.cause.attempts == 0 and not decoded.cause.saw_denied
+                assert decoded.requested.count == 4 and decoded.requested[0] == 255u8 and decoded.requested[1] == 36u8
+                assert decoded.requested[2] == 32u8 and decoded.requested[3] == 116u8
+                assert decoded.context_bytes == 4 and decoded.candidate_count == 1
+                assert decoded.last_attempted.count == 0 and decoded.first_denied.count == 0 and decoded.last_denied.count == 0
+                storage[1] <- EsIr::runtime_int(99)
+                storage.truncate(0)
+                payloads.truncate(0)
+                assert decoded.requested[0] == 255u8 and decoded.requested[3] == 116u8
+                assert decoded.cause.stage == 1 and decoded.context_bytes == 4
+
+
+        @test
+        def launch_payload_decoder_rejects_wrong_arity_kinds_and_pool_ranges() -> void:
+            can Memory.Allocate, Abort.Panic:
+                saved: EsProcessLaunchDiagnostic::Snapshot = admission()
+                storage: mutable darray[EsIr::RuntimeValue] = []
+                payloads: mutable darray[EsIr::RuntimeValue] = try EsProcessLaunchPayload::encode(saved, storage) else failure:
+                    assert false
+                    return
+                payloads[3] <- EsIr::runtime_int(0)
+                assert_invalid(payloads, storage)
+                payloads[3] <- EsIr::runtime_bool(false)
+                payloads[4] <- EsIr::runtime_text("not a byte array")
+                assert_invalid(payloads, storage)
+                payloads[4] <- EsIr::runtime_array(4294967295u32, 4)
+                assert_invalid(payloads, storage)
+                payloads[4] <- EsIr::runtime_array(1, 4)
+                assert_invalid(payloads, storage)
+                payloads[4] <- EsIr::runtime_array(0, 4096)
+                assert_invalid(payloads, storage)
+                payloads[4] <- EsIr::runtime_array(0, 4)
+                payloads[5] <- EsIr::runtime_array(5, 0)
+                assert_invalid(payloads, storage)
+                payloads[5] <- EsIr::runtime_array(4, 0)
+                payloads[0] <- EsIr::runtime_bool(true)
+                assert_invalid(payloads, storage)
+                payloads[0] <- EsIr::runtime_int(1)
+                payloads.push(EsIr::runtime_int(99))
+                assert_invalid(payloads, storage)
+                payloads.truncate(11)
+                assert_invalid(payloads, storage)
+                assert storage.count == 4 and storage[0].integer == 255
+
+
+        @test
+        def launch_payload_decoder_checks_wide_counts_and_byte_cells_before_narrowing() -> void:
+            can Memory.Allocate, Abort.Panic:
+                saved: EsProcessLaunchDiagnostic::Snapshot = admission()
+                storage: mutable darray[EsIr::RuntimeValue] = []
+                payloads: mutable darray[EsIr::RuntimeValue] = try EsProcessLaunchPayload::encode(saved, storage) else failure:
+                    assert false
+                    return
+                for invalid in [-1i64, 4097i64, 4294967297i64, 9223372036854775807i64]:
+                    payloads[8] <- EsIr::runtime_int(invalid)
+                    assert_invalid(payloads, storage)
+                payloads[8] <- EsIr::runtime_int(0)
+                payloads[11] <- EsIr::runtime_int(16381)
+                assert_invalid(payloads, storage)
+                payloads[11] <- EsIr::runtime_int(3)
+                assert_invalid(payloads, storage)
+                payloads[11] <- EsIr::runtime_int(4)
+                payloads[10] <- EsIr::runtime_int(0)
+                assert_invalid(payloads, storage)
+                payloads[10] <- EsIr::runtime_int(1)
+                for invalid_byte in [0i64, -1i64, 256i64, 4294967551i64]:
+                    storage[0] <- EsIr::runtime_int(invalid_byte)
+                    assert_invalid(payloads, storage)
+                storage[0] <- EsIr::runtime_bool(true)
+                assert_invalid(payloads, storage)
+                storage[0] <- EsIr::runtime_int(255)
+                decoded: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchPayload::decode(payloads, storage) else failure:
+                    assert false
+                    return
+                assert decoded.requested[0] == 255u8 and storage.count == 4
+
+
+        @test
+        def launch_payload_decoder_checks_denial_cross_fields_and_interrupted_search() -> void:
+            can Memory.Allocate, Abort.Panic:
+                saved: EsProcessLaunchDiagnostic::Snapshot = EsProcessLaunchDiagnostic::Snapshot{
+                    cause: EsProcessLaunchFailure::Payload{stage: 4, code: 13, attempts: 3, saw_denied: true},
+                    requested: [116u8], last_attempted: [99u8], first_denied: [97u8], last_denied: [98u8],
+                    first_denied_attempt: 1, last_denied_attempt: 2, candidate_count: 3, context_bytes: 4
+                }
+                storage: mutable darray[EsIr::RuntimeValue] = []
+                payloads: mutable darray[EsIr::RuntimeValue] = try EsProcessLaunchPayload::encode(saved, storage) else failure:
+                    assert false
+                    return
+                decoded: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchPayload::decode(payloads, storage) else failure:
+                    assert false
+                    return
+                assert decoded.cause.code == 13 and decoded.first_denied_attempt == 1 and decoded.last_denied_attempt == 2
+                assert decoded.last_attempted[0] == 99u8 and decoded.first_denied[0] == 97u8 and decoded.last_denied[0] == 98u8
+                payloads[9] <- EsIr::runtime_int(3)
+                assert_invalid(payloads, storage)
+                payloads[9] <- EsIr::runtime_int(2)
+                payloads[8] <- EsIr::runtime_int(2)
+                assert_invalid(payloads, storage)
+                payloads[8] <- EsIr::runtime_int(1)
+                payloads[10] <- EsIr::runtime_int(4)
+                assert_invalid(payloads, storage)
+                payloads[0] <- EsIr::runtime_int(3)
+                interrupted: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchPayload::decode(payloads, storage) else failure:
+                    assert false
+                    return
+                assert interrupted.cause.stage == 3 and interrupted.cause.code == 13 and interrupted.candidate_count == 4
+                receipt: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_payload(interrupted.cause) else failure:
+                    assert false
+                    return
+                catch EsProcessLaunchFailure::native_cause(receipt):
+                    ok _:
+                        assert false
+                    error failure:
+                        assert failure == EsProcessLaunchFailure::ReceiptError.NoNativeCause
+                assert storage.count == 4 and storage[2].integer == 97 and storage[3].integer == 98
