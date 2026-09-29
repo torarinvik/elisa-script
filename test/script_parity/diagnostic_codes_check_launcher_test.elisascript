@@ -1,0 +1,171 @@
+# Dormant read-only check-mode projection. No process starts without explicit
+# reauthorization, separate launcher qualification and an external RSS guard.
+include "../../src/testing/differential.elisa"
+include "../../src/runtime/bounded_text_posix.elisa"
+include "../../src/testing/checksum_record_model.elisa"
+include "skia_environment_launcher_plan.elisa"
+
+using EsDifferential
+
+
+module EsDiagnosticCodesCheckParity:
+    private:
+        const module Paths:
+            REFERENCE: sview = "../Elisa-LSP/scripts/generate_diagnostic_codes.py"
+            CANDIDATE: sview = "ports/Elisa-LSP/scripts/generate_diagnostic_codes.elisascript"
+            MODEL: sview = "ports/Elisa-LSP/scripts/diagnostic_codes_model.elisa"
+            ENUM: sview = "../Elisa-compiler/src/semantic/semantic_types_diagnostic_kind.elisa"
+            GENERATED: sview = "../Elisa-LSP/src/diagnostic_codes.elisa"
+
+
+        const module Tools:
+            PYTHON: sview = "/usr/bin/python3"
+            PYTHON_SHA256: sview = "34129c71a01a74f7f3b2443521519b2e5447553fa187f5fcafaaf8c42cc192e2"
+            PERL: sview = "/usr/bin/perl"
+            PERL_SHA256: sview = "85e5621137742a37be052f58800372b2005f91f609ad55019832214b5d9e61bc"
+            SHA256: sview = "/usr/bin/shasum"
+            SHA256_SHA256: sview = "0812595f981a26f813d98dc380af14d4af427626c9339eda29eb849ae13de1e3"
+            COMPILER: sview = EsSkiaEnvironmentLauncherPlan::Pins::COMPILER
+            PATH_VALUE: sview = "/usr/bin:/bin:/usr/sbin:/sbin"
+            TIMEOUT_STEPS: u64 = 10000
+            OUTPUT_BYTES: u64 = 16384
+            PIN_BYTES: usize = 67108864
+            EXPECTED: sview = "diagnostic code adapter is current (621 variants): ../Elisa-LSP/src/diagnostic_codes.elisa\n"
+
+
+        struct Authorization:
+            launcher: sview
+            launcher_sha256: sview
+            compiler_sha256: sview
+
+
+        error GateError:
+            Disabled
+            MissingGuard
+            WrongCompiler
+            InvalidIdentity
+
+
+        def environment_value(name: sview) -> sview can[Environment.Read]:
+            return try getenv(name, "") else ""
+
+
+        def authorization() -> Authorization error[GateError] can[Environment.Read]:
+            raise GateError.Disabled if environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") != "1" or environment_value("ELISASCRIPT_DIAGNOSTIC_CODES_LAUNCHER_QUALIFIED") != "1"
+            raise GateError.MissingGuard if environment_value("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD") != "active"
+            raise GateError.WrongCompiler if environment_value("ELISA_LOCAL_COMPILER") != Tools::COMPILER or environment_value("ELISACORE_BIN") != Tools::COMPILER
+            launcher: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER")
+            launcher_hash: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256")
+            compiler_hash: sview = environment_value("ELISASCRIPT_LOCAL_COMPILER_SHA256")
+            try EsSkiaEnvironmentLauncherPlan::validate_roles(
+                EsSkiaEnvironmentLauncherPlan::Identity{path: launcher, hash: launcher_hash},
+                EsSkiaEnvironmentLauncherPlan::Identity{path: Tools::PYTHON, hash: Tools::PYTHON_SHA256}, compiler_hash) else err:
+                raise GateError.InvalidIdentity
+            return Authorization{launcher: launcher, launcher_sha256: launcher_hash, compiler_sha256: compiler_hash}
+
+
+        def has_sha256(target: sview, expected: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not EsSkiaEnvironmentLauncherPlan::valid_hash(expected) or target == "" or target == "-" or len(target) > EsChecksumRecord::Limits::FILENAME_BYTES
+            for byte in target:
+                return false if byte == 0u8
+            return false if not is_file(path(target)) or is_symlink(path(target))
+            size: usize = try file_size(path(target)) else err:
+                return false
+            return false if size == 0 or size > Tools::PIN_BYTES
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "diagnostic-codes-identity",
+                target: Tools::SHA256, arguments: ["-a", "256", "-t", "--", target],
+                environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            observed: DifferentialRun = try run_differential_process(runner) else err:
+                return false
+            return false if observed.outcome != DifferentialRunOutcome.Completed or observed.error_text != "" or observed.exit_status != 0 or observed.stderr != ""
+            return try EsChecksumRecord::sha256_text_record_matches(observed.stdout, expected, target) else false
+
+
+        # Native header admission is not artifact provenance or closure proof.
+        def native_artifact(target: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not EsSkiaEnvironmentLauncherPlan::absolute_identity_path(target)
+            file: Path = path(target)
+            return false if not is_file(file) or is_symlink(file) or not is_executable(file)
+            size: usize = try file_size(file) else 0usize
+            return false if size < 4 or size > Tools::PIN_BYTES
+            name: mutable darray[u8] = []
+            for byte in target |name|:
+                name.push(byte)
+            name.push(0u8)
+            mode: darray[u8] = [114u8, 98u8, 0u8]
+            stream: mutable heap void&? = fopen(&name[0], &mode[0])
+            return false if stream == null
+            opened: mutable heap void& = stream
+            header: mutable darray[u8] = [0u8, 0u8, 0u8, 0u8]
+            amount: usize = fread((&header[0]).cast[mutable void&], 1, 4, opened)
+            closed: int = fclose(opened)
+            return amount == 4 and closed == 0 and EsSkiaEnvironmentLauncherPlan::native_container_header(header) and not is_symlink(file)
+
+
+        def pinned_inputs(auth: Authorization) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not native_artifact(Tools::COMPILER) or not native_artifact(Tools::PYTHON) or not native_artifact(Tools::PERL) or not native_artifact(auth.launcher)
+            return false if not is_file(path(Tools::SHA256)) or is_symlink(path(Tools::SHA256)) or not is_executable(path(Tools::SHA256))
+            hash_script: sview = try EsBoundedText::read_utf8(path(Tools::SHA256), 16384usize) else err:
+                return false
+            return false if not hash_script.startswith("#!/usr/bin/perl\n")
+            return false if not has_sha256(Tools::SHA256, Tools::SHA256_SHA256) or not has_sha256(Tools::PERL, Tools::PERL_SHA256)
+            return false if not has_sha256("test/script_parity/skia_environment_launcher_plan.elisa", "9941a2c973a8492f20a36785bf6c44085bb7d3718218eaf8d12536feb645164e")
+            return false if not has_sha256("src/testing/checksum_record_model.elisa", "1b3cec1235d42076e50b15491d3d6b906f3841ea966937779dc665f1e8a59488")
+            return false if not has_sha256("src/runtime/bounded_text_posix.elisa", "a0c8d8144e4ebd9f90402489696b153bed6e7b292722ba2ca11eda551c27cda0")
+            return false if not has_sha256("src/testing/differential.elisa", "22b3b93ac3bafb9103f96a8e48d18769698e2e223da34eb10fe7d7572f9652ac")
+            return false if not has_sha256(Paths::REFERENCE, "72590cfa8a4a9fb05888bd95e09b53391d5c34c30f4ec14ba4d9e9fd71cd6dbe")
+            return false if not has_sha256(Paths::CANDIDATE, "320f2da26c56424e716395c8bffe61ce995f1f186906ce6057f62891e6cc9a84")
+            return false if not has_sha256(Paths::MODEL, "68bb330a9657d9c6ef02e19bd30ac4e81b42de751a0916d94ea834193d149b3c")
+            return false if not has_sha256(Paths::ENUM, "6b9363e40d883f83efa451a4cfd279e0ce3a76710bcf3f37f0dd157cb73a5a87")
+            return false if not has_sha256(Paths::GENERATED, "f97fe2c6f0194c813a8aa2968121f839e6499cc8debda30a3791d35824aa8285")
+            return false if not has_sha256(Tools::PYTHON, Tools::PYTHON_SHA256) or not has_sha256(Tools::COMPILER, auth.compiler_sha256) or not has_sha256(auth.launcher, auth.launcher_sha256)
+            return true
+
+
+        def exact_success(run: DifferentialRun) -> bool:
+            return run.outcome == DifferentialRunOutcome.Completed and run.error_text == "" and run.exit_status == 0 and run.stdout == Tools::EXPECTED and run.stderr == ""
+
+    public:
+        def public_launcher_parity() -> bool can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
+            auth: Authorization = try authorization() else err:
+                _ = write_stderr("diagnostic codes parity: validation gate is not qualified\n")
+                return false
+            return false if not pinned_inputs(auth)
+            current: Path = try path_real(path(".")) else err:
+                return false
+            arguments: darray[sview] = ["--compiler-root", "../Elisa-compiler", "--output", Paths::GENERATED, "--check"]
+            environment: darray[DifferentialEnvironmentEntry] = [
+                DifferentialEnvironmentEntry{name: "PATH", value: Tools::PATH_VALUE},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "PYTHONDONTWRITEBYTECODE", value: "1"}
+            ]
+            reference: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "diagnostic-codes-python-check",
+                target: Tools::PYTHON, arguments: EsSkiaEnvironmentLauncherPlan::candidate_arguments(Paths::REFERENCE, arguments),
+                working_directory: f"{current}", environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            candidate: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess, name: "diagnostic-codes-elisascript-check",
+                target: auth.launcher, arguments: EsSkiaEnvironmentLauncherPlan::candidate_arguments(Paths::CANDIDATE, arguments),
+                working_directory: f"{current}", environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
+            }
+            reference_run: DifferentialRun = try run_differential_process(reference) else err:
+                return false
+            return false if not exact_success(reference_run) or not pinned_inputs(auth)
+            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+                return false
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            return comparison.equal and exact_success(candidate_run) and pinned_inputs(auth)
+
+
+@test
+def diagnostic_codes_check_public_launcher_matches_pinned_python() -> void:
+    can Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format:
+        assert EsDiagnosticCodesCheckParity::public_launcher_parity()

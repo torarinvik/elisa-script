@@ -27,9 +27,20 @@ in either this `ports/Elisa-LSP/scripts` checkout or a deployed sibling LSP
 checkout. The output default remains cwd-relative, as in Python. No invocation
 has run.
 
-This is not yet a qualified replacement. Python `argparse` help/error wording,
-all malformed arguments, Unicode whitespace accepted by its regex, source/tool
-identity qualification, exact failure status/stderr, and a bounded
-Python-vs-public-launcher parity matrix remain open. The original and callers
-remain unchanged. Do not run a compiler or parity validation under the current
-hold.
+This is not yet a qualified replacement. A dormant public-launcher matrix now
+pins the live Python helper, compiler enum, generated adapter, candidate/model,
+runtime runner, Python/Perl/hash-tool sources and the selected compiler/launcher
+identities. Its single read-only `--check` case uses an independent literal
+success message for 621 variants (the current source and adapter each have 621
+member rows), admits exact Python status/stdout/stderr first, then compares the
+candidate. Python bytecode writes are disabled in the replacement child
+environment. The matrix requires explicit reauthorization, separate launcher
+qualification, the pinned local StructPy compiler selectors and an active
+*external* RSS guard. It is authored but uncompiled and unrun; the current dirty
+differential runner fails its committed-source pin.
+
+Python `argparse` help/error wording, malformed arguments, Unicode whitespace
+accepted by its regex, generation-mode file mutation and failure parity,
+dependency closure, and real memory/timeout enforcement remain open. The
+original and callers remain unchanged. Do not run a compiler or parity
+validation under the current hold.
