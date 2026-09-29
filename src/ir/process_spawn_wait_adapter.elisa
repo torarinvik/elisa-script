@@ -15,12 +15,12 @@ extend EsIr:
                 session.state <- SpawnSessionState.Quarantined
                 interpret_set_failure(machine, InterpretFailure.Panic)
                 rejected: EsProcessLaunchCompletion::Report = completion_report(session.launch, true)
-                return finish_prepared_launch(machine, session.launch.child, session.launch.budget, session.ledger, session.owner_token, timeout_micros, rejected)
+                return finish_prepared_launch(machine, session.launch.child, session.launch.budget, session.ledger, session.owner_token, timeout_micros, rejected, session.launch.failure)
             ids: SpawnResourceIds = try prepare_session_launch(session) else failure:
                 session.state <- SpawnSessionState.Quarantined
                 interpret_set_failure(machine, InterpretFailure.Panic)
                 rejected: EsProcessLaunchCompletion::Report = completion_report(session.launch, true)
-                return finish_prepared_launch(machine, session.launch.child, session.launch.budget, session.ledger, session.owner_token, timeout_micros, rejected)
+                return finish_prepared_launch(machine, session.launch.child, session.launch.budget, session.ledger, session.owner_token, timeout_micros, rejected, session.launch.failure)
             value: RuntimeValue = evaluate_prepared_launch(machine, session.launch, session.ledger, ids.process, ids.attributes, session.owner_token, timeout_micros, storage, tables)
             if machine.failure == InterpretFailure.Panic:
                 session.state <- SpawnSessionState.Quarantined
@@ -45,7 +45,7 @@ extend EsIr:
                 # Running child for mandatory cleanup before fatal return.
                 interpret_set_failure(machine, InterpretFailure.Panic)
                 rejected: EsProcessLaunchCompletion::Report = completion_report(launch, true)
-                return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, rejected)
+                return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, rejected, launch.failure)
             launch_failed: mutable bool = false
             # The machine's existing usage/policy are shared with reservation
             # and completion. Do not create a fresh policy/counter for a child.
@@ -57,12 +57,16 @@ extend EsIr:
             report: EsProcessLaunchCompletion::Report = completion_report(launch, launch_failed)
             # Even a typed setup/search/cleanup error must visit this dispatcher:
             # a captured Running PID cannot be hidden by an early error return.
-            return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, report)
+            return finish_prepared_launch(machine, launch.child, launch.budget, ledger, owner_token, timeout_micros, report, launch.failure)
 
 
-        def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+        def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report, diagnostic: mutable EsProcessLaunchFailure::Receipt&) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
             match EsProcessLaunchCompletion::route(child, budget.held, report):
                 EsProcessLaunchCompletion::Route.Wait:
+                    # Stale diagnostic state cannot bypass mandatory live-child
+                    # cleanup; it is an invariant error, not another launch.
+                    if not EsProcessLaunchFailure::is_pristine(diagnostic):
+                        return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true)
                     return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, false)
                 EsProcessLaunchCompletion::Route.TerminateThenPanic:
                     return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true)
@@ -77,6 +81,18 @@ extend EsIr:
                     else:
                         # Fresh admission failure has no reservation to query.
                         if budget.resource_id != 0 or budget.owner_token != 0:
+                            interpret_set_failure(machine, InterpretFailure.Panic)
+                            return runtime_void()
+                    if machine.failure == InterpretFailure.Panic:
+                        # Failed/reentrant entries preserve the original cause.
+                        return runtime_void()
+                    if not EsProcessLaunchFailure::is_pristine(diagnostic):
+                        interpret_set_failure(machine, InterpretFailure.Panic)
+                        return runtime_void()
+                    catch EsProcessLaunchFailure::from_report(child, report):
+                        ok receipt:
+                            diagnostic <- receipt
+                        error failure:
                             interpret_set_failure(machine, InterpretFailure.Panic)
                             return runtime_void()
                     interpret_set_failure(machine, InterpretFailure.Process)

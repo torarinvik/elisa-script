@@ -1,0 +1,160 @@
+# Pure receipts only. No attribute, process, filesystem or interpreter facade.
+include "../../src/runtime/process_launch_failure_model.elisa"
+
+module EsProcessLaunchFailureFixture:
+    private:
+        def completed_report() -> EsProcessLaunchCompletion::Report:
+            return EsProcessLaunchCompletion::Report{coordinator_complete: true, cleanup_attempted: true}
+
+
+        def reserved() -> EsProcessSpawnOwner::Owner:
+            return EsProcessSpawnOwner::Owner{resource_id: 11, owner_token: 7, state: EsProcessSpawnOwner::State.Reserved}
+
+
+        def assert_rejected(child: EsProcessSpawnOwner::Owner&, report: EsProcessLaunchCompletion::Report) -> void:
+            catch EsProcessLaunchFailure::from_report(child, report):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchFailure::ReceiptError.InvalidReceipt
+
+    public:
+        @test
+        def launch_failure_default_and_stale_receipts_are_distinct() -> void:
+            receipt: mutable EsProcessLaunchFailure::Receipt = EsProcessLaunchFailure::Receipt{}
+            assert EsProcessLaunchFailure::is_pristine(receipt)
+            try EsProcessLaunchFailure::validate(receipt) else failure:
+                assert false
+                return
+            receipt.code <- 22
+            assert not EsProcessLaunchFailure::is_pristine(receipt)
+            catch EsProcessLaunchFailure::validate(receipt):
+                ok:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchFailure::ReceiptError.InvalidReceipt
+
+
+        @test
+        def launch_failure_admission_has_no_native_errno_cause() -> void:
+            child: EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+            receipt: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, EsProcessLaunchCompletion::Report{launch_failed: true}) else failure:
+                assert false
+                return
+            assert receipt.stage == EsProcessLaunchFailure::Stage.Admission
+            assert receipt.code == 0 and receipt.attempts == 0 and not receipt.saw_denied
+            catch EsProcessLaunchFailure::native_cause(receipt):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchFailure::ReceiptError.NoNativeCause
+
+
+        @test
+        def launch_failure_completed_missing_and_denied_searches_keep_causes() -> void:
+            child: mutable EsProcessSpawnOwner::Owner = reserved()
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(2, 999))
+            EsProcessSpawnOwner::exhausted(child)
+            missing: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, completed_report()) else failure:
+                assert false
+                return
+            assert missing.stage == EsProcessLaunchFailure::Stage.Spawn
+            assert missing.code == 2 and missing.attempts == 1 and not missing.saw_denied
+            assert (try EsProcessLaunchFailure::native_cause(missing) else 0i32) == 2i32
+            child <- reserved()
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(13, 999))
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(2, 999))
+            EsProcessSpawnOwner::exhausted(child)
+            denied: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, completed_report()) else failure:
+                assert false
+                return
+            assert denied.stage == EsProcessLaunchFailure::Stage.Spawn
+            assert denied.code == 13 and denied.attempts == 2 and denied.saw_denied
+            assert (try EsProcessLaunchFailure::native_cause(denied) else 0i32) == 13i32
+
+
+        @test
+        def launch_failure_aborted_search_does_not_publish_last_errno_as_cause() -> void:
+            child: mutable EsProcessSpawnOwner::Owner = reserved()
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(2, 999))
+            assert EsProcessSpawnOwner::stop_retrying_before_next_attempt(child)
+            report: mutable EsProcessLaunchCompletion::Report = completed_report()
+            report.launch_failed <- true
+            receipt: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, report) else failure:
+                assert false
+                return
+            assert receipt.stage == EsProcessLaunchFailure::Stage.AbortedSearch
+            assert receipt.code == 2 and receipt.attempts == 1
+            catch EsProcessLaunchFailure::native_cause(receipt):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchFailure::ReceiptError.NoNativeCause
+
+
+        @test
+        def launch_failure_setup_is_distinct_from_attempted_exec() -> void:
+            child: mutable EsProcessSpawnOwner::Owner = reserved()
+            child.state <- EsProcessSpawnOwner::State.NoChild
+            report: mutable EsProcessLaunchCompletion::Report = completed_report()
+            report.setup_failed <- true
+            report.setup_code <- 22
+            native: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, report) else failure:
+                assert false
+                return
+            assert native.stage == EsProcessLaunchFailure::Stage.Setup and native.attempts == 0
+            assert (try EsProcessLaunchFailure::native_cause(native) else 0i32) == 22i32
+            report.setup_code <- 0
+            report.launch_failed <- true
+            typed: EsProcessLaunchFailure::Receipt = try EsProcessLaunchFailure::from_report(child, report) else failure:
+                assert false
+                return
+            assert typed.stage == EsProcessLaunchFailure::Stage.Setup and typed.code == 0
+            catch EsProcessLaunchFailure::native_cause(typed):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchFailure::ReceiptError.NoNativeCause
+
+
+        @test
+        def launch_failure_normal_children_and_unresolved_cleanup_have_no_receipt() -> void:
+            child: mutable EsProcessSpawnOwner::Owner = reserved()
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(0, 41))
+            assert_rejected(child, completed_report())
+            child.state <- EsProcessSpawnOwner::State.Reaped
+            assert_rejected(child, completed_report())
+            child <- reserved()
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(8, 999))
+            report: mutable EsProcessLaunchCompletion::Report = completed_report()
+            report.cleanup_failed <- true
+            assert_rejected(child, report)
+            report.cleanup_failed <- false
+            report.setup_failed <- true
+            report.setup_code <- 22
+            assert_rejected(child, report)
+
+
+        @test
+        def launch_failure_rejects_inconsistent_search_and_code_metadata() -> void:
+            child: mutable EsProcessSpawnOwner::Owner = reserved()
+            child.state <- EsProcessSpawnOwner::State.NoChild
+            child.code <- 2
+            child.attempts <- 1
+            child.saw_denied <- true
+            assert_rejected(child, completed_report())
+            child.saw_denied <- false
+            child.code <- 13
+            assert_rejected(child, completed_report())
+            child.code <- 20
+            assert_rejected(child, completed_report())
+            child.code <- 8
+            report: mutable EsProcessLaunchCompletion::Report = completed_report()
+            report.launch_failed <- true
+            assert_rejected(child, report)
+            report.launch_failed <- false
+            child.code <- -1
+            assert_rejected(child, report)
+            child.code <- 2
+            child.attempts <- EsProcessSpawnOwner::Limits::ATTEMPTS + 1
+            assert_rejected(child, report)

@@ -70,6 +70,15 @@ generated child call graph, inherited errno-pointer lifetime and native ABI also
 remain unqualified. The preferred explicit parent-prepared spawn path remains
 unwired; this narrow legacy correction neither enables it nor closes acceptance.
 
+The prepared-spawn seam now retains a separate structured diagnostic receipt
+after canonical no-child release. Setup codes, completed spawn failures and
+aborted searches are distinct; the last errno of an aborted search cannot be
+rendered as its failure cause. Ordinary tool exits 126/127 do not produce these
+receipts. The model/default/session fixtures are unrun, and the seam remains
+unwired to source/bytecode error payloads or this port. Copying a receipt into the
+typed error value, rendering compatible diagnostics and observing all seven
+failure cases through the public launcher remain required.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains

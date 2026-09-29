@@ -1,0 +1,86 @@
+# Diagnostic data only: no PID, opaque handle, wait or signaling authority.
+# The host must check canonical released ownership before publishing a receipt.
+include "process_launch_completion_model.elisa"
+
+module EsProcessLaunchFailure:
+    public:
+        const enum Stage of u8:
+            None
+            Admission
+            Setup
+            AbortedSearch
+            Spawn
+
+
+        struct Receipt:
+            stage: Stage = Stage.None
+            # Setup/Spawn: cause. AbortedSearch: last observed native code,
+            # NOT the cause of the typed error that interrupted the search.
+            code: i32 = 0
+            attempts: usize = 0
+            saw_denied: bool = false
+
+
+        error ReceiptError:
+            InvalidReceipt
+            NoNativeCause
+
+
+        def is_pristine(receipt: Receipt&) -> bool:
+            return receipt.stage == Stage.None and receipt.code == 0 and receipt.attempts == 0 and not receipt.saw_denied
+
+
+        def validate(receipt: Receipt&) -> void error[ReceiptError]:
+            match receipt.stage:
+                Stage.None:
+                    raise ReceiptError.InvalidReceipt if not is_pristine(receipt)
+                Stage.Admission:
+                    raise ReceiptError.InvalidReceipt if receipt.code != 0 or receipt.attempts != 0 or receipt.saw_denied
+                Stage.Setup:
+                    # Zero denotes a typed setup error, not errno zero.
+                    raise ReceiptError.InvalidReceipt if receipt.code < 0 or receipt.attempts != 0 or receipt.saw_denied
+                Stage.AbortedSearch:
+                    raise ReceiptError.InvalidReceipt if receipt.attempts == 0 or receipt.attempts > EsProcessSpawnOwner::Limits::ATTEMPTS
+                    action: EsProcessExecSearch::Action = EsProcessExecSearch::after_failure(receipt.code)
+                    raise ReceiptError.InvalidReceipt if action != EsProcessExecSearch::Action.Next and action != EsProcessExecSearch::Action.NextDenied
+                    raise ReceiptError.InvalidReceipt if receipt.code == EsProcessExecSearch::DarwinErrno::EACCES and not receipt.saw_denied
+                Stage.Spawn:
+                    raise ReceiptError.InvalidReceipt if receipt.code <= 0 or receipt.attempts == 0 or receipt.attempts > EsProcessSpawnOwner::Limits::ATTEMPTS
+                    # Completed PATH exhaustion normalizes missing components
+                    # to ENOENT, or EACCES if any candidate was denied.
+                    if receipt.code == EsProcessExecSearch::DarwinErrno::ENOENT:
+                        raise ReceiptError.InvalidReceipt if receipt.saw_denied
+                    elif receipt.code == EsProcessExecSearch::DarwinErrno::EACCES:
+                        raise ReceiptError.InvalidReceipt if not receipt.saw_denied
+                    else:
+                        raise ReceiptError.InvalidReceipt if EsProcessExecSearch::after_failure(receipt.code) != EsProcessExecSearch::Action.Stop
+                _:
+                    raise ReceiptError.InvalidReceipt
+
+
+        def native_cause(receipt: Receipt&) -> i32 error[ReceiptError]:
+            try validate(receipt)
+            raise ReceiptError.NoNativeCause if receipt.code <= 0 or (receipt.stage != Stage.Setup and receipt.stage != Stage.Spawn)
+            return receipt.code
+
+
+        def from_report(child: EsProcessSpawnOwner::Owner&, report: EsProcessLaunchCompletion::Report) -> Receipt error[ReceiptError]:
+            raise ReceiptError.InvalidReceipt if EsProcessLaunchCompletion::route(child, false, report) != EsProcessLaunchCompletion::Route.ProcessFailure
+            if child.state == EsProcessSpawnOwner::State.Fresh:
+                return Receipt{stage: Stage.Admission}
+            raise ReceiptError.InvalidReceipt if child.resource_id == 0 or child.owner_token == 0 or child.attempts > EsProcessSpawnOwner::Limits::ATTEMPTS
+            receipt: mutable Receipt = Receipt{}
+            if report.setup_failed:
+                raise ReceiptError.InvalidReceipt if child.attempts != 0 or child.code != 0 or child.saw_denied
+                raise ReceiptError.InvalidReceipt if report.setup_code == 0 and not report.launch_failed
+                receipt <- Receipt{stage: Stage.Setup, code: report.setup_code}
+            elif child.attempts == 0:
+                raise ReceiptError.InvalidReceipt if not report.launch_failed or child.code != 0 or child.saw_denied
+                receipt <- Receipt{stage: Stage.Admission}
+            else:
+                receipt <- Receipt{
+                    stage: Stage.AbortedSearch if report.launch_failed else Stage.Spawn,
+                    code: child.code, attempts: child.attempts, saw_denied: child.saw_denied
+                }
+            try validate(receipt)
+            return receipt

@@ -647,3 +647,35 @@ classifying clock errors without losing an owned child remain next. Native enum/
 timespec writes, field alignment/lifetime, clock behavior and generated ABI still
 need independent contained qualification. No compiler, fixture, clock, sleep,
 child, wait/signal or parity process ran; originals and others' work are unchanged.
+
+## Retained launch failure causes (source-only)
+
+The private budgeted owner now retains a handle/PID-free diagnostic receipt.
+The finish adapter publishes it only on recoverable launch failure, after
+checking canonical released no-child ownership (or pristine unreserved admission
+state). Admission, setup, aborted search and completed spawn failure remain
+distinct. Setup's saved native code survives attribute destruction; an aborted
+search retains the last observed code but cannot expose it as the failure cause.
+In particular, a partial search interrupted after ENOENT does not establish
+completed PATH exhaustion or command-not-found.
+
+The pure model rejects inconsistent attempt counts, setup-plus-exec reports,
+negative/zero completed spawn codes, lost denial history and unnormalized
+completed ENOTDIR. Native cause access is a typed error for admission, typed
+setup errors without a native code, and aborted search. Normal Running/Reaped
+children never produce launch-error receipts: tool exits 126/127 remain exits.
+This metadata does not establish PID/resource authority or native evidence.
+
+Receipts remain in the existing per-run session after failure. Reentry/Panic
+does not overwrite them, and only the existing checked retired-session reset
+starts with an empty receipt again. A stale receipt on a live-child wait edge
+forces mandatory cleanup and fatal classification, not an early child discard.
+Small pure/default/session-reuse fixtures are authored, all uncompiled/unrun.
+
+The seam is still unwired: source/bytecode typed error payloads and copying the
+receipt into the caller's error value before session reuse remain next, followed
+by diagnostic rendering and actual smallest lint failure parity. No Bash-style
+diagnostic, public process API change or native qualification is claimed here.
+Pre-setup deadline, ownership/group/reaper/lifetime/cancellation qualification
+and external containment remain open. No compiler, fixture or native operation
+ran; originals, SSH and other agents' work remain unchanged.
