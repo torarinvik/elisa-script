@@ -238,8 +238,10 @@ The candidate has no explicit per-file, aggregate-byte, file-count, entry-count,
 directory-depth, or enumerated-path-byte ceiling. It reads source contents with
 one fixed 16 KiB buffer and walks directories with a depth-first pending-path
 stack; only matching source paths are retained for deterministic ordering and
-diagnostic collection. This is not a hard process RSS guarantee; the isolated
-parity harness still needs its separate external RSS/time containment.
+diagnostic collection. Each buffer is traversed once for both incremental
+UTF-8 validation and universal-newline counting. This is not a hard process
+RSS guarantee; the isolated parity harness still needs its separate external
+RSS/time containment.
 
 Unreadable, changing, non-regular, and invalid UTF-8 inputs produce a
 candidate-specific diagnostic and status 2, not Python's traceback/status 1.
