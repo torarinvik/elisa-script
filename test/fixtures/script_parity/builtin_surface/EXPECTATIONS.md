@@ -23,9 +23,13 @@ independent raw-source regex searches.
 The positive registry fixture gives the first following `def` line a quoted
 comment token, pinning the shell reference's inclusive `sed` range endpoint.
 
-The source-only launcher harness also generates two bounded failure inputs:
-one semantic source of 1,048,577 bytes and one semantic seed containing 65,537
-identifier matches. Each must return status 2, no stdout, and respectively
+The source-only launcher harness also checks an owned empty root where the
+first required semantic file is absent. Both implementations must return
+status 2, no stdout, and
+`builtin surface: missing source file: <absolute-symbols-path>\n`. It then
+generates two bounded failure inputs: one semantic source of 1,048,577 bytes
+and one semantic seed containing 65,537 identifier matches. Each must return
+status 2, no stdout, and respectively
 `builtin surface: source file exceeds audit limit: <absolute-symbols-path>\n`
 or `builtin surface: identifier match count exceeds audit limit\n`. The shell
 reference and Elisascript candidate share these 1 MiB per-file and 65,536
