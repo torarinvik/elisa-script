@@ -597,3 +597,28 @@ array stride, raw NULL sentinels, opaque-slot writes, borrowed lifetime and the
 native C view still need independent contained qualification. No compiler,
 fixture, attribute, child, native wait/signal or parity run occurred. Public
 source/bytecode/UI wiring and smallest-script acceptance remain open.
+
+## Independent C view of real builder tables (dormant)
+
+The separately linked scalar fixture now includes a fixed-size read-only C
+pointer-table oracle and independent C controls. Its third Elisa test uses the
+actual storage/table builder for argv `./tool` plus an empty argument, environment
+`X=`, and a separately owned direct candidate. C admits the three/two/two slots
+by expected pointer identity and NULL sentinels before reading eighteen known
+buffer bytes. This exercises the real nullable-entry stride/C view rather than
+constructing a parallel pointer-table implementation solely for the fixture.
+
+The C control rejects substituted empty-argument NULL, missing environment NULL
+and aliased candidate entries. The Elisa test also substitutes/restores its empty
+argument between calls and checks rejection/reacceptance. No buffer or table is
+mutated during a native call. Raw fixture functions remain private, exported C
+symbols remain uniquely prefixed, and no process/environment/stdio/signal/native
+attribute operation is present in the oracle. Its only reads are bounded fixture
+tables/buffers; invalid pointers still require external crash/time/RSS containment.
+
+The admission contract now names all three required test entries. Neither C nor
+Elisa source has been compiled/run, and the fixture stays outside ordinary
+*_test discovery. Passing it later would qualify only the exercised table/scalar
+cases for the recorded build; broad lifetime/alignment/malformed/maximum-table,
+native spawn, errno, reaper/group and unresolved-owner qualifications remain open.
+No compiler, fixture, child, wait, signal or parity operation ran here.
