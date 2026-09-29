@@ -93,6 +93,34 @@ validation_process_group_has_live_members_from_snapshot() {
     '
 }
 
+# Tri-state process-group probe for termination cleanup: 0 proves quiescence,
+# 1 means a live member remains, and 2 means the snapshot is inconclusive.
+validation_process_group_quiescence_from_snapshot() {
+    /usr/bin/awk -v group="$1" -v row_limit="$2" '
+        BEGIN {
+            if (group !~ /^[0-9]+$/ || group == "0" || length(group) > 10 || (group + 0) > 2147483647 || row_limit !~ /^[0-9]+$/ || row_limit == "0") malformed = 1
+        }
+        NR > row_limit + 1 { overflow = 1; exit }
+        $1 == "__ELISASCRIPT_PS_STATUS__" {
+            if (status_seen || NF != 2 || $2 !~ /^[0-9]+$/) malformed = 1
+            status_seen = 1
+            if ($2 != 0) ps_failed = 1
+            next
+        }
+        status_seen { malformed = 1; exit }
+        ++process_rows > row_limit { overflow = 1; exit }
+        $1 !~ /^[0-9]+$/ || length($1) > 10 || ($1 + 0) > 2147483647 || NF != 2 || $2 == "" { malformed = 1; exit }
+        {
+            if ($1 == group && $2 !~ /^Z/) found = 1
+        }
+        END {
+            if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1) exit 2
+            if (found) exit 1
+            exit 0
+        }
+    '
+}
+
 validation_process_state_from_snapshot() {
     /usr/bin/awk -v target="$1" -v row_limit="$2" '
         BEGIN { if (target !~ /^[0-9]+$/ || target == "0") malformed = 1 }

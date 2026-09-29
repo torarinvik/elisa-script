@@ -148,6 +148,10 @@ that snapshot, never the wrapper's own group. Any RSS, timeout, or diagnostic-lo
 guard trip also sets this latch. Both validation wrappers refuse to relaunch while
 the latch exists; remove it manually only after reviewing the failure and
 deciding to reauthorize a smaller bounded run.
+After escalation, each wrapper keeps its session leader unreaped and repeats
+group `KILL` until a complete process snapshot proves no live group members
+remain. If ownership or quiescence cannot be proven, it sets the emergency
+latch and retains the validation lease rather than treating cleanup as complete.
 
 Run the compiler-free wrapper audit before reviewing a validation change:
 

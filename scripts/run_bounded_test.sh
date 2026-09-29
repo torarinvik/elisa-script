@@ -195,6 +195,46 @@ process_group_has_processes() {
     printf '%s\n' "$process_table" | validation_process_group_has_live_members_from_snapshot "$process_group_id" "$process_snapshot_row_limit"
 }
 
+process_group_quiescence_status() {
+    quiescence_probe_group="$1"
+    quiescence_probe_table="$( { LC_ALL=C /bin/ps -axo pgid=,stat= 2>/dev/null; quiescence_probe_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$quiescence_probe_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || return 2
+    printf '%s\n' "$quiescence_probe_table" | validation_process_group_quiescence_from_snapshot "$quiescence_probe_group" "$process_snapshot_row_limit"
+}
+
+wait_for_owned_group_quiescence() {
+    quiescence_root_pid="$1"
+    quiescence_group_id="$2"
+    if [ -z "$quiescence_group_id" ]; then
+        latch_validation_disabled "run_bounded_test process_group_identity_missing pid=$quiescence_root_pid"
+        return 1
+    fi
+    quiescence_owned_group="$(validation_owned_process_group_id "$quiescence_root_pid" "$quiescence_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
+    if [ -z "$quiescence_owned_group" ]; then
+        latch_validation_disabled "run_bounded_test process_group_quiescence_unverified pid=$quiescence_root_pid pgid=$quiescence_group_id"
+        return 1
+    fi
+    while :; do
+        process_group_quiescence_status "$quiescence_group_id"
+        quiescence_status=$?
+        if [ "$quiescence_status" -eq 0 ]; then
+            return 0
+        fi
+        if [ "$quiescence_status" -ne 1 ]; then
+            latch_validation_disabled "run_bounded_test process_group_quiescence_unverified pid=$quiescence_root_pid pgid=$quiescence_group_id"
+            return 1
+        fi
+        quiescence_owned_group="$(validation_owned_process_group_id "$quiescence_root_pid" "$quiescence_group_id" "$validation_wrapper_pgid" 2>/dev/null || true)"
+        if [ -z "$quiescence_owned_group" ]; then
+            latch_validation_disabled "run_bounded_test process_group_quiescence_unverified pid=$quiescence_root_pid pgid=$quiescence_group_id"
+            return 1
+        fi
+        # Keep the direct setsid child unreaped while the group is nonempty so
+        # its PID/PGID cannot be recycled during repeated escalation.
+        kill -KILL -- "-$quiescence_owned_group" 2>/dev/null || true
+        sleep "$rss_poll_interval_seconds"
+    done
+}
+
 compiler_process_state() {
     process_id="$1"
     process_table="$( { LC_ALL=C /bin/ps -axo pid=,stat= 2>/dev/null; process_table_ps_status=$?; printf '__ELISASCRIPT_PS_STATUS__ %s\n' "$process_table_ps_status"; } | head -n "$((process_snapshot_row_limit + 2))")" || { printf 'unknown\n'; return 0; }
@@ -248,6 +288,7 @@ kill_process_tree() {
     if [ -n "$owned_group_id" ]; then
         kill -KILL -- "-$owned_group_id" 2>/dev/null || true
     fi
+    wait_for_owned_group_quiescence "$process_root_pid" "$process_group_id"
 }
 
 kill_process_tree_immediately() {
@@ -265,6 +306,7 @@ kill_process_tree_immediately() {
         kill -KILL -- "-$owned_group_id" 2>/dev/null || true
     fi
     signal_process_tree_identities "$process_tree_snapshot" KILL
+    wait_for_owned_group_quiescence "$process_root_pid" "$process_group_id"
 }
 
 compiler_pid=""
@@ -373,9 +415,12 @@ release_validation_lease() {
 }
 
 cleanup_bounded_test() {
+    cleanup_release_lease=1
     if [ -n "$compiler_pid" ] || [ -n "$compiler_pgid" ]; then
         if { [ -n "$compiler_pid" ] && kill -0 "$compiler_pid" 2>/dev/null; } || { [ -n "$compiler_pgid" ] && process_group_has_processes "$compiler_pgid"; }; then
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                cleanup_release_lease=0
+            fi
         fi
     fi
     if [ -n "$source_snapshot" ]; then
@@ -388,7 +433,11 @@ cleanup_bounded_test() {
         fi
         echo "run_bounded_test: preserving bounded-run evidence log=$log_file metadata=${metadata_file:-unavailable}" >&2
     fi
-    release_validation_lease
+    if [ "$cleanup_release_lease" -eq 1 ]; then
+        release_validation_lease
+    else
+        echo "run_bounded_test: retaining validation lease because process-group quiescence could not be proven" >&2
+    fi
 }
 
 trap 'cleanup_bounded_test' 0
@@ -552,7 +601,9 @@ for source_file in "$@"; do
         printf 'compiler_pid=%s\ncompiler_pgid=%s\n' "$compiler_pid" "$compiler_pgid"
     } >>"$metadata_file"; then
         echo "run_bounded_test: unable to record compiler ownership; stopping it" >&2
-        kill_process_tree "$compiler_pid" "$compiler_pgid"
+        if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+            exit 125
+        fi
         wait "$compiler_pid" 2>/dev/null || true
         compiler_pid=""
         compiler_pgid=""
@@ -561,13 +612,17 @@ for source_file in "$@"; do
     case "$compiler_pgid" in
         ''|0|*[!0-9]*|"$validation_wrapper_pgid")
             echo "run_bounded_test: compiler was not isolated in a private process group" >&2
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
             exit 125
             ;;
     esac
     if [ "$compiler_pgid" != "$compiler_pid" ]; then
         echo "run_bounded_test: session leader PID does not own its process-group ID" >&2
-        kill_process_tree "$compiler_pid" "$compiler_pgid"
+        if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+            exit 125
+        fi
         exit 125
     fi
     rss_guard=0
@@ -592,10 +647,14 @@ for source_file in "$@"; do
             fi
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_test rss_snapshot_or_containment_failed pid=$compiler_pid pgid=$compiler_pgid"; then
-                kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
+                if ! kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"; then
+                    exit 125
+                fi
                 exit 125
             fi
-            kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
             break
         fi
         rss_sample_count=$((rss_sample_count + 1))
@@ -605,10 +664,14 @@ for source_file in "$@"; do
         if [ "$rss_kb" -gt "$rss_limit_kb" ]; then
             rss_guard=1
             if ! latch_validation_disabled "run_bounded_test rss_guard pid=$compiler_pid rss_kb=$rss_kb limit_kb=$rss_limit_kb"; then
-                kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
+                if ! kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"; then
+                    exit 125
+                fi
                 exit 125
             fi
-            kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree_immediately "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
             break
         fi
 
@@ -619,20 +682,28 @@ for source_file in "$@"; do
             ''|*[!0-9]*)
                 output_guard=1
                 if ! latch_validation_disabled "run_bounded_test log_measurement_failed pid=$compiler_pid"; then
-                    kill_process_tree "$compiler_pid" "$compiler_pgid"
+                    if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                        exit 125
+                    fi
                     exit 125
                 fi
-                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                    exit 125
+                fi
                 break
                 ;;
         esac
         if [ "$log_bytes" -gt "$effective_log_limit_bytes" ]; then
             output_guard=1
             if ! latch_validation_disabled "run_bounded_test output_guard pid=$compiler_pid log_bytes=$log_bytes limit_bytes=$effective_log_limit_bytes"; then
-                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                    exit 125
+                fi
                 exit 125
             fi
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
             break
         fi
 
@@ -640,10 +711,14 @@ for source_file in "$@"; do
         if [ "$((now - started_at))" -gt "$time_limit_seconds" ]; then
             timeout_guard=1
             if ! latch_validation_disabled "run_bounded_test timeout_guard pid=$compiler_pid limit_seconds=$time_limit_seconds"; then
-                kill_process_tree "$compiler_pid" "$compiler_pgid"
+                if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                    exit 125
+                fi
                 exit 125
             fi
-            kill_process_tree "$compiler_pid" "$compiler_pgid"
+            if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
             break
         fi
         # Sample at 20 Hz: the prior one-second gap allowed fast compiler

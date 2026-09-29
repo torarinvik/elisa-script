@@ -60,6 +60,19 @@ assert_group_liveness_status() {
     assert_equal "$expected_status" "$actual_status" "$description"
 }
 
+assert_group_quiescence_status() {
+    quiescence_input="$1"
+    quiescence_group="$2"
+    expected_status="$3"
+    description="$4"
+    if printf '%s\n' "$quiescence_input" | validation_process_group_quiescence_from_snapshot "$quiescence_group" 2; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+    assert_equal "$expected_status" "$actual_status" "$description"
+}
+
 assert_process_state() {
     state_input="$1"
     target_pid="$2"
@@ -121,6 +134,24 @@ assert_group_liveness_status '10 S
 11 R
 12 R
 __ELISASCRIPT_PS_STATUS__ 0' 0 'oversized liveness snapshot conservatively retains leader'
+
+assert_group_quiescence_status '10 Z
+__ELISASCRIPT_PS_STATUS__ 0' 10 0 'zombie-only group is quiescent'
+assert_group_quiescence_status '11 R
+__ELISASCRIPT_PS_STATUS__ 0' 10 0 'unrelated group is quiescent'
+assert_group_quiescence_status '10 S
+__ELISASCRIPT_PS_STATUS__ 0' 10 1 'live group member prevents quiescence'
+assert_group_quiescence_status '10 S
+__ELISASCRIPT_PS_STATUS__ 1' 10 2 'failed group snapshot is inconclusive'
+assert_group_quiescence_status '10 S' 10 2 'missing group snapshot sentinel is inconclusive'
+assert_group_quiescence_status '10 S
+11 R
+12 R
+__ELISASCRIPT_PS_STATUS__ 0' 10 2 'oversized group snapshot is inconclusive'
+assert_group_quiescence_status '10 S extra
+__ELISASCRIPT_PS_STATUS__ 0' 10 2 'malformed group row is inconclusive'
+assert_group_quiescence_status '10 Z
+__ELISASCRIPT_PS_STATUS__ 0' invalid 2 'invalid group identity is inconclusive'
 
 state_snapshot='10 S
 11 Z+
@@ -256,4 +287,4 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10 10 40' rss 'rows after RSS sentinel'
 assert_parser_failure '10 1 10 30' rss 'missing RSS status sentinel'
 
-printf '%s\n' 'process snapshot fixture: group-signal identity/liveness, process start identities, process states, descendant traversal, RSS union/ID/ceiling, caller-PATH isolation, reparenting, escaped-group rejection, malformed/failed/truncated snapshots covered'
+printf '%s\n' 'process snapshot fixture: group-signal identity/liveness/quiescence, process start identities, process states, descendant traversal, RSS union/ID/ceiling, caller-PATH isolation, reparenting, escaped-group rejection, malformed/failed/truncated snapshots covered'
