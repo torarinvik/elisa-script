@@ -20,7 +20,8 @@ An additional source-only candidate,
 declaration or pointer cast in the candidate. It preserves the model's 4,096-byte
 name admission and 1 MiB pre-copy value budget. Both candidates and the original
 remain separate; the dormant native matrix below does not test the interpreted
-companion, which needs its own gated public-launcher qualification.
+companion. Its separate public-launcher tool is described below; actual
+qualification is still required.
 
 ## Intended ordinary behavior
 
@@ -135,7 +136,8 @@ literal ordinary cases; it imports no candidate lookup/printing implementation.
 anything. `skia_environment_native_parity_test.elisascript` is a gated process
 matrix for a separately qualified, prebuilt native candidate. It never compiles
 the candidate, starts a compiler, or invokes the interpreted public launcher.
-That launcher still needs its own presence-aware host integration and tests.
+The separate launcher matrix below targets the presence-aware and bounded-read
+source paths; neither tool has compiled or run.
 
 The public `EsSkiaEnvironmentNativeParity::native_parity` entry requires all of:
 
@@ -190,3 +192,76 @@ reverse order and then attempts the empty root directory; unexpected files are
 not recursively erased, and cleanup failure reports the recoverable root path.
 Partial setup is cleaned too. All matrix/gate/cleanup paths are source-only and
 still require compilation and execution qualification.
+
+## Dormant interpreted public-launcher matrix (authored, not executed)
+
+`test/script_parity/skia_environment_launcher_test.elisascript` targets the new
+interpreted companion through the public argv ABI: launcher executable, copied
+`.elisascript` filename, then the exact script arguments. It never invokes a
+compiler or compiles a candidate. The native candidate and its older matrix are
+unchanged. The expected-output module is shared by both matrices, imports neither
+candidate, and supplies ten literal ordinary cases. A reference must first match
+status 0, empty stderr and its literal stdout before the candidate can launch.
+
+The public entry gates filesystem/hash/child work on all of these inputs:
+
+- Explicit reauthorization and an active outer RSS guard, using the same
+  `ELISASCRIPT_VALIDATION_REAUTHORIZED` and `ELISASCRIPT_BOUNDED_TEST_RSS_GUARD`
+  markers as the native tool.
+- `ELISASCRIPT_SKIA_ENV_LAUNCHER_QUALIFIED=1`, asserting separate qualification
+  of a **prebuilt native public launcher with no automatic compiler/build path**.
+- `ELISASCRIPT_PUBLIC_LAUNCHER` / `ELISASCRIPT_PUBLIC_LAUNCHER_SHA256` and
+  `ELISASCRIPT_PARITY_PYTHON_BIN` / `ELISASCRIPT_PARITY_PYTHON_SHA256`: absolute
+  nonsymlink executable identities, distinct from each other and the compiler.
+  Equal executable hashes are rejected too, including obvious compiler aliases.
+- Both compiler selectors matching the approved local StructPy path, plus
+  `ELISASCRIPT_LOCAL_COMPILER_SHA256`. Its identity is checked, never executed.
+- `ELISASCRIPT_SKIA_ENV_INTERPRETED_SOURCE_SHA256`,
+  `ELISASCRIPT_SKIA_ENV_MODEL_SHA256` and
+  `ELISASCRIPT_SKIA_ENV_BUDGET_SHA256` matching `Pins` in the pure launch plan.
+
+The pure gate rejects relative/NUL/newline identities, malformed hashes, missing
+markers and source-pairing drift. Its authored fixtures also check source-first
+argv, empty/metacharacter arguments, and rejection of script-wrapper headers.
+Before hash-tool launches, the harness reads just four bytes of the launcher,
+Python and compiler files and requires a recognized Mach-O/fat/ELF container
+header. That rejects text wrappers but is **not** executable validation or proof
+that a native binary will not spawn a compiler. Qualified provenance, the full
+runner/launcher/runtime dependency closure, build options, trusted system hash
+tool and actual process-tree RSS/wall-time containment remain external evidence
+requirements. Markers and matching source hashes are not that evidence.
+
+Key engine, registry, driver and runner source slices are pinned to the committed
+`e5756150` state and checked before and after use. Current concurrent dirty edits
+will therefore fail closed; do not overwrite them or assume an older binary
+contains them. Qualify the exact closure in an isolated checkout, and deliberately
+refresh pins when adopting another version. The harness's own compiled artifact
+and complete include closure need separate qualification as well.
+
+The copied fixture has exactly three files and three directories: `reference.py`,
+the candidate under `scripts/`, and its model under `src/runtime/`. Includes remain
+source-relative. Both processes use the same private cwd, fresh replacement
+environment (`LC_ALL=C` and literal fixture entries only), and binary stdin
+sentinel. Python uses `-I -S -B -X utf8`; no PATH, HOME, credentials, compiler or
+validation variables are inherited by either child. The launcher must be usable
+without those variables. Files, directory entries, source bytes and permission
+modes are checked around each run; original source/tool identities are rechecked
+on both success and ordinary failure paths.
+
+All subprocesses have 10,000 bounded wait polls and a 64 KiB combined output
+budget. Native header reads allocate four bytes; source copies are admitted at
+64 KiB each; identity files are admitted at 64 MiB. Those are admission checks,
+not RSS containment or protection against concurrent path replacement. Cleanup
+uses only recorded files, then recorded empty directories in reverse order; it
+checks remaining parents for symlink/non-directory replacement before deleting.
+Unexpected files are never recursively erased. A replaced parent or failed
+cleanup leaves the recoverable root and reports its path. These are path-based
+checks, not descriptor-sealed race protection, panic/cancellation finalization,
+or a sandbox for untrusted executables. Concurrent fixture mutation must be
+excluded during qualification.
+
+The matrix has not launched a compiler, fixture, hash child, reference, launcher
+or native-header probe. Only source/identity metadata checks were performed while
+authoring it. Admission/encoding/error/resource-boundary cases, mutable-world
+receipts, parent-state observation and real public-launcher behavior remain unverified;
+the ordinary matrix alone is not acceptance of every Python behavior.
