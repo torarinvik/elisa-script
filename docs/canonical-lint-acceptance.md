@@ -215,13 +215,15 @@ and [error name/line prefix](https://github.com/apple-oss-distributions/bash/blo
 These are mutable upstream links, not an immutable source/build provenance
 chain for the local `/bin/bash` hash or an observed byte oracle.
 
-`src/runtime/bash_exec_lookup_model.elisa` now models only that candidate
-preference from ordered filesystem observations, separately from native
-`execvp` retries. Its pure fixtures cover executable-over-denied precedence,
-first non-executable fallback, ignored directories/missing entries, and
-directory-fallback shadowing and impossible observations. They are uncompiled
-and unrun; no filesystem adapter, renderer, or local Bash source/build
-qualification is implied.
+`src/runtime/bash_exec_lookup_model.elisa` models candidate preference from
+ordered filesystem observations, separately from native `execvp` retries. It
+also models the non-AFS Bash 3.2 permission-bit check from a stat mode and an
+explicit effective-credential snapshot: owner, primary/supplementary group,
+other, and root's any-execute-bit cases. This intentionally does not substitute
+`access(X_OK)` or claim ACL behavior. The caller must still supply trustworthy
+stat and credential facts. Pure fixtures cover both selection and permission
+classification; they are uncompiled and unrun. No filesystem/identity adapter,
+renderer, or local Bash source/build qualification is implied.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
