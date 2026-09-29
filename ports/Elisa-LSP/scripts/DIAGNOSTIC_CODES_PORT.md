@@ -18,9 +18,18 @@ order, stopping and duplicates. A bounded read-only fixture compares the
 projection of the real compiler enum to the checked-in generated adapter.
 All fixtures are authored but uncompiled and unrun.
 
-This is not yet a replacement CLI. `--compiler-root`, `--output` and `--check`
-parsing, path resolution, source identity qualification, error text/status,
-write behavior and a bounded Bash/Python-vs-public-launcher parity matrix are
-still open. The current model intentionally covers the ordinary source layout,
-not every Unicode whitespace case admitted by Python's `re` patterns. Do not
-run a compiler or parity validation under the current hold.
+`generate_diagnostic_codes.elisascript` is an authored CLI companion for the
+ordinary `--compiler-root`, `--output` and `--check` forms. It reads the enum
+with a 128 KiB UTF-8 bound, compares the checked-in output in check mode, and
+otherwise writes the rendered adapter, following the Python script's direct
+write behavior. Its no-option compiler root resolves from the script location
+in either this `ports/Elisa-LSP/scripts` checkout or a deployed sibling LSP
+checkout. The output default remains cwd-relative, as in Python. No invocation
+has run.
+
+This is not yet a qualified replacement. Python `argparse` help/error wording,
+all malformed arguments, Unicode whitespace accepted by its regex, source/tool
+identity qualification, exact failure status/stderr, and a bounded
+Python-vs-public-launcher parity matrix remain open. The original and callers
+remain unchanged. Do not run a compiler or parity validation under the current
+hold.
