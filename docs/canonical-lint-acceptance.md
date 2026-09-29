@@ -79,6 +79,12 @@ unwired to source/bytecode error payloads or this port. Copying a receipt into t
 typed error value, rendering compatible diagnostics and observing all seven
 failure cases through the public launcher remain required.
 
+Cause snapshots now have a checked primitive-carrier encoder/decoder and a
+private retired-session accessor; authored fixtures check that a copied value
+survives session reuse. This does not publish a script error variant or change
+catch behavior. Requested/resolved executable context, typed frame publication
+and diagnostic rendering are still open, and all new fixtures remain unrun.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains

@@ -679,3 +679,28 @@ diagnostic, public process API change or native qualification is claimed here.
 Pre-setup deadline, ownership/group/reaper/lifetime/cancellation qualification
 and external containment remain open. No compiler, fixture or native operation
 ran; originals, SSH and other agents' work remain unchanged.
+
+## Primitive cause snapshots before session reuse (source-only)
+
+The cause model now provides a value snapshot with three i64 fields and a bool,
+matching the primitive carriers supported by existing IR error payloads. Its
+explicit version-one stage codes do not depend on enum ordinal conversion.
+Encoding rejects an empty receipt; decoding checks code width, nonnegative
+bounded attempts and known stage codes before narrowing, then validates the
+same cause invariants. An aborted search remains without a native failure cause
+after a round trip.
+
+The private session accessor requires Ready plus checked retired owners/ledger
+and reprojects the retained coordinator/child metadata before copying. Active,
+quarantined, empty and mismatched diagnostic state is not exportable. The returned
+primitive value does not reference the session, so the next checked prepare can
+reset the old launch without altering a caller's captured snapshot.
+
+Pure payload and extended session fixtures cover copying/reuse, mismatch,
+active/quarantined rejection, empty receipts and wide aliases; all are unrun.
+This is cause transport, not a full diagnostic/error-message schema or a new
+bytecode format. Requested/resolved executable identity and diagnostic context
+still need retention; source builtin error-variant declarations, runtime frame
+publication, typed catch binding and source/bytecode parity remain unwired.
+No runtime value kind or generic catch behavior changed. No compiler, fixture,
+native operation or parity ran; originals and other agents' work are unchanged.
