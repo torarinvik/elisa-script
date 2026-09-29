@@ -495,3 +495,22 @@ exclusive reaping, signal handling or post-reap group identity. Native return/
 status-slot probes and smallest-wrapper public-launcher parity still require
 explicitly reauthorized contained validation. No compiler, native operation,
 fixture or parity process ran; originals, SSH and others' changes are untouched.
+
+## Bridge rejection versus native errno (source-only)
+
+The ordinary interpreter and independent differential runner now use the same
+pure `native_errno_failure` predicate for kill/setpgid/dup2 results. Only native
+-1 admits an errno lookup. Bridge -2 rejection (or another unexpected return)
+stops signal retries and fails group setup/descriptor duplication without
+consulting stale EINTR/EACCES. In particular, a rejected out-of-range setpgid
+input can no longer appear successfully grouped because a prior call left
+EACCES in errno. A rejected group-membership probe remains conservatively
+"possibly present", never proof that captured output has become quiescent.
+
+This applies to parent and child setup helpers in both runners; no helper loses
+its existing bounded retry policy for genuine native -1/EINTR. Pure fixtures
+distinguish native -1, bridge -2, other negative returns and success. They remain
+uncompiled/unrun, and this does not qualify actual errno access, post-fork safety,
+generated ABI, group identity, external reaping or differential waiter ownership.
+No compiler, fixture, signal, process or parity operation ran. Only these isolated
+helper changes are committed; concurrent errno/clock edits remain unstaged.
