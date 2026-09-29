@@ -9,7 +9,10 @@ original and its callers remain unchanged.
 invocation: `--output`, optional `--ar`, one or more ordered objects, and `--`
 to end option parsing. Explicit `--ar` wins over nonempty `AR`, which wins over
 an injected PATH resolution of `ar`. It produces the exact ordinary archiver
-argv shape `-rcs <temporary archive> <objects...>`. Its 4096-byte path and
+argv shape `-rcs <temporary archive> <objects...>`. The argv builder accepts
+an owned staging *directory*, derives the archive leaf from the output name,
+and rejects a wrong lexical parent or staging prefix. The host must still
+prove canonical parent identity and directory ownership. Its 4096-byte path and
 4096-object limits are Elisascript safety policy, not Python `argparse` parity.
 The authored model fixtures are uncompiled and unrun.
 
