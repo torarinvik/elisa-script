@@ -121,6 +121,35 @@ against or mutate the live proof-assistant repository during fixture tests.
 Success/error fixtures must assert expectations, not just agreement between
 two possibly broken implementations.
 
+Reference admission now occurs before the candidate starts: the reference must
+complete with the literal expected status, empty stdout, exact stderr and no
+host-error text. Candidate admission uses the same full observation after the
+reference has independently passed. Authored data-only assertion bodies reject
+wrong statuses/streams, host-error records and timeout-shaped records; the full
+harness also includes its gated native test and must not be auto-run merely to
+execute those assertions.
+
+The public entry additionally requires
+`ELISASCRIPT_SOURCE_LENGTH_LAUNCHER_QUALIFIED=1`. Shared role admission rejects
+invalid/control-containing/unbounded identity paths and path/digest aliases
+between launcher, pinned Python and compiler. All three roles must preflight as
+bounded nonsymlink executable regular files with recognized four-byte native
+container headers before any hash-tool child. Headers, hashes and qualification
+markers are not provenance, no-auto-build proof, ownership or real containment.
+The operator must independently qualify a prebuilt launcher and its complete
+dependency closure without compiler launches. The parent compiler selectors
+remain checked, but neither child receives them: replacement environments contain
+only fixture PATH and LC_ALL, not compiler/authorization variables or secrets.
+
+Checksum checks now use explicit text mode and `--`, reject stdin sentinel `-`
+and NUL paths, and compare the complete escaped hash-tool record including the
+literal filename and final LF. Backslash-bearing identity paths are preserved.
+The hash utility and shared role/checksum model sources have pinned identities;
+the utility's self-hash is not independent proof of its trustworthiness and
+requires separate operator/tool qualification. Filesystem identity checks remain
+observational and do not prevent concurrent replacement. No reference, candidate,
+preflight, hash child, fixture or compiler ran.
+
 ## Bounded behavior and open gaps
 
 The candidate reads at most 16 MiB per file and 64 MiB in aggregate, processing

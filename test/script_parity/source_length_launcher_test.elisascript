@@ -2,6 +2,8 @@
 # after user reauthorization; never launch it against a live project tree.
 include "../../src/testing/differential.elisa"
 include "../../src/runtime/bounded_text_posix.elisa"
+include "../../src/testing/checksum_record_model.elisa"
+include "skia_environment_launcher_plan.elisa"
 
 using EsDifferential
 
@@ -12,7 +14,7 @@ module EsSourceLengthLauncherParity:
             PYTHON: sview = "/usr/bin/python3"
             PYTHON_SHA256: sview = "34129c71a01a74f7f3b2443521519b2e5447553fa187f5fcafaaf8c42cc192e2"
             SHA256: sview = "/usr/bin/shasum"
-            COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            COMPILER: sview = EsSkiaEnvironmentLauncherPlan::Pins::COMPILER
             PATH_VALUE: sview = "/usr/bin:/bin:/usr/sbin:/sbin"
             TIMEOUT_STEPS: u64 = 10000
             OUTPUT_BYTES: u64 = 65536
@@ -59,20 +61,20 @@ module EsSourceLengthLauncherParity:
 
 
         def valid_sha256(value: sview) -> bool:
-            return false if len(value) != 64
-            for byte in value:
-                return false if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 97u8 and byte <= 102u8))
-            return true
+            return EsSkiaEnvironmentLauncherPlan::valid_hash(value)
 
 
         def authorization() -> Authorization error[GateError] can[Environment.Read]:
-            raise GateError.Disabled if environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") != "1"
+            raise GateError.Disabled if environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") != "1" or environment_value("ELISASCRIPT_SOURCE_LENGTH_LAUNCHER_QUALIFIED") != "1"
             raise GateError.MissingGuard if environment_value("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD") != "active"
             raise GateError.WrongCompiler if environment_value("ELISA_LOCAL_COMPILER") != Tools::COMPILER or environment_value("ELISACORE_BIN") != Tools::COMPILER
             launcher: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER")
             launcher_hash: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256")
             compiler_hash: sview = environment_value("ELISASCRIPT_LOCAL_COMPILER_SHA256")
-            raise GateError.MissingIdentity if launcher == "" or not launcher.startswith("/") or not valid_sha256(launcher_hash) or not valid_sha256(compiler_hash)
+            try EsSkiaEnvironmentLauncherPlan::validate_roles(
+                EsSkiaEnvironmentLauncherPlan::Identity{path: launcher, hash: launcher_hash},
+                EsSkiaEnvironmentLauncherPlan::Identity{path: Tools::PYTHON, hash: Tools::PYTHON_SHA256}, compiler_hash) else err:
+                raise GateError.MissingIdentity
             return Authorization{launcher: launcher, launcher_sha256: launcher_hash, compiler_sha256: compiler_hash}
 
 
@@ -91,23 +93,52 @@ module EsSourceLengthLauncherParity:
 
 
         def has_sha256(target: sview, expected: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
-            return false if not valid_sha256(expected) or not is_file(path(target))
+            return false if not valid_sha256(expected) or target == "" or target == "-" or len(target) > EsChecksumRecord::Limits::FILENAME_BYTES
+            for byte in target:
+                return false if byte == 0u8
+            return false if not is_file(path(target)) or is_symlink(path(target))
             size: usize = try file_size(path(target)) else err:
                 return false
             return false if size == 0 or size > Tools::PIN_BYTES
             runner: DifferentialRunner = DifferentialRunner{
                 kind: DifferentialRunnerKind.NativeProcess, name: "source-length-identity",
-                target: Tools::SHA256, arguments: ["-a", "256", target],
+                target: Tools::SHA256, arguments: ["-a", "256", "-t", "--", target],
                 environment_mode: EsProcess::ProcessEnvironmentMode.Clear,
                 timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
             }
             observed: DifferentialRun = try run_differential_process(runner) else err:
                 return false
-            return observed.outcome == DifferentialRunOutcome.Completed and observed.exit_status == 0 and observed.stderr == "" and observed.stdout == expected + "  " + target + "\n"
+            return false if observed.outcome != DifferentialRunOutcome.Completed or observed.exit_status != 0 or observed.stderr != ""
+            return try EsChecksumRecord::sha256_text_record_matches(observed.stdout, expected, target) else false
+
+
+        def native_artifact(target: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not EsSkiaEnvironmentLauncherPlan::absolute_identity_path(target)
+            file: Path = path(target)
+            return false if not is_file(file) or is_symlink(file) or not is_executable(file)
+            size: usize = try file_size(file) else 0usize
+            return false if size < 4 or size > Tools::PIN_BYTES
+            name: mutable darray[u8] = []
+            for byte in target |name|:
+                name.push(byte)
+            name.push(0u8)
+            mode: darray[u8] = [114u8,98u8,0u8]
+            stream: mutable heap void&? = fopen(&name[0], &mode[0])
+            return false if stream == null
+            opened: mutable heap void& = stream
+            header: mutable darray[u8] = [0u8,0u8,0u8,0u8]
+            amount: usize = fread((&header[0]).cast[mutable void&], 1, 4, opened)
+            closed: int = fclose(opened)
+            return amount == 4 and closed == 0 and EsSkiaEnvironmentLauncherPlan::native_container_header(header) and not is_symlink(file)
 
 
         def pinned_inputs(auth: Authorization) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
-            return false if is_symlink(path(Tools::COMPILER)) or not is_executable(path(Tools::COMPILER)) or not is_executable(path(auth.launcher))
+            # Reject executable text wrappers before even the hash-tool child.
+            # Header recognition is not qualification or no-auto-build proof.
+            return false if not native_artifact(Tools::COMPILER) or not native_artifact(Tools::PYTHON) or not native_artifact(auth.launcher)
+            return false if not has_sha256(Tools::SHA256, "0812595f981a26f813d98dc380af14d4af427626c9339eda29eb849ae13de1e3")
+            return false if not has_sha256("test/script_parity/skia_environment_launcher_plan.elisa", "f48a705b1410537085a99bcc32c2ca6ab5dd837d45d5c38c6e83fd1691e7af44")
+            return false if not has_sha256("src/testing/checksum_record_model.elisa", "1b3cec1235d42076e50b15491d3d6b906f3841ea966937779dc665f1e8a59488")
             return false if not has_sha256(Tools::PYTHON, Tools::PYTHON_SHA256) or not has_sha256(Tools::COMPILER, auth.compiler_sha256) or not has_sha256(auth.launcher, auth.launcher_sha256)
             for source in sources():
                 return false if not has_sha256(source.source, source.sha256)
@@ -190,9 +221,7 @@ module EsSourceLengthLauncherParity:
         def case_matches(auth: Authorization, root: TemporaryRoot, status: i64, stderr: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast]:
             environment: darray[DifferentialEnvironmentEntry] = [
                 DifferentialEnvironmentEntry{name: "PATH", value: Tools::PATH_VALUE},
-                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
-                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Tools::COMPILER},
-                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Tools::COMPILER}
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"}
             ]
             reference: DifferentialRunner = DifferentialRunner{
                 kind: DifferentialRunnerKind.NativeProcess, name: "python-source-length-reference",
@@ -210,10 +239,15 @@ module EsSourceLengthLauncherParity:
             }
             reference_run: DifferentialRun = try run_differential_process(reference) else err:
                 return false
+            return false if not expected_observation(reference_run, status, stderr)
             candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
                 return false
             comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
-            return comparison.equal and reference_run.outcome == DifferentialRunOutcome.Completed and candidate_run.outcome == DifferentialRunOutcome.Completed and reference_run.exit_status == status and candidate_run.exit_status == status and reference_run.stdout == "" and candidate_run.stdout == "" and reference_run.stderr == stderr and candidate_run.stderr == stderr
+            return comparison.equal and expected_observation(candidate_run, status, stderr)
+
+
+        def expected_observation(run: DifferentialRun, status: i64, stderr: sview) -> bool:
+            return run.outcome == DifferentialRunOutcome.Completed and run.error_text == "" and run.exit_status == status and run.stdout == "" and run.stderr == stderr
 
 
         def repeated(value: sview, count: usize) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -255,6 +289,23 @@ module EsSourceLengthLauncherParity:
             return case_matches(auth, root, 1, with_link)
 
     public:
+        # Assertion bodies are data-only, but this full harness also contains
+        # the separately gated native matrix. Do not auto-run it for this test.
+        @test
+        def source_length_oracle_admission_requires_complete_exact_observation() -> void:
+            can Memory.Allocate, Abort.Panic:
+                expected: sview = "source file exceeds 600 lines: src/a.elisa (601)\n"
+                accepted: DifferentialRun = DifferentialRun{observations: [], exit_status: 1i64, stderr: expected}
+                assert expected_observation(accepted, 1i64, expected)
+                assert not expected_observation(accepted, 0i64, expected)
+                assert not expected_observation(accepted, 1i64, expected + "extra\n")
+                assert not expected_observation(DifferentialRun{observations: [], exit_status: 1i64, stdout: "unexpected", stderr: expected}, 1i64, expected)
+                assert not expected_observation(DifferentialRun{observations: [], exit_status: 1i64, error_text: "host failure", stderr: expected}, 1i64, expected)
+                assert not expected_observation(DifferentialRun{observations: [], outcome: DifferentialRunOutcome.Timeout, exit_status: 1i64, stderr: expected}, 1i64, expected)
+                empty: DifferentialRun = DifferentialRun{observations: []}
+                assert expected_observation(empty, 0i64, "")
+
+
         def public_launcher_parity() -> bool can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast, Console.Write, Console.Format]:
             # This gate is inside the public entry, not just the @test wrapper.
             auth: Authorization = try authorization() else err:
