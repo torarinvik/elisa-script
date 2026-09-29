@@ -434,3 +434,29 @@ post-reap group identity, external reapers, cancellation and retained owner
 lifetime still need separate handling and evidence. The smallest lint wrapper
 remains a candidate, not an accepted Bash exec replacement; original scripts and
 callers are unchanged.
+
+## Negative wait failure admission (source-only)
+
+The selected Darwin error profile now distinguishes interrupted waits, ECHILD
+ownership loss, EINVAL request failure and unknown errors. Only the expected
+`-1`/EINTR pair preserves the existing retry assumptions. Other negative returns
+mark the waiter ownership-uncertain before any cleanup or later signal attempt;
+ECHILD is not converted into a terminal receipt or released process capacity.
+The check applies in normal polling, TERM-grace polling and final reaping.
+The errno value is copied immediately after access, before any further native
+operation; nonnegative wait returns do not interpret stale errno.
+
+Existing bounded EINTR retries remain. Exhaustion can still enter mandatory
+cleanup under the exclusive-reaper assumption, but any subsequent non-EINTR
+wait failure blocks further signaling. This intentionally sacrifices recoverable
+progress on an unqualified host error rather than guessing a PID's ownership.
+No eventual reap, orphan recovery or successful cleanup is claimed from the
+quarantine state. Fatal owners and budgets still need durable task lifetime.
+
+Pure fixtures cover ECHILD, EINVAL, valid EINTR, malformed negative returns,
+zero/negative/unknown errno, and nonnegative returns with stale errno. They are
+uncompiled/unrun. The legacy waitpid C-int/pid/status ABI, exclusive-reaper and
+signal-disposition assumptions, post-reap group identity, retained lifetime and
+cancellation remain qualification blockers for the smallest lint wrapper and
+new spawn path. No compiler, fixture, child, wait, kill or parity process ran;
+original scripts/callers and other agents' work remain unchanged.
