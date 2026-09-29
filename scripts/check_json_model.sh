@@ -26,9 +26,14 @@ encoder="$repo_root/src/runtime/json_encode_model.elisa"
 lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 parser="$repo_root/src/runtime/json_parse_model.elisa"
 docs="$repo_root/docs/ir.md"
+parity_reference="$repo_root/test/fixtures/script_parity/json_values/reference.py"
+parity_candidate="$repo_root/test/fixtures/script_parity/json_values/candidate.elisascript"
+parity_expected="$repo_root/test/fixtures/script_parity/json_values/expected.txt"
+parity_contract="$repo_root/test/fixtures/script_parity/json_values/CONTRACT.md"
+parity_launcher="$repo_root/test/script_parity/json_values_launcher_test.elisascript"
 
 total_source_bytes=0
-for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$docs"; do
+for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$docs" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
     size_output="$(wc -c < "$required_file")"
     source_size="${size_output//[[:space:]]/}"
@@ -254,4 +259,40 @@ done
 
 rg -Fq '`EsJson` is the namespaced owned-document boundary' "$docs"
 
-printf 'json model audit: namespaced owned scalar/key arenas and document lifecycle contracts are present\n'
+for parity_reference_pattern in \
+    'Python json oracle' \
+    'json.loads(SOURCE)' \
+    "value['duplicate']"; do
+    rg -Fq "$parity_reference_pattern" "$parity_reference"
+done
+
+for parity_candidate_pattern in \
+    'module EsJsonValuesParityCandidate:' \
+    'parse_json_document(lexed)' \
+    'JsonDuplicateKeyPolicy.KeepLast' \
+    'JSON_INDEX_NONE' \
+    'blåbær'; do
+    rg -Fq "$parity_candidate_pattern" "$parity_candidate"
+done
+
+for parity_launcher_pattern in \
+    'json_value_projection_matches_python_reference_and_golden' \
+    'ELISASCRIPT_VALIDATION_REAUTHORIZED' \
+    'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' \
+    'SourceHashes::JSON_PARSER'; do
+    rg -Fq "$parity_launcher_pattern" "$parity_launcher"
+done
+
+for parity_expected_pattern in \
+    'big=1234567890123456789012345678901234567890' \
+    'missing=missing' \
+    'nullable=null' \
+    'item.2=4' \
+    'duplicate=last'; do
+    rg -Fq "$parity_expected_pattern" "$parity_expected"
+done
+
+rg -Fq 'not a claim of full Python' "$parity_contract"
+rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
+
+printf 'json model audit: namespaced owned scalar/key arenas, lifecycle contracts, and Python value parity fixture are present\n'

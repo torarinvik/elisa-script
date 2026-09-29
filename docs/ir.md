@@ -380,7 +380,10 @@ and array values, Unicode, booleans, null versus a missing member, and
 last-value-wins duplicate keys. The Python executable, candidate, reference,
 golden, and directly consumed JSON model sources are digest-pinned. This is a
 focused behavior slice, not full Python JSON compatibility, and the launcher
-has not been run under the validation hold.
+has not been run under the validation hold. Both compiler-free JSON source
+audits also preflight these parity inputs and check the candidate, golden, and
+launcher safety markers, so a missing fixture cannot be reported as a complete
+JSON model audit.
 
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,
