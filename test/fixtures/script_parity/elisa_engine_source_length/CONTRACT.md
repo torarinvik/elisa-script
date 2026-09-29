@@ -17,11 +17,14 @@ the checker prints its success sentence and exits 0.
 
 The candidate targets the sibling `elisa-engine` directory from its installed
 Elisa Projects layout and accepts no meaningful arguments, like the reference.
-It preserves the plan/root ordering, exact suffix set, per-root path ordering,
-600-line threshold, and ordinary success/violation output. Its reader uses a
-fixed 16 KiB buffer and strict incremental UTF-8/newline state. Matching file
-symlinks are read through their targets, descendant directory symlinks are not
-traversed, and the configured root itself is inspected as a directory.
+It resolves the full `Script::source_path()` before taking its parent, matching
+`Path(__file__).resolve()` even when the candidate is invoked through a final
+script symlink. It preserves the plan/root ordering, exact suffix set,
+per-root path ordering, 600-line threshold, and ordinary success/violation
+output. Its reader uses a fixed 16 KiB buffer and strict incremental UTF-8/
+newline state. Matching file symlinks are read through their targets,
+descendant directory symlinks are not traversed, and the configured root itself
+is inspected as a directory.
 
 This is only a source port and pure-policy fixture. Discovery/read errors are
 not Python-traceback compatible: the candidate fails closed with a concise
@@ -41,7 +44,8 @@ operator qualification. Authored cases cover no oversized source (with only the 
 short reference beneath `scripts`), a non-directory root, 600/601
 universal-newline boundaries, all configured roots, path-component
 ordering, every accepted suffix, excluded dot/uppercase/other suffixes, file
-and directory symlinks, ignored arguments, unrelated cwd, and exact output.
+and directory symlinks, a candidate launch symlink from a different relative
+include directory, ignored arguments, unrelated cwd, and exact output.
 Cleanup removes only ledgered files/links and known directories in reverse
 order, with recorded-parent checks. The entry requires explicit reauthorization,
 the active external RSS marker, the pinned local compiler selection, and a
