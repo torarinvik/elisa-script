@@ -75,6 +75,25 @@ filtering, a file symlink, and a descendant directory-symlink cycle. Each run
 asserts independently expected status/stdout/stderr as well as agreement.
 Extra wrapper arguments are supplied to both programs and must be ignored.
 
+The single-file phase now consumes 13 independently authored cases from
+`test/script_parity/source_length_cases.elisa`, which imports neither the
+candidate counter nor a host adapter. It covers an empty file, BOM-only content,
+599/600/601 LF lines, 600/601 final unterminated lines, 600 bare CR/CRLF lines,
+300 repeated CR+CRLF pairs (600 lines), mixed newline/control content (601),
+601 repetitions of Unicode/control separators as one unterminated line, and
+602 LF lines with its own literal diagnostic. Every expected status/stderr is
+fixture data, not produced by the candidate. Missing/empty roots and multi-file
+ordering/symlink cases remain separate; this is 17 ordinary case invocations
+in total, each with reference-first admission and exact empty stdout.
+
+The fixture source is pinned before/after the matrix. Failure reports the
+fixed fixture label without dumping child output. Pure assertions in
+`test/runtime/source_length_cases_test.elisa` compare the actual counter to the
+literal line metadata and check byte boundaries/diagnostic fields. They have
+not compiled/run and do not prove Python, filesystem or launcher behavior.
+Regular-file `src`, source-root symlinks, matching directories and host/error
+cases still need their separate acceptance fixtures/qualification.
+
 The public fixture entry performs authorization checks itself, before any hash
 tool or program starts; these are not only checks in the @test caller. In
 addition to the existing wrapper-provided opt-in/RSS marker and pinned compiler
