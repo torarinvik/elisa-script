@@ -19,21 +19,25 @@ file kind, and nonzero size. It also ports the selected-resource root
 admission from the packaging workflow: implicit all-assets mode requires the
 project's `assets/` directory, while explicitly selected paths must exist,
 must not themselves be symlinks, and must be regular files or directories.
-The filesystem module does not yet copy notices or resources; directory
-traversal, Python `copy2` metadata behavior, and `copytree(symlinks=False)`
-handling are still unported. A file-level Darwin adapter in
+The filesystem module now stages selected resources and notices. Directory
+traversal uses the per-entry ignore policy; notice destinations reject
+pre-existing entries while ordinary file resources overwrite like `copy2`.
+A file-level Darwin adapter in
 `src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
 POSIX-stat, and xattr flags while following source symlinks; a focused fixture
-is authored but unrun. It is not yet integrated into recursive staging, and
-Python's best-effort xattr errors still need an explicit parity policy. The
-pure policy in
+is authored but unrun. Recursive resource staging now composes that adapter
+with Elisa directory traversal and the asset-ignore policy, dereferences
+symlinked descendants, rejects active directory cycles, and restores copied
+directory modes. The pure policy in
 `src/runtime/macos_app_asset_filter_model.elisa` now ports both the regular
 asset litter exclusions and the additional shader metadata exclusions; its
-fixture is authored but unrun.
+fixture is authored but unrun. Directory timestamps/xattrs and Python's
+best-effort xattr error behavior still need parity treatment. The app-package
+entrypoint and transactional publication remain unported.
 
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
-against the project, resource filesystem staging, linked-library closure,
+against the project, linked-library closure,
 `otool`/`install_name_tool`/`codesign`, plist writing, and transactional bundle
 publication are still unported. Python's non-standard
 `NaN`/`Infinity` JSON acceptance is also not represented by the
