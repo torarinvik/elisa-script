@@ -281,6 +281,19 @@ qualification. No formatting match proves digest correctness, atomic file
 identity, source execution or parity. Original scripts and callers remain
 unchanged; validation and native/process execution remain disabled.
 
+The same checksum-record bug also affected both dormant Skia environment-query
+harnesses. Their native/public-launcher pin and copied-fixture checks now reuse
+the bounded exact matcher with explicit text mode and `--`, preflight filename
+bounds/non-NUL bytes and reject the special stdin name `-`. The matcher source
+is included in each existing before/after pin set. An additional pure gate
+fixture admits unchanged literal-backslash launcher/Python paths while retaining
+newline/CR/NUL rejection; path admission does not prove those artifacts exist.
+Existing compiler/source/artifact pins and all explicit qualification gates
+are unchanged, including intentionally stale engine pins that still need
+fresh qualification. No Skia compiler, native or launcher test ran, and no
+script was accepted or live caller switched. This infrastructure repair does
+not advance the smallest-first acceptance order.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
