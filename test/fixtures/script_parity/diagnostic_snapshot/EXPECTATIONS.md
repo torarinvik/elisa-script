@@ -12,6 +12,7 @@ implementations.
 | --- | ---: | --- | --- |
 | `positive` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `compact_fields` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
+| `unicode_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `missing_fingerprint` | 1 | empty | `diagnostic snapshot audit: fingerprint omits entrypoint_error\n` |
 | `missing_fingerprint_source` | 1 | empty | `diagnostic snapshot audit: fingerprint omits source\n` |
 | `missing_equality` | 1 | empty | `diagnostic snapshot audit: structural equality omits entrypoint_error\n` |
@@ -36,10 +37,12 @@ The positive fixture proves the `execution` exclusion remains intentional.
 optional space before the colon; it ensures field-name extraction follows the
 parser's token-based treatment of insignificant whitespace. The four
 field-omission fixtures cover every required field in each comparison
-operation. The generated cases exercise raw CRLF/bare-CR bytes, the exact
-source-byte ceiling, field-count/name ceilings, and the extra-operand usage
-boundary. None of these expectations have been executed; the standing compiler
-validation hold remains in force.
+operation. `unicode_runner.elisa` places valid non-ASCII text in comments and
+after field types while keeping the audited identifiers ASCII. The generated
+cases exercise raw CRLF/bare-CR bytes, the exact source-byte ceiling,
+field-count/name ceilings, and the extra-operand usage boundary. None of these
+expectations have been executed; the standing compiler validation hold remains
+in force.
 
 The shell reference and Elisascript candidate both resolve an omitted or empty
 path relative to their own script locations. The public-launcher parity source
