@@ -8,7 +8,11 @@ hash both before and after its matrix, so local fixture drift cannot silently
 turn the test into parity against a stale Python snapshot.
 Candidate: `scripts/check_wasmbrowser_source_length.elisascript`, with a pure
 counter in `src/runtime/source_length_model.elisa` and authored regression
-tests in `test/runtime/source_length_model_test.elisa`. Component-wise ordering
+tests in `test/runtime/source_length_model_test.elisa`. The counter now exposes
+a small typed feed/finalize API that preserves CRLF state across arbitrary
+chunks; the existing whole-buffer API is defined through that same path. The
+candidate reader still materializes each bounded file, so streaming file I/O
+and its differential qualification remain open. Component-wise ordering
 fixtures are in `test/script_parity/source_length_order_test.elisascript`.
 
 The candidate lives in elisa-script and selects its neighboring
