@@ -228,9 +228,10 @@ behavior, and source-observed omission of a trailing empty component. Named
 directories are retained as owned PATH byte spans; leading-tilde expansion is
 marked but not performed. Inputs over 64 KiB PATH or 4,096 components fail
 explicitly, so those bounds are runtime policy, not a claim about unrestricted
-Bash behavior. Pure fixtures cover selection, permission classification, and
-these path-plan rules; they are uncompiled and unrun. Tilde expansion, a
-renderer, and local Bash source/build qualification remain open.
+Bash behavior. Pure fixtures cover selection, permission classification,
+invalid directory-as-executable observations, and these path-plan rules; they
+are uncompiled and unrun. Tilde expansion, a renderer, and local Bash
+source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
 captures effective UID, real and effective GIDs, and the supplementary group
