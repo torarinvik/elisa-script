@@ -53,6 +53,29 @@ if grep -F 'read_text(' "$candidate_file" "$bounded_reader" >/dev/null 2>&1; the
     echo "check_namespace_manifest: source read uses unbounded read_text" >&2
     exit 1
 fi
+if ! grep -F 'capture_process_result_with_environment(exe"rg", file_list_arguments' "$candidate_file" >/dev/null 2>&1; then
+    echo "check_namespace_manifest: candidate does not use the bounded ripgrep file-list process" >&2
+    exit 1
+fi
+for source_discovery_invariant in \
+    '["--files", "--null", "--glob", "*.elisa", root_text]' \
+    'FILES: usize = 4096' \
+    'discovered_paths.count >= Limits::FILES' \
+    'FILE_LIST_BYTES: usize = 16777216' \
+    'ENUMERATION_TIMEOUT_MICROS: i64 = 30000000' \
+    'Limits::FILE_LIST_BYTES.i64()' \
+    'file_list.status != 0 and file_list.status != 1' \
+    'sview_at(file_list_output, cursor) == 0u8' \
+    'record_start != len(file_list_output)'; do
+    if ! grep -F "$source_discovery_invariant" "$candidate_file" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: source discovery omits bounded NUL-list invariant: $source_discovery_invariant" >&2
+        exit 1
+    fi
+done
+if grep -F '.iterdir()' "$candidate_file" >/dev/null 2>&1; then
+    echo "check_namespace_manifest: source discovery bypasses ripgrep ignore rules" >&2
+    exit 1
+fi
 
 module_names="$(rg --no-filename '^module [A-Za-z_][A-Za-z0-9_]*:' "$source_root" -g '*.elisa' 2>/dev/null | awk '{name=$2; sub(/:$/, "", name); print name}' | sort)"
 duplicate_names="$(printf '%s\n' "$module_names" | awk 'seen[$0]++ {print $0}' | sort -u)"
