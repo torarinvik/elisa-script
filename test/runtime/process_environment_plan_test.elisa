@@ -1,0 +1,230 @@
+# Parent preparation only. No environment reads/mutations or child processes.
+include "../../src/runtime/process_environment_plan.elisa"
+
+using EsProcessEnvironmentPlan
+
+
+module EsProcessEnvironmentFixture:
+    public:
+        def sealed(entries: darray[EsEnvironment::EnvironmentEntry]) -> EsEnvironment::EnvironmentSnapshot error[EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            result: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Begin)
+            for entry in entries |result|:
+                _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Seal)
+            return result
+
+
+        def tombstoned() -> EsEnvironment::EnvironmentSnapshot error[EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            result: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Begin)
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Set, "OLD", "hidden")
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Unset, "OLD")
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Set, "EMPTY", "")
+            _ = try EsEnvironment::advance_environment_snapshot(result, EsEnvironment::EnvironmentEvent.Seal)
+            return result
+
+
+@test
+def process_environment_plan_preserves_ambient_and_owns_child_bytes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([
+            EsEnvironment::EnvironmentEntry{name: "CC", value: ""},
+            EsEnvironment::EnvironmentEntry{name: "PATH", value: ":/bin::rel:"},
+            EsEnvironment::EnvironmentEntry{name: "KEEP", value: "x"}
+        ]) else err:
+            assert false
+            return
+        before_bytes: usize = ambient.text_bytes
+        planned: mutable Prepared = try prepare(ambient, [EsEnvironment::EnvironmentEntry{name: "CC", value: "clang"}, EsEnvironment::EnvironmentEntry{name: "NEW", value: "a=b"}], "tool") else err:
+            assert false
+            return
+        assert ambient.entries.count == 3 and ambient.entries[0].value == ""
+        assert ambient.text_bytes == before_bytes and ambient.state == EsEnvironment::EnvironmentState.Sealed
+        assert planned.environment.count == 4
+        assert bytes_view(planned.environment[0]) == "CC=clang\0"
+        assert bytes_view(planned.environment[1]) == "PATH=:/bin::rel:\0"
+        assert bytes_view(planned.environment[2]) == "KEEP=x\0"
+        assert bytes_view(planned.environment[3]) == "NEW=a=b\0"
+        assert planned.executable_candidates.count == 5
+        assert bytes_view(planned.executable_candidates[0]) == "tool\0"
+        assert bytes_view(planned.executable_candidates[1]) == "/bin/tool\0"
+        assert bytes_view(planned.executable_candidates[2]) == "tool\0"
+        assert bytes_view(planned.executable_candidates[3]) == "rel/tool\0"
+        assert bytes_view(planned.executable_candidates[4]) == "tool\0"
+        planned.environment[0][0] <- 120u8
+        assert ambient.entries[0].name == "CC" and ambient.entries[0].value == ""
+
+
+@test
+def process_environment_plan_uses_child_overlay_path_not_ambient_path() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: "/old"}]) else err:
+            assert false
+            return
+        planned: Prepared = try prepare(ambient, [EsEnvironment::EnvironmentEntry{name: "PATH", value: "/new:dir with spaces"}], "tool") else err:
+            assert false
+            return
+        assert planned.executable_candidates.count == 2
+        assert bytes_view(planned.executable_candidates[0]) == "/new/tool\0"
+        assert bytes_view(planned.executable_candidates[1]) == "dir with spaces/tool\0"
+        assert ambient.entries[0].value == "/old"
+
+
+@test
+def process_environment_plan_distinguishes_missing_path_policy_from_empty_path() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([]) else err:
+            assert false
+            return
+        direct: Prepared = try prepare(ambient, [], "relative/tool") else err:
+            assert false
+            return
+        assert direct.executable_candidates.count == 1
+        assert bytes_view(direct.executable_candidates[0]) == "relative/tool\0"
+        missing: mutable bool = false
+        catch prepare(ambient, [], "tool"):
+            ok _:
+                assert false
+            error failure:
+                missing <- failure == PlanError.MissingPathPolicy
+        assert missing
+        explicit: Prepared = try prepare(ambient, [], "tool", AbsentPath{provided: true, value: "/usr/bin:/bin"}) else err:
+            assert false
+            return
+        assert explicit.executable_candidates.count == 2
+        assert bytes_view(explicit.executable_candidates[0]) == "/usr/bin/tool\0"
+        empty: Prepared = try prepare(ambient, [EsEnvironment::EnvironmentEntry{name: "PATH", value: ""}], "tool") else err:
+            assert false
+            return
+        assert empty.executable_candidates.count == 1 and bytes_view(empty.executable_candidates[0]) == "tool\0"
+
+
+@test
+def process_environment_plan_rejects_duplicate_overlay_unset_and_invalid_names() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([]) else err:
+            assert false
+            return
+        duplicate: mutable bool = false
+        catch prepare(ambient, [EsEnvironment::EnvironmentEntry{name: "X", value: "1"}, EsEnvironment::EnvironmentEntry{name: "X", value: "2"}], "/tool"):
+            ok _:
+                assert false
+            error failure:
+                duplicate <- failure == PlanError.DuplicateOverlay
+        assert duplicate
+        unset: mutable bool = false
+        catch prepare(ambient, [EsEnvironment::EnvironmentEntry{name: "X", value: "", present: false}], "/tool"):
+            ok _:
+                assert false
+            error failure:
+                unset <- failure == PlanError.UnsupportedUnset
+        assert unset
+        for name in ["", "a=b", "a\0b"]:
+            rejected: mutable bool = false
+            catch prepare(ambient, [EsEnvironment::EnvironmentEntry{name: name, value: "x"}], "/tool"):
+                ok _:
+                    assert false
+                error failure:
+                    rejected <- failure == EsEnvironment::EnvironmentContractError.NameInvalid
+            assert rejected
+        assert ambient.entries.count == 0 and ambient.text_bytes == 0
+
+
+@test
+def process_environment_plan_path_and_search_limits_fail_before_launch() -> void:
+    can Memory.Allocate, Abort.Panic:
+        directory: mutable sview = ""
+        for _ in 0..<4095 |directory|:
+            directory <- directory + "x"
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: directory}]) else err:
+            assert false
+            return
+        too_long: mutable bool = false
+        catch prepare(ambient, [], "tool"):
+            ok _:
+                assert false
+            error failure:
+                too_long <- failure == PlanError.PathLimit
+        assert too_long
+        separators: mutable sview = ""
+        for _ in 0..<4096 |separators|:
+            separators <- separators + ":"
+        many: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: separators}]) else err:
+            assert false
+            return
+        overflow: mutable bool = false
+        catch prepare(many, [], "tool"):
+            ok _:
+                assert false
+            error failure:
+                overflow <- failure == PlanError.SearchLimit
+        assert overflow
+
+
+@test
+def process_environment_plan_rejects_unsealed_ambient_and_forged_path_policy() -> void:
+    can Memory.Allocate, Abort.Panic:
+        unsealed: EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+        rejected: mutable bool = false
+        catch prepare(unsealed, [], "/tool"):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == PlanError.AmbientNotSealed
+        assert rejected
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([]) else err:
+            assert false
+            return
+        for policy in [AbsentPath{value: "/hidden"}, AbsentPath{provided: true, value: "a\0b"}]:
+            invalid: mutable bool = false
+            catch prepare(ambient, [], "/tool", policy):
+                ok _:
+                    assert false
+                error failure:
+                    invalid <- failure == PlanError.InvalidPathPolicy
+            assert invalid
+
+
+@test
+def process_environment_plan_excludes_tombstones_and_preserves_empty_values() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::tombstoned() else err:
+            assert false
+            return
+        planned: Prepared = try prepare(ambient, [], "/tool") else err:
+            assert false
+            return
+        assert planned.environment.count == 1 and bytes_view(planned.environment[0]) == "EMPTY=\0"
+        assert planned.environment_bytes == 7
+        assert ambient.entries.count == 2 and not ambient.entries[0].present
+
+
+@test
+def process_environment_plan_search_byte_receipt_admits_exact_boundary() -> void:
+    can Memory.Allocate, Abort.Panic:
+        name: mutable darray[u8] = []
+        for _ in 0..<2047 |name|:
+            name.push(120u8)
+        path: mutable darray[u8] = []
+        for _ in 0..<511 |path|:
+            path.push(58u8)
+        ambient: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: bytes_view(path)}]) else err:
+            assert false
+            return
+        planned: Prepared = try prepare(ambient, [], bytes_view(name)) else err:
+            assert false
+            return
+        assert planned.executable_candidates.count == 512
+        assert planned.search_bytes == 1048576
+        path.push(58u8)
+        larger: EsEnvironment::EnvironmentSnapshot = try EsProcessEnvironmentFixture::sealed([EsEnvironment::EnvironmentEntry{name: "PATH", value: bytes_view(path)}]) else err:
+            assert false
+            return
+        rejected: mutable bool = false
+        catch prepare(larger, [], bytes_view(name)):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == PlanError.SearchLimit
+        assert rejected

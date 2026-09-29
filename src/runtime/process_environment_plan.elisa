@@ -1,0 +1,119 @@
+# Parent-side preparation for streaming child-only environment overlays.
+# Pure data only: no getenv/setenv, filesystem lookup, fork or process launch.
+include "process_model.elisa"
+include "environment_model.elisa"
+
+module EsProcessEnvironmentPlan:
+    public:
+        const module Limits:
+            PATH_BYTES: usize = 4096
+            PATH_VALUE_BYTES: usize = 65536
+            SEARCH_CANDIDATES: usize = 4096
+            SEARCH_BYTES: usize = 1048576
+
+
+        struct AbsentPath:
+            # The host must explicitly supply its qualified absent-PATH policy.
+            # Present empty PATH is different: it searches the caller cwd.
+            provided: bool = false
+            value: sview = ""
+
+
+        struct Prepared:
+            # Every inner array owns bytes and has exactly one terminal NUL.
+            # A host still constructs pointer vectors with a final null pointer.
+            environment: darray[darray[u8]] = []
+            executable_candidates: darray[darray[u8]] = []
+            environment_bytes: usize = 0
+            search_bytes: usize = 0
+
+
+        error PlanError:
+            AmbientNotSealed
+            OverlayLimit
+            DuplicateOverlay
+            UnsupportedUnset
+            InvalidExecutable
+            MissingPathPolicy
+            InvalidPathPolicy
+            PathLimit
+            SearchLimit
+
+
+        def prepare(ambient: EsEnvironment::EnvironmentSnapshot&, overlay: darray[EsEnvironment::EnvironmentEntry], executable: sview, absent_path: AbsentPath = AbsentPath{}) -> Prepared error[PlanError, EsEnvironment::EnvironmentContractError] can[Memory.Allocate, Abort.Panic]:
+            try EsEnvironment::validate_environment_snapshot(ambient)
+            raise PlanError.AmbientNotSealed if ambient.state != EsEnvironment::EnvironmentState.Sealed
+            raise PlanError.OverlayLimit if overlay.count > EsEnvironment::ENVIRONMENT_MAX_ENTRIES
+            for index in 0..<overlay.count:
+                raise PlanError.UnsupportedUnset if not overlay[index].present
+                for earlier in 0..<index:
+                    raise PlanError.DuplicateOverlay if overlay[earlier].name == overlay[index].name
+            raise PlanError.InvalidExecutable if executable == "" or len(executable) >= Limits::PATH_BYTES or sview_contains_byte(executable, 0)
+            raise PlanError.InvalidPathPolicy if (not absent_path.provided and absent_path.value != "") or (absent_path.provided and (len(absent_path.value) > Limits::PATH_VALUE_BYTES or sview_contains_byte(absent_path.value, 0)))
+
+            # Never update or alias the ambient entries array. Rebuild only its
+            # live entries, then apply the explicit set-only overlay to that copy.
+            merged: mutable EsEnvironment::EnvironmentSnapshot = EsEnvironment::EnvironmentSnapshot{}
+            _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Begin)
+            for entry in ambient.entries |merged|:
+                if entry.present:
+                    _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
+            for entry in overlay |merged|:
+                _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Set, entry.name, entry.value)
+            _ = try EsEnvironment::advance_environment_snapshot(merged, EsEnvironment::EnvironmentEvent.Seal)
+
+            prepared: mutable Prepared = Prepared{}
+            for entry in merged.entries |prepared|:
+                encoded: mutable darray[u8] = []
+                append_text(encoded, entry.name)
+                encoded.push(61u8)
+                append_text(encoded, entry.value)
+                encoded.push(0u8)
+                prepared.environment_bytes <- prepared.environment_bytes + encoded.count
+                prepared.environment.push(encoded)
+            # The snapshot validator already bounds this total including '='
+            # and NUL. Keep an explicit receipt cross-check at the ABI boundary.
+            assert prepared.environment_bytes == merged.text_bytes
+            if sview_contains_byte(executable, 47):
+                try append_candidate(prepared, "", executable)
+                return prepared
+
+            path_present: mutable bool = false
+            search_path: mutable sview = ""
+            for entry in merged.entries |path_present, search_path|:
+                if entry.name == "PATH":
+                    path_present <- true
+                    search_path <- entry.value
+            if not path_present:
+                raise PlanError.MissingPathPolicy if not absent_path.provided
+                search_path <- absent_path.value
+            raise PlanError.PathLimit if len(search_path) > Limits::PATH_VALUE_BYTES or sview_contains_byte(search_path, 0)
+            directory: mutable darray[u8] = []
+            for byte in search_path |directory, prepared|:
+                if byte == 58u8:
+                    try append_candidate(prepared, bytes_view(directory), executable)
+                    directory <- []
+                else:
+                    raise PlanError.PathLimit if directory.count >= Limits::PATH_BYTES - 1
+                    directory.push(byte)
+            # Include the final empty component, including PATH="" or "dir:".
+            try append_candidate(prepared, bytes_view(directory), executable)
+            return prepared
+
+    private:
+        def append_text(output: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def append_candidate(prepared: mutable Prepared&, directory: sview, executable: sview) -> void error[PlanError] can[Memory.Allocate, Abort.Panic]:
+            count: usize = len(directory) + len(executable) + (1usize if directory != "" else 0usize)
+            raise PlanError.PathLimit if count >= Limits::PATH_BYTES
+            raise PlanError.SearchLimit if prepared.executable_candidates.count >= Limits::SEARCH_CANDIDATES or count + 1 > Limits::SEARCH_BYTES - prepared.search_bytes
+            encoded: mutable darray[u8] = []
+            append_text(encoded, directory)
+            encoded.push(47u8) if directory != ""
+            append_text(encoded, executable)
+            encoded.push(0u8)
+            prepared.search_bytes <- prepared.search_bytes + encoded.count
+            prepared.executable_candidates.push(encoded)

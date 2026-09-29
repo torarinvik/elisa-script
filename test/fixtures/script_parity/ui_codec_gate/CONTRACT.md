@@ -47,7 +47,10 @@ inherited CC remains exported unchanged. Preserve all unrelated environment
 entries. The current candidate defaults the executable but leaves an inherited
 empty CC unchanged, so this is an identified source-level parity gap. It needs a
 streaming child-only environment overlay, not a global parent-env mutation or
-the existing capture-and-discard environment runner.
+the existing capture-and-discard environment runner. The pure child-CC policy
+and parent-prepared environment/PATH layer are now authored; see
+`docs/process-environment-plan.md`. A streaming host executor and candidate
+wiring are still required, so this gap is not marked fixed.
 Both reference root resolution and
 mktemp capture happen in command substitutions, not a parent-shell `cd`.
 Both compiler and test inherit stdin/stdout/stderr with no script-imposed deadline.
