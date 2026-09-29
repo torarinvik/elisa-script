@@ -70,8 +70,9 @@ are under `test/fixtures/script_parity/process_probe/` and
 binaries or passing tests. Budget captures for the complete binary frame, not
 just the human-readable argv prefix.
 
-`test/script_parity/canonical_wrappers_launcher_test.elisascript` authors ten
-ordinary cases across this family and lint: all three canonical modes, absent
+`test/script_parity/canonical_wrappers_launcher_test.elisascript` authors 21
+ordinary cases across this family and lint (10 test-wrapper cases plus 11 lint
+cases): all three canonical modes, absent
 and empty mode, forced-campaign forwarding, unset/empty PYTHON_BIN, relative/
 absolute paths with spaces, literal caller arguments, nonzero statuses, and
 binary streams. The same isolated read-only dummy-tool project is used for the
@@ -79,6 +80,23 @@ reference and candidate, so physical cwd bytes can be compared exactly. Copied
 scripts/probes are hashed before and after the matrix; cleanup rejects unknown
 remaining files instead of recursively sweeping them. This does not replace
 independent mutable worlds for tools with filesystem side effects.
+
+`test/script_parity/canonical_test_cases.elisa` owns the ten independent
+test-wrapper expectations and imports only the data-only lint case types, not
+the candidate's argument builders or a host/process implementation. Its six
+existing cases are retained, with four additions: campaign without arguments
+and unset Python selection; campaign with empty Python selection, empty/CRLF/
+Unicode arguments and a normal 255 exit; all mode with a literal metacharacter
+executable and normal 126 exit; and campaign mode with a literal PATH name,
+repeated `-m`, LF/Unicode arguments and normal 127 exit. These normal statuses
+are not exec-failure provenance. Data-only fixture assertions pin the new
+vectors and metadata; the separate pure argument-builder fixture compares the
+actual builders against all ten literal vectors. No fixtures have run.
+
+The family expectation source is pinned before/after an explicitly selected
+family wave. The default lint wave remains eleven ordinary cases plus seven
+actual lint exec-failure cases; it neither constructs nor executes test-wrapper
+cases. A broader source fixture is not authorization to advance acceptance.
 
 The public entry gates hash tools and all program launches on explicit opt-in,
 the outer RSS marker, pinned local compiler path/hash, launcher path/hash, and
@@ -92,7 +110,8 @@ the candidate's argument builders.
 
 Process captures are bounded to 256 KiB and 10,000 wait polls per invocation.
 Source copies are preflighted at 512 KiB each/2 MiB total; the qualified probe
-is at most 16 MiB and has three isolated copies. Underlying copy/runtime bounds
+is at most 16 MiB and has four isolated copies in the family wave (three in
+the default lint wave). Underlying copy/runtime bounds
 and the outer time/RSS guard still apply; preflight size checks do not prove a
 descriptor-level bound against racing source changes. The RSS environment
 marker is a prerequisite, not proof of an OS hard cap. No probe compilation or
