@@ -7,7 +7,7 @@ Neither is an accepted replacement yet. Keep originals and callers unchanged.
 
 ## Smallest source-only check
 
-`test/script_parity/canonical_lint_cases.elisa` owns the eight ordinary
+`test/script_parity/canonical_lint_cases.elisa` owns the eleven ordinary
 reference expectations in a public typed module. Its separate pure fixtures pin
 every executable selection, normally returned status, ignored wrapper argument
 and fixed Ruff argv. They import neither the port nor the differential runner.
@@ -222,8 +222,35 @@ reference alongside candidate evidence. The reference still runs first, must
 match the independent status and full probe byte frame, and prevents candidate
 execution if it fails. Both ordinary observations and full comparison must pass;
 normally returned 126/127 still do not replace actual-exec failure coverage.
-The literal golden bytes, eight-case model, wider-wave selection, limits, pins
-and execution order are unchanged. This extension is source-only and unrun.
+At that evidence-formatting step the literal golden bytes, original eight-case
+model, wider-wave selection, limits, pins and execution order were unchanged.
+That extension was source-only and unrun.
+
+## Literal executable-name cases (source-only)
+
+Three additional ordinary lint cases set RUFF_BIN to relative, absolute and PATH
+spellings of the same probe filename containing `$HOME`, a semicolon, a quoted
+glob, double quotes and a backslash. These characters belong to the filename:
+they must not trigger shell expansion, token splitting, globbing or reparsing.
+The earlier shell-shaped *ignored wrapper arguments* did not exercise this
+contract. Each new reference/candidate still receives the fixed four Ruff
+arguments, and must independently match the full binary observation frame and
+its normal exit status (31, 32 or 33), before exact pair comparison.
+
+The temporary root owns one extra pinned executable probe copy. The existing
+scope provides that alias to both waves, requires no Python-shaped fixture tree
+for lint, and registers it for existing nonrecursive cleanup. The case count is
+now eleven for lint, seventeen for the explicit wider wave. All seven actual
+exec failures remain mandatory: these successful launches are not substitutes
+for missing/denied exec diagnostics. Both the case model and the fixture-scope
+source are SHA-256 checked before and after the suite. These checks are not
+atomic protection against external source or file mutation.
+
+Pure fixtures pin the added selections, statuses, empty ignored argv and exact
+literal alias. They and the expanded matrix are authored only, uncompiled/unrun.
+No source/native probe, public launcher, script or compiler was executed. This
+does not qualify native path-byte handling or establish shell equivalence, and
+no original script/caller was changed.
 
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
