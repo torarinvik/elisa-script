@@ -1,0 +1,103 @@
+# Pure ordinary CLI plan for Elisa-compiler/scripts/emit_c_archive.py.
+# Filesystem admission, same-parent staging, archiver execution and publication
+# are intentionally separate host steps, not silently represented as complete.
+module EsCArchivePlan:
+    private:
+        const module Syntax:
+            OUTPUT: sview = "--output"
+            ARCHIVER: sview = "--ar"
+            END_OPTIONS: sview = "--"
+            ARCHIVE_FLAGS: sview = "-rcs"
+
+
+        const module Limits:
+            PATH_BYTES: usize = 4096
+            OBJECTS: usize = 4096
+
+
+        const enum PendingOption of u8:
+            None
+            Output
+            Archiver
+
+    public:
+        struct Plan:
+            output: sview
+            archiver: sview
+            objects: darray[sview]
+
+
+        error PlanError:
+            MissingOptionValue
+            MissingOutput
+            MissingArchiver
+            MissingObjects
+            TooManyObjects
+            InvalidPath
+            UnknownOption
+
+
+        def safe_path(value: sview) -> bool:
+            return false if value == "" or len(value) >= Limits::PATH_BYTES
+            for byte in value:
+                return false if byte == 0u8
+            return true
+
+
+        # `resolved_path_archiver` is an injected observation of shutil.which("ar").
+        # It is used only when neither --ar nor nonempty AR supplied a value.
+        def parse_ordinary(arguments: darray[sview], environment_archiver: sview, resolved_path_archiver: sview) -> Plan error[PlanError] can[Memory.Allocate, Abort.Panic]:
+            output: mutable sview = ""
+            explicit_archiver: mutable sview = ""
+            archiver_seen: mutable bool = false
+            objects: mutable darray[sview] = []
+            pending: mutable PendingOption = PendingOption.None
+            options_open: mutable bool = true
+            for argument in arguments |output, explicit_archiver, archiver_seen, objects, pending, options_open|:
+                if pending == PendingOption.Output:
+                    raise PlanError.MissingOptionValue if argument.startswith("--")
+                    output <- argument
+                    pending <- PendingOption.None
+                    continue
+                if pending == PendingOption.Archiver:
+                    raise PlanError.MissingOptionValue if argument.startswith("--")
+                    explicit_archiver <- argument
+                    archiver_seen <- true
+                    pending <- PendingOption.None
+                    continue
+                if options_open and argument == Syntax::END_OPTIONS:
+                    options_open <- false
+                    continue
+                if options_open and argument == Syntax::OUTPUT:
+                    pending <- PendingOption.Output
+                    continue
+                if options_open and argument == Syntax::ARCHIVER:
+                    pending <- PendingOption.Archiver
+                    continue
+                raise PlanError.UnknownOption if options_open and argument.startswith("-") and argument != "-"
+                raise PlanError.TooManyObjects if objects.count >= Limits::OBJECTS
+                raise PlanError.InvalidPath if not safe_path(argument)
+                objects.push(argument)
+            raise PlanError.MissingOptionValue if pending != PendingOption.None
+            raise PlanError.MissingOutput if output == ""
+            raise PlanError.InvalidPath if not safe_path(output)
+            raise PlanError.MissingObjects if objects.count == 0
+            selected_archiver: mutable sview = resolved_path_archiver
+            selected_archiver <- environment_archiver if environment_archiver != ""
+            selected_archiver <- explicit_archiver if archiver_seen
+            raise PlanError.MissingArchiver if selected_archiver == ""
+            raise PlanError.InvalidPath if not safe_path(selected_archiver)
+            return Plan{output: output, archiver: selected_archiver, objects: objects}
+
+
+        # Python invokes `ar -rcs <temporary sibling>/<output basename> <objects...>`.
+        # The host must first create the staging directory inside output.parent.
+        def archive_arguments(plan: Plan, temporary_archive: sview) -> darray[sview] error[PlanError] can[Memory.Allocate, Abort.Panic]:
+            raise PlanError.InvalidPath if not safe_path(temporary_archive) or not safe_path(plan.output) or not safe_path(plan.archiver)
+            raise PlanError.MissingObjects if plan.objects.count == 0
+            raise PlanError.TooManyObjects if plan.objects.count > Limits::OBJECTS
+            arguments: mutable darray[sview] = [Syntax::ARCHIVE_FLAGS, temporary_archive]
+            for object in plan.objects |arguments|:
+                raise PlanError.InvalidPath if not safe_path(object)
+                arguments.push(object)
+            return arguments
