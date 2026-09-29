@@ -48,11 +48,12 @@ targets, before that pure overlap check. Its `prepare_macos_app_path_plan`
 entry composes the project canonicalization, `.app` suffix rule, reference-
 ordered inputs, path resolution, and overlap validation before output-parent
 creation. The resolver is a preflight snapshot, not race-free ownership; the
-entry is not yet called by a package CLI or publication workflow. It expands
-current-user `~`/`~/...` paths from an explicit HOME path; `~user` requires the
-still-unported passwd lookup and is rejected explicitly. Environment lookup,
-exact error parity, adversarial filesystem races, and end-to-end output checks
-remain open. All new fixtures remain uncompiled and unrun.
+entry is not yet called by a package CLI or publication workflow. Its
+environment-backed variant reads HOME only when a current-user `~` path is
+present. Empty/missing HOME and `~user` currently fail explicitly; Python's
+passwd-database fallback and named-user lookup remain unported. Exact error
+parity, adversarial filesystem races, and end-to-end output checks remain open.
+All new fixtures remain uncompiled and unrun.
 A file-level Darwin adapter in
 `src/runtime/macos_app_copy_posix.elisa` now calls `copyfile(3)` with data,
 POSIX-stat, and xattr flags while following source symlinks; a focused fixture

@@ -3,6 +3,7 @@
 # lexically, matching Path.resolve(strict=False) for ordinary filesystem state.
 
 module EsMacosAppPathPlanPosix:
+    using EsEnvironmentLookup
     using EsMacosAppManifest
     using EsMacosAppPathPlan
 
@@ -20,6 +21,7 @@ module EsMacosAppPathPlanPosix:
 
         error MacosAppPathResolutionError:
             InvalidPath
+            HomeUnavailable
             NamedUserExpansionUnsupported
             UnresolvablePath
             TooManySymlinks
@@ -45,7 +47,26 @@ module EsMacosAppPathPlanPosix:
             return path_join(path_parent(value), name)
 
 
+        def macos_app_path_requests_home_expansion(value: Path) -> bool can[Console.Format]:
+            value_text: sview = f"{value}"
+            return value_text == "~" or value_text.startswith("~/")
+
+
     public:
+        def macos_app_home_path(value: EsEnvironmentLookup::Value) -> Path error[MacosAppPathResolutionError] can[Memory.Allocate, Abort.Panic]:
+            raise MacosAppPathResolutionError.HomeUnavailable if not value.present or value.bytes == ""
+            home: Path = path(value.bytes)
+            normalized: Path = path_normalize(home)
+            raise MacosAppPathResolutionError.HomeUnavailable if normalized == path("")
+            return home
+
+
+        def macos_app_current_home_directory() -> Path error[MacosAppPathResolutionError] can[Environment.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            value: EsEnvironmentLookup::Value = try EsEnvironmentLookup::lookup("HOME") else err:
+                raise MacosAppPathResolutionError.HomeUnavailable
+            return try macos_app_home_path(value)
+
+
         # Expand the current user's Python-style `~` and `~/...` forms from a
         # caller-supplied HOME path. Named-user forms require a passwd lookup
         # and fail explicitly rather than silently becoming relative paths.
@@ -170,3 +191,16 @@ module EsMacosAppPathPlanPosix:
                 canonical_inputs.push(resolved_source)
             try macos_app_validate_output_disjoint(canonical_project, canonical_app, canonical_inputs)
             return PreparedMacosAppPathPlan{project: canonical_project, app: canonical_app, required_inputs: canonical_inputs}
+
+
+        # Environment access is lazy: scripts using no leading-tilde paths do
+        # not acquire an unnecessary HOME dependency. This is the call-ready
+        # preflight variant for a future package CLI.
+        def prepare_macos_app_path_plan_from_environment(project: Path, output: Path, executable: Path, shader_root: Path, project_shaders: bool, icon: Path, has_icon: bool, selection: MacosAppPathSelection) -> PreparedMacosAppPathPlan error[MacosAppPathPreflightError, MacosAppPathResolutionError, MacosAppPathPlanError, MacosAppManifestError] can[Blocking.IO, File.Read, Directory.Read, Environment.Read, Memory.Allocate, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            needs_home: bool = macos_app_path_requests_home_expansion(project) or macos_app_path_requests_home_expansion(output) or macos_app_path_requests_home_expansion(executable)
+            needs_home <- needs_home or (not project_shaders and macos_app_path_requests_home_expansion(shader_root))
+            needs_home <- needs_home or (has_icon and macos_app_path_requests_home_expansion(icon))
+            home_directory: mutable Path = path("/")
+            if needs_home:
+                home_directory <- try macos_app_current_home_directory()
+            return try prepare_macos_app_path_plan(project, home_directory, output, executable, shader_root, project_shaders, icon, has_icon, selection)
