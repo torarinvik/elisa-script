@@ -487,6 +487,17 @@ building or complete. Record starts are range-checked before subtraction.
 Direct event-by-event construction remains intended for small fixtures; large
 file streaming and external-spill aggregation still require host adapters.
 
+`EsCsvEncode::encode_csv_record` writes one bounded UTF-8 record from typed
+text cells using the same `CsvPolicy`. It validates each field, quotes cells
+containing separators, quotes, or configured record-ending bytes, preserves
+leading/trailing spaces when unquoted trimming is enabled, and escapes embedded
+quotes using either doubled quotes or the configured escape byte. A one-cell
+empty row is emitted as a quoted empty cell, distinct from a zero-field blank
+record; LF, CR, CRLF, and configured-byte endings are emitted explicitly. The
+output cap is checked before every byte append. Source fixtures cover parser and
+schema round trips, custom escapes, blank/empty rows, CRLF, and output limits;
+they have not been executed under the compiler safety hold.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate

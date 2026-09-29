@@ -11,8 +11,9 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 runtime_fixture="$repo_root/test/runtime/csv_empty_input_test.elisa"
 docs="$repo_root/docs/ir.md"
 parser="$repo_root/src/runtime/csv_parser_model.elisa"
+encoder="$repo_root/src/runtime/csv_encode_model.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -28,7 +29,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -114,4 +115,24 @@ for parser_pattern in \
     rg -Fq "$parser_pattern" "$parser"
 done
 
-printf 'csv model audit: bounded source parsing, quote-aware transitions, and explicit line endings are present\n'
+for encoder_pattern in \
+    'module EsCsvEncode:' \
+    'const enum CsvEncodePhase of u8:' \
+    'OutputLimitExceeded' \
+    'def encode_csv_record(' \
+    'csv_policy_record_terminator_width(policy)'; do
+    rg -Fq "$encoder_pattern" "$encoder"
+done
+
+for encoder_fixture_pattern in \
+    'csv_record_encoder_preserves_cells_under_explicit_dialects' \
+    'one_empty_field' \
+    'custom_escape' \
+    'exact_limit' \
+    'over_limit_rejected'; do
+    rg -Fq "$encoder_fixture_pattern" "$runtime_fixture"
+done
+
+rg -Fq '`EsCsvEncode::encode_csv_record`' "$docs"
+
+printf 'csv model audit: bounded CSV record encoding, source parsing, quote-aware transitions, and explicit line endings are present\n'

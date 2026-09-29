@@ -1,0 +1,114 @@
+# Bounded CSV/TSV encoding for one record of UTF-8 text cells.
+#
+# The writer follows EsData's explicit dialect policy, quotes only when needed
+# to preserve a cell, and always appends that policy's complete record ending.
+
+module EsCsvEncode:
+    using EsData
+    using EsEncoding
+
+    public:
+        const CSV_ENCODE_MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES
+
+
+        error CsvEncodeError:
+            InvalidLimit
+            TooManyFields
+            FieldTooLarge
+            InvalidUtf8
+            NulByte
+            OutputLimitExceeded
+
+
+    private:
+        const enum CsvEncodePhase of u8:
+            EmitField
+            EmitTerminator
+            Done
+
+
+        def csv_encode_byte(output: mutable darray[u8]&, byte: u8, limit: usize) -> void error[CsvEncodeError] can[Memory.Allocate, Abort.Panic]:
+            raise CsvEncodeError.OutputLimitExceeded if output.count >= limit
+            output.push(byte)
+
+
+        def csv_encode_cell_valid(value: sview) -> bool error[CsvEncodeError]:
+            length: usize = sview_len(value)
+            raise CsvEncodeError.FieldTooLarge if length > DATA_MAX_FIELD_BYTES
+            cursor: mutable Utf8Cursor = Utf8Cursor{}
+            for offset in 0..<length |value, cursor|:
+                byte: u8 = sview_at(value, offset)
+                raise CsvEncodeError.NulByte if byte == 0
+                raise CsvEncodeError.InvalidUtf8 if not utf8_feed(byte, cursor)
+            raise CsvEncodeError.InvalidUtf8 if not utf8_complete(cursor)
+            return true
+
+
+        def csv_encode_cell_needs_quotes(value: sview, policy: CsvPolicy, force_empty: bool) -> bool:
+            length: usize = sview_len(value)
+            return true if force_empty and length == 0
+            return true if policy.trim_unquoted and length != 0 and (sview_at(value, 0) == 32 or sview_at(value, 0) == 9 or sview_at(value, length - 1) == 32 or sview_at(value, length - 1) == 9)
+            for offset in 0..<length |value, policy|:
+                byte: u8 = sview_at(value, offset)
+                return true if byte == policy.separator or byte == policy.quote or csv_policy_record_terminator_contains(policy, byte)
+            return false
+
+
+        def csv_encode_cell_content(output: mutable darray[u8]&, value: sview, policy: CsvPolicy, quoted: bool, limit: usize) -> void error[CsvEncodeError] can[Memory.Allocate, Abort.Panic]:
+            for offset in 0..<sview_len(value) |output, value, policy, quoted, limit|:
+                byte: u8 = sview_at(value, offset)
+                if quoted and policy.escape == policy.quote and byte == policy.quote:
+                    try csv_encode_byte(output, byte, limit)
+                    try csv_encode_byte(output, byte, limit)
+                elif quoted and policy.escape != policy.quote and (byte == policy.escape or byte == policy.quote):
+                    try csv_encode_byte(output, policy.escape, limit)
+                    try csv_encode_byte(output, byte, limit)
+                else:
+                    try csv_encode_byte(output, byte, limit)
+
+
+        def csv_encode_cell(output: mutable darray[u8]&, value: sview, policy: CsvPolicy, force_empty: bool, limit: usize) -> void error[CsvEncodeError] can[Memory.Allocate, Abort.Panic]:
+            quoted: bool = csv_encode_cell_needs_quotes(value, policy, force_empty)
+            if quoted:
+                try csv_encode_byte(output, policy.quote, limit)
+            try csv_encode_cell_content(output, value, policy, quoted, limit)
+            if quoted:
+                try csv_encode_byte(output, policy.quote, limit)
+
+
+    public:
+        def encode_csv_record(fields: darray[sview], policy: CsvPolicy = CsvPolicy{}, max_output_bytes: usize = CSV_ENCODE_MAX_OUTPUT_BYTES) -> darray[u8] error[DataContractError, CsvEncodeError] can[Memory.Allocate, Abort.Panic]:
+            try validate_csv_policy(policy)
+            raise CsvEncodeError.InvalidLimit if max_output_bytes == 0 or max_output_bytes > CSV_ENCODE_MAX_OUTPUT_BYTES
+            raise CsvEncodeError.TooManyFields if fields.count > DATA_MAX_FIELDS
+            for value in fields:
+                _ = try csv_encode_cell_valid(value)
+
+            output: mutable darray[u8] = []
+            field_index: mutable usize = 0
+            phase: mutable CsvEncodePhase = CsvEncodePhase.EmitField
+            machine over phase while phase != CsvEncodePhase.Done:
+                state Record
+                start Record
+
+                Record, CsvEncodePhase.EmitField:
+                    if field_index == fields.count:
+                        phase <- CsvEncodePhase.EmitTerminator
+                        continue
+                    if field_index != 0:
+                        try csv_encode_byte(output, policy.separator, max_output_bytes)
+                    field: sview = fields[field_index]
+                    force_empty: bool = fields.count == 1
+                    try csv_encode_cell(output, field, policy, force_empty, max_output_bytes)
+                    field_index <- field_index + 1
+                    -> Record
+
+                Record, CsvEncodePhase.EmitTerminator:
+                    for byte_index in 0..<csv_policy_record_terminator_width(policy) |output, policy, max_output_bytes|:
+                        try csv_encode_byte(output, csv_policy_record_terminator_byte(policy, byte_index), max_output_bytes)
+                    phase <- CsvEncodePhase.Done
+                    -> Record
+
+                Record, CsvEncodePhase.Done:
+                    break
+            return output
