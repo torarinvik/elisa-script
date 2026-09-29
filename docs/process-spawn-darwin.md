@@ -408,3 +408,29 @@ session in public runner/bytecode contexts yet. Owner/borrow/codegen lifetime,
 memory accounting, panic/cancellation finalization, pre-launch deadlines, group
 identity and native qualification remain open before tiny UI/public wiring.
 No compiler, fixture, attribute, process, wait, signal or parity run occurred.
+
+## Uncertain positive wait reports (source-only)
+
+The shared waiter now distinguishes a known stopped/continued report from an
+unsupported status accompanying a positive wait result. The latter may already
+have consumed a child, so another direct-PID signal could target a reused PID.
+A mismatched positive PID is likewise not evidence that the owned child is
+still live. Polling, TERM-grace polling and final reaping mark these observations
+as ownership-uncertain, fail the operation, and stop further wait/signal attempts.
+Repeated termination and group cleanup also respect the uncertainty flag.
+Neither ordinary resource completion nor the private spawn handoff releases
+process capacity from an uncertain waiter, even if a stale reaped bit is set.
+
+The conservative Darwin status profile rejects zero/out-of-range stop signals
+and impossible stop/core combinations, while preserving ordinary exit codes,
+terminal signals, SIGSTOP and the Darwin SIGCONT continuation encoding. Pure
+fixtures cover malformed statuses, exact/mismatched/invalid PIDs, pending returns
+with stale status bytes and known nonterminal reports. They remain uncompiled
+and unrun; no wait, kill, child, compiler or parity operation was performed.
+
+This closes one source-level unsafe branch, not full waiter qualification.
+Negative wait errors (especially ownership loss/ECHILD), C-int/pid/status ABI,
+post-reap group identity, external reapers, cancellation and retained owner
+lifetime still need separate handling and evidence. The smallest lint wrapper
+remains a candidate, not an accepted Bash exec replacement; original scripts and
+callers are unchanged.

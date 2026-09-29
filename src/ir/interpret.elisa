@@ -342,6 +342,9 @@ extend EsIr:
             # direct child has been reaped. Failed cleanup retains the slot
             # rather than under-reporting a possibly live process.
             reaped: mutable bool = false
+            # An unsupported positive wait report may already have consumed
+            # the child. Retain capacity and prohibit guessed PID/group reuse.
+            ownership_uncertain: mutable bool = false
             # Negative-PID signaling is safe only after the parent has
             # successfully placed the child in its own process group. Keep
             # this explicit because a failed setpgid must never let cleanup
@@ -5472,16 +5475,18 @@ extend EsIr:
             return false
 
 
-        # Terminate and reap the private process group on every parent-side
-        # wait failure. Give the child and its descendants a bounded
+        # Attempt termination/reaping on failures with retained child ownership.
+        # Uncertain wait reports prohibit further guessed signaling. Give the
+        # child and its descendants a bounded
         # cooperative TERM window first, then force KILL and reap. The direct
         # PID covers the fork/setpgid race; the group signal handles
         # descendants only when group_ready was established by a successful
-        # parent-side setpgid. Keeping this protocol in one helper prevents a
-        # failed poll from stranding a child or zombie without ever signaling
-        # an unrelated process group. Both signaling and the blocking reap
+        # parent-side setpgid. Post-reap group identity still needs qualification;
+        # the recorded group number alone is not a permanent ownership proof.
+        # Both signaling and the blocking reap
         # tolerate bounded EINTR interruptions.
         def process_wait_terminate(waiter: mutable ProcessWaiter&) -> void can[Blocking.IO]:
+            return if waiter.ownership_uncertain
             if waiter.reaped:
                 process_wait_terminate_group(waiter)
                 return
@@ -5491,6 +5496,10 @@ extend EsIr:
             leader_reaped: mutable bool = false
             while grace_polls < ProcessWait::TERM_GRACE_POLLS:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)
+                if EsProcessSpawnWait::uncertain_positive_wait(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
+                    waiter.ownership_uncertain <- true
+                    waiter.failed <- true
+                    return
                 if EsProcessSpawnWait::exact_reap(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
                     leader_reaped <- true
                     waiter.reaped <- true
@@ -5506,6 +5515,10 @@ extend EsIr:
             retries: mutable usize = 0
             while retries <= PosixRetry::EINTR_RETRIES:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
+                if EsProcessSpawnWait::uncertain_positive_wait(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
+                    waiter.ownership_uncertain <- true
+                    waiter.failed <- true
+                    return
                 if EsProcessSpawnWait::exact_reap(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
                     waiter.reaped <- true
                     return
@@ -5522,11 +5535,12 @@ extend EsIr:
 
         # The direct child may already have been reaped when the final output
         # sample discovers an overflow. Do not signal waiter.pid in that case:
-        # the PID can be reused immediately after waitpid. The private group
-        # remains the only safe cleanup target for descendants. Give them the
+        # the PID can be reused immediately after waitpid. The existing group-only
+        # cleanup also needs group-identity qualification before public use of
+        # the new spawn seam. Give descendants the
         # same bounded TERM window as the live-child path, then force KILL.
         def process_wait_terminate_group(waiter: ProcessWaiter&) -> void can[Blocking.IO]:
-            return if not waiter.group_ready
+            return if waiter.ownership_uncertain or not waiter.group_ready
             process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_TERM)
             grace_polls: mutable u64 = 0
             while grace_polls < ProcessWait::TERM_GRACE_POLLS:
@@ -5633,7 +5647,7 @@ extend EsIr:
 
 
         def process_resource_complete(machine: mutable Machine&, waiter: ProcessWaiter&) -> bool:
-            if not waiter.reaped:
+            if waiter.ownership_uncertain or not waiter.reaped:
                 # Continuing through a recoverable Process error could let a
                 # handler launch more children while this one may still live.
                 interpret_set_failure(machine, InterpretFailure.Panic)
@@ -5723,11 +5737,18 @@ extend EsIr:
 
 
         def process_wait_next(waiter: mutable ProcessWaiter&) -> ProcessWaitState can[Blocking.IO]:
+            if waiter.ownership_uncertain:
+                waiter.failed <- true
+                return ProcessWaitState.Error
             if not waiter.clock_started and not process_wait_clock_start(waiter):
                 waiter.failed <- true
                 process_wait_terminate(waiter)
                 return ProcessWaitState.Error
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)
+            if EsProcessSpawnWait::uncertain_positive_wait(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
+                waiter.ownership_uncertain <- true
+                waiter.failed <- true
+                return ProcessWaitState.Error
             if waited == waiter.pid:
                 if not EsProcessSpawnWait::terminal(waiter.status.i64()):
                     waiter.failed <- true
