@@ -24,6 +24,7 @@ for declaration in \
     'const enum FileMetadataEvent of u8' \
     'struct FileMetadataPolicy:' \
     'struct FileMetadataEntry:' \
+    'size: u64' \
     'struct FileMetadataSnapshot:' \
     'error FileMetadataError:' \
     'def validate_file_metadata_snapshot\(' \
@@ -57,6 +58,11 @@ for boundary in \
     rg -Fq "$boundary" "$model"
 done
 
+if rg -Fq 'entry.size > Limits::TOTAL_BYTES' "$model"; then
+    printf 'file metadata audit: file size must not be conflated with path/target text bytes\n' >&2
+    exit 1
+fi
+
 for fixture_pattern in \
     'using EsFileMetadata' \
     'typed_file_metadata_contract_is_bounded_and_symlink_explicit' \
@@ -70,6 +76,8 @@ for fixture_pattern in \
     'forged_missing_metadata'; do
     rg -q "$fixture_pattern" "$fixture_file"
 done
+rg -Fq 'file_metadata_preserves_large_file_size_without_charging_metadata_budget' "$fixture_file"
+rg -Fq 'size: 67108865u64' "$fixture_file"
 
 rg -q 'EsFileMetadata::FileMetadataSnapshot' "$docs"
 rg -q 'ES-FS-002' "$ledger"
