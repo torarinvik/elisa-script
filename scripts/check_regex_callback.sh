@@ -75,6 +75,7 @@ for boundary in \
     'RegexCallbackError.AccountingInvalid' \
     'not session.policy.global and session.matches > 1' \
     'session.matches == 0 and (session.captures != 0 or session.replaced_input_bytes != 0 or session.replacement_total_bytes != 0 or session.has_last_zero)' \
+    'session.matches == 0 and (session.state == RegexCallbackState.Failed or session.state == RegexCallbackState.Cancelled)' \
     'not session.has_last_zero and session.last_zero_start != 0' \
     'session.has_last_zero and session.last_zero_start > session.input_bytes' \
     'session.state == RegexCallbackState.Complete and session.cursor != session.input_bytes' \
@@ -98,6 +99,7 @@ rg -Fq 'regex_callback_abort_clears_unconsumed_zero_width_match' "$runtime_fixtu
 rg -Fq 'regex_callback_uses_matcher_supplied_zero_width_advance' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_missing_or_oversized_zero_width_advance' "$runtime_fixture"
 rg -Fq 'regex_callback_rejects_forged_completed_output_accounting' "$runtime_fixture"
+rg -Fq 'regex_callback_rejects_terminal_progress_before_first_match' "$runtime_fixture"
 rg -Fq 'zero_width_advance_bytes: usize = 0' "$model"
 rg -Fq 'raise RegexCallbackError.NonProgress if zero_width_advance_bytes == 0' "$model"
 rg -Fq 'session.cursor <- session.pending_start + preserved' "$model"

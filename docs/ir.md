@@ -2514,6 +2514,9 @@ callback output totals.
 Fail/cancel discard pending span and zero-width progress markers, leaving a
 valid terminal snapshot even when the callback aborts before replacement; the
 cursor commits the already-emitted unmatched prefix before pending markers clear.
+If failure or cancellation occurs before the first match, validation also
+requires the cursor and emitted-output ledger to remain at zero, because no
+legal transition can have emitted an unmatched prefix without a pending match.
 Callback invocation and capture materialization remain host/interpreter work.
 
 `EsJsonStream::JsonStreamSession` is the JSON/JSONL framing layer before value
