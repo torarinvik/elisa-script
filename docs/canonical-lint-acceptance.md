@@ -109,10 +109,43 @@ byte-preservation and storage/session-reuse fixtures remain uncompiled/unrun.
 
 These structural checks cannot prove that arbitrary supplied storage belongs to
 the invocation: the exclusive private host coordinator must supply the same
-unchanged prepared input before storage reuse. No automatic host publication,
-script error variant, diagnostic-candidate selection or renderer is wired. The
+unchanged prepared input before storage reuse. No default host dispatch,
+default-source error variant, diagnostic-candidate selection or renderer is wired. The
 16,380-byte copy limit is a payload bound, not an RSS guard or qualification of
 allocation-failure/cancellation recovery. Lint failure parity remains open.
+
+## Typed launch-error publication (dormant seam)
+
+The private prepared-session adapter now accepts the enclosing run's runtime
+value pool. After Ready/retired settlement, a retained launch receipt can replace
+the invocation's generic Process failure with `ProcessError.LaunchFailure` using
+the existing Raised/error-payload mechanism and matching operation identity.
+The opt-in declaration is `src/runtime/process_errors.elisascript`, not a default
+prelude. Its twelve ordered fields are stage, code, attempts, saw-denied,
+requested bytes, last-attempted bytes, first-denied bytes, last-denied bytes,
+first-denied attempt, last-denied attempt, candidate count and context byte count.
+Scalar fields are i64 except the boolean; path fields are darray[u8].
+
+The codec revalidates public snapshot metadata before checking the full append
+span against runtime-pool/u32 bounds. It copies bytes into Int cells in the
+caller-owned run-long pool and publishes Array carriers, not dangling Text views.
+The complete local payload replaces stale handled-error payloads before the
+raised identity is published. Panic, malformed metadata, active/quarantined
+sessions and publication capacity failures cannot become recoverable launch
+variants. Ordinary tool exits and reaped-child wait failures have no launch
+receipt and do not enter this publication path. Same-invocation storage and
+run-pool provenance remain exclusive host-caller obligations; allocation panic,
+cancellation and resource-memory accounting are still unqualified.
+
+Small codec and synthetic source-catch fixtures are authored but uncompiled/unrun.
+A separate opt-in `test/fixtures/process_launch_error/publication.elisa` uses the
+real Machine/guard helpers to model admission publication, typed extraction,
+reuse, reentry rejection and quarantine. It includes the full IR facade: it is
+not an execution authorization or a lightweight compiler qualification, and must
+remain dormant pending explicit authorization and external RSS/time containment.
+The public launcher, default interpreter/bytecode dispatch and lint port still
+do not include the prepared-spawn seam. No diagnostic text or shell-equivalence
+claim follows from this private publication step.
 
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and

@@ -699,8 +699,16 @@ reset the old launch without altering a caller's captured snapshot.
 Pure payload and extended session fixtures cover copying/reuse, mismatch,
 active/quarantined rejection, empty receipts and wide aliases; all are unrun.
 This is cause transport, not a full diagnostic/error-message schema or a new
-bytecode format. Requested/resolved executable identity and diagnostic context
-still need retention; source builtin error-variant declarations, runtime frame
-publication, typed catch binding and source/bytecode parity remain unwired.
-No runtime value kind or generic catch behavior changed. No compiler, fixture,
-native operation or parity ran; originals and other agents' work are unchanged.
+bytecode format. Follow-up source now retains bounded owned executable-context
+snapshots and provides an opt-in ProcessError.LaunchFailure declaration. The
+dormant private session adapter encodes twelve scalar/byte-array fields into the
+enclosing run's existing RuntimeValue pool after canonical retirement, then
+publishes Raised metadata matching a named error guard. This private path does
+not turn ordinary exits or reaped-child wait failures into launch failures.
+See canonical-lint-acceptance.md for the field order and remaining provenance,
+allocation/resource-memory/cancellation and compiler qualification obligations.
+The default interpreter/bytecode/public launcher and lint port remain unwired;
+diagnostic selection/rendering and observed parity are still open. No new runtime
+value kind or generic catch rule was introduced. Codec/source-catch and separate
+opt-in real-Machine fixture bodies are authored only, uncompiled/unrun. No compiler,
+fixture, native operation or parity ran; originals and other agents' work are unchanged.
