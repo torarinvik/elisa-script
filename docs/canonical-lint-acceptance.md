@@ -321,6 +321,33 @@ qualification gates and earlier source/artifact pins were not relaxed. No
 compiler, Python, native adapter or launcher ran; lint remains the first
 acceptance target and originals/callers remain unchanged.
 
+## Cleanup parent observations (source-only correction)
+
+The canonical wrapper harness previously removed recorded file paths without
+rechecking their directory parents. Replacing a fixture parent with a symlink
+could redirect that cleanup. It now checks that the owned temporary root and
+all recorded directory parents remain non-symlink directories before each file
+removal. The reverse directory loop checks only the remaining prefix of its
+parent-first ledger, then checks the root again before removing it. Missing,
+symlinked or non-directory parents stop cleanup and report failure, leaving the
+unresolved root for inspection rather than guessing a new deletion target.
+
+A path registered before a failed copy may legitimately be absent. Cleanup
+now skips that absent file, while checking final symlinks explicitly so a
+dangling link does not masquerade as absence. File unlink failures and unknown
+extra files/nonempty directories still fail cleanup. No recursive deletion,
+source-script deletion or broad temporary-directory sweep was introduced.
+
+This is an observation fence, not atomic identity protection: same-kind parent
+replacement and mutation between checks remain possible. Descriptor-relative
+cleanup, exclusive directory ownership/mutation exclusion and native semantics
+still require qualification. Future isolated tests must cover unchanged roots,
+failed-copy/absent-file cleanup, dangling final links, nested reverse retirement,
+replaced-parent symlinks, missing parents and unexpected retained files. No
+cleanup fixture, directory operation, compiler, process or parity test ran;
+only source inspection and git diff checks were performed. Originals, callers,
+SSH and other agents' work remain unchanged.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
