@@ -7,13 +7,16 @@ The public launcher checks that the live neighboring reference has this exact
 hash both before and after its matrix, so local fixture drift cannot silently
 turn the test into parity against a stale Python snapshot.
 Candidate: `scripts/check_wasmbrowser_source_length.elisascript`, with a pure
-counter in `src/runtime/source_length_model.elisa` and authored regression
-tests in `test/runtime/source_length_model_test.elisa`. The counter now exposes
-a small typed feed/finalize API that preserves CRLF state across arbitrary
-chunks; the existing whole-buffer API is defined through that same path. The
-candidate reader still materializes each bounded file, so streaming file I/O
-and its differential qualification remain open. Component-wise ordering
-fixtures are in `test/script_parity/source_length_order_test.elisascript`.
+counter in `src/runtime/source_length_model.elisa` and a descriptor-verified
+streaming UTF-8 reader in `src/runtime/source_length_stream_posix.elisa`.
+Authored model fixtures are in `test/runtime/source_length_model_test.elisa`.
+The counter exposes a typed feed/finalize API that preserves CRLF state across
+arbitrary chunks; the whole-buffer helper delegates to that state machine. The
+candidate now counts and validates UTF-8 incrementally with a fixed-size buffer
+while retaining per-file and aggregate byte ceilings. This reduces file-content
+memory from up to 16 MiB per file to a 16 KiB read buffer, but the reader and
+public-launcher parity matrix remain uncompiled and unqualified. Component-wise
+ordering fixtures are in `test/script_parity/source_length_order_test.elisascript`.
 
 The candidate lives in elisa-script and selects its neighboring
 `wasmbrowser-proof` project using its own resolved source directory. It is not
@@ -26,6 +29,7 @@ workspace/
   elisa-script/
     scripts/check_wasmbrowser_source_length.elisascript
     src/runtime/source_length_model.elisa
+    src/runtime/source_length_stream_posix.elisa
     src/runtime/bounded_text_posix.elisa
     src/runtime/encoding.elisa
     src/runtime/file_posix.elisa
@@ -102,8 +106,10 @@ candidate counter nor a host adapter. It covers an empty file, BOM-only content,
 601 repetitions of Unicode/control separators as one unterminated line, and
 602 LF lines with its own literal diagnostic. Every expected status/stderr is
 fixture data, not produced by the candidate. Missing/empty roots and multi-file
-ordering/symlink cases remain separate; this is 19 ordinary case invocations
-in total, each with reference-first admission and exact empty stdout.
+ordering/symlink cases remain separate. Two additional single-file cases put a
+CRLF pair and a two-byte UTF-8 scalar across the scanner's 16 KiB read boundary.
+There are 21 ordinary case invocations in total, each with reference-first
+admission and exact empty stdout.
 
 Before creating the ordinary source directory, the harness writes a 601-line
 regular file named `src` and expects silent status 0. It then makes `src` a
