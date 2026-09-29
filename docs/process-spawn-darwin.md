@@ -372,3 +372,39 @@ full IR execution facade. Its public test entry runs inside EsIr and observes
 private defaults/constants and public report routing only; it does not call any
 native function. It remains uncompiled/unrun, as does the connected entry. No
 compiler, attribute, child, waiter, signal or parity process was launched here.
+
+## Durable session owners and checked reuse (source-only)
+
+`PreparedSpawnSession` now owns the native launch slot, canonical lease history,
+nonzero owner token, non-wrapping resource-ID stream and Ready/Active/Quarantined
+state. `evaluate_prepared_session` uses the connected entry with the same machine
+usage/policy. Fatal completion quarantines the session without dropping its PID,
+budget, opaque slot or receipts. It does not clear an interpreter failure or
+reset usage so a nested/repeated launch can obtain new capacity improperly.
+
+Reuse requires no active/failed ledger entries, an unheld process budget and
+internally consistent Fresh, known NoChild or confirmed Reaped state. Completed
+process/attribute slots must match canonical Released leases and the session
+token; missing/failed/closing leases or uncertain attribute receipts block reset.
+Only then is the retired launch slot replaced with a fresh one. Released history
+is retained, IDs advance by two even for a later rejected admission, and a
+rewound/colliding/exhausted stream fails without unsigned wrap. The total retained
+record limit still applies; this is not unbounded history or an RSS guarantee.
+
+The generic resource validator now checks strict ID order first. Strictly
+increasing IDs prove uniqueness without allocation, making that validation path
+linear in record count. Unordered input keeps the original earlier-ID duplicate
+scan and error ordering; kind/state/owner/accounting validation is never skipped.
+The session uses monotonic IDs, so normal retained history takes the checked
+ordered path. No benchmark or runtime speed claim has been qualified.
+
+Small dormant fixtures cover model-only released reuse, retained history, unknown
+child quarantine, uncertain attribute history without a child, ID exhaustion,
+empty/single/ordered/unordered ledgers, nonadjacent duplicates and accounting.
+They do not invoke the native process/attribute bridge and remain uncompiled/
+unrun. The enclosing run/task still must retain the session and borrowed input
+storage/tables across unresolved outcomes; this does not instantiate a durable
+session in public runner/bytecode contexts yet. Owner/borrow/codegen lifetime,
+memory accounting, panic/cancellation finalization, pre-launch deadlines, group
+identity and native qualification remain open before tiny UI/public wiring.
+No compiler, fixture, attribute, process, wait, signal or parity run occurred.

@@ -1,0 +1,100 @@
+# Private durable per-run launch owners; no native operation in these helpers.
+include "process_spawn_budget_darwin.elisa"
+
+extend EsIr:
+    private:
+        const module SpawnSessionLimits:
+            LAST_PAIR_START: u64 = 18446744073709551613u64
+
+
+        const enum SpawnSessionState of u8:
+            Ready
+            Active
+            Quarantined
+
+
+        error SpawnSessionError:
+            InvalidState
+            InvalidOwner
+            IdExhausted
+            UnresolvedLease
+
+
+        struct SpawnResourceIds:
+            process: u64
+            attributes: u64
+
+
+        struct PreparedSpawnSession:
+            owner_token: u64
+            ledger: EsResource::ResourceLedger = EsResource::ResourceLedger{}
+            launch: BudgetedLaunch = BudgetedLaunch{}
+            next_resource_id: u64 = 1
+            state: SpawnSessionState = SpawnSessionState.Ready
+
+
+        def require_session_launch_retired(session: PreparedSpawnSession&) -> void error[SpawnSessionError, EsResource::ResourceContractError]:
+            raise SpawnSessionError.InvalidOwner if session.owner_token == 0
+            _ = try EsResource::validate_resource_ledger(session.ledger)
+            raise SpawnSessionError.UnresolvedLease if session.ledger.active_entries != 0 or session.ledger.failed_entries != 0
+            raise SpawnSessionError.UnresolvedLease if session.launch.budget.held or session.launch.cleanup_failed
+            match session.launch.child.state:
+                EsProcessSpawnOwner::State.Fresh:
+                    raise SpawnSessionError.UnresolvedLease if session.launch.phase != LaunchPhase.Fresh and session.launch.phase != LaunchPhase.Reserve
+                    raise SpawnSessionError.UnresolvedLease if session.launch.setup_failed or session.launch.setup_code != 0 or session.launch.cleanup_attempted
+                    raise SpawnSessionError.UnresolvedLease if session.launch.child.resource_id != 0 or session.launch.child.owner_token != 0 or session.launch.child.pid != 0 or session.launch.child.diagnostic_pid != 0 or session.launch.child.code != 0 or session.launch.child.attempts != 0 or session.launch.child.saw_denied
+                    raise SpawnSessionError.UnresolvedLease if session.launch.budget.resource_id != 0 or session.launch.budget.owner_token != 0
+                EsProcessSpawnOwner::State.NoChild:
+                    raise SpawnSessionError.UnresolvedLease if session.launch.child.pid != 0 or session.launch.child.diagnostic_pid != 0
+                    raise SpawnSessionError.UnresolvedLease if session.launch.child.attempts > EsProcessSpawnOwner::Limits::ATTEMPTS or session.launch.child.code < 0
+                    if session.launch.child.attempts == 0:
+                        raise SpawnSessionError.UnresolvedLease if session.launch.child.code != 0 or session.launch.child.saw_denied
+                    else:
+                        raise SpawnSessionError.UnresolvedLease if session.launch.child.code == 0
+                    try require_session_process_released(session)
+                EsProcessSpawnOwner::State.Reaped:
+                    raise SpawnSessionError.UnresolvedLease if session.launch.child.pid <= 1 or session.launch.child.diagnostic_pid != session.launch.child.pid or session.launch.child.code != 0 or session.launch.child.attempts == 0 or session.launch.child.attempts > EsProcessSpawnOwner::Limits::ATTEMPTS
+                    try require_session_process_released(session)
+                _:
+                    raise SpawnSessionError.UnresolvedLease
+            if session.launch.attributes.resource_id == 0:
+                raise SpawnSessionError.UnresolvedLease if session.launch.attributes.owner_token != 0 or session.launch.attributes.handle != null or EsProcessSpawnAttributes::preparation_step(session.launch.attributes.receipt) != EsProcessSpawnAttributes::PreparationStep.Initialize
+            else:
+                raise SpawnSessionError.UnresolvedLease if session.launch.attributes.owner_token != session.owner_token or session.launch.attributes.handle != null or EsProcessSpawnAttributes::finalization_step(session.launch.attributes.receipt) != EsProcessSpawnAttributes::FinalizationStep.AlreadyReleased
+                lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(session.ledger, session.launch.attributes.resource_id, session.owner_token)
+                raise SpawnSessionError.UnresolvedLease if lease.kind != EsResource::ResourceKind.NativeAttribute or lease.state != EsResource::ResourceLeaseState.Released
+
+
+        def require_session_process_released(session: PreparedSpawnSession&) -> void error[SpawnSessionError, EsResource::ResourceContractError]:
+            raise SpawnSessionError.UnresolvedLease if session.launch.phase != LaunchPhase.Complete or not session.launch.cleanup_attempted
+            raise SpawnSessionError.UnresolvedLease if session.launch.child.owner_token != session.owner_token or session.launch.budget.owner_token != session.owner_token or session.launch.child.resource_id == 0 or session.launch.child.resource_id != session.launch.budget.resource_id
+            lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(session.ledger, session.launch.child.resource_id, session.owner_token)
+            raise SpawnSessionError.UnresolvedLease if lease.kind != EsResource::ResourceKind.Process or lease.state != EsResource::ResourceLeaseState.Released
+
+
+        def prepare_session_launch(session: mutable PreparedSpawnSession&) -> SpawnResourceIds error[SpawnSessionError, EsResource::ResourceContractError]:
+            raise SpawnSessionError.InvalidState if session.state != SpawnSessionState.Ready
+            try require_session_launch_retired(session)
+            _ = try EsResource::validate_resource_ledger(session.ledger)
+            raise SpawnSessionError.IdExhausted if session.next_resource_id == 0 or session.next_resource_id > SpawnSessionLimits::LAST_PAIR_START
+            # Retained history is never reset. Reject a rewound/colliding ID
+            # stream rather than treating a stale record as a new reservation.
+            for lease in session.ledger.resources |session|:
+                raise SpawnSessionError.InvalidOwner if lease.owner_token != session.owner_token
+                raise SpawnSessionError.InvalidState if lease.kind != EsResource::ResourceKind.Process and lease.kind != EsResource::ResourceKind.NativeAttribute
+                raise SpawnSessionError.IdExhausted if lease.id >= session.next_resource_id
+            ids: SpawnResourceIds = SpawnResourceIds{process: session.next_resource_id, attributes: session.next_resource_id + 1}
+            session.next_resource_id <- session.next_resource_id + 2
+            session.launch <- BudgetedLaunch{}
+            session.state <- SpawnSessionState.Active
+            return ids
+
+
+        def settle_session_launch(session: mutable PreparedSpawnSession&) -> void error[SpawnSessionError, EsResource::ResourceContractError]:
+            raise SpawnSessionError.InvalidState if session.state != SpawnSessionState.Active
+            catch require_session_launch_retired(session):
+                ok:
+                    session.state <- SpawnSessionState.Ready
+                error failure:
+                    session.state <- SpawnSessionState.Quarantined
+                    raise failure

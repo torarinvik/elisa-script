@@ -243,3 +243,11 @@ without resetting machine budgets or exporting raw slots. No facade includes
 it. A small namespace/default/projection fixture is authored but unrun; session
 storage/lifetime, fatal finalization, native/deadline/group qualification and
 actual public source/bytecode/tiny UI CC integration remain open.
+
+Private durable session storage now retains native owners and lease history,
+quarantines unresolved outcomes, and resets only fully retired slots. Resource
+IDs do not wrap or reuse retained history; checked strictly increasing ledgers
+have a linear validation path without skipping generic validation. Pure/dormant
+session and ledger fixtures are authored but unrun. Actual run/task session
+placement, borrowed-buffer lifetimes, memory/deadline/group/native qualification
+and public source/bytecode/tiny UI CC wiring remain open.

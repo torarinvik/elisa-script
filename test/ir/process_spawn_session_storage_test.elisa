@@ -1,0 +1,136 @@
+# Small dormant fixture: private storage and pure leases only; no C calls.
+include "../../src/ir/process_spawn_session_storage.elisa"
+
+extend EsIr:
+    private:
+        def spawn_session_fixture_policy() -> RuntimeResourcePolicy:
+            return RuntimeResourcePolicy{steps: ES_RUNTIME_DEFAULT_MAX_STEPS, elapsed_micros: ES_RUNTIME_DEFAULT_MAX_ELAPSED_MICROS, memory_bytes: ES_RUNTIME_DEFAULT_MAX_MEMORY_BYTES, open_handles: ES_RUNTIME_DEFAULT_MAX_OPEN_HANDLES, processes: 1, output_bytes: ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES, regex_work: ES_RUNTIME_DEFAULT_MAX_REGEX_WORK, retained_traces: ES_RUNTIME_DEFAULT_MAX_RETAINED_TRACES, concurrent_tasks: ES_RUNTIME_DEFAULT_MAX_CONCURRENT_TASKS}
+
+    public:
+        @test
+        def spawn_session_reuse_retains_history_and_allocates_fresh_ids() -> void:
+            can Memory.Allocate, Abort.Panic:
+                session: mutable PreparedSpawnSession = PreparedSpawnSession{owner_token: 7}
+                first: SpawnResourceIds = try prepare_session_launch(session) else failure:
+                    assert false
+                    return
+                assert first.process == 1 and first.attributes == 2 and session.next_resource_id == 3
+                assert session.state == SpawnSessionState.Active
+                usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
+                policy: RuntimeResourcePolicy = spawn_session_fixture_policy()
+                try EsProcessSpawnBudget::reserve(session.launch.child, session.launch.budget, session.ledger, usage, policy, first.process, 7) else failure:
+                    assert false
+                    return
+                try EsProcessSpawnBudget::release_unstarted(session.launch.child, session.launch.budget, session.ledger, usage, 7) else failure:
+                    assert false
+                    return
+                # Model-only completed setup rollback; no attribute was made.
+                session.launch.phase <- LaunchPhase.Complete
+                session.launch.cleanup_attempted <- true
+                try settle_session_launch(session) else failure:
+                    assert false
+                    return
+                assert session.state == SpawnSessionState.Ready and usage.processes == 0
+                second: SpawnResourceIds = try prepare_session_launch(session) else failure:
+                    assert false
+                    return
+                assert second.process == 3 and second.attributes == 4 and session.next_resource_id == 5
+                assert session.launch.phase == LaunchPhase.Fresh and not session.launch.budget.held
+                assert session.ledger.resources.count == 1 and session.ledger.resources[0].id == 1
+                assert session.ledger.resources[0].state == EsResource::ResourceLeaseState.Released
+
+
+        @test
+        def spawn_session_unknown_child_quarantines_without_erasing_owners() -> void:
+            can Memory.Allocate, Abort.Panic:
+                session: mutable PreparedSpawnSession = PreparedSpawnSession{owner_token: 7}
+                first: SpawnResourceIds = try prepare_session_launch(session) else failure:
+                    assert false
+                    return
+                usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
+                policy: RuntimeResourcePolicy = spawn_session_fixture_policy()
+                try EsProcessSpawnBudget::reserve(session.launch.child, session.launch.budget, session.ledger, usage, policy, first.process, 7) else failure:
+                    assert false
+                    return
+                _ = EsProcessSpawnOwner::observe(session.launch.child, EsProcessSpawnAttempt::classify(-1, 41))
+                quarantined: mutable bool = false
+                catch settle_session_launch(session):
+                    ok:
+                        assert false
+                    error failure:
+                        quarantined <- failure == SpawnSessionError.UnresolvedLease
+                assert quarantined and session.state == SpawnSessionState.Quarantined
+                assert session.launch.budget.held and usage.processes == 1
+                assert session.launch.child.pid == 0 and session.launch.child.diagnostic_pid == 41
+                rejected: mutable bool = false
+                catch prepare_session_launch(session):
+                    ok _:
+                        assert false
+                    error failure:
+                        rejected <- failure == SpawnSessionError.InvalidState
+                assert rejected and session.next_resource_id == 3
+                assert session.ledger.active_entries == 1 and session.launch.child.diagnostic_pid == 41
+
+
+        @test
+        def spawn_session_id_pair_exhaustion_never_wraps_to_zero() -> void:
+            can Memory.Allocate, Abort.Panic:
+                session: mutable PreparedSpawnSession = PreparedSpawnSession{owner_token: 7, next_resource_id: SpawnSessionLimits::LAST_PAIR_START}
+                last: SpawnResourceIds = try prepare_session_launch(session) else failure:
+                    assert false
+                    return
+                assert last.process == 18446744073709551613u64 and last.attributes == 18446744073709551614u64
+                assert session.next_resource_id == 18446744073709551615u64
+                # No reservation/native attempt followed this model allocation.
+                try settle_session_launch(session) else failure:
+                    assert false
+                    return
+                exhausted: mutable bool = false
+                catch prepare_session_launch(session):
+                    ok _:
+                        assert false
+                    error failure:
+                        exhausted <- failure == SpawnSessionError.IdExhausted
+                assert exhausted and session.next_resource_id == 18446744073709551615u64
+                assert session.state == SpawnSessionState.Ready
+
+
+        @test
+        def spawn_session_failed_attribute_history_blocks_reset_even_without_child() -> void:
+            can Memory.Allocate, Abort.Panic:
+                session: mutable PreparedSpawnSession = PreparedSpawnSession{owner_token: 7}
+                ids: SpawnResourceIds = try prepare_session_launch(session) else failure:
+                    assert false
+                    return
+                usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
+                policy: RuntimeResourcePolicy = spawn_session_fixture_policy()
+                try EsProcessSpawnBudget::reserve(session.launch.child, session.launch.budget, session.ledger, usage, policy, ids.process, 7) else failure:
+                    assert false
+                    return
+                _ = try EsResource::resource_ledger_acquire(session.ledger, ids.attributes, EsResource::ResourceKind.NativeAttribute, 7) else failure:
+                    assert false
+                    return
+                _ = try EsResource::advance_resource_lease(session.ledger, ids.attributes, 7, EsResource::ResourceEvent.Fail) else failure:
+                    assert false
+                    return
+                try EsProcessSpawnBudget::release_unstarted(session.launch.child, session.launch.budget, session.ledger, usage, 7) else failure:
+                    assert false
+                    return
+                # Model an uncertain init report, not an actual opaque handle.
+                session.launch.attributes.resource_id <- ids.attributes
+                session.launch.attributes.owner_token <- 7
+                session.launch.attributes.receipt <- EsProcessSpawnAttributes::initialized(0, false)
+                session.launch.phase <- LaunchPhase.Complete
+                session.launch.cleanup_attempted <- true
+                session.launch.cleanup_failed <- true
+                quarantined: mutable bool = false
+                catch settle_session_launch(session):
+                    ok:
+                        assert false
+                    error failure:
+                        quarantined <- failure == SpawnSessionError.UnresolvedLease
+                assert quarantined and session.state == SpawnSessionState.Quarantined
+                assert usage.processes == 0 and not session.launch.budget.held
+                assert session.ledger.active_entries == 0 and session.ledger.failed_entries == 1
+                assert session.launch.attributes.resource_id == ids.attributes
+                assert session.launch.attributes.receipt.state == EsProcessSpawnAttributes::State.InitUncertain
