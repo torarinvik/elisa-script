@@ -373,6 +373,15 @@ required postorder. It remains separate from the vendor's global parser names;
 typed target-width conversion and runtime/performance qualification remain open,
 while compact encoding is provided by `EsJsonEncode`.
 
+`test/script_parity/json_values_launcher_test.elisascript` adds a gated
+process-level C06 comparison against Python's standard `json` module. Its
+bounded value projection covers an integer larger than 64 bits, nested object
+and array values, Unicode, booleans, null versus a missing member, and
+last-value-wins duplicate keys. The Python executable, candidate, reference,
+golden, and directly consumed JSON model sources are digest-pinned. This is a
+focused behavior slice, not full Python JSON compatibility, and the launcher
+has not been run under the validation hold.
+
 `EsSchema` adds the checked schema-conversion boundary that follows parsing.
 `SchemaDescriptor` declares named fields, source format, requiredness,
 expected value kinds, aliases, and positional source indexes. JSON ignores

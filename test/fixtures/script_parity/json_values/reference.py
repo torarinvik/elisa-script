@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Python json oracle for a bounded C06 value-semantics slice."""
+
+import json
+import sys
+
+
+SOURCE = (
+    '{"big":1234567890123456789012345678901234567890,'
+    '"nullable":null,'
+    '"nested":{"label":"blåbær","items":[true,null,4]},'
+    '"duplicate":"first","duplicate":"last"}'
+)
+
+
+def main():
+    value = json.loads(SOURCE)
+    nested = value["nested"]
+    items = nested["items"]
+    lines = [
+        f"big={value['big']}",
+        f"missing={'present' if 'absent' in value else 'missing'}",
+        f"nullable={'null' if 'nullable' in value and value['nullable'] is None else 'other'}",
+        f"label={nested['label']}",
+        f"items.count={len(items)}",
+        f"item.0={'true' if items[0] is True else 'false'}",
+        f"item.1={'null' if items[1] is None else 'other'}",
+        f"item.2={items[2]}",
+        f"duplicate={value['duplicate']}",
+    ]
+    sys.stdout.write("\n".join(lines) + "\n")
+
+
+if __name__ == "__main__":
+    main()
