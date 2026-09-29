@@ -6,6 +6,7 @@ include "process_probe_model.elisa"
 include "canonical_wrapper_scope.elisa"
 include "canonical_lint_cases.elisa"
 include "canonical_lint_exec_failure_cases.elisa"
+include "../../src/testing/observation_preview_model.elisa"
 
 using EsDifferential
 
@@ -128,6 +129,7 @@ module EsCanonicalWrappersLauncherParity:
             return false if not has_hash("test/fixtures/script_parity/process_probe/probe.c", "fbaf5b83b8ec226a980bfc52e0fca56380acb42b7a80dc6cf773533d550a0e8d") or not has_hash("test/script_parity/process_probe_model.elisa", "d7394a1583feafeba29046a24149a8760ac9219fd0786afe05942192ad46bbec")
             return false if not has_hash("test/script_parity/canonical_lint_cases.elisa", "87cb85d65ab59f7f323cf1bf3e9e7065ed47a793a2b1dc95c15e4c3ad874c9bb")
             return false if not has_hash("test/script_parity/canonical_lint_exec_failure_cases.elisa", "a3b19ba6bfbcdc8482999509f5b945f0c1f20d2a14ac4755fa481f1285189608")
+            return false if not has_hash("src/testing/observation_preview_model.elisa", "7553c78bb167295a9be1528b6f05acb037098800adbe8c05acfaa2e23f0ee1b7")
             sources: darray[SourceCopy] = source_set(wave)
             expected_count: usize = Coverage::LINT_SOURCES if wave == Wave.LintOnly else Coverage::FAMILY_SOURCES
             return false if sources.count != expected_count
@@ -328,8 +330,59 @@ module EsCanonicalWrappersLauncherParity:
             return run.outcome == DifferentialRunOutcome.Completed and run.exit_status == status and run.stdout == "" and run.stderr != ""
 
 
-        def exec_failure_case_matches(auth: Authorization, root: TemporaryRoot, selected: EsCanonicalLintExecFailureCases::Case) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
-            return false if not exec_failure_fixture_ready(root)
+        def outcome_label(outcome: DifferentialRunOutcome) -> sview:
+            return when outcome:
+                DifferentialRunOutcome.Completed -> "completed"
+                DifferentialRunOutcome.NormalError -> "normal-error"
+                DifferentialRunOutcome.SpawnFailure -> "spawn-failure"
+                DifferentialRunOutcome.Crash -> "crash"
+                DifferentialRunOutcome.Timeout -> "timeout"
+                DifferentialRunOutcome.OutputLimit -> "output-limit"
+                DifferentialRunOutcome.CompileFailure -> "compile-failure"
+                _ -> "unknown"
+
+
+        def exec_failure_notice(name: sview, phase: sview) -> void can[Console.Write]:
+            # Names/phases are pinned fixture literals, not observed stream data.
+            _ = write_stderr("canonical lint failure: case=" + name + "; phase=" + phase + "\n")
+
+
+        def exec_failure_stream_evidence(name: sview, phase: sview, stream: sview, prefix: EsObservationPreview::Preview&, tail: EsObservationPreview::Preview&) -> void can[Console.Write, Console.Format]:
+            cut: sview = "yes" if prefix.truncated else "no"
+            _ = write_stderr(f"canonical lint stream: case={name}; phase={phase}; stream={stream}; retained_bytes={prefix.total_bytes}; prefix_hex={bytes_view(prefix.hex)}; tail_hex={bytes_view(tail.hex)}; window_truncated={cut}\n")
+
+
+        def exec_failure_evidence(name: sview, phase: sview, run: DifferentialRun&, expected_status: i64) -> void can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+            stdout: EsObservationPreview::Preview = try EsObservationPreview::preview(run.stdout) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            stderr: EsObservationPreview::Preview = try EsObservationPreview::preview(run.stderr) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            error_preview: EsObservationPreview::Preview = try EsObservationPreview::preview(run.error_text) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            stdout_tail: EsObservationPreview::Preview = try EsObservationPreview::tail_preview(run.stdout) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            stderr_tail: EsObservationPreview::Preview = try EsObservationPreview::tail_preview(run.stderr) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            error_tail: EsObservationPreview::Preview = try EsObservationPreview::tail_preview(run.error_text) else failure:
+                exec_failure_notice(name, "evidence-preview-failed")
+                return
+            # Non-completed outcomes do not have a completed exit-status receipt.
+            status: sview = f"{run.exit_status}" if run.outcome == DifferentialRunOutcome.Completed else "unavailable"
+            _ = write_stderr(f"canonical lint failure: case={name}; phase={phase}; outcome={outcome_label(run.outcome)}; expected_status={expected_status}; actual_status={status}\n")
+            exec_failure_stream_evidence(name, phase, "stdout", stdout, stdout_tail)
+            exec_failure_stream_evidence(name, phase, "stderr", stderr, stderr_tail)
+            exec_failure_stream_evidence(name, phase, "error-text", error_preview, error_tail)
+
+
+        def exec_failure_case_matches(auth: Authorization, root: TemporaryRoot, selected: EsCanonicalLintExecFailureCases::Case) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
+            if not exec_failure_fixture_ready(root):
+                exec_failure_notice(selected.name, "fixture-before-reference")
+                return false
             root_text: sview = f"{root.path}"
             configured: sview = EsCanonicalLintExecFailureCases::executable_text(selected, root_text)
             environment: darray[DifferentialEnvironmentEntry] = [
@@ -355,19 +408,37 @@ module EsCanonicalWrappersLauncherParity:
                 timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
             }
             reference_run: DifferentialRun = try run_differential_process(reference) else err:
+                exec_failure_notice(selected.name, "reference-run-error-no-receipt")
                 return false
             # Independent status/no-stdout/nonempty-diagnostic admission first.
             # Exact error bytes are then compared to the pinned reference;
             # they are not claimed to have a separate literal stderr oracle.
-            return false if not exec_failure_observation(reference_run, selected.status) or not exec_failure_fixture_ready(root)
-            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+            if not exec_failure_observation(reference_run, selected.status):
+                exec_failure_evidence(selected.name, "reference-contract", reference_run, selected.status)
                 return false
-            return false if not exec_failure_observation(candidate_run, selected.status) or not exec_failure_fixture_ready(root)
+            if not exec_failure_fixture_ready(root):
+                exec_failure_evidence(selected.name, "fixture-after-reference", reference_run, selected.status)
+                return false
+            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+                exec_failure_notice(selected.name, "candidate-run-error-no-receipt")
+                exec_failure_evidence(selected.name, "reference-before-candidate-error", reference_run, selected.status)
+                return false
+            if not exec_failure_observation(candidate_run, selected.status):
+                exec_failure_evidence(selected.name, "reference-before-candidate-contract", reference_run, selected.status)
+                exec_failure_evidence(selected.name, "candidate-contract", candidate_run, selected.status)
+                return false
+            if not exec_failure_fixture_ready(root):
+                exec_failure_evidence(selected.name, "reference-before-fixture-failure", reference_run, selected.status)
+                exec_failure_evidence(selected.name, "fixture-after-candidate", candidate_run, selected.status)
+                return false
             comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            if not comparison.equal:
+                exec_failure_evidence(selected.name, "reference-comparison", reference_run, selected.status)
+                exec_failure_evidence(selected.name, "candidate-comparison", candidate_run, selected.status)
             return comparison.equal
 
 
-        def exec_failure_matrix(auth: Authorization, root: TemporaryRoot) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
+        def exec_failure_matrix(auth: Authorization, root: TemporaryRoot) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
             required_cases: darray[EsCanonicalLintExecFailureCases::Case] = EsCanonicalLintExecFailureCases::required()
             return false if required_cases.count != Coverage::LINT_EXEC_FAILURES
             for selected in required_cases:
@@ -375,7 +446,7 @@ module EsCanonicalWrappersLauncherParity:
             return true
 
 
-        def matrix(auth: Authorization, root: TemporaryRoot, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Format]:
+        def matrix(auth: Authorization, root: TemporaryRoot, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
             selected_cases: darray[Case] = cases(wave)
             expected_count: usize = Coverage::LINT_CASES if wave == Wave.LintOnly else Coverage::FAMILY_CASES
             return false if selected_cases.count != expected_count

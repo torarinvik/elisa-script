@@ -180,6 +180,38 @@ expectations based on an unmatched source checkout. The seven failure plans
 retain exact reference/candidate comparison, without normalization, and remain
 unrun. Execution authorization and external RSS/time containment are still required.
 
+## Bounded failure evidence from the dormant matrix
+
+Actual-exec failures now report the case and failed phase: fixture admission,
+reference run/contract, candidate run/contract, post-run fixture checks or exact
+comparison. A failed reference contract still prevents candidate execution.
+Available run receipts print outcome, expected status and actual status only for
+Completed outcomes; other statuses are explicitly unavailable. stdout, stderr
+and error-text evidence uses retained byte counts, lowercase hex of at most the
+first and last 64 bytes each, and explicit per-window truncation flags. A tail
+keeps the useful message visible after a long path prefix. Windows may overlap;
+a window-truncated flag means each window alone omits bytes. A thrown runner error
+is reported as no receipt, not synthesized into a DifferentialRun observation.
+
+The small reusable preview model never decodes/normalizes text, and only scans
+the admitted windows. Its binary/control-byte, zero-budget and 63/64/65-byte
+fixtures are authored but uncompiled/unrun. Logs contain no raw observed stream
+bytes that could control a terminal; case/phase labels are fixed fixture data.
+Hex is reversible and does not redact secrets: this harness uses controlled,
+authorized fixture streams, and this preview must not be treated as a general
+redaction policy. Counts describe retained input spans, not proof of complete
+capture when a runner outcome indicates failure or output exhaustion.
+
+The preview model's source hash is also checked with the matrix's other pinned
+inputs, before and after the suite. Log headers and individual stream lines carry
+case/phase labels so interleaving does not silently relabel their evidence.
+These log previews are diagnostic aids, not artifacts, hashes, source provenance
+or equality oracles. They neither weaken the seven authored status expectations
+nor replace full exact comparison. A difference beyond the prefix can still fail
+comparison even when both windows look identical. Cleanup and all existing
+authorization/identity/containment prerequisites remain unchanged; no matrix,
+console diagnostic, fixture setup or native operation was executed by this work.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
