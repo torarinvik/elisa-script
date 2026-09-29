@@ -16,9 +16,9 @@ The authored wrapper SHA-256 is
 Current candidate/model source identities are respectively
 `1aa632ce625dd5608de31714567c8bb9ff6d22dc699b16fcd38960eaf8d50e6c`
 and `0ff7c281c690ff45c471aee003b7a8a9e17ba782d5e523782acbc1b2d5e719d1`.
-These are recorded bytes, not build provenance or a completed hash gate; a
-future public fixture must verify every selected artifact before and after
-use and refuse concurrent dirty source revisions.
+These are recorded bytes, not build provenance. The authored public fixture
+below checks selected identities before and after use but cannot prevent
+replacement between observational checks.
 
 The source-only companion is
 `ports/Elisa-LSP/scripts/compiler_root_env.elisascript`; its pure selection
@@ -58,10 +58,8 @@ Pure fixtures in `test/runtime/compiler_root_env_model_test.elisa` pin
 unset/empty defaulting, relative and verbatim missing overrides, trailing
 separator spelling, exact 4,095-byte selected boundaries, NUL rejection and
 the default-suffix overflow. They have not compiled or run. The sourced-function
-contract still needs an independently admitted, isolated public-launcher
-matrix: copy the unchanged Bash helper, source it in a fixed test wrapper,
-print its resulting variable only as an observation, and compare to a qualified
-Elisascript candidate with identical cwd/environment and exact expected bytes.
+contract still needs a qualified run of the independently admitted isolated
+public-launcher matrix below; authored source alone is not acceptance.
 
 `test/script_parity/elisa_lsp_compiler_root_cases.elisa` separately authors
 eight literal success observations without importing the candidate or model.
@@ -71,17 +69,53 @@ regular-file override, an existing directory, a directory symlink, and an
 existing default sibling. The fixture root must be canonical and contain a
 created `Elisa-LSP/scripts` tree; its basename should contain a space. The
 relative case requires an isolated cwd with no matching directory. The
-symlink must point only to a recorded directory inside the fixture. Later
-setup must establish and recheck each topology before reference and candidate
-runs, admit exact status/empty stderr/literal stdout against the reference
-*first*, and retain a separate outside sentinel through cleanup. The case
+symlink must point only to a recorded directory inside the fixture. Authored
+setup rechecks topology before and after each child, admits exact status, empty
+stderr and literal stdout against the reference *first*, and checks a sentinel
+outside the staged LSP tree (but inside the temporary workspace). The case
 source SHA-256 is
 `7425b22b3be42266400f5610f916b75af223f7dc1e56ed0f7efc12393169f542`;
 pure metadata assertions are authored but unrun. Neither this pin nor eight
-data rows is an executable parity gate or observed host behavior.
+data rows is observed host behavior.
+
+`test/script_parity/elisa_lsp_compiler_root_launcher_test.elisascript` is a
+dormant public-launcher matrix. Its entry requires explicit reauthorization,
+a separate LSP-root launcher qualification marker, the outer RSS-guard marker,
+both compiler selectors pinned to the approved local StructPy compiler, and
+distinct bounded candidate/Bash/compiler path+digest roles. The three
+executables preflight as nonsymlink regular files with native container headers
+before any hash-tool child. Pinned sources include the Bash snapshot/observer,
+candidate/model, independent cases, bounded reader, committed differential
+runner, shared role/checksum models, Bash, compiler, launcher and hash utility.
+The committed runner pin deliberately fails against current concurrent dirty
+edits; only reviewed source plus separate artifact/closure qualification may
+authorize a new pin. No compiler is invoked or rebuilt by this fixture.
+
+The matrix allocates a private root with spaces in its name; copies four
+bounded UTF-8 sources under `Elisa-LSP/scripts`; creates only recorded files,
+directories and an in-workspace sentinel; and applies all eight topologies.
+It uses a replacement child environment containing only PATH, LC_ALL and,
+when selected, `ELISA_COMPILER_ROOT`—no compiler/authorization variables.
+Both children run from the private root with bounded capture and wait-poll
+counts. The Bash observer must first complete with empty host-error text and
+independent literal stdout/status/stderr before the candidate starts. Candidate
+output must independently satisfy the same expectation and compare exactly.
+Copied assets, topology and sentinel are checked between children and after
+each case. Cleanup unlinks only recorded files and symlinks, removes recorded
+directories in reverse order and refuses unexpected nonempty directories;
+partial setup roots reach that cleanup path. No compiler, Bash, launcher,
+fixture, hash child or cleanup has run.
+
+These are observational pathname fences, not exclusive creation, descriptor-
+sealed ownership, atomic no-follow writes, a race-free symlink resolver or an
+independent sentinel outside the whole temporary root. A concurrent adversary
+can replace checked paths. Native qualification must cover races, failed or
+partial setup, unexpected entries and cleanup failure before migration. The
+external RSS/time wrapper is required; its `active` marker alone is not OS
+containment or no-auto-build proof.
 
 Include existing real/symlink directories, missing paths, unset/empty values,
-relative paths, spaces and metacharacters. Keep an outside sentinel and bounded
-cleanup; never run either side against a live compiler checkout. The original
+relative paths, spaces and metacharacters. Keep bounded cleanup; never run
+either side against a live compiler checkout. The original
 parent-export behavior is an interface difference to address by converting
 callers to typed values, not by claiming subprocess parity.
