@@ -9,6 +9,7 @@ include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime.elisa"
 include "../../vendor/elisa-compiler/elisacore_std/elisacore_fileio.elisa"
 include "../ir/ir.elisa"
 include "../runtime/process_wait_result_model.elisa"
+include "../runtime/process_exec_search_model.elisa"
 include "./sequence_model.elisa"
 include "./stability_model.elisa"
 include "./report_model.elisa"
@@ -3291,6 +3292,10 @@ module EsDifferential:
                     _ = fclose(stderr_stream)
                     raise DifferentialRunnerError.Process
 
+                # Borrow the C-width errno location before fork. Child exec
+                # failure handling must not obtain it through another host call
+                # after exec, or read it after an unexpected/bridge return.
+                exec_errno: mutable i32& = elisascript_posix_errno()
                 pid: int = elisascript_posix_fork()
                 if pid < 0:
                     _ = fclose(input_stream)
@@ -3322,16 +3327,28 @@ module EsDifferential:
                                 set_status: int = elisascript_posix_setenv(entry_items.cast[cstr], value_items.cast[cstr], 1)
                                 entry_items[name_length] <- 61
                                 elisascript_posix_exit(126) if set_status != 0
-                        _ = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
-                        elisascript_posix_exit(127)
+                        returned: int = elisascript_posix_execvp(executable_items.cast[cstr], argv_items)
+                        if EsProcessScalarAbi::native_errno_failure(returned.i64()):
+                            failure: i32 = exec_errno[0]
+                            elisascript_posix_exit(EsProcessExecSearch::returned_exec_status(returned.i64(), failure).int())
+                        else:
+                            elisascript_posix_exit(EsProcessExecSearch::fatal_status().int())
                     else:
                         saw_access_denied: mutable bool = false
-                        for candidate in executable_search.candidates |executable_search, argv_items, environment_items, saw_access_denied|:
-                            _ = elisascript_posix_execve(candidate, argv_items, environment_items)
-                            errno: mutable int& = elisascript_posix_errno()
-                            saw_access_denied <- true if errno[0] == DarwinErrno::EACCES
-                        elisascript_posix_exit(126) if saw_access_denied
-                        elisascript_posix_exit(127)
+                        for candidate in executable_search.candidates |executable_search, argv_items, environment_items, saw_access_denied, exec_errno|:
+                            returned: int = elisascript_posix_execve(candidate, argv_items, environment_items)
+                            if EsProcessScalarAbi::native_errno_failure(returned.i64()):
+                                failure: i32 = exec_errno[0]
+                                match EsProcessExecSearch::after_failure(failure):
+                                    EsProcessExecSearch::Action.Next:
+                                        pass
+                                    EsProcessExecSearch::Action.NextDenied:
+                                        saw_access_denied <- true
+                                    EsProcessExecSearch::Action.Stop:
+                                        elisascript_posix_exit(EsProcessExecSearch::fatal_status().int())
+                            else:
+                                elisascript_posix_exit(EsProcessExecSearch::fatal_status().int())
+                        elisascript_posix_exit(EsProcessExecSearch::exhausted_status(saw_access_denied).int())
                     return DifferentialRun{observations: []}
 
                 status: mutable int = 0

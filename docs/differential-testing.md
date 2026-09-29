@@ -1433,3 +1433,29 @@ stdlib/testing/differential/
 The VM and effect runtime must preserve deterministic effect traces and source spans
 because differential testing depends on them. This requirement therefore influences
 MIR, bytecode, handlers, subprocess APIs, and artifact formats from the beginning.
+
+## Legacy child exec-failure policy (source-only correction)
+
+The legacy native process adapter previously discarded returned execvp results
+and retried every returned execve error. An inherited access denial could thus
+be labeled 127, or an explicit PATH search could hide a format/resource/I/O
+failure behind a later candidate. This undermines small-wrapper qualification.
+
+Both child branches now borrow the C-width errno location in the parent before
+fork and admit an immediate errno sample only after a native -1 result. The
+existing pure Darwin exec-search policy maps missing components to continued
+search, remembers EACCES, and stops on every other failure. Exhaustion returns
+126 after any denial and 127 otherwise; unexpected/bridge returns select 126
+without reading errno. The inherited execvp branch uses the same returned-error
+status policy. Pure boundary fixtures additionally cover an unsigned-looking
+32-bit -1 and the maximum signed 64-bit unexpected return, both fail-closed.
+
+This is legacy exit-number compatibility, not a native failure receipt or an
+accepted script migration. Tools can normally return 126/127 too, so the parent
+still cannot prove which event occurred. libc execvp fallback behavior, the
+generated child call graph/async-signal safety, inherited errno-pointer lifetime,
+scalar ABI, native nonreturning exit and external process containment remain
+unqualified. The explicit execve branch retains its no-shell-fallback policy.
+No compiler, child, native probe, fixture or parity run occurred; source review
+and git diff checks alone do not establish runtime correctness. Existing
+authorization gates and intentionally stale qualification pins were not relaxed.
