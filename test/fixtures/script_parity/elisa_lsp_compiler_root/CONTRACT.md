@@ -7,9 +7,9 @@ It is a sourced Bash function, not an executable program. The original and
 
 The source-only companion is
 `ports/Elisa-LSP/scripts/compiler_root_env.elisascript`; its pure selection
-module is `src/runtime/compiler_root_env_model.elisa`. When deployed beside the
-real helper, copy the include closure in the same relative tree or adapt the
-include path intentionally. This repository's port path is a staging layout,
+module is `ports/Elisa-LSP/scripts/compiler_root_env_model.elisa`. The companion
+includes the model by its sibling filename, so both files can be copied together
+beside the real helper without changing the include path. This staging tree is
 not an installed Elisa-LSP script. No compiler, Bash, fixture or candidate ran.
 
 The original uses `ELISA_COMPILER_ROOT` when nonempty; unset or exported-empty
