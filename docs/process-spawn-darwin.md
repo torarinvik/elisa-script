@@ -570,3 +570,30 @@ RSS/time guard and local compiler, separately build/admit the C object and link
 only this selected fixture with recorded SDK/target/tool/source identities.
 Neither source has been compiled or run. No fixture, compiler, native call,
 process or parity operation was launched, and smallest lint parity remains open.
+
+## Generated pointer/opaque-slot width admission (source-only)
+
+The launch table builder and binding validator now derive their width through
+`native_pointer_bytes`, which checks both `size_of(uintptr)` and the generated
+`size_of(u8&?)`. Only supported four/eight-byte pointers with equally sized
+nullable entries pass. A future tagged optional representation cannot silently
+retain a raw-pointer table budget or reach the private spawn binding checks.
+This is actual target-derived admission, not a caller-supplied marker.
+
+Private attribute initialization now checks the selected Darwin64 pointer,
+optional void-reference slot, reference, C-int/pid and short widths before lease
+acquisition or native initialization. Existing owner checks apply the same gate
+before native group/flag setters, destruction and configured spawning; a layout
+failure does not authorize native cleanup of a guessed opaque slot.
+The compiler source currently niche-optimizes reference optionals to a bare
+pointer (`optional_is_niche` and `llvm_type_of`), but that source fact does not
+qualify the selected installed/local compiler or generated runtime representation.
+
+Pure fixtures reject unsupported/tagged widths and each wrong Darwin scalar/
+slot width. The existing dormant native table fixture also calls the generated
+width gate before constructing tables. All fixtures remain uncompiled/unrun.
+Equal size is necessary, not sufficient: alignment, pointer encoding, physical
+array stride, raw NULL sentinels, opaque-slot writes, borrowed lifetime and the
+native C view still need independent contained qualification. No compiler,
+fixture, attribute, child, native wait/signal or parity run occurred. Public
+source/bytecode/UI wiring and smallest-script acceptance remain open.
