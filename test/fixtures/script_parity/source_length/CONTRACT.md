@@ -68,7 +68,8 @@ Extra command-line arguments are ignored by both scripts.
 
 `test/script_parity/source_length_launcher_test.elisascript` creates an isolated
 sibling-project workspace with spaces in its name and launches both programs
-from `/`. It covers missing src, empty src, the 600-CRLF boundary, a 601-line
+from `/`. It covers missing src, regular-file src, root-symlink src, empty src,
+the 600-CRLF boundary, a 601-line
 mixed-terminator/Unicode/control-byte source, seven oversized hidden/Unicode/
 prefix-colliding paths in exact diagnostic order, case-sensitive suffix
 filtering, a file symlink, and a descendant directory-symlink cycle. Each run
@@ -83,16 +84,27 @@ candidate counter nor a host adapter. It covers an empty file, BOM-only content,
 601 repetitions of Unicode/control separators as one unterminated line, and
 602 LF lines with its own literal diagnostic. Every expected status/stderr is
 fixture data, not produced by the candidate. Missing/empty roots and multi-file
-ordering/symlink cases remain separate; this is 17 ordinary case invocations
+ordering/symlink cases remain separate; this is 19 ordinary case invocations
 in total, each with reference-first admission and exact empty stdout.
+
+Before creating the ordinary source directory, the harness writes a 601-line
+regular file named `src` and expects silent status 0. It then makes `src` a
+symlink to a separately recorded `root-target` directory containing a 601-line
+source, expecting status 1 and the literal `src/boundary.elisa` diagnostic,
+not the target directory's name. The outside target remains oversized during
+later runs: it must not leak into an empty or ordinary `src` scan. Transition
+cleanup retires only the last recorded file/link after an exact ledger-path
+match, intact recorded parents, observed file/link shape and successful unlink;
+failures retain the entry for centralized cleanup. This is an observational
+fence, not atomic ownership. No unlink, setup or case has executed.
 
 The fixture source is pinned before/after the matrix. Failure reports the
 fixed fixture label without dumping child output. Pure assertions in
 `test/runtime/source_length_cases_test.elisa` compare the actual counter to the
 literal line metadata and check byte boundaries/diagnostic fields. They have
 not compiled/run and do not prove Python, filesystem or launcher behavior.
-Regular-file `src`, source-root symlinks, matching directories and host/error
-cases still need their separate acceptance fixtures/qualification.
+Matching directories and host/error cases still need their separate acceptance
+fixtures; every authored ordinary case still needs native qualification.
 
 The public fixture entry performs authorization checks itself, before any hash
 tool or program starts; these are not only checks in the @test caller. In
