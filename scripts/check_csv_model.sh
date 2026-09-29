@@ -17,8 +17,13 @@ file_reader="$repo_root/src/runtime/csv_record_file_posix.elisa"
 schema_csv="$repo_root/src/runtime/schema_csv_materializer.elisa"
 schema_file_reader="$repo_root/src/runtime/schema_csv_file_posix.elisa"
 file_writer="$repo_root/src/runtime/csv_record_file_writer_posix.elisa"
+parity_reference="$repo_root/test/fixtures/script_parity/csv_io/reference.py"
+parity_candidate="$repo_root/test/fixtures/script_parity/csv_io/candidate.elisascript"
+parity_expected="$repo_root/test/fixtures/script_parity/csv_io/expected.txt"
+parity_contract="$repo_root/test/fixtures/script_parity/csv_io/CONTRACT.md"
+parity_launcher="$repo_root/test/script_parity/csv_io_launcher_test.elisascript"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -34,7 +39,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -181,6 +186,45 @@ for file_writer_fixture_pattern in \
     rg -Fq "$file_writer_fixture_pattern" "$runtime_fixture"
 done
 
+for parity_reference_pattern in \
+    'Independent Python csv oracle' \
+    'csv.reader(' \
+    'csv.writer(' \
+    'strict=True' \
+    'malformed=error'; do
+    rg -Fq "$parity_reference_pattern" "$parity_reference"
+done
+
+for parity_candidate_pattern in \
+    'module EsCsvIoParityCandidate:' \
+    'materialize_csv_schema_batch(' \
+    'encode_csv_record(' \
+    'blåbær' \
+    'malformed=error'; do
+    rg -Fq "$parity_candidate_pattern" "$parity_candidate"
+done
+
+for parity_launcher_pattern in \
+    'csv_reader_writer_public_launcher_matches_python_reference_and_golden' \
+    'PYTHONIOENCODING' \
+    'ELISASCRIPT_VALIDATION_REAUTHORIZED' \
+    'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' \
+    'SourceHashes::SCHEMA_CSV'; do
+    rg -Fq "$parity_launcher_pattern" "$parity_launcher"
+done
+
+for parity_expected_pattern in \
+    'quoted,"comma, quote ""and"""' \
+    'multiline,"line 1' \
+    'line 2"' \
+    'unicode,blåbær' \
+    'malformed=error'; do
+    rg -Fq "$parity_expected_pattern" "$parity_expected"
+done
+
+rg -Fq 'does not claim full Python `csv` compatibility' "$parity_contract"
+rg -Fq '`test/script_parity/csv_io_launcher_test.elisascript`' "$docs"
+
 for framer_fixture_pattern in \
     'csv_record_framer_preserves_quoted_content_and_split_crlf' \
     'first_chunk.count == 0' \
@@ -254,4 +298,4 @@ for schema_file_fixture_pattern in \
     rg -Fq "$schema_file_fixture_pattern" "$runtime_fixture"
 done
 
-printf 'csv model audit: bounded POSIX CSV reading and writing, schema-aware row streaming, chunk framing, and record encoding are present\n'
+printf 'csv model audit: bounded POSIX CSV reading and writing, schema-aware row streaming, Python parity, chunk framing, and record encoding are present\n'

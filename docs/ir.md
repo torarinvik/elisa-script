@@ -542,6 +542,14 @@ Source fixtures cover exact total-output limits, append behavior, and reading
 the emitted records back; validation remains disabled under the compiler
 safety hold.
 
+`test/script_parity/csv_io_launcher_test.elisascript` adds an independent
+process-level comparison against Python's standard `csv` module for a bounded
+read/normalize/write corpus. It covers quoted delimiters, doubled quotes,
+embedded newlines, empty cells, UTF-8, and rejection of an unterminated quoted
+record, with a pinned golden output and source/interpreter hashes. The gate
+requires the existing validation reauthorization and RSS-guard attestation;
+the parity fixture has been authored but not run.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate

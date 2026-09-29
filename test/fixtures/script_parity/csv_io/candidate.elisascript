@@ -1,0 +1,103 @@
+# CSV file-data parity candidate: parse into a typed schema, then re-encode.
+
+include "../../../../src/runtime/encoding.elisa"
+include "../../../../src/runtime/data_model.elisa"
+include "../../../../src/runtime/json_model.elisa"
+include "../../../../src/runtime/schema_model.elisa"
+include "../../../../src/runtime/record_numeric_model.elisa"
+include "../../../../src/runtime/schema_integer_conversion.elisa"
+include "../../../../src/runtime/csv_model.elisa"
+include "../../../../src/runtime/csv_materializer_model.elisa"
+include "../../../../src/runtime/csv_parser_model.elisa"
+include "../../../../src/runtime/csv_encode_model.elisa"
+include "../../../../src/runtime/schema_csv_materializer.elisa"
+
+using EsCsv
+using EsCsvEncode
+using EsCsvParser
+using EsData
+using EsSchema
+using EsSchemaCsv
+
+
+module EsCsvIoParityCandidate:
+    private:
+        const module Inputs:
+            CORPUS: sview = "label,note\nplain,ascii\nquoted,\"comma, quote \"\"and\"\"\"\nmultiline,\"line 1\nline 2\"\nempty,\"\"\nunicode,blåbær\n"
+            MALFORMED: sview = "\"unterminated,value\n"
+
+
+        error CsvParityError:
+            InvalidMaterializedRow
+            InvalidInput
+
+
+        def csv_parity_bytes_view(bytes: darray[u8]) -> sview:
+            return "" if bytes.count == 0
+            data: u8& = (&bytes[0]).cast[u8&]
+            return sview(data, 0, bytes.count.i64())
+
+
+        def csv_parity_append_bytes(output: mutable darray[u8]&, bytes: darray[u8]) can[Memory.Allocate, Abort.Panic]:
+            for byte in bytes |output|:
+                output.push(byte)
+
+
+        def csv_parity_schema() -> SchemaDescriptor:
+            return SchemaDescriptor{
+                name: "csv_io_parity",
+                source: SchemaSource.Csv,
+                fields: [
+                    SchemaField{name: "label", kind: SchemaValueKind.Text},
+                    SchemaField{name: "note", kind: SchemaValueKind.Text}
+                ]
+            }
+
+
+        def csv_parity_round_trip() -> darray[u8] error[DataContractError, CsvContractError, CsvMaterializerError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaCsvMaterializeError, CsvEncodeError, CsvParityError] can[Memory.Allocate, Abort.Panic]:
+            policy: CsvPolicy = CsvPolicy{line_ending: CsvLineEndingMode.Lf, header: true}
+            materializer: CsvMaterializer = try parse_csv_materializer(Inputs::CORPUS, policy)
+            raise CsvParityError.InvalidInput if materializer.records.count == 0
+            schema: SchemaDescriptor = csv_parity_schema()
+            batch: SchemaCsvRecordBatch = try materialize_csv_schema_batch(schema, materializer, 0, materializer.records.count - 1)
+
+            output: mutable darray[u8] = []
+            encoded_header: darray[u8] = try encode_csv_record(["label", "note"], policy)
+            csv_parity_append_bytes(output, encoded_header)
+            for record in batch.records |output|:
+                fields: mutable darray[sview] = []
+                for value in record.values |fields|:
+                    raise CsvParityError.InvalidMaterializedRow if value.kind != SchemaCsvValueKind.Text
+                    fields.push(csv_parity_bytes_view(value.bytes))
+                encoded_record: darray[u8] = try encode_csv_record(fields, policy)
+                csv_parity_append_bytes(output, encoded_record)
+            return output
+
+
+        def csv_parity_malformed_rejected(policy: CsvPolicy) -> bool:
+            catch parse_csv_materializer(Inputs::MALFORMED, policy):
+                ok parsed:
+                    _ = parsed
+                    return false
+                error failure:
+                    _ = failure
+                    return true
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+            if arguments.count != 0:
+                print("usage: csv_io_candidate")
+                return 2i64
+            policy: CsvPolicy = CsvPolicy{line_ending: CsvLineEndingMode.Lf, header: true}
+            output: darray[u8] = try csv_parity_round_trip() else err:
+                print("csv=error")
+                return 1i64
+            printr(csv_parity_bytes_view(output))
+            marker: sview = "malformed=error" if csv_parity_malformed_rejected(policy) else "malformed=accepted"
+            print(marker)
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+    return EsCsvIoParityCandidate::run(arguments)
