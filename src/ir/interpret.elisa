@@ -1,5 +1,6 @@
 include "./runtime_model.elisa"
 include "../runtime/temporary_path_model.elisa"
+include "../runtime/environment_read_budget_model.elisa"
 
 
 error InterpretError:
@@ -4028,6 +4029,21 @@ extend EsIr:
             return length
 
 
+        def host_environment_cstring_length_bounded(value: u8&, limit: usize, too_large: mutable bool) -> usize:
+            too_large <- false
+            for index in 0..<(limit + 1) |value, limit, too_large|:
+                match EsEnvironmentReadBudget::classify_byte(value[index], index, limit):
+                    EsEnvironmentReadBudget::ByteAction.Payload:
+                        continue
+                    EsEnvironmentReadBudget::ByteAction.Terminator:
+                        return index
+                    EsEnvironmentReadBudget::ByteAction.Exceeded:
+                        too_large <- true
+                        return index
+            too_large <- true
+            return limit + 1
+
+
         # libc-returned path strings are admitted through the path envelope,
         # not the broader process/text C-string ceiling. The terminator must
         # appear before byte 4096 so the resulting owned value remains a valid
@@ -6307,7 +6323,13 @@ extend EsIr:
             return false
 
 
-        def evaluate_get_environment(machine: mutable Machine&, name: RuntimeValue, presence_only: bool = false) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+        def evaluate_get_environment(machine: mutable Machine&, name: RuntimeValue, presence_only: bool = false, max_value_bytes: i64 = EsEnvironmentReadBudget::Limits::MAX_VALUE_BYTES) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
+            value_limit: usize = try EsEnvironmentReadBudget::admit_limit(max_value_bytes) else err:
+                interpret_set_failure(machine, InterpretFailure.Environment)
+                return runtime_void()
+            if value_limit >= INTERPRET_MAX_CSTRING_BYTES:
+                interpret_set_failure(machine, InterpretFailure.Environment)
+                return runtime_void()
             if name.kind != RuntimeValueKind.Text:
                 interpret_set_failure(machine, InterpretFailure.TypeMismatch)
                 return runtime_void()
@@ -6329,7 +6351,9 @@ extend EsIr:
                 return runtime_void()
             found_items: u8& = found
             too_large: mutable bool = false
-            length: usize = host_cstring_length_bounded(found_items, too_large)
+            # Admit the terminator before allocating owned payload storage.
+            # Never scan past the caller's limit plus one terminator probe.
+            length: usize = host_environment_cstring_length_bounded(found_items, value_limit, too_large)
             interpret_set_failure(machine, InterpretFailure.Environment) if too_large
             return runtime_void() if too_large
             return runtime_text("") if length == 0
@@ -8379,7 +8403,12 @@ extend EsIr:
 
                             Opcode.GetEnvironment:
                                 name_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize()], machine)
-                                dispatch.value <- evaluate_get_environment(machine, name_value, instruction.integer == 1)
+                                value_limit: mutable i64 = EsEnvironmentReadBudget::Limits::MAX_VALUE_BYTES
+                                if instruction.integer == 2:
+                                    limit_value: RuntimeValue = frame_value(ids, values, fn.operand_pool[instruction.operand_start.usize() + 1], machine)
+                                    interpret_set_failure(machine, InterpretFailure.TypeMismatch) if limit_value.kind != RuntimeValueKind.Int
+                                    value_limit <- limit_value.integer
+                                dispatch.value <- evaluate_get_environment(machine, name_value, instruction.integer == 1, value_limit) if machine.failure == InterpretFailure.None
                                 break
 
                             Opcode.SetEnvironment:
@@ -9299,6 +9328,14 @@ extend EsIr:
         def get_environment_value(name: sview) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
             value: RuntimeValue = evaluate_get_environment(machine, runtime_text(name))
+            if machine.failure != InterpretFailure.None:
+                try raise_interpret_failure(machine.failure)
+            return value.text
+
+
+        def get_environment_bounded_value(name: sview, max_bytes: i64) -> sview error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            machine: mutable Machine = Machine{steps: 0, step_limit: 1, failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void()}
+            value: RuntimeValue = evaluate_get_environment(machine, runtime_text(name), false, max_bytes)
             if machine.failure != InterpretFailure.None:
                 try raise_interpret_failure(machine.failure)
             return value.text

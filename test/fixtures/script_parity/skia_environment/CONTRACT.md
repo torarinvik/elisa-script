@@ -14,6 +14,14 @@ No compiler, Python reference, launcher, native adapter or fixture has run.
 Compilation and public-launcher integration remain open; do not present this as
 a usable interpreted-script replacement until its FFI path is qualified.
 
+An additional source-only candidate,
+`scripts/get_skia_environment_interpreted.elisascript`, now uses the public
+`has_environment` and `get_environment_bounded` builtins, with no native extern
+declaration or pointer cast in the candidate. It preserves the model's 4,096-byte
+name admission and 1 MiB pre-copy value budget. Both candidates and the original
+remain separate; the dormant native matrix below does not test the interpreted
+companion, which needs its own gated public-launcher qualification.
+
 ## Intended ordinary behavior
 
 Use the first script argument as the environment key; ignore extra arguments.
@@ -63,10 +71,12 @@ host observations, not an atomic snapshot.
 
 This native candidate still needs build qualification. Its adapter bounds value
 copying to 1 MiB before appending bytes, whereas the generic interpreted getter
-has the wider runtime ceiling. A qualified explicit value-copy budget and public-
-launcher integration are still needed before migrating this exact candidate away
-from its native adapter. Do not assume that adding an extern declaration or a
-presence registry row automatically enables an equivalent public interpreted port.
+has the wider runtime ceiling. The new source-only bounded read uses an explicit
+signed-i64 budget and checks the terminator before allocating the owned value;
+the interpreted companion passes 1 MiB. Invalid limits and failed/oversized reads
+remain errors rather than `None`. Zero accepts only an empty value. Both the
+runtime implementation and public-launcher integration still need qualification;
+a registry row or source candidate is not evidence of observed parity.
 
 ## Explicit differences, not accepted parity
 

@@ -1,0 +1,85 @@
+# Source/IR fixtures only. Never execute any environment opcode.
+include "../../src/ir/ir.elisa"
+
+using EsIr
+
+
+module EsEnvironmentBoundedFixture:
+    public:
+        def lower(source: u8&) -> LowerResult can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            tokens: darray[Lexer::Token] = frontend_tokenize("environment-bounded.elisascript", source)
+            file: Ast::File = frontend_parser_parse_file(source, tokens)
+            assert file.errors.count == 0
+            return lower_file(file, "environment-bounded")
+
+
+        def module_for(limit_type: Type, count: u16 = 2, result_type: Type = Type{kind: TypeKind.Text}) -> Module can[Memory.Allocate, Abort.Panic]:
+            span: SourceSpan = SourceSpan{file: "environment-bounded.elisascript", line: 1, column: 1, end_line: 1, end_column: 2}
+            name: Parameter = Parameter{value: 1, type: Type{kind: TypeKind.Text}, name: "name"}
+            limit: Parameter = Parameter{value: 2, type: limit_type, name: "limit"}
+            read: Instruction = Instruction{opcode: Opcode.GetEnvironment, result: 3, result_type: result_type, integer: 2, operand_start: 0, operand_count: count, span: span}
+            block: Block = Block{id: 1, parameter_start: 0, parameter_count: 0, instruction_start: 0, instruction_count: 1, terminator: Terminator{kind: TerminatorKind.Return, span: span}}
+            function: Function = Function{name: "read", parameters: [name, limit], return_type: Type{kind: TypeKind.Void}, effects: ["Environment.Read"], errors: ["EnvironmentError"], operand_pool: [1,2,1], edge_arg_pool: [], block_parameter_pool: [], instruction_pool: [read], blocks: [block], entry: 1}
+            return Module{name: "environment-bounded", functions: [function]}
+
+
+@test
+def environment_bounded_registry_is_not_a_text_fallback() -> void:
+    can Memory.Allocate, Abort.Panic:
+        spec: EsBuiltin::BuiltinSpec = EsBuiltin::typed_builtin_spec("get_environment_bounded")
+        assert spec.known and spec.arity_min == 2 and spec.arity_max == 2
+        assert spec.argument_types == "text,i64" and spec.return_type == "sview"
+        assert spec.effects == "Environment.Read" and spec.errors == "EnvironmentError"
+        assert spec.opcode == "GetEnvironment" and spec.lowering_mode == 2
+        assert any name in EsBuiltin::typed_builtin_names() where name == "get_environment_bounded"
+        assert EsEnvironmentReadBudget::Limits::MAX_VALUE_BYTES.usize() + 1 == EsIr::ES_RUNTIME_DEFAULT_MAX_CSTRING_BYTES
+
+
+@test
+def environment_bounded_verifier_requires_i64_limit_and_text_result() -> void:
+    can Memory.Allocate, Abort.Panic:
+        signed: Type = Type{kind: TypeKind.Int, bits: 64, signed: true}
+        valid: Module = EsEnvironmentBoundedFixture::module_for(signed)
+        assert verify(valid).count == 0
+        for invalid_type in [Type{kind: TypeKind.Text}, Type{kind: TypeKind.Bool}, Type{kind: TypeKind.Int, bits: 64, signed: false}, Type{kind: TypeKind.Int, bits: 32, signed: true}]:
+            invalid: Module = EsEnvironmentBoundedFixture::module_for(invalid_type)
+            assert verify(invalid).count > 0
+        for count in [0u16, 1u16, 3u16]:
+            invalid: Module = EsEnvironmentBoundedFixture::module_for(signed, count)
+            assert verify(invalid).count > 0
+        bool_result: Module = EsEnvironmentBoundedFixture::module_for(signed, 2, Type{kind: TypeKind.Bool})
+        assert verify(bool_result).count > 0
+
+
+@test
+def environment_bounded_lowering_preserves_single_ordered_argument_evaluation() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def key() -> sview:\n    return \"ELISASCRIPT_PARITY_ENV_VALUE\"\n\ndef budget() -> i64:\n    return 1048576i64\n\ndef lookup() -> sview:\n    return get_environment_bounded(key(), budget())\n"
+        lowered: LowerResult = EsEnvironmentBoundedFixture::lower(source)
+        assert lowered.issues.count == 0 and verify(lowered.module).count == 0
+        function: Function = lowered.module.functions[2]
+        calls: mutable usize = 0
+        reads: mutable usize = 0
+        name_id: mutable u32 = 0
+        limit_id: mutable u32 = 0
+        for instruction in function.instruction_pool |calls, reads, name_id, limit_id|:
+            if instruction.opcode == Opcode.Call:
+                assert instruction.symbol == ("key" if calls == 0 else "budget")
+                name_id <- instruction.result if calls == 0
+                limit_id <- instruction.result if calls == 1
+                calls <- calls + 1
+            if instruction.opcode == Opcode.GetEnvironment:
+                assert calls == 2 and instruction.integer == 2 and instruction.operand_count == 2
+                assert function.operand_pool[instruction.operand_start.usize()] == name_id
+                assert function.operand_pool[instruction.operand_start.usize() + 1] == limit_id
+                reads <- reads + 1
+            assert instruction.opcode != Opcode.ErrorGuardPush and instruction.opcode != Opcode.ErrorGuardPop
+        assert calls == 2 and reads == 1
+
+
+@test
+def environment_bounded_lowering_rejects_text_budget_instead_of_defaulting() -> void:
+    can Memory.Allocate, Abort.Panic, Unsafe.PointerCast:
+        source: static u8& = "def lookup(name: sview) -> sview:\n    return get_environment_bounded(name, \"fallback\")\n"
+        lowered: LowerResult = EsEnvironmentBoundedFixture::lower(source)
+        assert lowered.issues.count > 0

@@ -3674,6 +3674,18 @@ produces `Bool` presence without reading/copying the variable's value. The verif
 requires the matching result type and rejects unknown modes. An absent variable
 is false in presence mode; invalid names and host/admission failures remain typed
 errors. A present empty value is true, not absence.
+`get_environment_bounded(name, max_bytes)` uses mode 2 with two operands: a
+text name and a signed `i64` payload-byte limit. It produces text, with the same
+`Environment.Read`/`EnvironmentError` rows. Its second argument is a budget, not
+fallback text. Limits are inclusive, exclude the C terminator, and must be in
+`0..67108863`; zero admits only an empty value, never unlimited input. The host
+reads at most `max_bytes + 1` bytes, accepting a terminator at the exact boundary
+and rejecting the next payload byte before allocating/copying owned value bytes.
+Missing names, invalid limits and oversized values raise errors; no truncation
+or default is returned. Name-buffer allocation is separate from the value budget.
+The verifier checks mode-specific arity and signed-i64 limit type; the runtime
+checks the numeric limit before calling libc. Bytecode delegates to the same host
+scanner. These source paths and pure boundary/type fixtures remain unexecuted.
 The scripting-profile `get_environment_or(name, fallback)` and its aliases now
 evaluate the name once, branch on presence, read the value only on the present
 edge, and merge typed text values. The fallback is lazy and selected only for
@@ -3684,7 +3696,7 @@ say so explicitly with `try ... else ...`.
 Presence and value are separate host observations, not an atomic environment
 snapshot. Concurrent setenv/unsetenv/putenv must be excluded during the borrowed
 host reads; disappearance between presence and value is an error, not fallback.
-Both modes and the corrected fallback have source-only verifier/lowering fixtures;
+All three modes and the corrected fallback have source-only verifier/lowering fixtures;
 host, bytecode and public-launcher runtime behavior remain unqualified.
 
 EsEnvironment provides the child-facing data boundary for those operations.
