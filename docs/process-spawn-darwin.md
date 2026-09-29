@@ -306,3 +306,36 @@ cross-namespace integration, pre-launch deadline origin, group identity/native
 qualification, source/bytecode/UI wiring and real failure injection are pending.
 Pure partial-abort/retained-PID/budget fixtures are authored but unrun. No native
 setup, spawn, destroy, signal, compiler or parity process ran during this work.
+
+## Completion routing and fatal cleanup precedence (source-only)
+
+The native coordinator can now project a small completion report containing its
+phase completion, typed invocation failure, setup failure/code and cleanup
+attempted/failed fields. It does not expose raw attribute slots or layout. The
+public report is pure data, not ownership authority; only a fresh private host
+workflow and canonical ownership checks may feed the private interpreter handoff.
+
+`finish_prepared_launch` routes a normal retained Running child to the existing
+waiter, and a Running child with failed/missing/inconsistent cleanup to forced
+terminate/reap followed by Panic. Reaping resolves child capacity, not uncertain
+native-attribute allocation or a broken coordinator invariant. Consequently such
+cleanup failures now remain fatal even after successful child cleanup, instead
+of becoming recoverable Process failures that could repeatedly allocate opaque
+failed slots. Unknown or unresolved Reserved outcomes retain state/capacity and
+never authorize signaling a diagnostic PID. Already Reaped is not a new launch.
+
+Known no-child outcomes are recoverable Process failures only after completed,
+nonfailed cleanup, an unheld paired budget and a matching canonical Released
+Process lease. A forged unheld receipt with an Acquired lease is rejected. Fresh
+typed admission failures require pristine child/budget fields and no cleanup or
+setup side effects. Process failure is not a tool exit code: ordinary tool
+statuses 125/126/127 still flow through actual terminal wait status decoding.
+
+Pure fixtures cover wait/fatal-cleanup/no-child/unknown/reserved/repeated-reap/
+fresh-admission routing and canonical-release checks, but remain uncompiled and
+unrun. The report projection and interpreter dispatcher are authored on either
+side of the namespace boundary; a qualified entry still must connect them while
+retaining owners and excluding mutation. No public launcher includes this seam.
+Native/callback lifetime qualification, deadline origin, group identity, panic/
+cancellation finalization and source/bytecode/tiny UI CC wiring remain open. No
+compiler, fixture, attribute operation, spawn, signal or parity run occurred.

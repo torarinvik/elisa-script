@@ -2,9 +2,36 @@
 # Machine/ProcessWaiter and its host helpers. No default facade includes this.
 include "process_spawn_budget_model.elisa"
 include "../runtime/process_spawn_wait_model.elisa"
+include "../runtime/process_launch_completion_model.elisa"
 
 extend EsIr:
     private:
+        def finish_prepared_launch(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, report: EsProcessLaunchCompletion::Report) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            match EsProcessLaunchCompletion::route(child, budget.held, report):
+                EsProcessLaunchCompletion::Route.Wait:
+                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, false)
+                EsProcessLaunchCompletion::Route.TerminateThenPanic:
+                    return await_spawned_process(machine, child, budget, ledger, owner_token, timeout_micros, true)
+                EsProcessLaunchCompletion::Route.ProcessFailure:
+                    if child.state == EsProcessSpawnOwner::State.NoChild:
+                        catch EsProcessSpawnBudget::require_released_no_child(child, budget, ledger, owner_token):
+                            ok:
+                                pass
+                            error failure:
+                                interpret_set_failure(machine, InterpretFailure.Panic)
+                                return runtime_void()
+                    else:
+                        # Fresh admission failure has no reservation to query.
+                        if budget.resource_id != 0 or budget.owner_token != 0:
+                            interpret_set_failure(machine, InterpretFailure.Panic)
+                            return runtime_void()
+                    interpret_set_failure(machine, InterpretFailure.Process)
+                    return runtime_void()
+                EsProcessLaunchCompletion::Route.Panic:
+                    interpret_set_failure(machine, InterpretFailure.Panic)
+                    return runtime_void()
+
+
         # Preconditions beyond public data: a fresh qualified Darwin spawn
         # succeeded with SETPGROUP/group zero; caller retains exclusive owners,
         # canonical ledger and this machine's usage. Cleanup was attempted and
@@ -49,10 +76,16 @@ extend EsIr:
                     return runtime_void()
             # Do not also call process_resource_complete: the paired release
             # above already consumed the exact same runtime Process counter.
+            if cleanup_failed:
+                # Reaping resolves child capacity, not uncertain attribute
+                # allocation or a broken coordinator/ledger invariant. Do not
+                # permit a recoverable Process handler to retry this launch.
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                return runtime_void()
             if waiter.timed_out:
                 interpret_set_failure(machine, InterpretFailure.Time)
                 return runtime_void()
-            if waiter.failed or cleanup_failed:
+            if waiter.failed:
                 interpret_set_failure(machine, InterpretFailure.Process)
                 return runtime_void()
             status: i64 = try EsProcessSpawnWait::exit_status(waiter.status.i64()) else failure:

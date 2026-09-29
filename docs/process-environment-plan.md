@@ -228,3 +228,10 @@ search can release unused capacity without claiming full PATH exhaustion. Live
 and Unknown outcomes remain caller-held and budgeted. This is still unwired,
 uncompiled source: outer fatal-error/reap integration, panic/cancellation, native
 qualification and actual tiny UI CC parity remain unfinished.
+
+Completion routing now separates normal wait, forced child cleanup then Panic,
+known released no-child Process failure and unresolved fatal outcomes. Cleanup
+uncertainty remains fatal even after child reaping; canonical Released leases
+are required before recoverable no-child classification. Pure report/dispatch
+fixtures are authored but unrun. Namespace entry/retained-owner/native lifetime
+qualification and actual public source/bytecode/UI wiring remain open.
