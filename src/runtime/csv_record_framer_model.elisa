@@ -1,0 +1,151 @@
+# Incremental CSV record framing over caller-supplied byte chunks.
+#
+# Framing delegates every byte to EsCsv, so quoted delimiters/newlines and
+# split CRLF boundaries keep the same semantics as the whole-source parser.
+# Completed records own their raw bytes; only the unfinished record stays in
+# the framer between calls.
+
+module EsCsvRecordFramer:
+    using EsCsv
+    using EsData
+
+    public:
+        const CSV_RECORD_FRAMER_MAX_CHUNK_BYTES: usize = 16384
+
+
+        const enum CsvRecordFramerState of u8:
+            Reading
+            Complete
+            Failed
+
+
+        struct CsvRecordFramer:
+            policy: CsvPolicy
+            limits: DataDecodeLimits
+            max_record_bytes: usize
+            stream: CsvStream
+            current_record: darray[u8] = []
+            records_emitted: usize = 0
+            state: CsvRecordFramerState = CsvRecordFramerState.Reading
+
+
+        error CsvRecordFramerError:
+            InvalidState
+            InvalidLimit
+            InvalidChunkSize
+            RecordByteLimitExceeded
+            NulByte
+            AccountingInvalid
+
+
+    private:
+        def csv_record_framer_min(left: usize, right: usize) -> usize:
+            return left if left < right else right
+
+
+        def csv_record_framer_policy_equal(left: CsvPolicy, right: CsvPolicy) -> bool:
+            return left.separator == right.separator and left.quote == right.quote and left.escape == right.escape and left.record_separator == right.record_separator and left.line_ending == right.line_ending and left.header == right.header and left.trim_unquoted == right.trim_unquoted
+
+
+        def csv_record_framer_limits_equal(left: DataDecodeLimits, right: DataDecodeLimits) -> bool:
+            return left.input_bytes == right.input_bytes and left.tokens == right.tokens and left.depth == right.depth and left.records == right.records and left.fields == right.fields and left.field_bytes == right.field_bytes
+
+
+        def csv_record_framer_append_completed(framer: mutable CsvRecordFramer&, completed: mutable darray[darray[u8]]&) -> void error[CsvRecordFramerError] can[Memory.Allocate, Abort.Panic]:
+            raise CsvRecordFramerError.AccountingInvalid if framer.current_record.count == 0
+            raise CsvRecordFramerError.AccountingInvalid if framer.records_emitted >= framer.limits.records
+            completed.push(framer.current_record)
+            framer.current_record <- []
+            framer.records_emitted <- framer.records_emitted + 1
+
+
+        def csv_record_framer_mark_failed(framer: mutable CsvRecordFramer&) -> void:
+            return if framer.state != CsvRecordFramerState.Reading
+            catch advance_csv_stream(framer.stream, CsvStreamEvent.Fail):
+                ok state:
+                    _ = state
+                error failure:
+                    _ = failure
+            framer.state <- CsvRecordFramerState.Failed
+
+
+        def csv_record_framer_validate(framer: CsvRecordFramer&) -> bool error[DataContractError, CsvContractError, CsvRecordFramerError]:
+            try validate_csv_stream(framer.stream)
+            raise CsvRecordFramerError.InvalidState if framer.state not in {CsvRecordFramerState.Reading, CsvRecordFramerState.Complete, CsvRecordFramerState.Failed}
+            raise CsvRecordFramerError.AccountingInvalid if not csv_record_framer_policy_equal(framer.policy, framer.stream.policy)
+            raise CsvRecordFramerError.AccountingInvalid if not csv_record_framer_limits_equal(framer.limits, framer.stream.limits)
+            raise CsvRecordFramerError.AccountingInvalid if framer.max_record_bytes == 0 or framer.max_record_bytes > framer.limits.input_bytes
+            raise CsvRecordFramerError.AccountingInvalid if framer.current_record.count > framer.max_record_bytes
+            raise CsvRecordFramerError.AccountingInvalid if framer.records_emitted > framer.stream.records
+            if framer.state == CsvRecordFramerState.Reading:
+                raise CsvRecordFramerError.InvalidState if framer.stream.state not in {CsvStreamState.Unquoted, CsvStreamState.Quoted, CsvStreamState.Escaped, CsvStreamState.AfterQuote, CsvStreamState.PendingRecordTerminator}
+                raise CsvRecordFramerError.AccountingInvalid if framer.records_emitted != framer.stream.records
+            elif framer.state == CsvRecordFramerState.Complete:
+                raise CsvRecordFramerError.InvalidState if framer.stream.state != CsvStreamState.Complete
+                raise CsvRecordFramerError.AccountingInvalid if framer.current_record.count != 0 or framer.records_emitted != framer.stream.records
+            return true
+
+
+        def feed_csv_record_framer_impl(framer: mutable CsvRecordFramer&, chunk: sview) -> darray[darray[u8]] error[DataContractError, CsvContractError, CsvRecordFramerError] can[Memory.Allocate, Abort.Panic]:
+            try csv_record_framer_validate(framer)
+            raise CsvRecordFramerError.InvalidState if framer.state != CsvRecordFramerState.Reading
+            raise CsvRecordFramerError.InvalidChunkSize if sview_len(chunk) > CSV_RECORD_FRAMER_MAX_CHUNK_BYTES
+            completed: mutable darray[darray[u8]] = []
+            for offset in 0..<sview_len(chunk) |framer, chunk, completed|:
+                byte: u8 = sview_at(chunk, offset)
+                raise CsvRecordFramerError.NulByte if byte == 0
+                raise CsvRecordFramerError.RecordByteLimitExceeded if framer.current_record.count >= framer.max_record_bytes
+                prior_records: usize = framer.stream.records
+                _ = try advance_csv_stream(framer.stream, CsvStreamEvent.Byte, byte)
+                framer.current_record.push(byte)
+                if framer.stream.records != prior_records:
+                    raise CsvRecordFramerError.AccountingInvalid if framer.stream.records != prior_records + 1
+                    try csv_record_framer_append_completed(framer, completed)
+            return completed
+
+
+        def finish_csv_record_framer_impl(framer: mutable CsvRecordFramer&) -> darray[darray[u8]] error[DataContractError, CsvContractError, CsvRecordFramerError] can[Memory.Allocate, Abort.Panic]:
+            try csv_record_framer_validate(framer)
+            raise CsvRecordFramerError.InvalidState if framer.state != CsvRecordFramerState.Reading
+            completed: mutable darray[darray[u8]] = []
+            prior_records: usize = framer.stream.records
+            _ = try advance_csv_stream(framer.stream, CsvStreamEvent.End)
+            if framer.stream.records != prior_records:
+                raise CsvRecordFramerError.AccountingInvalid if framer.stream.records != prior_records + 1
+                try csv_record_framer_append_completed(framer, completed)
+            raise CsvRecordFramerError.AccountingInvalid if framer.records_emitted != framer.stream.records
+            framer.state <- CsvRecordFramerState.Complete
+            return completed
+
+
+    public:
+        def begin_csv_record_framer(policy: CsvPolicy = CsvPolicy{}, limits: DataDecodeLimits = DataDecodeLimits{}, max_record_bytes: usize = DATA_MAX_INPUT_BYTES) -> CsvRecordFramer error[DataContractError, CsvContractError, CsvRecordFramerError]:
+            try validate_data_decoder(DataDecoder{format: DataFormat.Csv, limits: limits})
+            raise CsvRecordFramerError.InvalidLimit if max_record_bytes == 0 or max_record_bytes > DATA_MAX_INPUT_BYTES
+            effective_record_limit: usize = csv_record_framer_min(max_record_bytes, limits.input_bytes)
+            stream: mutable CsvStream = CsvStream{policy: policy, limits: limits}
+            _ = try advance_csv_stream(stream, CsvStreamEvent.Begin)
+            return CsvRecordFramer{policy: policy, limits: limits, max_record_bytes: effective_record_limit, stream: stream}
+
+
+        def validate_csv_record_framer(framer: CsvRecordFramer&) -> bool error[DataContractError, CsvContractError, CsvRecordFramerError]:
+            try csv_record_framer_validate(framer)
+            return true
+
+
+        def feed_csv_record_framer(framer: mutable CsvRecordFramer&, chunk: sview) -> darray[darray[u8]] error[DataContractError, CsvContractError, CsvRecordFramerError] can[Memory.Allocate, Abort.Panic]:
+            catch feed_csv_record_framer_impl(framer, chunk):
+                ok completed:
+                    return completed
+                error failure:
+                    csv_record_framer_mark_failed(framer)
+                    raise failure
+
+
+        def finish_csv_record_framer(framer: mutable CsvRecordFramer&) -> darray[darray[u8]] error[DataContractError, CsvContractError, CsvRecordFramerError] can[Memory.Allocate, Abort.Panic]:
+            catch finish_csv_record_framer_impl(framer):
+                ok completed:
+                    return completed
+                error failure:
+                    csv_record_framer_mark_failed(framer)
+                    raise failure

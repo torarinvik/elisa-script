@@ -498,6 +498,17 @@ output cap is checked before every byte append. Source fixtures cover parser and
 schema round trips, custom escapes, blank/empty rows, CRLF, and output limits;
 they have not been executed under the compiler safety hold.
 
+`EsCsvRecordFramer` accepts bounded byte chunks and returns completed raw
+record buffers, retaining only the unfinished record between calls. It feeds
+each byte through `EsCsv`, so quoted newlines stay inside a record and a CRLF
+split across chunks is recognized only after its LF arrives. The final call
+flushes an unterminated last row through the same stream contract; empty input
+returns no rows and a terminator-only row remains a zero-field record. The
+per-record and input limits bound retained source bytes. This is a framing
+model, not yet a POSIX file-reader adapter; the caller supplies and reads the
+chunks. The source fixture covers split quoted content, split CRLF, EOF flush,
+and fail-closed malformed input, but has not been run.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate

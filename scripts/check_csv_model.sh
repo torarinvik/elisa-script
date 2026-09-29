@@ -12,8 +12,9 @@ runtime_fixture="$repo_root/test/runtime/csv_empty_input_test.elisa"
 docs="$repo_root/docs/ir.md"
 parser="$repo_root/src/runtime/csv_parser_model.elisa"
 encoder="$repo_root/src/runtime/csv_encode_model.elisa"
+framer="$repo_root/src/runtime/csv_record_framer_model.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -29,7 +30,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -104,6 +105,7 @@ done
 
 rg -Fq '`EsCsv`' "$docs"
 rg -Fq '`EsCsvParser::parse_csv_materializer`' "$docs"
+rg -Fq 'include "../runtime/csv_record_framer_model.elisa"' "$ir"
 for parser_pattern in \
     'module EsCsvParser:' \
     'def parse_csv_materializer(' \
@@ -134,5 +136,27 @@ for encoder_fixture_pattern in \
 done
 
 rg -Fq '`EsCsvEncode::encode_csv_record`' "$docs"
+rg -Fq '`EsCsvRecordFramer::feed_csv_record_framer`' "$docs"
 
-printf 'csv model audit: bounded CSV record encoding, source parsing, quote-aware transitions, and explicit line endings are present\n'
+for framer_pattern in \
+    'module EsCsvRecordFramer:' \
+    'CSV_RECORD_FRAMER_MAX_CHUNK_BYTES' \
+    'def begin_csv_record_framer(' \
+    'def feed_csv_record_framer(' \
+    'def finish_csv_record_framer(' \
+    'CsvStreamEvent.Byte'; do
+    rg -Fq "$framer_pattern" "$framer"
+done
+
+for framer_fixture_pattern in \
+    'csv_record_framer_preserves_quoted_content_and_split_crlf' \
+    'first_chunk.count == 0' \
+    'third_chunk.count == 1' \
+    'final_chunk.count == 1' \
+    'blank_materialized.records[0].field_count == 0' \
+    'record_limit_rejected' \
+    'malformed_framer.state == CsvRecordFramerState.Failed'; do
+    rg -Fq "$framer_fixture_pattern" "$runtime_fixture"
+done
+
+printf 'csv model audit: bounded chunked CSV framing and record encoding, source parsing, and explicit line endings are present\n'

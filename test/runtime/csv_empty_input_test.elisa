@@ -1,6 +1,7 @@
 include "../../src/ir/ir.elisa"
 
 using EsCsv
+using EsCsvRecordFramer
 using EsCsvMaterialize
 using EsCsvParser
 using EsCsvEncode
@@ -197,3 +198,57 @@ def csv_record_encoder_preserves_cells_under_explicit_dialects() -> void:
             assert failure == CsvEncodeError.OutputLimitExceeded
             over_limit_rejected <- true
     assert over_limit_rejected
+
+
+@test
+def csv_record_framer_preserves_quoted_content_and_split_crlf() -> void:
+    policy: CsvPolicy = CsvPolicy{line_ending: CsvLineEndingMode.CrLf}
+    framer: mutable CsvRecordFramer = begin_csv_record_framer(policy)
+    first_chunk: darray[darray[u8]] = feed_csv_record_framer(framer, "left,\"two\n")
+    assert first_chunk.count == 0 and framer.current_record.count != 0
+    second_chunk: darray[darray[u8]] = feed_csv_record_framer(framer, "lines\",right\r")
+    assert second_chunk.count == 0 and framer.stream.state == CsvStreamState.PendingRecordTerminator
+    third_chunk: darray[darray[u8]] = feed_csv_record_framer(framer, "\nlast,row")
+    assert third_chunk.count == 1 and bytes_view(third_chunk[0]) == "left,\"two\nlines\",right\r\n"
+    first_materialized: CsvMaterializer = parse_csv_materializer(bytes_view(third_chunk[0]), policy)
+    assert first_materialized.records.count == 1 and first_materialized.fields.count == 3
+    assert csv_materialized_field(first_materialized, 1) == "\"two\nlines\""
+    final_chunk: darray[darray[u8]] = finish_csv_record_framer(framer)
+    assert final_chunk.count == 1 and bytes_view(final_chunk[0]) == "last,row"
+    final_materialized: CsvMaterializer = parse_csv_materializer(bytes_view(final_chunk[0]), policy)
+    assert final_materialized.records.count == 1 and final_materialized.fields.count == 2
+    assert validate_csv_record_framer(framer) and framer.state == CsvRecordFramerState.Complete
+
+    empty_framer: mutable CsvRecordFramer = begin_csv_record_framer()
+    empty_result: darray[darray[u8]] = finish_csv_record_framer(empty_framer)
+    assert empty_result.count == 0 and empty_framer.stream.records == 0
+    blank_framer: mutable CsvRecordFramer = begin_csv_record_framer()
+    blank_result: darray[darray[u8]] = feed_csv_record_framer(blank_framer, "\n")
+    assert blank_result.count == 1 and bytes_view(blank_result[0]) == "\n"
+    blank_materialized: CsvMaterializer = parse_csv_materializer(bytes_view(blank_result[0]))
+    assert blank_materialized.records.count == 1 and blank_materialized.records[0].field_count == 0
+    small_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: 16}
+    small_framer: CsvRecordFramer = begin_csv_record_framer(limits: small_limits)
+    assert small_framer.max_record_bytes == 16
+
+    bounded_framer: mutable CsvRecordFramer = begin_csv_record_framer(limits: small_limits, max_record_bytes: 2)
+    record_limit_rejected: mutable bool = false
+    catch feed_csv_record_framer(bounded_framer, "abc"):
+        ok unexpected:
+            _ = unexpected
+            assert false
+        error failure:
+            assert failure == CsvRecordFramerError.RecordByteLimitExceeded
+            record_limit_rejected <- true
+    assert record_limit_rejected and bounded_framer.stream.input_bytes == 2
+
+    malformed_framer: mutable CsvRecordFramer = begin_csv_record_framer()
+    malformed_rejected: mutable bool = false
+    catch feed_csv_record_framer(malformed_framer, "a\"b\n"):
+        ok unexpected:
+            _ = unexpected
+            assert false
+        error failure:
+            assert failure == CsvContractError.UnexpectedQuote
+            malformed_rejected <- true
+    assert malformed_rejected and malformed_framer.state == CsvRecordFramerState.Failed
