@@ -252,6 +252,35 @@ No source/native probe, public launcher, script or compiler was executed. This
 does not qualify native path-byte handling or establish shell equivalence, and
 no original script/caller was changed.
 
+## Exact checksum records for literal filenames (source-only correction)
+
+The checksum admission helper previously compared stdout with a raw
+`digest + two spaces + pathname + LF` record. Local `/usr/bin/shasum` 6.02's
+installed source escapes backslashes and LF in filenames and prefixes the
+entire record with a backslash when either occurs. Thus the literal probe alias
+above would have failed fixture setup, before exercising wrapper behavior.
+The source's output loop and mode selection were inspected without running
+the matrix or checksum tool against any fixture.
+
+The helper now requests explicit text mode and separates options from the
+literal target with `--`. A small public `EsChecksumRecord` pure model compares
+the complete observed record against that exact format without allocating,
+decoding UTF-8, unescaping arbitrary input or accepting a digest-prefix match.
+It validates a lowercase 64-byte digest and nonempty/non-NUL filename of at
+most 4096 bytes before inspecting observed bytes. The worst escaped record is
+8260 bytes. Full length, escape marker/order, digest, two spaces, exact filename
+bytes and final LF must all match. Other bytes, including CR and non-UTF-8,
+are unchanged. Binary-mode markers, trailing records and wrong filenames fail.
+
+Pure fixtures cover plain/escaped records, invalid inputs, binary/CR byte
+preservation and maximum expansion; all are authored, uncompiled/unrun. The
+model source is also pinned before and after the suite. This fixes checksum
+record interpretation, not checksum computation or tool provenance: the host
+tool, Perl runtime/dependencies and filesystem/process ABI still need explicit
+qualification. No formatting match proves digest correctness, atomic file
+identity, source execution or parity. Original scripts and callers remain
+unchanged; validation and native/process execution remain disabled.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
