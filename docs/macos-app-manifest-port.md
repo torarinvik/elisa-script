@@ -7,11 +7,20 @@ window title/size. It consumes a sealed JSON document, requires Python's
 last-value-wins duplicate-key behavior, and owns the returned text bytes so
 settings do not borrow storage from the JSON document.
 
+The same model now captures `package.resources` selection (`None`/`null` means
+stage all assets, while an empty array means stage none) and normalizes
+resource/notice paths with POSIX `pathlib.Path`-style separator and dot
+handling. Resource paths reject absolute paths, parent components, and the
+packager's ignored metadata names; duplicate resource paths retain their first
+normalized occurrence. Notice syntax rejects absolute/parent/NUL and duplicate
+paths. Notice containment, symlink, regular-file, and nonempty checks still
+require a filesystem adapter.
+
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
-against the project, resource/notices selection, file staging, linked-library
-closure, `otool`/`install_name_tool`/`codesign`, plist writing, and transactional
-bundle publication are still unported. Python's non-standard `NaN`/`Infinity`
-JSON acceptance is also not represented by the standards-conforming JSON
-front end. The authored model fixture has not been compiled or run under the
-explicit execution hold.
+against the project, resource/notices filesystem checks, file staging,
+linked-library closure, `otool`/`install_name_tool`/`codesign`, plist writing,
+and transactional bundle publication are still unported. Python's non-standard
+`NaN`/`Infinity` JSON acceptance is also not represented by the
+standards-conforming JSON front end. The authored model fixture has not been
+compiled or run under the explicit execution hold.

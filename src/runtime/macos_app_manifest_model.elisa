@@ -17,6 +17,17 @@ module EsMacosAppManifest:
             window_height: usize
 
 
+        const enum MacosResourceMode of u8:
+            AllAssets
+            ExplicitPaths
+
+
+        struct MacosAppPathSelection:
+            resource_mode: MacosResourceMode = MacosResourceMode.AllAssets
+            resource_paths: darray[darray[u8]] = []
+            notice_paths: darray[darray[u8]] = []
+
+
         error MacosAppManifestError:
             InvalidJsonPolicy
             InvalidManifestRoot
@@ -25,6 +36,12 @@ module EsMacosAppManifest:
             InvalidApplicationName
             InvalidOutput
             InvalidWindowDimension
+            InvalidPackage
+            InvalidResourceList
+            InvalidNoticeList
+            InvalidResourcePath
+            DuplicateNoticePath
+            PathLimitExceeded
 
 
     private:
@@ -34,8 +51,24 @@ module EsMacosAppManifest:
             TITLE: sview = "title"
             BUNDLE_ID: sview = "bundle_id"
             OUTPUT: sview = "output"
+            PACKAGE: sview = "package"
+            RESOURCES: sview = "resources"
+            NOTICES: sview = "notices"
             WIDTH: sview = "width"
             HEIGHT: sview = "height"
+
+
+        const module PathLimits:
+            ENTRIES: usize = 256
+
+
+        const module IgnoredNames:
+            GIT: sview = ".git"
+            GITATTRIBUTES: sview = ".gitattributes"
+            GITIGNORE: sview = ".gitignore"
+            DS_STORE: sview = ".DS_Store"
+            PYTHON_CACHE: sview = "__pycache__"
+            THUMBS: sview = "Thumbs.db"
 
 
         const module ApplicationDefaults:
@@ -48,6 +81,7 @@ module EsMacosAppManifest:
             name: usize = JSON_INDEX_NONE
             application: usize = JSON_INDEX_NONE
             output: usize = JSON_INDEX_NONE
+            package: usize = JSON_INDEX_NONE
 
 
         struct ApplicationIndexes:
@@ -55,6 +89,18 @@ module EsMacosAppManifest:
             bundle_id: usize = JSON_INDEX_NONE
             width: usize = JSON_INDEX_NONE
             height: usize = JSON_INDEX_NONE
+
+
+        struct PackageIndexes:
+            resources: usize = JSON_INDEX_NONE
+            notices: usize = JSON_INDEX_NONE
+
+
+        struct NormalizedPath:
+            bytes: darray[u8] = []
+            absolute: bool = false
+            has_parent: bool = false
+            has_ignored_name: bool = false
 
 
         def app_manifest_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
@@ -75,6 +121,20 @@ module EsMacosAppManifest:
                     indexes.application <- member.value_index
                 elif app_manifest_key_equals(document, member, JsonKey::OUTPUT):
                     indexes.output <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::PACKAGE):
+                    indexes.package <- member.value_index
+            return indexes
+
+
+        def app_manifest_package_indexes(document: JsonDocument&, package: JsonNode) -> PackageIndexes:
+            indexes: mutable PackageIndexes = PackageIndexes{}
+            member_end: usize = package.member_start + package.member_count
+            for member_index in package.member_start..<member_end |document, indexes|:
+                member: JsonMember = document.members[member_index]
+                if app_manifest_key_equals(document, member, JsonKey::RESOURCES):
+                    indexes.resources <- member.value_index
+                elif app_manifest_key_equals(document, member, JsonKey::NOTICES):
+                    indexes.notices <- member.value_index
             return indexes
 
 
@@ -110,6 +170,105 @@ module EsMacosAppManifest:
             for offset in 0..<sview_len(value) |value, bytes|:
                 bytes.push(sview_at(value, offset))
             return bytes
+
+
+        def app_manifest_bytes_equal(left: darray[u8], right: darray[u8]) -> bool:
+            return false if left.count != right.count
+            for offset in 0..<left.count |left, right|:
+                return false if left[offset] != right[offset]
+            return true
+
+
+        def app_manifest_path_segment_is_ignored(value: sview, start: usize, end: usize) -> bool:
+            segment: sview = string_view_slice(value, start.i64(), end.i64())
+            return segment == IgnoredNames::GIT or segment == IgnoredNames::GITATTRIBUTES or segment == IgnoredNames::GITIGNORE or segment == IgnoredNames::DS_STORE or segment == IgnoredNames::PYTHON_CACHE or segment == IgnoredNames::THUMBS
+
+
+        def app_manifest_normalize_path(value: sview) -> NormalizedPath can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(value)
+            normalized: mutable NormalizedPath = NormalizedPath{absolute: length != 0 and sview_at(value, 0) == 47}
+            cursor: mutable usize = 0
+            while cursor < length |value, normalized, cursor|:
+                while cursor < length and sview_at(value, cursor) == 47 |value, cursor|:
+                    cursor <- cursor + 1
+                segment_start: usize = cursor
+                while cursor < length and sview_at(value, cursor) != 47 |value, cursor|:
+                    cursor <- cursor + 1
+                segment_end: usize = cursor
+                segment_length: usize = segment_end - segment_start
+                if segment_length != 0 and not (segment_length == 1 and sview_at(value, segment_start) == 46):
+                    normalized.has_parent <- true if segment_length == 2 and sview_at(value, segment_start) == 46 and sview_at(value, segment_start + 1) == 46
+                    normalized.has_ignored_name <- true if app_manifest_path_segment_is_ignored(value, segment_start, segment_end)
+                    if normalized.bytes.count != 0:
+                        normalized.bytes.push(47)
+                    for offset in segment_start..<segment_end |value, normalized|:
+                        normalized.bytes.push(sview_at(value, offset))
+            if normalized.bytes.count == 0:
+                normalized.bytes.push(46)
+            return normalized
+
+
+        def app_manifest_array_item(document: JsonDocument&, array: JsonNode, index: usize) -> usize error[JsonContractError]:
+            raise JsonContractError.InvalidArrayChild if array.kind != JsonNodeKind.Array or index >= array.child_count
+            child_index: usize = array.child_start + index
+            raise JsonContractError.InvalidArrayChild if child_index >= document.children.count
+            return document.children[child_index].value_index
+
+
+        def app_manifest_path_already_selected(paths: darray[darray[u8]], candidate: darray[u8]) -> bool:
+            for previous in paths:
+                return true if app_manifest_bytes_equal(previous, candidate)
+            return false
+
+
+        def app_manifest_resources(document: JsonDocument&, root_indexes: RootIndexes) -> MacosAppPathSelection error[JsonContractError, MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            selection: mutable MacosAppPathSelection = MacosAppPathSelection{}
+            if root_indexes.package == JSON_INDEX_NONE:
+                return selection
+            raise MacosAppManifestError.InvalidPackage if root_indexes.package >= document.nodes.count
+            package: JsonNode = document.nodes[root_indexes.package]
+            return selection if package.kind == JsonNodeKind.Null
+            raise MacosAppManifestError.InvalidPackage if package.kind != JsonNodeKind.Object
+            package_indexes: PackageIndexes = app_manifest_package_indexes(document, package)
+            return selection if package_indexes.resources == JSON_INDEX_NONE
+            raise MacosAppManifestError.InvalidResourceList if package_indexes.resources >= document.nodes.count
+            raw_resources: JsonNode = document.nodes[package_indexes.resources]
+            return selection if raw_resources.kind == JsonNodeKind.Null
+            raise MacosAppManifestError.InvalidResourceList if raw_resources.kind != JsonNodeKind.Array
+            raise MacosAppManifestError.PathLimitExceeded if raw_resources.child_count > PathLimits::ENTRIES
+            selection.resource_mode <- MacosResourceMode.ExplicitPaths
+            for index in 0..<raw_resources.child_count |document, raw_resources, selection|:
+                entry_index: usize = try app_manifest_array_item(document, raw_resources, index)
+                entry: sview = try app_manifest_text_view(document, entry_index)
+                raise MacosAppManifestError.InvalidResourcePath if not app_manifest_text_has_non_whitespace(entry)
+                relative: NormalizedPath = app_manifest_normalize_path(entry)
+                raise MacosAppManifestError.InvalidResourcePath if relative.absolute or relative.has_parent or relative.has_ignored_name
+                continue if app_manifest_path_already_selected(selection.resource_paths, relative.bytes)
+                selection.resource_paths.push(relative.bytes)
+            return selection
+
+
+        def app_manifest_notices(document: JsonDocument&, root_indexes: RootIndexes) -> darray[darray[u8]] error[JsonContractError, MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            paths: mutable darray[darray[u8]] = []
+            return paths if root_indexes.package == JSON_INDEX_NONE
+            raise MacosAppManifestError.InvalidPackage if root_indexes.package >= document.nodes.count
+            package: JsonNode = document.nodes[root_indexes.package]
+            raise MacosAppManifestError.InvalidPackage if package.kind != JsonNodeKind.Object
+            package_indexes: PackageIndexes = app_manifest_package_indexes(document, package)
+            return paths if package_indexes.notices == JSON_INDEX_NONE
+            raise MacosAppManifestError.InvalidNoticeList if package_indexes.notices >= document.nodes.count
+            raw_notices: JsonNode = document.nodes[package_indexes.notices]
+            raise MacosAppManifestError.InvalidNoticeList if raw_notices.kind != JsonNodeKind.Array
+            raise MacosAppManifestError.PathLimitExceeded if raw_notices.child_count > PathLimits::ENTRIES
+            for index in 0..<raw_notices.child_count |document, raw_notices, paths|:
+                entry_index: usize = try app_manifest_array_item(document, raw_notices, index)
+                entry: sview = try app_manifest_text_view(document, entry_index)
+                raise MacosAppManifestError.InvalidNoticeList if sview_len(entry) == 0 or sview_contains_byte(entry, 0)
+                relative: NormalizedPath = app_manifest_normalize_path(entry)
+                raise MacosAppManifestError.InvalidNoticeList if relative.absolute or relative.has_parent
+                raise MacosAppManifestError.DuplicateNoticePath if app_manifest_path_already_selected(paths, relative.bytes)
+                paths.push(relative.bytes)
+            return paths
 
 
         def app_manifest_byte_allowed_in_name(byte: u8) -> bool:
@@ -203,6 +362,25 @@ module EsMacosAppManifest:
 
 
     public:
+        # Mirrors manifest_resources() followed by manifest_notices(). The
+        # returned relative paths are pathlib-normalized lexical paths; notice
+        # existence, symlink, containment, and nonempty-file checks still
+        # belong to the filesystem adapter.
+        def decode_macos_app_path_selection(document: JsonDocument&) -> MacosAppPathSelection error[JsonContractError, MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise JsonContractError.InvalidDocumentState if document.state != JsonDocumentState.Sealed
+            raise MacosAppManifestError.InvalidJsonPolicy if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast or document.policy.trailing_commas != JsonTrailingCommaPolicy.Reject or document.policy.allow_comments
+            raise MacosAppManifestError.InvalidManifestRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise MacosAppManifestError.InvalidManifestRoot if root_index >= document.nodes.count
+            root: JsonNode = document.nodes[root_index]
+            raise MacosAppManifestError.InvalidManifestRoot if root.kind != JsonNodeKind.Object
+            root_indexes: RootIndexes = app_manifest_root_indexes(document, root)
+            selection: mutable MacosAppPathSelection = try app_manifest_resources(document, root_indexes)
+            selection.notice_paths <- try app_manifest_notices(document, root_indexes)
+            return selection
+
+
         # Mirrors manifest_application() and manifest_window() in the Python
         # packager. output_setting remains unresolved for the path adapter.
         def decode_macos_app_settings(document: JsonDocument&, project_name: sview) -> MacosAppSettings error[JsonContractError, MacosAppManifestError] can[Memory.Allocate, Abort.Panic]:
