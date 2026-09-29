@@ -784,3 +784,27 @@ sleeps and cleanup still need separately authorized contained qualification.
 Retrying usleep requests the full interval again, not a measured remainder, so
 this does not promise exact elapsed duration or a hard cleanup deadline. No
 compiler, test, host sleep or process ran; original scripts/callers are unchanged.
+
+## Wait-return errno admission (source-only)
+
+Interpreter polling, termination grace and final reap now reject unsupported
+negative wait returns before reading errno. Only native -1 may sample the host
+slot and classify EINTR versus ownership loss/other errors. Bridge rejection
+and other negative values mark the interpreter waiter failed/ownership-uncertain
+and stop further wait/signal attempts. The existing resource-completion path
+therefore cannot publish a normal result or retire an unconfirmed child slot.
+
+The differential runner applies the same result gate in its main poll and both
+cleanup wait paths. Its main path closes the parent capture streams and raises
+Process without signalling the uncertain PID; cleanup stops further signalling
+or reaping after the unsupported observation. Any earlier cleanup signals were
+sent while ownership was still retained. No unsupported return is turned into
+absence, a confirmed reap or permission to restart the workflow.
+
+Pure scalar/wait fixtures cover unexpected negative values paired with stale
+EINTR, ECHILD and other errno values. They do not perform a native wait or inject
+faults into the host adapter. A retained uncertain child can still be live:
+closing parent streams or returning an error is not quiescence, resource release
+or containment. Native ABI/ownership/cleanup qualification and the external
+process-tree supervisor remain required. No compiler, fixture, wait, signal or
+parity process ran; original scripts and callers remain unchanged.
