@@ -1,0 +1,230 @@
+# Bounded, read-only Elisascript port of check_runtime_limits.sh.
+# The audit examines a fixed repository-relative source set and never launches
+# a compiler, shell, or search utility.
+
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+module EsRuntimeLimitAudit:
+    private:
+        const module Limits:
+            SOURCE_BYTES_PER_FILE: usize = 1048576
+            TOTAL_SOURCE_BYTES: usize = 2097152
+
+
+        const module Messages:
+            MISSING_FILE: sview = "runtime limit audit: missing file: "
+            SOURCE_LIMIT: sview = "runtime limit audit: source exceeds audit limit: "
+            SOURCE_TOTAL_LIMIT: sview = "runtime limit audit: aggregate source exceeds audit limit"
+            SOURCE_READ: sview = "runtime limit audit: unable to read source: "
+            SHARED_CONSTANT: sview = "runtime limit audit: shared constant is missing or changed: "
+            BACKEND_VALUE_EQUAL: sview = "runtime limit audit: backend-local shared resource constant leaked back in"
+            BACKEND_CALL_DEPTH: sview = "runtime limit audit: backend-local execution depth constant leaked back in"
+            INTERPRETER_CALL_DEPTH: sview = "runtime limit audit: interpreter does not consume the shared depth limit"
+            BYTECODE_CALL_DEPTH: sview = "runtime limit audit: direct bytecode does not consume the shared depth limit"
+            INTERPRETER_EQUAL_DEPTH: sview = "runtime limit audit: interpreter does not consume the shared equality depth limit"
+            BYTECODE_EQUAL_DEPTH: sview = "runtime limit audit: direct bytecode does not consume the shared equality depth limit"
+            INTERPRETER_ERROR_DEPTH: sview = "runtime limit audit: interpreter does not consume the shared error-guard depth limit"
+            BYTECODE_ERROR_DEPTH: sview = "runtime limit audit: direct bytecode does not consume the shared error-guard depth limit"
+            SHIFT_GUARD: sview = "runtime limit audit: direct bytecode shift guard is not width-aware"
+            SHIFT_FIXTURE: sview = "runtime limit audit: width-specific direct-bytecode shift regression is missing"
+            DOCUMENTATION: sview = "runtime limit audit: IR documentation omits the shared call-depth contract"
+            SAFE_GUARD: sview = "runtime limit audit: missing ordered budget guard: "
+
+
+        error ReadFailure:
+            Missing
+            LimitExceeded
+            AggregateLimitExceeded
+            ReadFailed
+
+
+        def write_diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def source_has_line(source: sview, expected: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            for line in split_lines(source):
+                return true if line == expected
+            return false
+
+
+        def source_contains_any(source: sview, needles: darray[sview]) -> bool:
+            for needle in needles:
+                return true if source.index(needle) >= 0
+            return false
+
+
+        def first_missing(source: sview, needles: darray[sview]) -> sview:
+            for needle in needles:
+                return needle if source.index(needle) < 0
+            return ""
+
+
+        def read_source(input_path: Path, remaining_total_bytes: usize) -> sview error[ReadFailure] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise ReadFailure.Missing if not is_file(input_path)
+            source_size: usize = try file_size(input_path) else err:
+                raise ReadFailure.Missing
+            raise ReadFailure.LimitExceeded if source_size > Limits::SOURCE_BYTES_PER_FILE
+            raise ReadFailure.AggregateLimitExceeded if source_size > remaining_total_bytes
+            read_limit: usize = Limits::SOURCE_BYTES_PER_FILE if remaining_total_bytes > Limits::SOURCE_BYTES_PER_FILE else remaining_total_bytes
+            catch EsBoundedText::read_utf8(input_path, read_limit):
+                ok contents:
+                    return contents
+                error failure:
+                    if failure == EsBoundedText::ReadError.LimitExceeded:
+                        raise ReadFailure.AggregateLimitExceeded if read_limit < Limits::SOURCE_BYTES_PER_FILE
+                        raise ReadFailure.LimitExceeded
+                    raise ReadFailure.ReadFailed
+
+
+        def report_read_failure(input_path: Path, failure: ReadFailure) -> void can[Console.Write, Console.Format, Memory.Allocate, Abort.Panic]:
+            if failure == ReadFailure.LimitExceeded:
+                write_diagnostic(Messages::SOURCE_LIMIT + f"{input_path}")
+            elif failure == ReadFailure.AggregateLimitExceeded:
+                write_diagnostic(Messages::SOURCE_TOTAL_LIMIT)
+            elif failure == ReadFailure.Missing:
+                write_diagnostic(Messages::MISSING_FILE + f"{input_path}")
+            else:
+                write_diagnostic(Messages::SOURCE_READ + f"{input_path}")
+
+
+        def source_files(repository_root: Path) -> darray[Path] can[Memory.Allocate, Abort.Panic]:
+            return [
+                repository_root.joinpath("src").joinpath("ir").joinpath("runtime_model.elisa"),
+                repository_root.joinpath("src").joinpath("ir").joinpath("interpret.elisa"),
+                repository_root.joinpath("src").joinpath("bytecode").joinpath("bytecode.elisa"),
+                repository_root.joinpath("test").joinpath("ir").joinpath("elisascript_bytecode_test.elisa"),
+                repository_root.joinpath("docs").joinpath("ir.md")
+            ]
+
+
+        def shared_constants_error(runtime_source: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            shared_constants: darray[sview] = [
+                "ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH: usize = 4096",
+                "ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH: usize = 128",
+                "ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH: usize = 4096"
+            ]
+            for constant in shared_constants:
+                expected_line: sview = "        const " + constant
+                if not source_has_line(runtime_source, expected_line):
+                    return Messages::SHARED_CONSTANT + constant
+
+            return ""
+
+
+        def safe_guards_error(runtime_source: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            safe_guards: darray[sview] = [
+                "usage.elapsed_micros > policy.elapsed_micros",
+                "amount > policy.elapsed_micros - usage.elapsed_micros",
+                "usage.memory_bytes > policy.memory_bytes",
+                "amount > policy.memory_bytes - usage.memory_bytes",
+                "usage.output_bytes > policy.output_bytes",
+                "amount > policy.output_bytes - usage.output_bytes",
+                "usage.regex_work > policy.regex_work",
+                "amount > policy.regex_work - usage.regex_work",
+                "usage.retained_traces > policy.retained_traces",
+                "amount > policy.retained_traces - usage.retained_traces"
+            ]
+            missing_guard: sview = first_missing(runtime_source, safe_guards)
+            return Messages::SAFE_GUARD + missing_guard if missing_guard != ""
+            return ""
+
+
+        def require_text(source: sview, required: darray[sview], message: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write]:
+            missing: sview = first_missing(source, required)
+            if missing != "":
+                write_diagnostic(message)
+                return false
+            return true
+
+
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, File.Read, Unsafe.PointerCast]:
+            paths: darray[Path] = source_files(repository_root)
+            for input_path in paths:
+                if not is_file(input_path):
+                    write_diagnostic(Messages::MISSING_FILE + f"{input_path}")
+                    return 2i64
+
+            sources: mutable darray[sview] = []
+            sources.reserve(paths.count)
+            total_source_bytes: mutable usize = 0
+            for input_path in paths:
+                remaining_total_bytes: usize = Limits::TOTAL_SOURCE_BYTES - total_source_bytes
+                source_size: usize = try file_size(input_path) else err:
+                    write_diagnostic(Messages::SOURCE_READ + f"{input_path}")
+                    return 1i64
+                if source_size > Limits::SOURCE_BYTES_PER_FILE:
+                    write_diagnostic(Messages::SOURCE_LIMIT + f"{input_path}")
+                    return 1i64
+                if source_size > remaining_total_bytes:
+                    write_diagnostic(Messages::SOURCE_TOTAL_LIMIT)
+                    return 1i64
+                source: sview = try read_source(input_path, remaining_total_bytes) else err:
+                    report_read_failure(input_path, err)
+                    return 2i64 if err == ReadFailure.Missing else 1i64
+                total_source_bytes <- total_source_bytes + source_size
+                sources.push(source)
+
+            runtime_source: sview = sources[0]
+            interpreter_source: sview = sources[1]
+            bytecode_source: sview = sources[2]
+            bytecode_fixture: sview = sources[3]
+            docs_source: sview = sources[4]
+
+            contract_error: sview = shared_constants_error(runtime_source)
+            if contract_error != "":
+                write_diagnostic(contract_error)
+                return 1i64
+
+            backend_value_equal_names: darray[sview] = [
+                "INTERPRET_MAX_VALUE_EQUAL_DEPTH",
+                "BYTECODE_MAX_VALUE_EQUAL_DEPTH",
+                "BYTECODE_MAX_ERROR_GUARD_DEPTH"
+            ]
+            if source_contains_any(interpreter_source, backend_value_equal_names) or source_contains_any(bytecode_source, backend_value_equal_names):
+                write_diagnostic(Messages::BACKEND_VALUE_EQUAL)
+                return 1i64
+
+            backend_call_depth_names: darray[sview] = [
+                "INTERPRET_MAX_EXECUTION_CALL_DEPTH",
+                "BYTECODE_MAX_EXECUTION_CALL_DEPTH"
+            ]
+            if source_contains_any(interpreter_source, backend_call_depth_names) or source_contains_any(bytecode_source, backend_call_depth_names):
+                write_diagnostic(Messages::BACKEND_CALL_DEPTH)
+                return 1i64
+
+            return 1i64 if not require_text(interpreter_source, ["ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH"], Messages::INTERPRETER_CALL_DEPTH)
+            return 1i64 if not require_text(bytecode_source, ["ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH"], Messages::BYTECODE_CALL_DEPTH)
+            return 1i64 if not require_text(interpreter_source, ["ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH"], Messages::INTERPRETER_EQUAL_DEPTH)
+            return 1i64 if not require_text(bytecode_source, ["ES_RUNTIME_DEFAULT_MAX_VALUE_EQUAL_DEPTH"], Messages::BYTECODE_EQUAL_DEPTH)
+            return 1i64 if not require_text(interpreter_source, ["ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH"], Messages::INTERPRETER_ERROR_DEPTH)
+            return 1i64 if not require_text(bytecode_source, ["ES_RUNTIME_DEFAULT_MAX_ERROR_GUARD_DEPTH"], Messages::BYTECODE_ERROR_DEPTH)
+            return 1i64 if not require_text(bytecode_source, ["right.integer >= instruction.result_type.bits.i64()"], Messages::SHIFT_GUARD)
+            return 1i64 if not require_text(bytecode_fixture, ["invalid_u8_shift", "failure == InterpretError.InvalidShift"], Messages::SHIFT_FIXTURE)
+            return 1i64 if not require_text(docs_source, ["ES_RUNTIME_DEFAULT_MAX_EXECUTION_CALL_DEPTH"], Messages::DOCUMENTATION)
+            if not source_contains_any(docs_source, ["host-recursive", "host recursive", "handler/error-stack depth"]):
+                write_diagnostic(Messages::DOCUMENTATION)
+                return 1i64
+
+            safe_guard_error: sview = safe_guards_error(runtime_source)
+            if safe_guard_error != "":
+                write_diagnostic(safe_guard_error)
+                return 1i64
+
+            print("runtime limit audit: interpreter and direct bytecode share execution depth contract")
+            return 0i64
+
+    public:
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, File.Read, Unsafe.PointerCast]:
+            script_directory: Path = try path_real(path_parent(Script::source_path())) else err:
+                write_diagnostic("runtime limit audit: unable to resolve script directory")
+                return 1i64
+            repository_root: Path = script_directory.parent()
+            return run_root(repository_root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, File.Read, Unsafe.PointerCast]:
+    _ = arguments
+    return EsRuntimeLimitAudit::run_default()
