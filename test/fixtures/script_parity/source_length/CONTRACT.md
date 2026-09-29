@@ -236,10 +236,10 @@ ran; the harness is not a sandbox for untrusted children.
 
 The candidate has no explicit per-file, aggregate-byte, file-count, entry-count,
 directory-depth, or enumerated-path-byte ceiling. It reads source contents with
-one fixed 16 KiB buffer, while discovery retains directory and matching-path
-metadata until deterministic sorting/diagnostic collection is complete. This is
-not a hard process RSS guarantee; the isolated parity harness still needs its
-separate external RSS/time containment.
+one fixed 16 KiB buffer and walks directories with a depth-first pending-path
+stack; only matching source paths are retained for deterministic ordering and
+diagnostic collection. This is not a hard process RSS guarantee; the isolated
+parity harness still needs its separate external RSS/time containment.
 
 Unreadable, changing, non-regular, and invalid UTF-8 inputs produce a
 candidate-specific diagnostic and status 2, not Python's traceback/status 1.
