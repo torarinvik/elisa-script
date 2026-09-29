@@ -1486,3 +1486,14 @@ This is a work bound, not a monotonic wall-clock deadline. Host syscalls, sleeps
 setup/cleanup and capture can still block or overrun; verified external time/RSS
 containment and native ownership/ABI qualification remain prerequisites. No
 compiler, wait, signal, process, fixture or parity execution occurred.
+
+The sleep retry helper now follows the same result-before-errno discipline.
+Previously every nonzero usleep return read errno and could retry on a stale
+EINTR, including a bridge rejection or unexpected positive return. It now
+borrows the C-width errno location before its retry loop, accepts zero as
+success, and samples the borrowed slot only for native -1. Other returns fail
+without an errno read; the existing consecutive retry bound is unchanged.
+Pure scalar fixtures add unexpected positive and unsigned-looking 32-bit -1
+boundaries. These fixtures and the sleep path remain uncompiled/unrun; native
+result widening, errno lifetime, actual interrupted sleep and cleanup still
+need qualification. No compiler, sleep, signal, process or parity run occurred.
