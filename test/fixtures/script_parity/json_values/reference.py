@@ -11,6 +11,11 @@ SOURCE = (
     '"nested":{"label":"blåbær","items":[true,null,4]},'
     '"duplicate":"first","duplicate":"last"}'
 )
+JSON_LINES_SOURCE = (
+    '{"id":1,"name":"blå"}\n'
+    '{"id":2,"ok":true}\n'
+    '{"id":3,"payload":null}'
+)
 
 
 def main():
@@ -29,6 +34,11 @@ def main():
         f"duplicate={value['duplicate']}",
         "json="
         + json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+        "jsonl="
+        + "|".join(
+            json.dumps(json.loads(line), ensure_ascii=False, separators=(",", ":"))
+            for line in JSON_LINES_SOURCE.splitlines()
+        ),
     ]
     sys.stdout.write("\n".join(lines) + "\n")
 

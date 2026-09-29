@@ -25,6 +25,8 @@ fixture="$repo_root/test/ir/elisascript_ir_test.elisa"
 encoder="$repo_root/src/runtime/json_encode_model.elisa"
 lexer="$repo_root/src/runtime/json_lexer_model.elisa"
 parser="$repo_root/src/runtime/json_parse_model.elisa"
+json_stream="$repo_root/src/runtime/json_stream_model.elisa"
+json_lines_parser="$repo_root/src/runtime/jsonl_parse_model.elisa"
 docs="$repo_root/docs/ir.md"
 parity_reference="$repo_root/test/fixtures/script_parity/json_values/reference.py"
 parity_candidate="$repo_root/test/fixtures/script_parity/json_values/candidate.elisascript"
@@ -33,7 +35,7 @@ parity_contract="$repo_root/test/fixtures/script_parity/json_values/CONTRACT.md"
 parity_launcher="$repo_root/test/script_parity/json_values_launcher_test.elisascript"
 
 total_source_bytes=0
-for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$docs" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
+for required_file in "$model" "$ir" "$fixture" "$encoder" "$lexer" "$parser" "$json_stream" "$json_lines_parser" "$docs" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
     [[ -f "$required_file" && -r "$required_file" ]] || { printf 'json model audit: missing %s\n' "$required_file" >&2; exit 1; }
     size_output="$(wc -c < "$required_file")"
     source_size="${size_output//[[:space:]]/}"
@@ -79,6 +81,22 @@ for parser_contract in \
     'JsonParseError.TrailingComma' \
     'JsonParseError.MultipleRoots'; do
     rg -Fq "$parser_contract" "$parser"
+done
+
+for json_stream_contract in \
+    'module EsJsonStream:' \
+    'struct JsonStreamPolicy:' \
+    'record_boundary: JsonLineBoundaryMode' \
+    'BalancedContainers'; do
+    rg -Fq "$json_stream_contract" "$json_stream"
+done
+
+for json_lines_parser_contract in \
+    'module EsJsonLinesParse:' \
+    'def begin_json_lines_reader(' \
+    'def next_json_lines_document(' \
+    'JsonLinesParseError'; do
+    rg -Fq "$json_lines_parser_contract" "$json_lines_parser"
 done
 
 for encoder_contract in \
@@ -262,7 +280,9 @@ rg -Fq '`EsJson` is the namespaced owned-document boundary' "$docs"
 for parity_reference_pattern in \
     'Python json oracle' \
     'json.loads(SOURCE)' \
-    "value['duplicate']"; do
+    "value['duplicate']" \
+    'json.loads(line)' \
+    'JSON_LINES_SOURCE.splitlines()'; do
     rg -Fq "$parity_reference_pattern" "$parity_reference"
 done
 
@@ -270,6 +290,9 @@ for parity_candidate_pattern in \
     'module EsJsonValuesParityCandidate:' \
     'parse_json_document(lexed)' \
     'encode_json_root(document, 0)' \
+    'begin_json_lines_reader(Inputs::JSON_LINES_SOURCE)' \
+    'next_json_lines_document(reader)' \
+    'encode_json_root(result.document, 0)' \
     'JsonDuplicateKeyPolicy.KeepLast' \
     'JSON_INDEX_NONE' \
     'blåbær'; do
@@ -277,10 +300,12 @@ for parity_candidate_pattern in \
 done
 
 for parity_launcher_pattern in \
-    'json_value_projection_matches_python_reference_and_golden' \
+    'json_values_and_jsonl_match_python_reference_and_golden' \
     'ELISASCRIPT_VALIDATION_REAUTHORIZED' \
     'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' \
     'SourceHashes::JSON_PARSER' \
+    'SourceHashes::JSON_STREAM' \
+    'SourceHashes::JSON_LINES_PARSER' \
     'SourceHashes::JSON_ENCODER'; do
     rg -Fq "$parity_launcher_pattern" "$parity_launcher"
 done
@@ -291,12 +316,14 @@ for parity_expected_pattern in \
     'nullable=null' \
     'item.2=4' \
     'duplicate=last' \
-    'json={"big":1234567890123456789012345678901234567890,'; do
+    'json={"big":1234567890123456789012345678901234567890,' \
+    'jsonl={"id":1'; do
     rg -Fq "$parity_expected_pattern" "$parity_expected"
 done
 
 rg -Fq 'compact UTF-8 JSON' "$parity_contract"
+rg -Fq 'unterminated final record' "$parity_contract"
 rg -Fq 'not a claim of full Python' "$parity_contract"
 rg -Fq '`test/script_parity/json_values_launcher_test.elisascript`' "$docs"
 
-printf 'json model audit: namespaced owned scalar/key arenas, lifecycle contracts, and Python JSON value/encode parity fixture are present\n'
+printf 'json model audit: namespaced owned scalar/key arenas, lifecycle contracts, and Python JSON value/JSON Lines parity fixture are present\n'

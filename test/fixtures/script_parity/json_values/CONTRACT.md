@@ -7,9 +7,11 @@ compact UTF-8 JSON. It covers an integer larger than
 missing member, and Python's default last-value-wins behavior for duplicate
 object keys. The output check also verifies duplicate normalization, insertion
 order, no-whitespace separators, exact integer spelling, and unescaped UTF-8.
-Both process output and a checked-in golden are compared.
+The JSON Lines slice parses multiple records, including an unterminated final
+record, and compares compact serialization in record order. Both process
+output and a checked-in golden are compared.
 
 This is a deliberately narrow behavior slice, not a claim of full Python
 `json` compatibility. Numeric conversion/formatting beyond the exact integer
-lexeme, custom decoder hooks, non-finite numbers, error wording, and streaming
-JSONL behavior remain separate acceptance work.
+lexeme, custom decoder hooks, non-finite numbers, and error wording remain
+separate acceptance work.
