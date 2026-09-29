@@ -71,6 +71,16 @@ identity. The companion returns a generic status 1 on a typed process error;
 that must not be confused with a legacy child returning after exec failed.
 No full shell equivalence or accepted migration is claimed.
 
+The current interpreter's `run_process` implementation forks, calls `execvp`
+in the child, waits in the interpreter, and returns an integer status. That is
+not process replacement: a shell wrapper using `exec` becomes the tool process,
+so its parent observes the tool's signal termination directly, while the
+Elisascript interpreter currently survives and converts a signaled child into a
+numeric status. A script-facing, terminal `Process.Replace` capability and an
+authorized host entry are therefore prerequisites for this wrapper's process
+identity/signal contract; an ordinary embedded test must never replace its own
+runner process accidentally.
+
 ## Returned exec failures (source-only correction)
 
 The legacy interpreter previously exited 127 after every returned execvp call,
