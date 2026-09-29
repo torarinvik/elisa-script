@@ -1,6 +1,7 @@
 include "./runtime_model.elisa"
 include "../runtime/temporary_path_model.elisa"
 include "../runtime/environment_read_budget_model.elisa"
+include "../runtime/process_spawn_wait_model.elisa"
 
 
 error InterpretError:
@@ -5481,13 +5482,16 @@ extend EsIr:
         # an unrelated process group. Both signaling and the blocking reap
         # tolerate bounded EINTR interruptions.
         def process_wait_terminate(waiter: mutable ProcessWaiter&) -> void can[Blocking.IO]:
+            if waiter.reaped:
+                process_wait_terminate_group(waiter)
+                return
             process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_TERM) if waiter.group_ready
             process_wait_signal(waiter.pid, ProcessWait::SIGNAL_TERM)
             grace_polls: mutable u64 = 0
             leader_reaped: mutable bool = false
             while grace_polls < ProcessWait::TERM_GRACE_POLLS:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)
-                if waited == waiter.pid or waited > 0:
+                if EsProcessSpawnWait::exact_reap(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
                     leader_reaped <- true
                     waiter.reaped <- true
                     break
@@ -5502,9 +5506,14 @@ extend EsIr:
             retries: mutable usize = 0
             while retries <= PosixRetry::EINTR_RETRIES:
                 waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, 0)
-                if waited == waiter.pid or waited > 0:
+                if EsProcessSpawnWait::exact_reap(waited.i64(), waiter.pid.i64(), waiter.status.i64()):
                     waiter.reaped <- true
                     return
+                if waited == waiter.pid:
+                    # A traced stop/continue report is not terminal reaping.
+                    # Recheck after KILL within the same bounded retry budget.
+                    retries <- retries + 1
+                    continue
                 return if waited >= 0
                 errno: mutable int& = elisascript_posix_errno()
                 return if errno[0] != EsRuntime::DarwinErrno::EINTR
@@ -5720,6 +5729,10 @@ extend EsIr:
                 return ProcessWaitState.Error
             waited: int = elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)
             if waited == waiter.pid:
+                if not EsProcessSpawnWait::terminal(waiter.status.i64()):
+                    waiter.failed <- true
+                    process_wait_terminate(waiter)
+                    return ProcessWaitState.Error
                 waiter.reaped <- true
                 waiter.eintr_retries <- 0
                 if process_wait_deadline_reached(waiter):

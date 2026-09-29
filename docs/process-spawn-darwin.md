@@ -230,3 +230,41 @@ wiring are still absent. No runtime includes the new native seam. The authored
 pure fixtures cover zero capacity, duplicate-ID rollback, live-child retention,
 exact reap, stale release, unstarted release, unknown outcomes and wrong owners;
 they remain uncompiled/unrun. No child, native attribute or waiter was executed.
+
+## Existing waiter handoff and terminal-status checks (source-only)
+
+The existing interpreter waiter had treated any positive cleanup wait result as
+reaping and any exact-PID poll result as terminal. The authored correction now
+requires an exact PID and a terminal status before setting reaped. Darwin traced
+stop/continue reports are not reaps; cleanup keeps a bounded retry after KILL,
+and nonterminal poll reports enter failed cleanup rather than publish an exit
+code or release capacity. Calling live-child cleanup on an already reaped waiter
+now delegates only to group cleanup, without signaling its reusable direct PID.
+
+The small `EsProcessSpawnWait` model admits the selected Darwin UNIX03 profile:
+sixteen-bit status words, ordinary exit bytes and signals 1..31 with optional
+core flag. Stop/continue and malformed/unsupported encodings are not terminal.
+This conservative profile is derived from the installed SDK sys/wait.h and
+sys/signal.h, not claimed as universal POSIX encoding. Literal fixtures cover
+tool statuses 125/126/127, signals/core, stop/continue, malformed words and PID
+mismatch. They are authored, not compiled or executed.
+
+`src/ir/process_spawn_wait_adapter.elisa` adds an unwired private EsIr handoff to
+the existing poll/deadline/group/terminate helpers, not a second polling loop.
+It checks the held canonical Running reservation before any signal, retains
+the PID/budget on ownership failure, and forces terminate/reap after reported
+attribute cleanup failure. Confirmed terminal reaping is captured before
+fallible lease close. The paired counter is released exactly once; the adapter
+does not also call the legacy process_resource_complete release. Unreaped or
+accounting-inconsistent outcomes become Panic, preventing recoverable launches
+while capacity remains held. Completed timeout/process failures are classified
+after cleanup and release; normal status comes from the same strict wait model.
+
+The adapter requires the interpreter definition context and fresh qualified
+Darwin SETPGROUP/group-zero spawn evidence, not a user-supplied PID or forged
+model record. No facade or public launcher includes it. The full launch/cleanup/
+wait coordinator, pre-launch deadline origin, source/bytecode/UI wiring and native
+qualification remain open. Existing group-quiescence and post-reap group-identity
+assumptions still need host-level scrutiny; this change does not prove group-ID
+reuse safety or escaped-descendant containment. Compiler/native/debugger/parity
+execution remained disabled, and unrelated interpreter changes were preserved.

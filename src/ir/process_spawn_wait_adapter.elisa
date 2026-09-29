@@ -1,0 +1,61 @@
+# Unwired private waiter handoff. Include only after interpret.elisa defines
+# Machine/ProcessWaiter and its host helpers. No default facade includes this.
+include "process_spawn_budget_model.elisa"
+include "../runtime/process_spawn_wait_model.elisa"
+
+extend EsIr:
+    private:
+        # Preconditions beyond public data: a fresh qualified Darwin spawn
+        # succeeded with SETPGROUP/group zero; caller retains exclusive owners,
+        # canonical ledger and this machine's usage. Cleanup was attempted and
+        # any error/uncertain outcome is represented by cleanup_failed. Never
+        # call with a diagnostic PID from an Unknown spawn observation.
+        def await_spawned_process(machine: mutable Machine&, child: mutable EsProcessSpawnOwner::Owner&, budget: mutable EsProcessSpawnBudget::Reservation&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64, timeout_micros: u64, cleanup_failed: bool) -> RuntimeValue can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            catch EsProcessSpawnBudget::require_running(child, budget, ledger, machine.resource_usage, owner_token):
+                ok:
+                    pass
+                error failure:
+                    # Do not signal a PID whose canonical ownership failed.
+                    # Retain state/capacity and prevent recoverable continuation.
+                    interpret_set_failure(machine, InterpretFailure.Panic)
+                    return runtime_void()
+            waiter: mutable ProcessWaiter = ProcessWaiter{pid: child.pid.int(), group_ready: true, status: 0, failed: cleanup_failed, timeout_micros: timeout_micros}
+            if cleanup_failed:
+                # A post-spawn attribute error must not throw away a live PID.
+                process_wait_terminate(waiter)
+            else:
+                machine over process_wait_next(waiter):
+                    state Wait
+                    start Wait
+
+                    Wait, ProcessWaitState.Progress:
+                        -> Wait
+                    Wait, ProcessWaitState.Exited:
+                        break
+                    Wait, ProcessWaitState.Error:
+                        break
+            if not waiter.reaped or not EsProcessSpawnWait::exact_reap(waiter.pid.i64(), child.pid.i64(), waiter.status.i64()):
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                return runtime_void()
+            # Capture terminal observation before fallible canonical close.
+            if not EsProcessSpawnOwner::record_reap(child, child.pid, true):
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                return runtime_void()
+            catch EsProcessSpawnBudget::release_reaped(child, budget, ledger, machine.resource_usage, owner_token):
+                ok:
+                    pass
+                error failure:
+                    interpret_set_failure(machine, InterpretFailure.Panic)
+                    return runtime_void()
+            # Do not also call process_resource_complete: the paired release
+            # above already consumed the exact same runtime Process counter.
+            if waiter.timed_out:
+                interpret_set_failure(machine, InterpretFailure.Time)
+                return runtime_void()
+            if waiter.failed or cleanup_failed:
+                interpret_set_failure(machine, InterpretFailure.Process)
+                return runtime_void()
+            status: i64 = try EsProcessSpawnWait::exit_status(waiter.status.i64()) else failure:
+                interpret_set_failure(machine, InterpretFailure.Panic)
+                return runtime_void()
+            return runtime_int(status)

@@ -213,3 +213,10 @@ outcomes can release it; live/unknown outcomes retain it, and exact-PID reaping
 must precede normal completion. This is authored accounting and private launch
 gating, not completed existing-waiter integration. Pure fixtures remain unrun;
 the full coordinator, native qualification and tiny UI CC wiring remain open.
+
+A source-only private existing-waiter handoff is now authored, with canonical
+Running-budget checks, cleanup-failure terminate/reap and once-only completion.
+The shared waiter has also been corrected to distinguish exact terminal reaping
+from positive, stopped or continued wait reports. Literal fixtures remain unrun.
+The handoff is not included by any facade; full coordinator/deadline-origin/
+group-identity qualification/source/bytecode/UI integration remain open.
