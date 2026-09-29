@@ -62,6 +62,24 @@ contract still needs an independently admitted, isolated public-launcher
 matrix: copy the unchanged Bash helper, source it in a fixed test wrapper,
 print its resulting variable only as an observation, and compare to a qualified
 Elisascript candidate with identical cwd/environment and exact expected bytes.
+
+`test/script_parity/elisa_lsp_compiler_root_cases.elisa` separately authors
+eight literal success observations without importing the candidate or model.
+They cover unset/exported-empty defaults while the sibling compiler path is
+missing, relative/absolute missing overrides with spaces and shell syntax, a
+regular-file override, an existing directory, a directory symlink, and an
+existing default sibling. The fixture root must be canonical and contain a
+created `Elisa-LSP/scripts` tree; its basename should contain a space. The
+relative case requires an isolated cwd with no matching directory. The
+symlink must point only to a recorded directory inside the fixture. Later
+setup must establish and recheck each topology before reference and candidate
+runs, admit exact status/empty stderr/literal stdout against the reference
+*first*, and retain a separate outside sentinel through cleanup. The case
+source SHA-256 is
+`7425b22b3be42266400f5610f916b75af223f7dc1e56ed0f7efc12393169f542`;
+pure metadata assertions are authored but unrun. Neither this pin nor eight
+data rows is an executable parity gate or observed host behavior.
+
 Include existing real/symlink directories, missing paths, unset/empty values,
 relative paths, spaces and metacharacters. Keep an outside sentinel and bounded
 cleanup; never run either side against a live compiler checkout. The original
