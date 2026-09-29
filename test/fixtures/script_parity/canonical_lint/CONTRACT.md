@@ -95,6 +95,24 @@ read-only fixture is used for these dummy-tool cases; source/probe copies are
 hashed before and after the matrix. This does not provide independent mutable
 filesystem worlds for future tools that write files.
 
+The dormant entry now defaults to `EsCanonicalWrapperScope::Wave.LintOnly`:
+only the two lint sources are identity-checked and copied, only the two Ruff
+probe aliases are installed, and exactly eight lint cases are selected. No
+canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
+wave. Source/case count checks reject silently empty or reduced selections.
+The wider fourteen-case suite remains available through an explicit
+`public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
+the default test does not advance to it automatically. Wave selection does not
+grant execution authorization or prove that a preceding wave passed.
+Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`
+and import no native runner. They have not been compiled or run.
+
+Delivery order is lint first, then the nine-line environment query, then the
+fourteen-line codec gate and larger wrappers. Keep working on a small script's
+own blockers and shared dependencies rather than treating a source port as an
+accepted replacement. Full exec parity still requires the failure/signal policy
+above, not just the ordinary eight cases.
+
 This is a source-only candidate and authored automated fixture, not a passing
 replacement or complete parity suite. Compiler, launcher, lint, and parity execution remain
 disabled until explicitly reauthorized; future validation must use the pinned

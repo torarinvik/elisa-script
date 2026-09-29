@@ -64,6 +64,17 @@ behavior is explicitly modeled as typed process effects.
 
 ## Prioritized discovery waves
 
+For implementation and acceptance, use the smallest-first order in
+[`canonical_lint/CONTRACT.md`](../test/fixtures/script_parity/canonical_lint/CONTRACT.md):
+the six-line lint wrapper, nine-line environment query, fourteen-line codec gate,
+then larger wrappers/checkers/build drivers. The project-root discovery waves
+below are inventory organization, not permission to start large ports first.
+A source candidate is not an accepted replacement; do not switch callers or
+delete originals before its scoped behavioral contract is qualified. The
+dormant lint parity entry defaults to lint only, with larger family coverage
+requiring an explicit selection. Validation remains paused pending explicit
+reauthorization and qualified resource containment.
+
 1. **Elisascript and toolchain projects.** Separate compiler/bootstrap tests,
    parity harnesses, generated files, and actual production helpers. The high
    shell count is not a single migration target; each workflow needs its own
