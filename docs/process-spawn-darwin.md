@@ -55,8 +55,8 @@ Prepare/retain owned buffers and admitted native tables before spawning. Own one
 initialized attribute handle, set only the intended group flag/group zero and
 do not copy that handle as a second owner. Configure and destroy using pointers
 to its opaque handle slot, not the handle's pointee. Attribute initialization,
-configuration and destruction need explicit resource receipts, including setup
-failure and uncertain destruction; no owner adapter is implemented here yet.
+configuration and destruction now have a source-only private owner adapter,
+described below; native qualification and parent process integration remain open.
 
 Reserve a process resource before each admitted launch workflow. A confirmed
 Spawned PID must be adopted immediately before any fallible cleanup or allocation;
@@ -72,9 +72,52 @@ those descriptors. Qualify signal defaults/masks, descriptor inheritance, cwd,
 attribute flags, group behavior and every error transition explicitly. Native
 API guarantees do not establish descendant containment, RSS or concurrency safety.
 
-Next implement the attribute-owner/parent-spawn integration, then source/IR/
+Next implement parent-spawn/PID adoption integration, then source/IR/
 verifier/interpreter/bytecode entry points and UI CC/package wiring. Synchronous
 spawn failure versus normal child statuses, merged PATH and inherited binary
 streams need independent native probes under explicit reauthorization plus real
 process-tree RSS/wall-time containment. Original scripts/callers, SSH and other
 agents' changes remain untouched. No execution permission is granted here.
+
+## Attribute ownership layer (authored, not executed)
+
+`process_spawn_attributes_model.elisa` distinguishes initialized/group-set/
+configured objects, known setup failure, uncertain setup and release outcomes.
+Known configuration failure retains a destroyable initialized object. An error
+plus unexpected slot state is uncertain, not safe evidence to call destroy.
+Failed/uncertain destruction is terminal: never retry it against a possibly
+freed native object. Slot presence is metadata, not a pointer-validity proof.
+
+`process_spawn_attributes_darwin.elisa` privately retains the actual nullable
+handle in a caller-held owner record. It reserves a NativeAttribute lease in the
+shared EsResource ledger before initialization. Owner-checked canonical lookup
+checks the kind and Acquired state before native configuration, destruction or
+spawn; a stale copied lease is not authority. Group zero is set first, followed
+by the intended group flag. Only Configured objects reach the guarded spawn
+helper; all fallible ownership checks precede the call, and its PID receipt is
+returned without intervening cleanup or another fallible ledger operation.
+
+BeginClose is recorded before native destroy. Success clears the local slot and
+completes release; uncertainty records a Failed lease and denies further native
+use. Init failure with no handle completes its unused reservation. Uncertain
+init/configuration preserves a failed ownership receipt instead of guessing that
+an opaque pointer is valid. The caller-held owner updates immediately after host
+calls, so an unexpected post-call ledger error cannot hide its handle via a
+failed constructor return. Such ledger corruption still needs typed host-failure
+recovery; these functions do not claim every panic/fault is safely finalized.
+
+One native owner/ledger pair must remain exclusively held: do not copy opaque
+owners, mutate or replace the ledger concurrently, or reuse IDs as new authority.
+Canonical gating prevents repeat destruction through stale records, but it does
+not establish full linear types or concurrency exclusion. Failed entries remain
+in the bounded ledger and its failed count; they are not proof that native memory
+was freed. The eventual runtime budget/finalizer must retain unresolved native
+reservations and inspect failed receipts, not just active_entries.
+
+NativeAttribute is an additive resource kind; existing kind ordinals are retained.
+The public owner-checked query returns a snapshot of the canonical lease, not a
+capability that stays current after copying. Pure receipt, owner mismatch, stale
+copy, once-only close and failed-release fixtures are authored but unrun. Native
+slot ABI, actual init/set/destroy behavior, allocator accounting and failure
+injection still need controlled qualification. No attribute object or spawn was
+created here, and UI/package/source/IR/bytecode wiring remains unfinished.

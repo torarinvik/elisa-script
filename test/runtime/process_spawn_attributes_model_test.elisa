@@ -1,0 +1,107 @@
+# Pure receipts/ledger transitions. No native attribute init/set/destroy occurs.
+include "../../src/runtime/process_spawn_attributes_model.elisa"
+include "../../src/runtime/resource_model.elisa"
+
+using EsProcessSpawnAttributes
+
+
+@test
+def spawn_attribute_receipts_preserve_failed_setup_cleanup_authority() -> void:
+    initialized_owner: Receipt = initialized(0, true)
+    group: Receipt = group_set(0, true)
+    configured: Receipt = flags_set(0, true)
+    assert initialized_owner.state == State.Initialized and destroyable(initialized_owner)
+    assert group.state == State.GroupSet and destroyable(group)
+    assert configured.state == State.Configured and destroyable(configured)
+    failed_group: Receipt = group_set(22, true)
+    failed_flags: Receipt = flags_set(22, true)
+    assert failed_group.state == State.ConfigurationFailed and destroyable(failed_group)
+    assert failed_flags.state == State.ConfigurationFailed and destroyable(failed_flags)
+    assert failed_flags.code == 22
+
+
+@test
+def spawn_attribute_receipts_never_destroy_uncertain_or_released_handles() -> void:
+    assert initialized(12, false).state == State.InitFailed
+    assert not destroyable(initialized(12, false))
+    assert initialized(0, false).state == State.InitUncertain
+    assert initialized(12, true).state == State.InitUncertain
+    assert not destroyable(initialized(-1, true))
+    assert group_set(0, false).state == State.ConfigurationUncertain
+    assert not destroyable(group_set(-1, true))
+    assert flags_set(22, false).state == State.ConfigurationUncertain
+    released: Receipt = destroyed(0, true)
+    assert released.state == State.Released and not released.handle_present and not destroyable(released)
+    uncertain: Receipt = destroyed(22, true)
+    assert uncertain.state == State.DestroyUncertain and not destroyable(uncertain)
+
+
+@test
+def spawn_attribute_canonical_lease_closes_once_and_keeps_stale_copies_inactive() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        acquired: bool = try EsResource::resource_ledger_acquire(ledger, 31, EsResource::ResourceKind.NativeAttribute, 7) else err:
+            assert false
+            return
+        assert acquired
+        copied: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, 31, 7) else err:
+            assert false
+            return
+        assert copied.state == EsResource::ResourceLeaseState.Acquired
+        closing: EsResource::ResourceLeaseState = try EsResource::advance_resource_lease(ledger, 31, 7, EsResource::ResourceEvent.BeginClose) else err:
+            assert false
+            return
+        assert closing == EsResource::ResourceLeaseState.Closing
+        released: EsResource::ResourceLeaseState = try EsResource::advance_resource_lease(ledger, 31, 7, EsResource::ResourceEvent.CompleteClose) else err:
+            assert false
+            return
+        assert released == EsResource::ResourceLeaseState.Released
+        actual: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, 31, 7) else err:
+            assert false
+            return
+        assert copied.state == EsResource::ResourceLeaseState.Acquired
+        assert actual.state == EsResource::ResourceLeaseState.Released and ledger.active_entries == 0
+        rejected: mutable bool = false
+        catch EsResource::advance_resource_lease(ledger, 31, 7, EsResource::ResourceEvent.BeginClose):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == EsResource::ResourceContractError.InvalidTransition
+        assert rejected
+        wrong_owner: mutable bool = false
+        catch EsResource::resource_lease_for_owner(ledger, 31, 8):
+            ok _:
+                assert false
+            error failure:
+                wrong_owner <- failure == EsResource::ResourceContractError.OwnerMismatch
+        assert wrong_owner
+
+
+@test
+def spawn_attribute_failed_release_remains_a_canonical_failed_receipt() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        acquired: bool = try EsResource::resource_ledger_acquire(ledger, 32, EsResource::ResourceKind.NativeAttribute, 7) else err:
+            assert false
+            return
+        assert acquired
+        closing: EsResource::ResourceLeaseState = try EsResource::advance_resource_lease(ledger, 32, 7, EsResource::ResourceEvent.BeginClose) else err:
+            assert false
+            return
+        assert closing == EsResource::ResourceLeaseState.Closing
+        failed: EsResource::ResourceLeaseState = try EsResource::advance_resource_lease(ledger, 32, 7, EsResource::ResourceEvent.Fail) else err:
+            assert false
+            return
+        assert failed == EsResource::ResourceLeaseState.Failed
+        actual: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, 32, 7) else err:
+            assert false
+            return
+        assert actual.state == EsResource::ResourceLeaseState.Failed
+        assert ledger.failed_entries == 1 and ledger.resources.count == 1
+        rejected: mutable bool = false
+        catch EsResource::advance_resource_lease(ledger, 32, 7, EsResource::ResourceEvent.BeginClose):
+            ok _:
+                assert false
+            error failure:
+                rejected <- failure == EsResource::ResourceContractError.InvalidTransition
+        assert rejected

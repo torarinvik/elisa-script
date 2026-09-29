@@ -1,0 +1,85 @@
+# Private opaque-slot owner, backed by the canonical shared resource ledger.
+# No spawn entry or native qualification is enabled by this source.
+include "process_spawn_darwin.elisa"
+include "process_spawn_attributes_model.elisa"
+include "resource_model.elisa"
+
+extend EsProcessSpawnDarwin:
+    private:
+        struct AttributeOwner:
+            resource_id: u64 = 0
+            owner_token: u64 = 0
+            handle: void&? = null
+            receipt: EsProcessSpawnAttributes::Receipt = EsProcessSpawnAttributes::Receipt{}
+
+
+        def require_attribute_owner(owner: AttributeOwner&, ledger: EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError]:
+            raise EsProcessSpawnAttributes::AttributeError.InvalidOwner if owner_token == 0 or owner.owner_token != owner_token
+            lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, owner.resource_id, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.WrongResourceKind if lease.kind != EsResource::ResourceKind.NativeAttribute
+            raise EsProcessSpawnAttributes::AttributeError.ResourceNotAcquired if lease.state != EsResource::ResourceLeaseState.Acquired
+            raise EsProcessSpawnAttributes::AttributeError.MissingHandle if owner.handle == null or not owner.receipt.handle_present
+
+
+        def initialize_attributes(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, id: u64, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Fresh or owner.resource_id != 0 or owner.handle != null
+            # Reserve the canonical ID before entering native initialization.
+            # Owner is caller-held, so post-call ledger errors cannot lose its
+            # actual slot/receipt through a failed value-return constructor.
+            _ = try EsResource::resource_ledger_acquire(ledger, id, EsResource::ResourceKind.NativeAttribute, owner_token)
+            owner.resource_id <- id
+            owner.owner_token <- owner_token
+            slot: mutable void& = (&owner.handle).cast[mutable void&]
+            code: i32 = native_spawnattr_init(slot)
+            owner.receipt <- EsProcessSpawnAttributes::initialized(code, owner.handle != null)
+            if owner.receipt.state == EsProcessSpawnAttributes::State.InitFailed:
+                _ = try EsResource::advance_resource_lease(ledger, id, owner_token, EsResource::ResourceEvent.BeginClose)
+                _ = try EsResource::advance_resource_lease(ledger, id, owner_token, EsResource::ResourceEvent.CompleteClose)
+            elif owner.receipt.state == EsProcessSpawnAttributes::State.InitUncertain:
+                _ = try EsResource::advance_resource_lease(ledger, id, owner_token, EsResource::ResourceEvent.Fail)
+
+
+        def set_attribute_group(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Unsafe.PointerCast]:
+            try require_attribute_owner(owner, ledger, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Initialized
+            slot: mutable void& = (&owner.handle).cast[mutable void&]
+            code: i32 = native_spawnattr_setpgroup(slot, 0i32)
+            owner.receipt <- EsProcessSpawnAttributes::group_set(code, owner.handle != null)
+            if owner.receipt.state == EsProcessSpawnAttributes::State.ConfigurationUncertain:
+                _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.Fail)
+
+
+        def set_attribute_flags(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Unsafe.PointerCast]:
+            try require_attribute_owner(owner, ledger, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.GroupSet
+            slot: mutable void& = (&owner.handle).cast[mutable void&]
+            code: i32 = native_spawnattr_setflags(slot, Flags::SETPGROUP)
+            owner.receipt <- EsProcessSpawnAttributes::flags_set(code, owner.handle != null)
+            if owner.receipt.state == EsProcessSpawnAttributes::State.ConfigurationUncertain:
+                _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.Fail)
+
+
+        def destroy_attributes(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Release, Unsafe.PointerCast]:
+            try require_attribute_owner(owner, ledger, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if not EsProcessSpawnAttributes::destroyable(owner.receipt)
+            # BeginClose precedes the host call. A copied receipt cannot authorize
+            # another destroy against Closing/Released/Failed canonical state.
+            _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.BeginClose)
+            slot: mutable void& = (&owner.handle).cast[mutable void&]
+            code: i32 = native_spawnattr_destroy(slot)
+            owner.receipt <- EsProcessSpawnAttributes::destroyed(code, owner.handle != null)
+            if code == 0:
+                owner.handle <- null
+                _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.CompleteClose)
+            else:
+                _ = try EsResource::advance_resource_lease(ledger, owner.resource_id, owner_token, EsResource::ResourceEvent.Fail)
+
+
+        def spawn_configured_candidate(owner: AttributeOwner&, ledger: EsResource::ResourceLedger&, owner_token: u64, candidate: cstr, argv: void&, environment: void&) -> EsProcessSpawnAttempt::Attempt error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
+            try require_attribute_owner(owner, ledger, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Configured
+            attributes: void& = (&owner.handle).cast[void&]
+            # Every fallible ownership check precedes spawn. Return its fresh
+            # receipt immediately; no attribute cleanup or ledger operation may
+            # throw here and hide a successfully created PID from the parent.
+            return spawn_candidate_raw(candidate, attributes, argv, environment)

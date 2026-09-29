@@ -188,3 +188,9 @@ for this platform. It still uses our precomputed merged-PATH candidates and
 explicit owned envp, not posix_spawnp or parent mutation. Attribute ownership,
 resource/group/wait/deadline integration and every native qualification remain
 open; the fork/error-record path stays unwired.
+
+The preferred spawn path now has a source-only private attribute owner with
+NativeAttribute ledger reservations, owner/kind/state checks, guarded configured
+spawn and begin-close-before-destroy receipts. See its contract for stale-copy
+gating and uncertain release handling. Parent PID adoption, process budgets,
+existing waiter/deadline integration and native qualification remain pending.
