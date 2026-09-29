@@ -4,10 +4,29 @@ include "../runtime/process_spawn_parent_darwin.elisa"
 
 extend EsProcessSpawnDarwin:
     private:
+        const enum LaunchPhase of u8:
+            Fresh
+            Reserve
+            Setup
+            Spawn
+            Cleanup
+            Complete
+
+
+        error WorkflowError:
+            InvalidState
+            UnsafeRollback
+
+
         struct BudgetedLaunch:
             child: EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
             budget: EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
             attributes: AttributeOwner = AttributeOwner{}
+            phase: LaunchPhase = LaunchPhase.Fresh
+            setup_failed: bool = false
+            setup_code: i32 = 0
+            cleanup_attempted: bool = false
+            cleanup_failed: bool = false
 
 
         def reserve_budgeted_launch(launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, usage: mutable EsIr::RuntimeResourceUsage&, policy: EsIr::RuntimeResourcePolicy&, id: u64, owner_token: u64) -> void error[EsProcessSpawnBudget::BudgetError, EsResource::ResourceContractError] can[Memory.Allocate, Abort.Panic]:
@@ -29,3 +48,104 @@ extend EsProcessSpawnDarwin:
 
         def finalize_budgeted_attributes(launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> EsProcessSpawnAttributes::Receipt error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Release, Unsafe.PointerCast]:
             return try finalize_attributes(launch.attributes, ledger, owner_token)
+
+
+        def rollback_budgeted_no_child(launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, usage: mutable EsIr::RuntimeResourceUsage&, owner_token: u64) -> void error[WorkflowError, EsProcessSpawnBudget::BudgetError, EsResource::ResourceContractError]:
+            match launch.child.state:
+                EsProcessSpawnOwner::State.Reserved:
+                    if launch.child.attempts == 0:
+                        try EsProcessSpawnBudget::release_unstarted(launch.child, launch.budget, ledger, usage, owner_token)
+                    else:
+                        raise WorkflowError.UnsafeRollback if not EsProcessSpawnOwner::stop_retrying_before_next_attempt(launch.child)
+                        try EsProcessSpawnBudget::release_no_child(launch.child, launch.budget, ledger, usage, owner_token)
+                EsProcessSpawnOwner::State.NoChild:
+                    try EsProcessSpawnBudget::release_no_child(launch.child, launch.budget, ledger, usage, owner_token)
+                EsProcessSpawnOwner::State.Running:
+                    # Await/terminate/reap is mandatory, even on cleanup error.
+                    pass
+                EsProcessSpawnOwner::State.Unknown:
+                    # No diagnostic PID is signaling or no-child authority.
+                    pass
+                _:
+                    raise WorkflowError.UnsafeRollback
+
+
+        def cleanup_budgeted_launch(launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, usage: mutable EsIr::RuntimeResourceUsage&, owner_token: u64) -> void error[WorkflowError, EsProcessSpawnBudget::BudgetError, EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Release, Unsafe.PointerCast]:
+            raise WorkflowError.InvalidState if launch.cleanup_attempted
+            launch.phase <- LaunchPhase.Cleanup
+            launch.cleanup_attempted <- true
+            # Assume cleanup failed until a canonical released/no-handle
+            # outcome is obtained. A typed error cannot leave false success.
+            launch.cleanup_failed <- true
+            if launch.attributes.resource_id == 0:
+                raise WorkflowError.InvalidState if launch.attributes.owner_token != 0 or launch.attributes.handle != null or EsProcessSpawnAttributes::preparation_step(launch.attributes.receipt) != EsProcessSpawnAttributes::PreparationStep.Initialize
+                launch.cleanup_failed <- false
+            else:
+                catch finalize_budgeted_attributes(launch, ledger, owner_token):
+                    ok receipt:
+                        launch.cleanup_failed <- EsProcessSpawnAttributes::finalization_step(receipt) != EsProcessSpawnAttributes::FinalizationStep.AlreadyReleased
+                    error failure:
+                        # A known no-child process slot is independent of an
+                        # attribute destroy failure. Retain the attribute
+                        # receipt, roll back only provably unused capacity.
+                        try rollback_budgeted_no_child(launch, ledger, usage, owner_token)
+                        raise failure
+            try rollback_budgeted_no_child(launch, ledger, usage, owner_token)
+            launch.phase <- LaunchPhase.Complete
+
+
+        def launch_prepared_budgeted(launch: mutable BudgetedLaunch&, ledger: mutable EsResource::ResourceLedger&, usage: mutable EsIr::RuntimeResourceUsage&, policy: EsIr::RuntimeResourcePolicy&, process_id: u64, attribute_id: u64, owner_token: u64, storage: EsProcessLaunchStorage::Prepared&, tables: EsProcessLaunchVectors::BorrowedTables&) -> void error[WorkflowError, EsProcessSpawnBudget::BudgetError, EsProcessSpawnOwner::OwnerError, EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError, EsProcessLaunchVectors::VectorError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            raise WorkflowError.InvalidState if launch.phase != LaunchPhase.Fresh or launch.setup_failed or launch.setup_code != 0 or launch.cleanup_attempted or launch.cleanup_failed
+            raise WorkflowError.InvalidState if launch.attributes.resource_id != 0 or launch.attributes.owner_token != 0 or launch.attributes.handle != null or EsProcessSpawnAttributes::preparation_step(launch.attributes.receipt) != EsProcessSpawnAttributes::PreparationStep.Initialize
+            # Admit retained bindings before reserving any native resource.
+            _ = try EsProcessLaunchVectors::validate_native_bindings(storage, tables)
+            launch.phase <- LaunchPhase.Reserve
+            machine over launch.phase while launch.phase != LaunchPhase.Complete:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, LaunchPhase.Reserve:
+                    try reserve_budgeted_launch(launch, ledger, usage, policy, process_id, owner_token)
+                    launch.phase <- LaunchPhase.Setup
+                    -> Dispatch
+
+                Dispatch, LaunchPhase.Setup:
+                    catch prepare_budgeted_attributes(launch, ledger, usage, attribute_id, owner_token):
+                        ok receipt:
+                            # Persist setup's code before destroy can replace
+                            # the attribute receipt with Released/code zero.
+                            launch.setup_code <- receipt.code
+                            launch.setup_failed <- EsProcessSpawnAttributes::preparation_step(receipt) != EsProcessSpawnAttributes::PreparationStep.Ready
+                        error failure:
+                            launch.setup_failed <- true
+                            launch.setup_code <- launch.attributes.receipt.code
+                            try cleanup_budgeted_launch(launch, ledger, usage, owner_token)
+                            raise failure
+                    launch.phase <- LaunchPhase.Cleanup if launch.setup_failed else LaunchPhase.Spawn
+                    -> Dispatch
+
+                Dispatch, LaunchPhase.Spawn:
+                    catch spawn_budgeted_candidates(launch, ledger, usage, owner_token, storage, tables):
+                        ok:
+                            pass
+                        error failure:
+                            # The search captures every native return before
+                            # any fallible check for its next candidate.
+                            try cleanup_budgeted_launch(launch, ledger, usage, owner_token)
+                            raise failure
+                    launch.phase <- LaunchPhase.Cleanup
+                    -> Dispatch
+
+                Dispatch, LaunchPhase.Cleanup:
+                    try cleanup_budgeted_launch(launch, ledger, usage, owner_token)
+                    -> Dispatch
+
+                Dispatch, LaunchPhase.Complete:
+                    break
+
+                Dispatch, LaunchPhase.Fresh:
+                    raise WorkflowError.InvalidState
+            # Complete means setup/search/attribute cleanup was visited, not
+            # tool success or reaping. Caller must inspect child + failure
+            # receipts: Running still owns a PID/budget; Unknown retains both
+            # uncertainty and capacity. Panic/cancellation is not finalized.

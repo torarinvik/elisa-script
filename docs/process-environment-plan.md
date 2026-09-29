@@ -220,3 +220,11 @@ The shared waiter has also been corrected to distinguish exact terminal reaping
 from positive, stopped or continued wait reports. Literal fixtures remain unrun.
 The handoff is not included by any facade; full coordinator/deadline-origin/
 group-identity qualification/source/bytecode/UI integration remain open.
+
+The private native seam now coordinates binding admission, budget reservation,
+setup/search and once-attempted attribute cleanup via a state machine. Typed
+setup/search errors attempt cleanup before propagation; partial known-no-child
+search can release unused capacity without claiming full PATH exhaustion. Live
+and Unknown outcomes remain caller-held and budgeted. This is still unwired,
+uncompiled source: outer fatal-error/reap integration, panic/cancellation, native
+qualification and actual tiny UI CC parity remain unfinished.

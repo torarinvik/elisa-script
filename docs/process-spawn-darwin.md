@@ -268,3 +268,41 @@ qualification remain open. Existing group-quiescence and post-reap group-identit
 assumptions still need host-level scrutiny; this change does not prove group-ID
 reuse safety or escaped-descendant containment. Compiler/native/debugger/parity
 execution remained disabled, and unrelated interpreter changes were preserved.
+
+## Private setup/search/cleanup coordinator (source-only)
+
+`launch_prepared_budgeted` now orders retained-binding admission, shared Process
+reservation, attribute setup, candidate search and attribute cleanup through a
+private state machine. Caller-held launch state retains all owners, setup's code
+and separate setup/cleanup failure flags. Setup's code is saved before successful
+destruction can replace an attribute receipt with Released/code zero. Native
+setup failures stop without spawn. Typed setup/search errors attempt cleanup
+before propagating, while preserving the caller-held child and budget.
+
+Cleanup is attempted once, recording attempted/failed before fallible operations.
+Pristine unreserved attributes need no destroy; known/uncertain acquired slots
+use the canonical finalizer. Known no-child/unstarted Process reservations are
+released independently of attribute cleanup success. An uncertain attribute
+receipt remains retained, does not prove deallocation and must be treated as
+fatal by the outer runtime even if no child was started. Running and Unknown
+children keep their process capacity; any cleanup error still leaves the captured
+PID for mandatory terminate/reap, not an ordinary early return by the outer layer.
+
+A partial search interrupted by a typed pre-attempt check now has a distinct
+no-child rollback. The synchronous controller captures every native return before
+its next fallible check. Only Reserved state with bounded nonzero attempts, zero
+owned/diagnostic PID and a last missing/not-directory/denied retry result can be
+stopped this way. Its last native code and denial observation are preserved; it
+is not relabeled full PATH exhaustion or a successful command. Running, Unknown,
+unstarted or inconsistent receipts are rejected. Public model fields still are
+not host proof; canonical close/counter guards and exclusive state are required.
+
+Complete means the setup/search/attribute cleanup sequence was visited, not that
+the tool succeeded or was reaped. Typed cleanup/accounting failures may supersede
+the initial setup/search error; retained fields and phase record unresolved state.
+Panic/cancellation finalization is still absent. These functions and the existing
+waiter handoff remain private, uncompiled and unincluded by public launchers;
+cross-namespace integration, pre-launch deadline origin, group identity/native
+qualification, source/bytecode/UI wiring and real failure injection are pending.
+Pure partial-abort/retained-PID/budget fixtures are authored but unrun. No native
+setup, spawn, destroy, signal, compiler or parity process ran during this work.
