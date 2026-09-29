@@ -226,12 +226,15 @@ This intentionally does not substitute `access(X_OK)` or claim ACL behavior.
 Its bounded PATH planner preserves direct-name bypass, empty/interior component
 behavior, and source-observed omission of a trailing empty component. Named
 directories are retained as owned PATH byte spans; leading-tilde expansion is
-marked but not performed. Inputs over 64 KiB PATH or 4,096 components fail
-explicitly, so those bounds are runtime policy, not a claim about unrestricted
-Bash behavior. Pure fixtures cover selection, permission classification,
-invalid directory-as-executable observations, and these path-plan rules; they
-are uncompiled and unrun. Tilde expansion, a renderer, and local Bash
-source/build qualification remain open.
+marked but not performed. `join_search_candidate` now matches Bash's
+`sh_makepath` joining after tilde expansion: an empty directory means `.`, a
+separator is added only when needed, and existing slash spelling is preserved
+without normalization ([Apple Bash 3.2 `makepath.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/sh/makepath.c#L490-L613)).
+Inputs over 64 KiB PATH or 4,096 components fail explicitly, so those bounds
+are runtime policy, not a claim about unrestricted Bash behavior. Pure fixtures
+cover selection, permission classification, invalid directory-as-executable
+observations, PATH planning, and joining; they are uncompiled and unrun. Tilde
+expansion, a renderer, and local Bash source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
 captures effective UID, real and effective GIDs, and the supplementary group
@@ -241,10 +244,10 @@ leaves that list empty, preserving Bash's fallback to real/effective GIDs;
 counts above the 1,024-entry bound fail explicitly. The stat adapter follows
 symlinks, maps every stat failure to absence, and treats directories as present
 but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
-Neither adapter is yet connected to the PATH plan: candidate joining, tilde
-expansion, ordered collection, and local Bash qualification remain open. This
-source has not been compiled or exercised; the caller must prevent concurrent
-credential changes during capture.
+The pure join is not yet wired into an ordered plan observer, and tilde
+expansion and local Bash qualification remain open. This source has not been
+compiled or exercised; the caller must prevent concurrent credential changes
+during capture.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.

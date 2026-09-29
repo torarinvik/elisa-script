@@ -30,6 +30,7 @@ module EsBashExecLookup:
             COMMAND_BYTES: usize = 4096
             PATH_BYTES: usize = 65536
             PATH_ENTRIES: usize = 4096
+            CANDIDATE_PATH_BYTES: usize = PATH_BYTES + COMMAND_BYTES + 1
 
 
         struct CredentialSnapshot:
@@ -70,6 +71,8 @@ module EsBashExecLookup:
             CommandLimitExceeded
             PathLimitExceeded
             PathEntryLimitExceeded
+            DirectNameMustBypassPath
+            CandidatePathLimitExceeded
 
 
         # Model the non-AFS Bash 3.2 file_status permission-bit check. This
@@ -137,6 +140,40 @@ module EsBashExecLookup:
             raise LookupError.InvalidSearchPlan if directory.kind != PathDirectoryKind.NamedDirectory or directory.length == 0 or directory.start > sview_len(path_value) or directory.length > sview_len(path_value) - directory.start
             raise LookupError.InvalidSearchPlan if directory.tilde_expansion_candidate != (sview_at(path_value, directory.start) == 126u8)
             return string_view_slice(path_value, directory.start.i64(), (directory.start + directory.length).i64())
+
+
+        # Match sh_makepath(path, name, 0) after Bash has expanded any PATH
+        # tilde prefix: empty path becomes '.', a slash is inserted only when
+        # the directory lacks a trailing slash, and no normalization occurs.
+        # `resolved_directory` must already include any Bash-compatible tilde
+        # expansion; this pure join does not perform home-directory lookup.
+        def join_search_candidate(resolved_directory: sview, command: sview) -> darray[u8] error[LookupError] can[Memory.Allocate, Abort.Panic]:
+            directory_length: usize = sview_len(resolved_directory)
+            command_length: usize = sview_len(command)
+            raise LookupError.PathLimitExceeded if directory_length > Limits::PATH_BYTES
+            raise LookupError.CommandLimitExceeded if command_length > Limits::COMMAND_BYTES
+            raise LookupError.SearchInputContainsNul if sview_contains_byte(resolved_directory, 0u8) or sview_contains_byte(command, 0u8)
+            for index in 0..<command_length |command|:
+                raise LookupError.DirectNameMustBypassPath if sview_at(command, index) == 47u8
+
+            effective_directory_length: usize = 1 if directory_length == 0 else directory_length
+            needs_separator: mutable bool = true
+            if directory_length > 0:
+                needs_separator <- sview_at(resolved_directory, directory_length - 1) != 47u8
+            candidate_length: usize = effective_directory_length + command_length + (1 if needs_separator else 0)
+            raise LookupError.CandidatePathLimitExceeded if candidate_length > Limits::CANDIDATE_PATH_BYTES
+
+            candidate: mutable darray[u8] = []
+            candidate.reserve(candidate_length)
+            if directory_length == 0:
+                candidate.push(46u8)
+            else:
+                for index in 0..<directory_length |resolved_directory, candidate|:
+                    candidate.push(sview_at(resolved_directory, index))
+            candidate.push(47u8) if needs_separator
+            for index in 0..<command_length |command, candidate|:
+                candidate.push(sview_at(command, index))
+            return candidate
 
 
     private:
