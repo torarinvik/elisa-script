@@ -13,6 +13,7 @@ implementations.
 | `positive` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `compact_fields` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `unicode_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
+| `tab_whitespace_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `missing_fingerprint` | 1 | empty | `diagnostic snapshot audit: fingerprint omits entrypoint_error\n` |
 | `missing_fingerprint_source` | 1 | empty | `diagnostic snapshot audit: fingerprint omits source\n` |
 | `missing_equality` | 1 | empty | `diagnostic snapshot audit: structural equality omits entrypoint_error\n` |
@@ -43,7 +44,8 @@ operation. `unicode_runner.elisa` places valid non-ASCII text in comments and
 after field types while keeping the audited identifiers ASCII. The generated
 cases exercise raw CRLF/bare-CR bytes, the exact source-byte ceiling,
 field-count/name ceilings, empty and missing-input behavior, and the extra-
-operand usage boundary. The missing path is already absolute but deliberately
+operand usage boundary. `tab_whitespace_runner.elisa` pins TAB acceptance around
+the declaration colon. The missing path is already absolute but deliberately
 is not passed through `path_real`, since it must remain absent. None of these
 expectations have been executed; the standing compiler validation hold remains
 in force.
