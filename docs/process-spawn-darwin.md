@@ -622,3 +622,28 @@ Elisa source has been compiled/run, and the fixture stays outside ordinary
 cases for the recorded build; broad lifetime/alignment/malformed/maximum-table,
 native spawn, errno, reaper/group and unresolved-owner qualifications remain open.
 No compiler, fixture, child, wait, signal or parity operation ran here.
+
+## Clock ABI prerequisite for launch-wide deadlines (source-only)
+
+Inspection of the installed Darwin `_time.h`/`unistd.h` and `timespec` headers
+shows C-int returns for clock_gettime/usleep, a C-width clockid_t enum with
+MONOTONIC value six, and Darwin64 time_t/long fields for seconds/nanoseconds.
+The clock bridge previously used Elisa int (64-bit) for returns and clock ID.
+It now declares signed i32 returns and emits only the selected positive enum
+value through a u32 carrier, explicitly widening native returns to preserve
+the public int API. This keeps native -1 negative for existing failure checks.
+
+Before a native clock write, the bridge checks the selected pointer/i64/timestamp/
+result/clock-ID widths. Unsupported shapes return bridge -2 without a clock call
+or errno update. Existing clock consumers reject any nonzero return; they do not
+interpret errno for that admission failure. A pure profile fixture and dormant
+literal timestamp-layout fixture cover wrong widths and the expected two-field
+Darwin64 byte order, with no clock/sleep call. Both remain uncompiled/unrun.
+
+This is a prerequisite correction, not launch-wide timeout integration. The
+private spawn path still starts its deadline in the existing waiter after setup;
+carrying a pre-setup origin through reservation/setup/spawn/cleanup/wait and
+classifying clock errors without losing an owned child remain next. Native enum/
+timespec writes, field alignment/lifetime, clock behavior and generated ABI still
+need independent contained qualification. No compiler, fixture, clock, sleep,
+child, wait/signal or parity process ran; originals and others' work are unchanged.
