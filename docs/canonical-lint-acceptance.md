@@ -294,6 +294,33 @@ fresh qualification. No Skia compiler, native or launcher test ran, and no
 script was accepted or live caller switched. This infrastructure repair does
 not advance the smallest-first acceptance order.
 
+## Environment-query raw-byte coverage (source-only)
+
+Both dormant Skia query matrices already select Python's isolated `-I -S -B
+-X utf8` profile and a replaced fixture environment. They now require seventeen
+ordinary cases, adding an undecodable value (invalid UTF-8 lead/continuation
+and surrogate-sequence bytes), an undecodable key with an undecodable value,
+and an exact key containing LF/tab. None contains NUL or `=` in its key.
+Independent literal expectations retain the raw bytes and append exactly one
+LF; they are not constructed by the candidate's lookup/renderer.
+
+Python documents Unix environment decoding with surrogateescape and UTF-8
+mode's matching stdout encoding/error handling, which supports these round-trip
+expectations for the existing profile. See the official
+[environment and UTF-8 mode contract](https://docs.python.org/3/library/os.html#python-utf-8-mode).
+This is a source-based expectation, not proof of our pinned reference executable
+or an arbitrary locale/PYTHONIOENCODING profile. The reference must still match
+the independent full stdout/status/empty-stderr oracle before any candidate
+runs; a reference mismatch closes the case rather than changing its expectation.
+
+Both matrices now reject a missing/subset ordinary case list through an explicit
+seventeen-case guard and pin the updated oracle source before/after execution.
+Pure fixtures check the raw bytes, literal names, exact LF and unchanged original
+cases. All remain authored only, uncompiled/unrun. Candidate sources, existing
+qualification gates and earlier source/artifact pins were not relaxed. No
+compiler, Python, native adapter or launcher ran; lint remains the first
+acceptance target and originals/callers remain unchanged.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
