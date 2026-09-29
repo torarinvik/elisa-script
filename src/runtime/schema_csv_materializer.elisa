@@ -47,6 +47,16 @@ module EsSchemaCsv:
             payload_bytes: usize = 0
 
 
+        # Reusable field-to-column mapping for complete sources or incremental
+        # row readers. Callers may inspect the maps but materialization checks
+        # their shape and reversibility before use.
+        struct SchemaCsvProjection:
+            field_to_column: darray[usize] = []
+            header_column_to_field: darray[usize] = []
+            position_order: darray[usize] = []
+            has_header: bool = false
+
+
         error SchemaCsvMaterializeError:
             UnsupportedValueKind
             RowIndexInvalid
@@ -60,6 +70,7 @@ module EsSchemaCsv:
             PayloadLimitExceeded
             BatchRowLimitExceeded
             BatchValueLimitExceeded
+            InvalidProjection
 
 
     private:
@@ -84,13 +95,6 @@ module EsSchemaCsv:
             end: usize
             index: usize
             schema_name: bool
-
-
-        struct SchemaCsvProjection:
-            field_to_column: darray[usize] = []
-            header_column_to_field: darray[usize] = []
-            position_order: darray[usize] = []
-            has_header: bool = false
 
 
         def schema_csv_bytes_valid_utf8(bytes: darray[u8]&, start: usize, end: usize) -> bool:
@@ -341,6 +345,38 @@ module EsSchemaCsv:
             return projection
 
 
+        def schema_csv_projection_valid(schema: SchemaDescriptor&, materializer: CsvMaterializer&, projection: SchemaCsvProjection&) -> bool error[SchemaCsvMaterializeError]:
+            raise SchemaCsvMaterializeError.InvalidProjection if projection.has_header != materializer.policy.header
+            raise SchemaCsvMaterializeError.InvalidProjection if projection.field_to_column.count != schema.fields.count
+            if projection.has_header:
+                raise SchemaCsvMaterializeError.InvalidProjection if projection.position_order.count != 0
+                raise SchemaCsvMaterializeError.PayloadLimitExceeded if projection.header_column_to_field.count > SCHEMA_CSV_MAX_INDEX_ENTRIES
+                for field_index in 0..<schema.fields.count |schema, projection|:
+                    column_index: usize = projection.field_to_column[field_index]
+                    if column_index != SCHEMA_CSV_INDEX_NONE:
+                        raise SchemaCsvMaterializeError.InvalidProjection if column_index >= projection.header_column_to_field.count
+                        raise SchemaCsvMaterializeError.InvalidProjection if projection.header_column_to_field[column_index] != field_index
+                for column_index in 0..<projection.header_column_to_field.count |projection|:
+                    field_index: usize = projection.header_column_to_field[column_index]
+                    if field_index != SCHEMA_CSV_INDEX_NONE:
+                        raise SchemaCsvMaterializeError.InvalidProjection if field_index >= schema.fields.count
+                        raise SchemaCsvMaterializeError.InvalidProjection if projection.field_to_column[field_index] != column_index
+            else:
+                raise SchemaCsvMaterializeError.InvalidProjection if projection.header_column_to_field.count != 0
+                raise SchemaCsvMaterializeError.InvalidProjection if projection.position_order.count != schema.fields.count
+                for field_index in 0..<schema.fields.count |schema, projection|:
+                    position: usize = schema_csv_effective_source_index(schema.fields[field_index], field_index)
+                    raise SchemaCsvMaterializeError.InvalidProjection if projection.field_to_column[field_index] != position
+                previous_position: mutable usize = 0
+                for order_index in 0..<projection.position_order.count |schema, projection, previous_position|:
+                    field_index: usize = projection.position_order[order_index]
+                    raise SchemaCsvMaterializeError.InvalidProjection if field_index >= schema.fields.count
+                    position: usize = schema_csv_effective_source_index(schema.fields[field_index], field_index)
+                    raise SchemaCsvMaterializeError.InvalidProjection if order_index != 0 and position <= previous_position
+                    previous_position <- position
+            return true
+
+
         def schema_csv_position_is_mapped(schema: SchemaDescriptor&, projection: SchemaCsvProjection&, position: usize) -> bool:
             low: mutable usize = 0
             high: mutable usize = projection.position_order.count
@@ -421,10 +457,25 @@ module EsSchemaCsv:
 
 
     public:
+        def prepare_csv_schema_projection(schema: SchemaDescriptor&, materializer: CsvMaterializer&) -> SchemaCsvProjection error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            try schema_csv_validate_inputs(schema, materializer)
+            projection: mutable SchemaCsvProjection = try schema_csv_prepare_projection(schema, materializer)
+            try schema_csv_projection_valid(schema, materializer, projection)
+            return projection
+
+
+        def materialize_csv_schema_record_with_projection(schema: SchemaDescriptor&, materializer: CsvMaterializer&, projection: SchemaCsvProjection&, row_ordinal: usize, source_record_index: usize) -> SchemaCsvRecord error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
+            try schema_csv_validate_inputs(schema, materializer)
+            try schema_csv_projection_valid(schema, materializer, projection)
+            raise SchemaCsvMaterializeError.RowIndexInvalid if source_record_index >= materializer.records.count
+            return try schema_csv_materialize_row_with_projection(schema, materializer, projection, row_ordinal, source_record_index, SCHEMA_CSV_MAX_PAYLOAD_BYTES)
+
+
         def materialize_csv_schema_record(schema: SchemaDescriptor&, materializer: CsvMaterializer&, row_ordinal: usize) -> SchemaCsvRecord error[DataContractError, CsvMaterializerError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaCsvMaterializeError] can[Memory.Allocate, Abort.Panic]:
             try schema_csv_validate_inputs(schema, materializer)
             raise SchemaCsvMaterializeError.RowIndexInvalid if row_ordinal >= schema_csv_data_row_count(materializer)
             projection: SchemaCsvProjection = try schema_csv_prepare_projection(schema, materializer)
+            try schema_csv_projection_valid(schema, materializer, projection)
             return try schema_csv_materialize_row_with_projection(schema, materializer, projection, row_ordinal, schema_csv_source_record_index(materializer, row_ordinal), SCHEMA_CSV_MAX_PAYLOAD_BYTES)
 
 

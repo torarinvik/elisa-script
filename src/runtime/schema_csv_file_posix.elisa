@@ -1,0 +1,196 @@
+# Bounded, schema-aware CSV/TSV rows over the POSIX record reader.
+#
+# The file reader owns CSV framing. This adapter retains a validated header
+# projection, parses one data record at a time, and returns owned typed values
+# without materializing the complete file or rebuilding the header mapping.
+
+module EsSchemaCsvFilePosix:
+    using EsCsv
+    using EsCsvMaterialize
+    using EsCsvParser
+    using EsCsvRecordFramer
+    using EsCsvRecordFilePosix
+    using EsData
+    using EsRuntime
+    using EsSchema
+    using EsSchemaCsv
+    using EsSchemaNumeric
+
+    public:
+        const SCHEMA_CSV_FILE_READER_FORMAT_VERSION: u8 = 1
+
+
+        const enum SchemaCsvFileReaderState of u8:
+            Reading
+            Complete
+            Failed
+            Closed
+
+
+        struct SchemaCsvFileRead:
+            has_record: bool = false
+            record: SchemaCsvRecord = SchemaCsvRecord{row_ordinal: 0}
+
+
+        struct SchemaCsvFileReader:
+            format_version: u8 = SCHEMA_CSV_FILE_READER_FORMAT_VERSION
+            file_reader: CsvRecordFileReader
+            schema: SchemaDescriptor
+            policy: CsvPolicy
+            limits: DataDecodeLimits
+            projection: SchemaCsvProjection = SchemaCsvProjection{}
+            projection_ready: bool = false
+            header_seen: bool = false
+            source_records_consumed: usize = 0
+            data_rows_returned: usize = 0
+            state: SchemaCsvFileReaderState = SchemaCsvFileReaderState.Reading
+
+
+        error SchemaCsvFileError:
+            InvalidFormatVersion
+            InvalidState
+            AccountingInvalid
+
+
+    private:
+        const enum SchemaCsvFileAction of u8:
+            ReadRecord
+            ReturnComplete
+
+
+        def schema_csv_file_action(reader: SchemaCsvFileReader&) -> SchemaCsvFileAction:
+            return SchemaCsvFileAction.ReturnComplete if reader.state == SchemaCsvFileReaderState.Complete
+            return SchemaCsvFileAction.ReadRecord
+
+
+        def schema_csv_file_policy_equal(left: CsvPolicy, right: CsvPolicy) -> bool:
+            return left.separator == right.separator and left.quote == right.quote and left.escape == right.escape and left.record_separator == right.record_separator and left.line_ending == right.line_ending and left.header == right.header and left.trim_unquoted == right.trim_unquoted
+
+
+        def schema_csv_file_limits_equal(left: DataDecodeLimits, right: DataDecodeLimits) -> bool:
+            return left.input_bytes == right.input_bytes and left.tokens == right.tokens and left.depth == right.depth and left.records == right.records and left.fields == right.fields and left.field_bytes == right.field_bytes
+
+
+        def schema_csv_file_state_valid(reader: SchemaCsvFileReader&) -> bool error[SchemaCsvFileError, FileStreamError, CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError, SchemaContractError] can[Memory.Allocate, Abort.Panic]:
+            raise SchemaCsvFileError.InvalidFormatVersion if reader.format_version != SCHEMA_CSV_FILE_READER_FORMAT_VERSION
+            try validate_schema_descriptor(reader.schema)
+            raise SchemaContractError.InvalidSource if reader.schema.source != SchemaSource.Csv and reader.schema.source != SchemaSource.Tsv
+            try validate_csv_record_file_reader(reader.file_reader)
+            raise SchemaCsvFileError.AccountingInvalid if not schema_csv_file_policy_equal(reader.policy, reader.file_reader.framer.policy)
+            raise SchemaCsvFileError.AccountingInvalid if not schema_csv_file_limits_equal(reader.limits, reader.file_reader.framer.limits)
+            raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed > reader.file_reader.framer.records_emitted
+            raise SchemaCsvFileError.AccountingInvalid if reader.data_rows_returned > reader.source_records_consumed
+            if reader.policy.header:
+                raise SchemaCsvFileError.InvalidState if reader.projection_ready != reader.header_seen
+            else:
+                raise SchemaCsvFileError.InvalidState if reader.header_seen or not reader.projection_ready
+                raise SchemaCsvFileError.InvalidState if reader.projection.has_header
+            pending_records: usize = reader.file_reader.pending_records.count - reader.file_reader.pending_index
+            if reader.state != SchemaCsvFileReaderState.Failed and reader.file_reader.framer.state != CsvRecordFramerState.Failed:
+                raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed > reader.file_reader.framer.records_emitted
+                raise SchemaCsvFileError.AccountingInvalid if pending_records > reader.file_reader.framer.records_emitted - reader.source_records_consumed
+                raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed + pending_records != reader.file_reader.framer.records_emitted
+                expected_consumed: usize = reader.data_rows_returned
+                expected_consumed <- expected_consumed + 1 if reader.policy.header and reader.header_seen
+                raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed != expected_consumed
+            if reader.state == SchemaCsvFileReaderState.Reading:
+                raise SchemaCsvFileError.InvalidState if reader.file_reader.state != CsvRecordFileReaderState.Reading and reader.file_reader.state != CsvRecordFileReaderState.Complete
+            elif reader.state == SchemaCsvFileReaderState.Complete:
+                raise SchemaCsvFileError.InvalidState if reader.file_reader.state != CsvRecordFileReaderState.Complete
+                raise SchemaCsvFileError.AccountingInvalid if pending_records != 0
+                raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed != reader.file_reader.framer.records_emitted
+            elif reader.state == SchemaCsvFileReaderState.Failed:
+                raise SchemaCsvFileError.InvalidState if reader.file_reader.state == CsvRecordFileReaderState.Closed
+            elif reader.state == SchemaCsvFileReaderState.Closed:
+                raise SchemaCsvFileError.InvalidState if reader.file_reader.state != CsvRecordFileReaderState.Closed
+            else:
+                raise SchemaCsvFileError.InvalidState
+            return true
+
+
+        def schema_csv_file_bytes_view(bytes: darray[u8]) -> sview:
+            return "" if bytes.count == 0
+            data: u8& = (&bytes[0]).cast[u8&]
+            return sview(data, 0, bytes.count.i64())
+
+
+        def schema_csv_file_next_impl(reader: mutable SchemaCsvFileReader&) -> SchemaCsvFileRead error[SchemaCsvFileError, FileStreamError, CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError, CsvMaterializerError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaCsvMaterializeError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            result: mutable SchemaCsvFileRead = SchemaCsvFileRead{}
+            machine over schema_csv_file_action(reader) while true:
+                state NextRecord
+                start NextRecord
+
+                NextRecord, SchemaCsvFileAction.ReturnComplete:
+                    break
+
+                NextRecord, SchemaCsvFileAction.ReadRecord:
+                    raw_record: CsvRecordFileRead = try next_csv_record_file(reader.file_reader)
+                    if not raw_record.has_record:
+                        reader.state <- SchemaCsvFileReaderState.Complete
+                        break
+                    raise SchemaCsvFileError.InvalidState if raw_record.bytes.count == 0
+                    raise SchemaCsvFileError.AccountingInvalid if reader.source_records_consumed >= reader.limits.records
+                    reader.source_records_consumed <- reader.source_records_consumed + 1
+                    if reader.policy.header and not reader.header_seen:
+                        header_materializer: CsvMaterializer = try parse_csv_materializer(schema_csv_file_bytes_view(raw_record.bytes), reader.policy, reader.limits)
+                        projection: SchemaCsvProjection = try prepare_csv_schema_projection(reader.schema, header_materializer)
+                        reader.projection <- projection
+                        reader.projection_ready <- true
+                        reader.header_seen <- true
+                        -> NextRecord
+
+                    raise SchemaCsvFileError.InvalidState if not reader.projection_ready
+                    materializer: CsvMaterializer = try parse_csv_materializer(schema_csv_file_bytes_view(raw_record.bytes), reader.policy, reader.limits)
+                    data_row: SchemaCsvRecord = try materialize_csv_schema_record_with_projection(reader.schema, materializer, reader.projection, reader.data_rows_returned, 0)
+                    reader.data_rows_returned <- reader.data_rows_returned + 1
+                    result <- SchemaCsvFileRead{has_record: true, record: data_row}
+                    break
+
+            return result
+
+
+    public:
+        # Schema name views and the path backing `path` must outlive this reader.
+        # The reader owns the schema descriptor value and prepared header map.
+        def begin_schema_csv_file_reader(path: cstr, schema: SchemaDescriptor, policy: CsvPolicy = CsvPolicy{}, limits: DataDecodeLimits = DataDecodeLimits{}, max_record_bytes: usize = DATA_MAX_INPUT_BYTES) -> SchemaCsvFileReader error[FileStreamError, DataContractError, CsvContractError, CsvRecordFramerError, CsvMaterializerError, SchemaContractError, SchemaCsvMaterializeError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic]:
+            try validate_schema_descriptor(schema)
+            raise SchemaContractError.InvalidSource if schema.source != SchemaSource.Csv and schema.source != SchemaSource.Tsv
+            projection: mutable SchemaCsvProjection = SchemaCsvProjection{}
+            projection_ready: mutable bool = false
+            if not policy.header:
+                empty_materializer: CsvMaterializer = try parse_csv_materializer("", policy, limits)
+                projection <- try prepare_csv_schema_projection(schema, empty_materializer)
+                projection_ready <- true
+            file_reader: CsvRecordFileReader = try begin_csv_record_file_reader(path, policy, limits, max_record_bytes)
+            return SchemaCsvFileReader{file_reader: file_reader, schema: schema, policy: file_reader.framer.policy, limits: file_reader.framer.limits, projection: projection, projection_ready: projection_ready}
+
+
+        def validate_schema_csv_file_reader(reader: SchemaCsvFileReader&) -> bool error[SchemaCsvFileError, FileStreamError, CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError, SchemaContractError] can[Memory.Allocate, Abort.Panic]:
+            try schema_csv_file_state_valid(reader)
+            return true
+
+
+        def next_schema_csv_file_record(reader: mutable SchemaCsvFileReader&) -> SchemaCsvFileRead error[SchemaCsvFileError, FileStreamError, CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError, CsvMaterializerError, SchemaContractError, SchemaIntegerError, SchemaDecimalError, SchemaCsvMaterializeError] can[Blocking.IO, Memory.Allocate, Abort.Panic]:
+            try validate_schema_csv_file_reader(reader)
+            raise SchemaCsvFileError.InvalidState if reader.state == SchemaCsvFileReaderState.Failed or reader.state == SchemaCsvFileReaderState.Closed
+            catch schema_csv_file_next_impl(reader):
+                ok result:
+                    return result
+                error failure:
+                    reader.state <- SchemaCsvFileReaderState.Failed
+                    raise failure
+
+
+        def close_schema_csv_file_reader(reader: mutable SchemaCsvFileReader&) -> bool error[SchemaCsvFileError, FileStreamError, CsvRecordFileError, DataContractError, CsvContractError, CsvRecordFramerError] can[Blocking.IO, Memory.Release]:
+            raise SchemaCsvFileError.InvalidState if reader.format_version != SCHEMA_CSV_FILE_READER_FORMAT_VERSION
+            if reader.state == SchemaCsvFileReaderState.Closed:
+                raise SchemaCsvFileError.InvalidState if reader.file_reader.state != CsvRecordFileReaderState.Closed
+                return true
+            catch close_csv_record_file_reader(reader.file_reader):
+                ok closed:
+                    _ = closed
+                    reader.state <- SchemaCsvFileReaderState.Closed
+                    return true
+                error failure:
+                    reader.state <- SchemaCsvFileReaderState.Closed if reader.file_reader.state == CsvRecordFileReaderState.Closed
+                    raise failure

@@ -14,8 +14,10 @@ parser="$repo_root/src/runtime/csv_parser_model.elisa"
 encoder="$repo_root/src/runtime/csv_encode_model.elisa"
 framer="$repo_root/src/runtime/csv_record_framer_model.elisa"
 file_reader="$repo_root/src/runtime/csv_record_file_posix.elisa"
+schema_csv="$repo_root/src/runtime/schema_csv_materializer.elisa"
+schema_file_reader="$repo_root/src/runtime/schema_csv_file_posix.elisa"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -31,7 +33,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -139,6 +141,8 @@ done
 rg -Fq '`EsCsvEncode::encode_csv_record`' "$docs"
 rg -Fq '`EsCsvRecordFramer::feed_csv_record_framer`' "$docs"
 rg -Fq '`EsCsvRecordFilePosix::next_csv_record_file`' "$docs"
+rg -Fq '`EsSchemaCsvFilePosix::next_schema_csv_file_record`' "$docs"
+rg -Fq '`EsSchemaCsv::prepare_csv_schema_projection`' "$docs"
 
 for framer_pattern in \
     'module EsCsvRecordFramer:' \
@@ -190,4 +194,37 @@ for file_reader_fixture_pattern in \
     rg -Fq "$file_reader_fixture_pattern" "$runtime_fixture"
 done
 
-printf 'csv model audit: bounded POSIX CSV reading, chunk framing, record encoding, and source parsing are present\n'
+rg -Fq 'include "../runtime/schema_csv_file_posix.elisa"' "$ir"
+for schema_csv_pattern in \
+    'module EsSchemaCsv:' \
+    'struct SchemaCsvProjection:' \
+    'def prepare_csv_schema_projection(' \
+    'def materialize_csv_schema_record_with_projection(' \
+    'InvalidProjection'; do
+    rg -Fq "$schema_csv_pattern" "$schema_csv"
+done
+
+for schema_file_reader_pattern in \
+    'module EsSchemaCsvFilePosix:' \
+    'using EsSchemaCsv' \
+    'struct SchemaCsvFileReader:' \
+    'def begin_schema_csv_file_reader(' \
+    'def next_schema_csv_file_record(' \
+    'def close_schema_csv_file_reader(' \
+    'reader.projection <- projection' \
+    'materialize_csv_schema_record_with_projection'; do
+    rg -Fq "$schema_file_reader_pattern" "$schema_file_reader"
+done
+
+for schema_file_fixture_pattern in \
+    'schema_csv_file_reader_streams_header_mapped_typed_rows' \
+    'using EsSchemaCsvFilePosix' \
+    'first.record.row_ordinal == 0' \
+    'second.record.row_ordinal == 1' \
+    'source_name: "name"' \
+    'SchemaCsvValueKind.Integer' \
+    'SchemaCsvMaterializeError.DuplicateHeader'; do
+    rg -Fq "$schema_file_fixture_pattern" "$runtime_fixture"
+done
+
+printf 'csv model audit: bounded POSIX CSV reading, schema-aware row streaming, chunk framing, and record encoding are present\n'

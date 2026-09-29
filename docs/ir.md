@@ -520,6 +520,15 @@ before requesting the next. Source fixtures describe empty input, a CRLF
 boundary at the chunk edge, a final unterminated row, exact-limit acceptance,
 and over-limit rejection, but no runtime or parity process has run.
 
+`EsSchemaCsvFilePosix::next_schema_csv_file_record` composes the bounded file
+reader with `EsSchemaCsv`. It prepares a checked header/position projection
+once, then parses and materializes one owned typed row per call while keeping
+global data-row ordinals. Header names and source aliases are validated even
+for a header-only file; empty input remains an empty stream. The reusable
+`SchemaCsvProjection` is checked for shape and reversible mappings before a
+row uses it. Source fixtures cover header alias reordering, exact integer
+conversion, and an unterminated final row; these changes have not been run.
+
 `EsSchemaCsv` materializes completed CSV/TSV records as owned UTF-8 text in
 schema order. It binds decoded header names through `source_name` aliases, or
 uses `source_index` (declaration order by default) without a header; duplicate
