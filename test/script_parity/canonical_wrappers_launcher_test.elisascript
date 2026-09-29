@@ -4,6 +4,7 @@
 include "../../src/testing/differential.elisa"
 include "process_probe_model.elisa"
 include "canonical_wrapper_scope.elisa"
+include "canonical_wrapper_gate.elisa"
 include "canonical_lint_cases.elisa"
 include "canonical_lint_exec_failure_cases.elisa"
 include "../../src/testing/observation_preview_model.elisa"
@@ -18,7 +19,7 @@ module EsCanonicalWrappersLauncherParity:
         using EsCanonicalLintCases
 
         const module Tools:
-            COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            COMPILER: sview = EsCanonicalWrapperGate::Pins::COMPILER
             BASH: sview = "/bin/bash"
             BASH_SHA256: sview = "d59c6f2312e551e9c46497329d435b6ec74fbc46e9155b84170f377127ed004e"
             SHA256: sview = "/usr/bin/shasum"
@@ -63,32 +64,29 @@ module EsCanonicalWrappersLauncherParity:
             directories: darray[Path] = []
 
 
-        error GateError:
-            Disabled
-            WrongCompiler
-            MissingIdentity
-
-
         def environment_value(name: sview) -> sview can[Environment.Read]:
             return try getenv(name, "") else ""
 
 
         def valid_hash(value: sview) -> bool:
-            return false if len(value) != 64
-            for byte in value:
-                return false if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 97u8 and byte <= 102u8))
-            return true
+            return EsCanonicalWrapperGate::valid_hash(value)
 
 
-        def authorization() -> Authorization error[GateError] can[Environment.Read]:
-            raise GateError.Disabled if environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") != "1" or environment_value("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD") != "active"
-            raise GateError.WrongCompiler if environment_value("ELISA_LOCAL_COMPILER") != Tools::COMPILER or environment_value("ELISACORE_BIN") != Tools::COMPILER
+        def authorization() -> Authorization error[EsCanonicalWrapperGate::GateError] can[Environment.Read]:
             launcher: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER")
             launcher_hash: sview = environment_value("ELISASCRIPT_PUBLIC_LAUNCHER_SHA256")
             compiler_hash: sview = environment_value("ELISASCRIPT_LOCAL_COMPILER_SHA256")
             probe: sview = environment_value("ELISASCRIPT_PROCESS_PROBE")
             probe_hash: sview = environment_value("ELISASCRIPT_PROCESS_PROBE_SHA256")
-            raise GateError.MissingIdentity if launcher == "" or probe == "" or not launcher.startswith("/") or not probe.startswith("/") or not valid_hash(launcher_hash) or not valid_hash(compiler_hash) or not valid_hash(probe_hash)
+            try EsCanonicalWrapperGate::validate(EsCanonicalWrapperGate::Gate{
+                reauthorized: environment_value("ELISASCRIPT_VALIDATION_REAUTHORIZED") == "1",
+                rss_guard: environment_value("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD") == "active",
+                launcher_qualified: environment_value("ELISASCRIPT_CANONICAL_LAUNCHER_QUALIFIED") == "1",
+                probe_qualified: environment_value("ELISASCRIPT_PROCESS_PROBE_QUALIFIED") == "1",
+                local_compiler: environment_value("ELISA_LOCAL_COMPILER"), core_compiler: environment_value("ELISACORE_BIN"),
+                launcher: EsCanonicalWrapperGate::Identity{path: launcher, hash: launcher_hash},
+                probe: EsCanonicalWrapperGate::Identity{path: probe, hash: probe_hash}, compiler_hash: compiler_hash
+            })
             return Authorization{launcher: launcher, launcher_hash: launcher_hash, compiler_hash: compiler_hash, probe: probe, probe_hash: probe_hash}
 
 
@@ -131,12 +129,35 @@ module EsCanonicalWrappersLauncherParity:
             return try EsChecksumRecord::sha256_text_record_matches(observed.stdout, expected, target) else false
 
 
+        # Preflight only: the header is not proof of trusted/native behavior.
+        # Reject text wrappers before even launching the checksum tool.
+        def native_artifact(target: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
+            return false if not EsCanonicalWrapperGate::absolute_identity_path(target)
+            selected: Path = path(target)
+            return false if not is_file(selected) or is_symlink(selected) or not is_executable(selected)
+            size: usize = try file_size(selected) else 0usize
+            return false if size < 4 or size > Tools::PIN_BYTES
+            name: mutable darray[u8] = []
+            for byte in target |name|:
+                name.push(byte)
+            name.push(0u8)
+            mode: darray[u8] = [114u8,98u8,0u8]
+            stream: mutable heap void&? = fopen(&name[0], &mode[0])
+            return false if stream == null
+            opened: mutable heap void& = stream
+            header: mutable darray[u8] = [0u8,0u8,0u8,0u8]
+            amount: usize = fread((&header[0]).cast[mutable void&], 1, 4, opened)
+            closed: int = fclose(opened)
+            return amount == 4 and closed == 0 and EsCanonicalWrapperGate::native_container_header(header) and not is_symlink(selected)
+
+
         def pinned_inputs(auth: Authorization, wave: Wave) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
-            return false if is_symlink(path(Tools::COMPILER)) or is_symlink(path(auth.probe)) or not is_executable(path(Tools::COMPILER)) or not is_executable(path(auth.probe)) or not is_executable(path(auth.launcher))
+            return false if not native_artifact(Tools::COMPILER) or not native_artifact(auth.probe) or not native_artifact(auth.launcher)
             return false if not has_hash(Tools::COMPILER, auth.compiler_hash) or not has_hash(auth.probe, auth.probe_hash) or not has_hash(auth.launcher, auth.launcher_hash) or not has_hash(Tools::BASH, Tools::BASH_SHA256)
             return false if not has_hash("test/fixtures/script_parity/process_probe/probe.c", "fbaf5b83b8ec226a980bfc52e0fca56380acb42b7a80dc6cf773533d550a0e8d") or not has_hash("test/script_parity/process_probe_model.elisa", "d7394a1583feafeba29046a24149a8760ac9219fd0786afe05942192ad46bbec")
             return false if not has_hash("test/script_parity/canonical_lint_cases.elisa", "a8c0221bd25fe0713cad3764dc114e71386931398eafee359af0e43a8c562d8a")
             return false if not has_hash("test/script_parity/canonical_wrapper_scope.elisa", "baf5e20f45a943211d85239c5b7afe491d672b150e929afa19991415e3700437")
+            return false if not has_hash("test/script_parity/canonical_wrapper_gate.elisa", "16e095d22b4169743a60f84fa469a200aec9e33e84fbaded6578221beb4223c7")
             return false if not has_hash("test/script_parity/canonical_lint_exec_failure_cases.elisa", "a3b19ba6bfbcdc8482999509f5b945f0c1f20d2a14ac4755fa481f1285189608")
             return false if not has_hash("src/testing/observation_preview_model.elisa", "7553c78bb167295a9be1528b6f05acb037098800adbe8c05acfaa2e23f0ee1b7")
             return false if not has_hash("src/testing/checksum_record_model.elisa", "1b3cec1235d42076e50b15491d3d6b906f3841ea966937779dc665f1e8a59488")

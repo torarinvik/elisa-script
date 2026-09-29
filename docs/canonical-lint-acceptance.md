@@ -348,6 +348,37 @@ cleanup fixture, directory operation, compiler, process or parity test ran;
 only source inspection and git diff checks were performed. Originals, callers,
 SSH and other agents' work remain unchanged.
 
+## Prebuilt role admission (source-only hardening)
+
+The dormant first-wrapper gate now also requires explicit declarations
+`ELISASCRIPT_CANONICAL_LAUNCHER_QUALIFIED=1` and
+`ELISASCRIPT_PROCESS_PROBE_QUALIFIED=1`, in addition to explicit execution
+reauthorization and the bounded-guard marker. The pure
+`canonical_wrapper_gate.elisa` model binds the exact local/core compiler path,
+validates lowercase SHA-256 identities and bounded absolute launcher/probe
+paths, and rejects compiler-versus-role and launcher-versus-probe path or digest
+aliases before file/hash/probe launches. Literal metacharacters/backslashes are
+retained; root-only, relative, NUL/LF/CR and oversized identity paths fail.
+
+Before launching any checksum process, the authorized harness checks all three
+prebuilt artifacts (compiler, launcher, probe) as non-symlink executable regular
+files within the existing byte bound. It reads/closes a four-byte header and
+requires recognized native container magic. This rejects obvious text/shell
+wrappers that might otherwise auto-build, but does not prove that an arbitrary
+native artifact cannot invoke a compiler. The gate model's source is pinned
+before and after the suite. Tiny pure fixtures cover missing declarations,
+aliases, malformed identity data and basic native/script header recognition;
+they and the file preflight remain uncompiled/unrun.
+
+Declarations, matching hashes and container magic are not execution authority,
+build provenance, compiler freshness, a functioning guard or native/dependency
+qualification. An operator still needs the explicitly authorized qualification
+record binding artifacts, source/options/dependency closure, local compiler,
+no-auto-build launcher behavior and external process-tree time/RSS containment.
+Path spelling/digest checks are observational, not inode-sealed admission or
+atomic protection against mutation. No artifact, compiler, header preflight,
+probe, test or parity run occurred, and no caller/original was changed.
+
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and
 build drivers remain later work. Compiler, native and parity execution remains
