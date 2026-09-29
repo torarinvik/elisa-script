@@ -23,7 +23,8 @@ independent raw-source regex searches.
 The positive registry fixture gives the first following `def` line a quoted
 comment token, pinning the shell reference's inclusive `sed` range endpoint.
 
-The source-only launcher harness also checks an owned empty root where the
+The source-only launcher harness creates its generated root with spaces and
+shell metacharacters in the path. It checks an owned empty root where the
 first required semantic file is absent. Both implementations must return
 status 2, no stdout, and
 `builtin surface: missing source file: <absolute-symbols-path>\n`. It then
