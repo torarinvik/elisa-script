@@ -4,6 +4,21 @@ Real source: `../Elisa-LSP/scripts/compiler_root_env.sh` (18 lines), SHA-256
 `f8035e67548592d33577988dc3315a8c9f2f423fa56daa03906b65457dd3524a`.
 It is a sourced Bash function, not an executable program. The original and
 `../Elisa-LSP/test/compiler_root_env_test.sh` remain unchanged.
+`reference.sh` is a byte-for-byte fixture snapshot, not a rewritten function.
+`reference_observe.sh` is a separate, authored Bash wrapper that sources only
+that snapshot, calls the function with one explicit LSP root argument, then
+prints the exported value plus LF as a projection comparable to the candidate
+CLI. It must be invoked by a qualified Bash interpreter in an isolated,
+pinned fixture, not as an authority to launch any live compiler. The wrapper's
+output projection does not prove parent-environment equivalence.
+The authored wrapper SHA-256 is
+`5e6196860c40c861f1a6ecee2d1ab32a76c4b22c591d829f8ebca62ea5be4674`.
+Current candidate/model source identities are respectively
+`1aa632ce625dd5608de31714567c8bb9ff6d22dc699b16fcd38960eaf8d50e6c`
+and `0ff7c281c690ff45c471aee003b7a8a9e17ba782d5e523782acbc1b2d5e719d1`.
+These are recorded bytes, not build provenance or a completed hash gate; a
+future public fixture must verify every selected artifact before and after
+use and refuse concurrent dirty source revisions.
 
 The source-only companion is
 `ports/Elisa-LSP/scripts/compiler_root_env.elisascript`; its pure selection
