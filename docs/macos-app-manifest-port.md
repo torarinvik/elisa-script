@@ -75,6 +75,15 @@ domain before embedding the name in a quoted shell word. Static golden fixtures
 cover default output, apostrophe/command-substitution quoting, and rejected
 shell syntax; they remain uncompiled and unrun.
 
+`src/runtime/macos_app_info_plist_model.elisa` now renders the packager's
+ordered `Info.plist` string/bool metadata, reusing the typed deployment-target
+formatter and escaping XML text. It includes `CFBundleIconFile` only when the
+packager has an icon, and rejects invalid UTF-8 or XML-forbidden control bytes.
+Static fixtures cover the ordered metadata, XML metacharacters, minimum OS,
+optional icon, and invalid controls; they remain uncompiled and unrun. The
+writer is not yet called from bundle assembly, and byte-for-byte comparison
+against `plistlib.dump` remains pending.
+
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
 against the project, linked-library closure,
