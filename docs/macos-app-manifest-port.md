@@ -84,6 +84,12 @@ optional icon, and invalid controls; they remain uncompiled and unrun. The
 writer is not yet called from bundle assembly, and byte-for-byte comparison
 against `plistlib.dump` remains pending.
 
+`src/runtime/macos_app_binary_format_model.elisa` now ports the packager's
+four-byte Mach-O prefix check for its three accepted magic values. Its small
+fixtures cover all three values, short/long prefixes, and a near miss; they
+remain uncompiled and unrun. Reading the prefix from staged files and invoking
+`otool` are still adapter/assembly work.
+
 This is a component of a future `package_macos_app.elisascript`, not a package
 replacement. The output remains a raw path setting; `expanduser()`, resolution
 against the project, linked-library closure,
