@@ -109,3 +109,67 @@ concurrent mutation exclusion. Hash source/reference/license/launcher/compiler
 identities before and after use; clean up only recorded isolated fixture paths.
 Do not touch SSH or other agents' processes. No adoption until observed workflow
 parity and the public execution path are actually demonstrated.
+
+## Dormant native qualification matrix (authored, not executed)
+
+`test/script_parity/skia_environment_cases.elisa` supplies ten independent
+literal ordinary cases; it imports no candidate lookup/printing implementation.
+`skia_environment_cases_test.elisa` checks that fixture surface without launching
+anything. `skia_environment_native_parity_test.elisascript` is a gated process
+matrix for a separately qualified, prebuilt native candidate. It never compiles
+the candidate, starts a compiler, or invokes the interpreted public launcher.
+That launcher still needs its own presence-aware host integration and tests.
+
+The public `EsSkiaEnvironmentNativeParity::native_parity` entry requires all of:
+
+- `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` and
+  `ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active` from an authorized outer guard.
+- `ELISASCRIPT_SKIA_ENV_NATIVE_QUALIFIED=1`, with absolute nonsymlink executable
+  paths and SHA-256 identities supplied through `ELISASCRIPT_SKIA_ENV_NATIVE_BIN`,
+  `ELISASCRIPT_SKIA_ENV_NATIVE_SHA256`, `ELISASCRIPT_PARITY_PYTHON_BIN` and
+  `ELISASCRIPT_PARITY_PYTHON_SHA256`.
+- Both compiler selectors pinned to the approved local StructPy compiler path,
+  and `ELISASCRIPT_LOCAL_COMPILER_SHA256` matching its selected local artifact.
+  The compiler is identity-checked, never executed by this fixture.
+- Candidate source/model/adapter pairing assertions through
+  `ELISASCRIPT_SKIA_ENV_SOURCE_SHA256`, `ELISASCRIPT_SKIA_ENV_MODEL_SHA256` and
+  `ELISASCRIPT_SKIA_ENV_ADAPTER_SHA256`, matching the fixed source hashes in the
+  matrix. The reference, license, independent cases and hash-tool identities are
+  pinned too.
+
+These markers and source-pairing assertions are not proof of artifact provenance
+or a working RSS guard. Separate qualification must establish the exact native
+build, compiler/options, dependency closure (including runtime libraries), test
+harness/runner build and actual whole-process-tree memory/time containment. The
+shared differential runner currently has concurrent worktree edits: do not assume
+its included sources match an earlier qualified artifact. No gate is permission
+to resume execution without explicit user reauthorization.
+
+The fixture constructs a private temporary directory containing only a copied
+reference and copied native candidate, checks their hashes and modes, and uses
+that directory as cwd for both programs. Each child receives a fresh replacement
+environment containing only explicit fixture values and `LC_ALL=C`; it does not
+inherit credentials, PATH, HOME or validation/compiler variables. A binary stdin
+sentinel is supplied to both but the program has no reason to read it. Python is
+invoked with `-I -S -B -X utf8`: isolated startup, no site hooks, no bytecode writes,
+and explicit UTF-8 mode. This deliberately qualifies ordinary UTF-8 behavior,
+not ambient Python encoding/locale configuration.
+
+For each case, the reference must match literal status 0/stdout/empty stderr before
+the native candidate starts. The candidate must match that same independent
+expectation as well as the reference. Absent/empty/None, metacharacters, CR/LF,
+UTF-8, case sensitivity, empty/equals keys and ignored extra args are covered.
+Input identities are rechecked even after setup/matrix failure; fixture filename
+membership, file bytes and modes are checked around each ordinary run. This is
+not a full mutable-world or parent-environment receipt: inode/timestamps, out-of-
+tree writes, TTY/stream timing, concurrent mutation and parent-state observation
+are still separate qualification requirements. The harness is not a sandbox for
+untrusted binaries.
+
+Captured output has a 64 KiB combined budget and every subprocess has 10,000
+bounded wait polls, not a promised 10,000 milliseconds. The external RSS/time
+guard remains required. Cleanup removes only recorded temporary file paths in
+reverse order and then attempts the empty root directory; unexpected files are
+not recursively erased, and cleanup failure reports the recoverable root path.
+Partial setup is cleaned too. All matrix/gate/cleanup paths are source-only and
+still require compilation and execution qualification.
