@@ -167,3 +167,10 @@ for the triple-pointer ABI, sentinel/aggregate-byte admission and exclusive
 borrow precondition. It is not wired into the runtime, qualified, or backed by
 an enforced concurrency guard; those remain prerequisites to integration.
 No native snapshot was executed.
+
+An additional [private Darwin child kernel](process-streaming-child-darwin.md)
+is now authored separately. It uses explicit envp and precomputed candidates,
+with no post-fork environment mutation, allocation or shell fallback. Its exec
+search failure policy is explicit and has source-only pure fixtures. It does
+not fork or expose a runnable API; parent error reporting, resource/group/wait/
+deadline integration and all native qualification remain pending.

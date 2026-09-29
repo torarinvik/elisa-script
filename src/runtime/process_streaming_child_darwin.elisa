@@ -1,0 +1,64 @@
+# Unwired private child kernel. No fork or public launch entry is provided here.
+# Parent must admit/retain storage, erase ABI views and acquire errno location
+# before fork. Only the eventual executor in this namespace may call the kernel.
+include "process_exec_search_model.elisa"
+include "process_launch_vectors_model.elisa"
+
+module EsProcessStreamingDarwin:
+    private:
+        const module ChildLimits:
+            GROUP_EINTR_RETRIES: usize = 64
+
+
+        @link_name(__error)
+        extern native_errno_location() -> mutable i32& can[Blocking.IO]
+
+        @link_name(setpgid)
+        extern native_setpgid(pid: i32, group: i32) -> i32 can[Blocking.IO]
+
+        @link_name(execve)
+        extern native_execve(candidate: cstr, argv: void&, environment: void&) -> i32 can[Blocking.IO]
+
+        @link_name(_exit)
+        extern native_exit(status: i32) -> void can[Blocking.IO]
+
+
+        def child_group(errno_location: mutable i32&) -> bool can[Blocking.IO]:
+            retries: mutable usize = 0
+            while retries <= ChildLimits::GROUP_EINTR_RETRIES |retries|:
+                return true if native_setpgid(0i32, 0i32) == 0i32
+                return false if errno_location[0] != EsProcessExecSearch::DarwinErrno::EINTR
+                retries <- retries + 1
+            return false
+
+
+        def child_exec(candidates: u8&?&, candidate_count: usize, argv: void&, environment: void&, errno_location: mutable i32&) -> void can[Blocking.IO, Unsafe.PointerCast]:
+            if candidate_count == 0 or candidate_count > EsProcessEnvironmentPlan::Limits::SEARCH_CANDIDATES:
+                native_exit(EsProcessExecSearch::fatal_status())
+                return
+            if not child_group(errno_location):
+                native_exit(EsProcessExecSearch::fatal_status())
+                return
+            saw_denied: mutable bool = false
+            index: mutable usize = 0
+            # Raw pointer indexing avoids child access to growing containers.
+            # candidate_count excludes the candidate table's null sentinel.
+            while index < candidate_count |index, saw_denied|:
+                borrowed: u8&? = candidates[index]
+                if borrowed == null:
+                    native_exit(EsProcessExecSearch::fatal_status())
+                    return
+                candidate: u8& = borrowed
+                _ = native_execve(candidate.cast[cstr], argv, environment)
+                # Take the errno sample immediately, before any other host call.
+                failure: i32 = errno_location[0]
+                match EsProcessExecSearch::after_failure(failure):
+                    EsProcessExecSearch::Action.Next:
+                        index <- index + 1
+                    EsProcessExecSearch::Action.NextDenied:
+                        saw_denied <- true
+                        index <- index + 1
+                    EsProcessExecSearch::Action.Stop:
+                        native_exit(EsProcessExecSearch::fatal_status())
+                        return
+            native_exit(EsProcessExecSearch::exhausted_status(saw_denied))
