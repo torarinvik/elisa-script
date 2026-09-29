@@ -4,6 +4,7 @@
 include "process_exec_search_model.elisa"
 include "process_launch_vectors_model.elisa"
 include "process_spawn_failure_model.elisa"
+include "process_scalar_abi_model.elisa"
 
 module EsProcessStreamingDarwin:
     private:
@@ -40,7 +41,9 @@ module EsProcessStreamingDarwin:
                 amount: isize = native_write_failure(fd, buffer.cast[void&], EsProcessSpawnFailure::Protocol::BYTES - offset)
                 attempts <- attempts + 1
                 if amount < 0:
-                    return false if errno_location[0] != EsProcessExecSearch::DarwinErrno::EINTR
+                    return false if not EsProcessScalarAbi::native_errno_failure(amount.i64())
+                    failure: i32 = errno_location[0]
+                    return false if not EsProcessScalarAbi::native_error_observation(amount.i64(), failure) or failure != EsProcessExecSearch::DarwinErrno::EINTR
                 elif amount == 0 or amount.usize() > EsProcessSpawnFailure::Protocol::BYTES - offset:
                     return false
                 else:
@@ -53,11 +56,20 @@ module EsProcessStreamingDarwin:
             native_exit(status if reported else EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
 
 
-        def child_group(errno_location: mutable i32&) -> bool can[Blocking.IO]:
+        def child_group(errno_location: mutable i32&, failure: mutable i32&) -> bool can[Blocking.IO]:
+            failure <- 0i32
             retries: mutable usize = 0
-            while retries <= ChildLimits::GROUP_EINTR_RETRIES |retries|:
-                return true if native_setpgid(0i32, 0i32) == 0i32
-                return false if errno_location[0] != EsProcessExecSearch::DarwinErrno::EINTR
+            while retries <= ChildLimits::GROUP_EINTR_RETRIES |retries, failure|:
+                returned: i32 = native_setpgid(0i32, 0i32)
+                if returned == 0i32:
+                    failure <- 0i32
+                    return true
+                if not EsProcessScalarAbi::native_errno_failure(returned.i64()):
+                    # Clear a previous EINTR sample before returning unknown.
+                    failure <- 0i32
+                    return false
+                failure <- errno_location[0]
+                return false if not EsProcessScalarAbi::native_error_observation(returned.i64(), failure) or failure != EsProcessExecSearch::DarwinErrno::EINTR
                 retries <- retries + 1
             return false
 
@@ -70,9 +82,12 @@ module EsProcessStreamingDarwin:
             if candidate_count == 0 or candidate_count > EsProcessEnvironmentPlan::Limits::SEARCH_CANDIDATES:
                 child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Prepared}, EsProcessExecSearch::fatal_status(), errno_location)
                 return
-            if not child_group(errno_location):
-                failure: i32 = errno_location[0]
-                child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Group, errno: failure}, EsProcessExecSearch::fatal_status(), errno_location)
+            group_failure: mutable i32 = 0
+            if not child_group(errno_location, group_failure):
+                if group_failure <= 0i32:
+                    native_exit(EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
+                    return
+                child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Group, errno: group_failure}, EsProcessExecSearch::fatal_status(), errno_location)
                 return
             saw_denied: mutable bool = false
             index: mutable usize = 0
@@ -84,9 +99,15 @@ module EsProcessStreamingDarwin:
                     child_fail(failure_fd, EsProcessSpawnFailure::Frame{phase: EsProcessSpawnFailure::Phase::Prepared}, EsProcessExecSearch::fatal_status(), errno_location)
                     return
                 candidate: u8& = borrowed
-                _ = native_execve(candidate.cast[cstr], argv, environment)
+                returned: i32 = native_execve(candidate.cast[cstr], argv, environment)
+                if not EsProcessScalarAbi::native_errno_failure(returned.i64()):
+                    native_exit(EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
+                    return
                 # Take the errno sample immediately, before any other host call.
                 failure: i32 = errno_location[0]
+                if not EsProcessScalarAbi::native_error_observation(returned.i64(), failure):
+                    native_exit(EsProcessSpawnFailure::Protocol::UNREPORTED_STATUS)
+                    return
                 match EsProcessExecSearch::after_failure(failure):
                     EsProcessExecSearch::Action.Next:
                         index <- index + 1

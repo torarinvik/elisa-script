@@ -115,3 +115,22 @@ ABI/snapshot/concurrency/native artifact qualification and independent inherited
 binary-stream/parity fixtures require explicit user reauthorization plus real
 process-tree RSS/wall-time containment. This document grants no execution
 permission. Originals, callers, SSH and other agents' work remain unchanged.
+
+## Native return/errno admission correction (source-only)
+
+Group setup, exec and report writing now gate errno reads on exactly native -1.
+Group setup captures its genuine failure in a caller-owned i32 output instead
+of rereading errno after a boolean return; success or an unexpected native return
+clears a prior EINTR observation. Only positive errno observations can populate
+native failure frames. Unknown exec/group returns or nonpositive errno stop via
+the existing unreported-failure exit, without fabricating an errno-based frame
+or advancing PATH search from stale state. Unexpected negative write returns
+likewise cannot retry on stale EINTR.
+
+The shared pure observation predicate has authored boundary fixtures, all unrun.
+No child kernel or C symbol was called. The unreported status 125 still collides
+with a normal tool exit: empty/partial EOF and that status are not proof of exec
+success or a uniquely identified failure. Parent protocol/ownership/group
+handling and full generated child call-graph/ABI/async-signal qualification
+remain open. The kernel remains private and unwired; neither source nor
+bytecode/public launch behavior changed here. Execution remains paused.
