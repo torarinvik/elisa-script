@@ -234,8 +234,8 @@ Inputs over 64 KiB PATH or 4,096 components fail explicitly, so those bounds
 are runtime policy, not a claim about unrestricted Bash behavior. Pure fixtures
 cover selection, permission classification, invalid directory-as-executable
 observations, PATH planning, forged-plan rejection, and joining; they are
-uncompiled and unrun. Tilde expansion, direct-name observation, a renderer,
-and local Bash source/build qualification remain open.
+uncompiled and unrun. Tilde expansion, a renderer, and local Bash source/build
+qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
 captures effective UID, real and effective GIDs, and the supplementary group
@@ -245,12 +245,12 @@ leaves that list empty, preserving Bash's fallback to real/effective GIDs;
 counts above the 1,024-entry bound fail explicitly. The stat adapter follows
 symlinks, maps every stat failure to absence, and treats directories as present
 but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
-`observe_path_search` now validates the owned plan, rejects unsupported tilde
-expansion before any stat query, joins and observes every PATH component in
-order, retains the exact candidate spelling with each observation, and applies
-the pure selector. It deliberately rejects direct-name plans for now. This
-source has not been compiled or exercised; the caller must prevent concurrent
-credential changes during capture.
+`observe_search_plan` now validates the owned plan. Direct-name mode observes
+the exact command spelling once without applying PATH candidate preference;
+PATH mode rejects unsupported tilde expansion before any stat query, then joins
+and observes every component in order, retaining each exact spelling and
+applying the pure selector. This source has not been compiled or exercised; the
+caller must prevent concurrent credential changes during capture.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
