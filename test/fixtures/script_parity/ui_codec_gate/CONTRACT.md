@@ -39,7 +39,16 @@ exactly these eleven arguments, in order:
 10. `-o`
 11. `<temporary>/utf8_utf16_codec_test`
 
-Do not change caller cwd or environment. Both reference root resolution and
+Do not change caller cwd or the invoking parent's environment. The reference's
+`CC="${CC:-clang}"` assignment has a child-environment detail: when inherited
+CC is present but empty, its exported value becomes `clang` for both compiler
+and test. When CC is absent, the new shell variable is not exported; nonempty
+inherited CC remains exported unchanged. Preserve all unrelated environment
+entries. The current candidate defaults the executable but leaves an inherited
+empty CC unchanged, so this is an identified source-level parity gap. It needs a
+streaming child-only environment overlay, not a global parent-env mutation or
+the existing capture-and-discard environment runner.
+Both reference root resolution and
 mktemp capture happen in command substitutions, not a parent-shell `cd`.
 Both compiler and test inherit stdin/stdout/stderr with no script-imposed deadline.
 The candidate uses the ordinary inherited-stream process runner, not the
@@ -114,6 +123,11 @@ compiler probe that records exact argv/cwd/environment/streams and materializes
 a pinned inert test executable only at a validated `-o` fixture path. It must
 not run a real compiler, shell script, sanitizer or project code. The existing
 read-only process probe cannot materialize an output and is insufficient here.
+The source-only two-role foundation is now authored in `probe.c`, with an
+independent Elisa packet oracle and pure fixtures. See `PROBE_CONTRACT.md` for
+its descriptor-relative output admission, prebuilt payload policy and remaining
+qualification/integration requirements. Neither artifact, oracle nor an
+integrated UI public-launcher matrix has compiled/run.
 Independently observe these workflow cases, not just reference/candidate equality:
 
 - Compile zero/test zero; compile zero/test nonzero; several compile failures

@@ -1,0 +1,144 @@
+# Independent binary-observation oracle. Never import the candidate recipe.
+module EsUiCodecProbe:
+    public:
+        const module Limits:
+            ARGUMENTS: usize = 11
+            TEXT_BYTES: usize = 65536
+            INPUT_BYTES: usize = 65536
+            PATH_BYTES: usize = 4096
+
+
+        const module Protocol:
+            MAGIC: sview = "ESUIGATE1"
+            OUTPUT_TOKEN: sview = "<owned-temp>/utf8_utf16_codec_test"
+            OUTPUT_SUFFIX: sview = "/utf8_utf16_codec_test"
+
+
+        const enum Role of u8:
+            Compiler
+            Run
+
+
+        struct EnvironmentValue:
+            present: bool = false
+            bytes: sview = ""
+
+
+        struct Observation:
+            role: Role
+            status: i64 = 0
+            root: sview
+            cwd: sview
+            arguments: darray[sview] = []
+            cc: EnvironmentValue = EnvironmentValue{}
+            tmpdir: EnvironmentValue
+            marker: EnvironmentValue = EnvironmentValue{}
+            stdin: darray[u8] = []
+
+
+        error FrameError:
+            InvalidStatus
+            InvalidContext
+            InvalidArguments
+            InvalidOutput
+            AbsentEnvironmentPayload
+            TextLimit
+            EmbeddedNul
+            StdinLimit
+
+
+        def output_admitted(root: sview, output: sview) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if not root.startswith("/") or root == "/" or len(root) >= Limits::PATH_BYTES
+            for byte in root:
+                return false if byte == 0u8
+            prefix: sview = root + "/tmp/"
+            return false if len(output) >= Limits::PATH_BYTES or not output.startswith(prefix) or not output.endswith(Protocol::OUTPUT_SUFFIX)
+            start: usize = len(prefix)
+            finish: usize = len(output) - len(Protocol::OUTPUT_SUFFIX)
+            return false if finish <= start or finish - start > 255
+            return false if finish - start == 1 and sview_at(output, start) == 46u8
+            return false if finish - start == 2 and sview_at(output, start) == 46u8 and sview_at(output, start + 1) == 46u8
+            for index in start..<finish:
+                byte: u8 = sview_at(output, index)
+                return false if not ((byte >= 97u8 and byte <= 122u8) or (byte >= 65u8 and byte <= 90u8) or (byte >= 48u8 and byte <= 57u8) or byte == 45u8 or byte == 95u8 or byte == 46u8)
+            return true
+
+
+        def expected_stdout(value: Observation) -> darray[u8] error[FrameError] can[Memory.Allocate, Abort.Panic]:
+            raise FrameError.InvalidStatus if value.status < 0 or value.status > 255
+            raise FrameError.InvalidContext if not value.root.startswith("/") or value.root == "/" or len(value.root) >= Limits::PATH_BYTES
+            raise FrameError.InvalidContext if value.cwd != value.root + "/work" or len(value.cwd) >= Limits::PATH_BYTES
+            raise FrameError.InvalidContext if not value.tmpdir.present or value.tmpdir.bytes != value.root + "/tmp"
+            compiler: bool = value.role == Role.Compiler
+            raise FrameError.InvalidArguments if value.arguments.count != (Limits::ARGUMENTS if compiler else 0usize)
+            raise FrameError.StdinLimit if value.stdin.count > Limits::INPUT_BYTES or (compiler and value.stdin.count != 0)
+            budget: mutable usize = Limits::TEXT_BYTES
+            try admit_text(value.root, budget)
+            try admit_text(value.cwd, budget)
+            try admit_environment(value.cc, budget)
+            try admit_environment(value.tmpdir, budget)
+            try admit_environment(value.marker, budget)
+            for argument in value.arguments |budget|:
+                try admit_text(argument, budget)
+            if compiler:
+                raise FrameError.InvalidOutput if not output_admitted(value.root, value.arguments[10])
+            output: mutable darray[u8] = []
+            append_bytes(output, Protocol::MAGIC)
+            output.push(67u8 if compiler else 82u8)
+            output.push(value.status.u8())
+            append_u32(output, value.arguments.count)
+            for index in 0..<value.arguments.count |output|:
+                argument: sview = Protocol::OUTPUT_TOKEN if compiler and index == 10 else value.arguments[index]
+                append_field(output, argument)
+            append_field(output, value.cwd)
+            append_environment(output, value.cc)
+            append_environment(output, value.tmpdir)
+            append_environment(output, value.marker)
+            append_u32(output, value.stdin.count)
+            for byte in value.stdin |output|:
+                output.push(byte)
+            output.push(0u8)
+            output.push(255u8)
+            return output
+
+
+        def expected_stderr(role: Role) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = []
+            append_bytes(output, "ui-compile-stderr" if role == Role.Compiler else "ui-run-stderr")
+            output.push(0u8)
+            output.push(255u8)
+            return output
+
+    private:
+        def admit_text(value: sview, budget: mutable usize&) -> void error[FrameError]:
+            raise FrameError.TextLimit if len(value) > budget
+            for byte in value:
+                raise FrameError.EmbeddedNul if byte == 0u8
+            budget <- budget - len(value)
+
+
+        def admit_environment(value: EnvironmentValue, budget: mutable usize&) -> void error[FrameError]:
+            raise FrameError.AbsentEnvironmentPayload if not value.present and value.bytes != ""
+            try admit_text(value.bytes, budget) if value.present
+
+
+        def append_bytes(output: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def append_u32(output: mutable darray[u8]&, value: usize) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push(((value >> 24) & 255).u8())
+            output.push(((value >> 16) & 255).u8())
+            output.push(((value >> 8) & 255).u8())
+            output.push((value & 255).u8())
+
+
+        def append_field(output: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            append_u32(output, len(value))
+            append_bytes(output, value)
+
+
+        def append_environment(output: mutable darray[u8]&, value: EnvironmentValue) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push(1u8 if value.present else 0u8)
+            append_field(output, value.bytes) if value.present
