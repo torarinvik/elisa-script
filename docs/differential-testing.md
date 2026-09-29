@@ -1459,3 +1459,30 @@ unqualified. The explicit execve branch retains its no-shell-fallback policy.
 No compiler, child, native probe, fixture or parity run occurred; source review
 and git diff checks alone do not establish runtime correctness. Existing
 authorization gates and intentionally stale qualification pins were not relaxed.
+
+## Interrupted waits consume the poll budget (source-only correction)
+
+The legacy native runner's `timeout_steps` budget used to count only zero-result
+wait polls. EINTR retries slept without consuming it; alternating interruptions
+and zero results reset the consecutive-interruption count. The separate retry
+cap still bounded consecutive interruptions, but did not make the stated poll
+budget accurate. Every waitpid attempt is now charged before the native call,
+using the allocation-free `EsProcessPollBudget::take_poll` helper. It rejects
+zero limits and consumed/overconsumed budgets before addition, so the counter
+cannot wrap even at maximum u64. Interrupted waits consume a slot too.
+
+A terminal receipt on the last permitted attempt remains admissible. A pending
+or interrupted wait on that attempt cannot sleep/retry on a renewed budget;
+known-owned cleanup precedes the timeout error. Existing uncertain-ownership
+failure handling, consecutive EINTR cap and output-limit precedence on a pending
+zero-result wait remain unchanged. Ordinary zero-result one-poll timeout
+semantics are preserved.
+
+Pure fixtures model charged attempts, one/zero limits, exhaustion, overconsumption
+and the maximum-width boundary. They are authored only, uncompiled/unrun. The
+helper source is added to the dormant lint and both Skia before/after pin sets;
+this does not refresh stale engine pins or qualify their compiled artifacts.
+This is a work bound, not a monotonic wall-clock deadline. Host syscalls, sleeps,
+setup/cleanup and capture can still block or overrun; verified external time/RSS
+containment and native ownership/ABI qualification remain prerequisites. No
+compiler, wait, signal, process, fixture or parity execution occurred.
