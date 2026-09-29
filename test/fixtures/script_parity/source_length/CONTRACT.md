@@ -29,6 +29,17 @@ workspace/
     src/...
 ```
 
+The observed production caller is `wasmbrowser-proof/scripts/test.sh`. It uses
+`set -euo pipefail`, computes an absolute `ROOT_DIR` from its own location, and
+invokes `python3 "$ROOT_DIR/scripts/check_source_length.py"` before the audit
+harness and build. Therefore replacing the Python file alone cannot adopt the
+Elisascript port: the accepted migration must update that one invocation to the
+public Elisascript launcher, preserve the root/cwd contract, and retain
+fail-fast propagation so later work does not proceed after a failed audit.
+This caller edit is deliberately deferred until launcher parity is accepted;
+the existing matrix tests the checker directly, not the complete `test.sh`
+workflow.
+
 `EsProofSourceLength::run_root(Path)` also exposes the operation without tying
 the implementation to the default neighboring-project layout. Deployment as a
 standalone companion will require bundling the reader/include closure and
