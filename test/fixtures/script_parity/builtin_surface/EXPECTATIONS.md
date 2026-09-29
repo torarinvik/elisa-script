@@ -22,6 +22,8 @@ Its semantic source also includes an escaped-quote comment before a later
 independent raw-source regex searches.
 The positive registry fixture gives the first following `def` line a quoted
 comment token, pinning the shell reference's inclusive `sed` range endpoint.
+The positive semantic fixture also includes quoted hyphenated and digit-leading
+near-misses; they must not be counted as identifiers by either scanner.
 
 The source-only launcher harness creates its generated root with spaces and
 shell metacharacters in the path. It checks an owned empty root where the
