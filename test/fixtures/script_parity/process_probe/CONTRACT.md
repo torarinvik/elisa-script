@@ -96,5 +96,12 @@ can encode independently supplied observations, but its golden/boundary tests
 also need to pass. Equal outputs from two programs are insufficient evidence
 if neither agrees with the independent expected frame.
 
+`test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors a
+direct literal-golden probe check followed by ten ordinary wrapper cases. It
+requires an already-built, separately qualified probe path/hash; it does not
+compile one or silently treat source-only probe/model fixtures as qualified.
+The direct golden check is an extra runtime prerequisite, not a substitute for
+the full boundary/failure qualification listed above. All cases remain unrun.
+
 No compiler, probe, model fixture, wrapper, or parity process was launched for
 this change. The standing validation hold still applies.

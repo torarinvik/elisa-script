@@ -61,14 +61,46 @@ case-sensitive invalid modes, empty and space-containing arguments,
 metacharacters, `--`, and campaign forwarding. Those tests do not execute a
 tool. They are authored, not passing runtime evidence.
 
-For the future gated public-launcher matrix, use the same deterministic native
-executable probe in independent temporary project trees, not actual pytest.
+For gated public-launcher cases, use the same deterministic native executable
+probe in isolated temporary project trees, not actual pytest.
 
 The authored probe source/protocol and independent Elisa expected-frame model
 are under `test/fixtures/script_parity/process_probe/` and
 `test/script_parity/process_probe_model.elisa`. They are not yet qualified
 binaries or passing tests. Budget captures for the complete binary frame, not
 just the human-readable argv prefix.
+
+`test/script_parity/canonical_wrappers_launcher_test.elisascript` authors ten
+ordinary cases across this family and lint: all three canonical modes, absent
+and empty mode, forced-campaign forwarding, unset/empty PYTHON_BIN, relative/
+absolute paths with spaces, literal caller arguments, nonzero statuses, and
+binary streams. The same isolated read-only dummy-tool project is used for the
+reference and candidate, so physical cwd bytes can be compared exactly. Copied
+scripts/probes are hashed before and after the matrix; cleanup rejects unknown
+remaining files instead of recursively sweeping them. This does not replace
+independent mutable worlds for tools with filesystem side effects.
+
+The public entry gates hash tools and all program launches on explicit opt-in,
+the outer RSS marker, pinned local compiler path/hash, launcher path/hash, and
+`ELISASCRIPT_PROCESS_PROBE` / `ELISASCRIPT_PROCESS_PROBE_SHA256`. It starts no
+compiler itself and requires a separately qualified prebuilt native probe.
+Bash, wrapper snapshots, candidates/helper, probe source and expected-frame
+model have recorded pins; tool/source identities are checked again after
+cleanup. A probe run from `/` must match literal golden stdout bytes before any
+wrapper run; wrapper expectations use declared literal argv vectors, never
+the candidate's argument builders.
+
+Process captures are bounded to 256 KiB and 10,000 wait polls per invocation.
+Source copies are preflighted at 512 KiB each/2 MiB total; the qualified probe
+is at most 16 MiB and has three isolated copies. Underlying copy/runtime bounds
+and the outer time/RSS guard still apply; preflight size checks do not prove a
+descriptor-level bound against racing source changes. The RSS environment
+marker is a prerequisite, not proof of an OS hard cap. No probe compilation or
+qualification has happened, so none of these cases is passing evidence.
+
+Invalid-mode usage text, spawn failures, signals, TTYs, symlinks/PWD and separate
+mutable-world assertions remain outside this ordinary-case fixture. Do not
+report the fixture as complete exec/error parity if its ordinary cases pass.
 
 - Record exact length-framed argv, physical cwd, selected environment values,
   stdin bytes, stdout/stderr bytes, and status for all pure cases above.

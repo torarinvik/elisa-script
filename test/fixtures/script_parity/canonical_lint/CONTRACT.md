@@ -37,7 +37,7 @@ runner's default deadline, matching the reference's lack of a deadline.
 
 ## Required differential cases (not executed)
 
-Use the same deterministic executable probe for both wrappers, with independent
+Use the same deterministic executable probe for both wrappers in isolated
 temporary project trees. Record exact argv as length-prefixed bytes, physical
 cwd, selected environment values, stdin bytes, stdout/stderr bytes, and status.
 Do not test by actually linting or altering the live training project.
@@ -78,8 +78,18 @@ reference parity. Bash's logical `cd`/PWD handling and symlink spelling also
 need dedicated cases; launcher source-path normalization is not proof of
 equivalence to `dirname "$0"`.
 
-This is a source-only candidate and a test contract, not a passing replacement
-or automated parity suite. Compiler, launcher, lint, and parity execution remain
+`test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors
+four ordinary lint cases alongside the test-wrapper family: unset/empty RUFF_BIN,
+relative/absolute probe paths with spaces, ignored extras, binary streams,
+marker inheritance, and statuses 0/1/2/23. Each program is checked against
+independently supplied expected probe bytes, not just against the other program.
+The probe is checked first against literal golden stdout. A shared isolated
+read-only fixture is used for these dummy-tool cases; source/probe copies are
+hashed before and after the matrix. This does not provide independent mutable
+filesystem worlds for future tools that write files.
+
+This is a source-only candidate and authored automated fixture, not a passing
+replacement or complete parity suite. Compiler, launcher, lint, and parity execution remain
 disabled until explicitly reauthorized; future validation must use the pinned
 local compiler and the working bounded RSS guard. Retain the original wrapper
 until ordinary lint behavior and the chosen error/signal policy are qualified.
