@@ -82,7 +82,7 @@ failure cases through the public launcher remain required.
 Cause snapshots now have a checked primitive-carrier encoder/decoder and a
 private retired-session accessor; authored fixtures check that a copied value
 survives session reuse. This does not publish a script error variant or change
-catch behavior. Requested/resolved executable context, typed frame publication
+catch behavior. Executable-context publication, typed frame publication
 and diagnostic rendering are still open, and all new fixtures remain unrun.
 
 The parent-held spawn owner also retains one-based first/last access-denied
@@ -93,7 +93,26 @@ reject inconsistent histories. Pure fixtures cover multiple denials and invalid
 history without releasing a live child's capacity; they are uncompiled/unrun.
 This is evidence for future diagnostic context, not a choice of which candidate
 the shell reports. Intermediate denial indices are not retained, paths still
-need a checked owned snapshot, and the primitive cause payload is unchanged.
+need host-checked invocation provenance, and the primitive cause payload is
+unchanged.
+
+An owned diagnostic snapshot now copies the original argv[0] spelling, last
+attempted candidate and first/last denied candidates as byte arrays without
+their terminal NULs. It validates storage shapes and byte receipts, cause/history
+agreement, indices and complete-search counts before copying. Its four text
+copies have an aggregate 16,380-byte limit checked before allocation; no
+environment values, live PID or opaque handle are exported. Non-NUL bytes are
+preserved without UTF-8 decoding, expansion or normalization. The private
+session accessor first requires Ready/retired canonical ownership and reprojection
+of the retained cause. Authored budget, malformed-input, early-fatal/interrupted,
+byte-preservation and storage/session-reuse fixtures remain uncompiled/unrun.
+
+These structural checks cannot prove that arbitrary supplied storage belongs to
+the invocation: the exclusive private host coordinator must supply the same
+unchanged prepared input before storage reuse. No automatic host publication,
+script error variant, diagnostic-candidate selection or renderer is wired. The
+16,380-byte copy limit is a payload bound, not an RSS guard or qualification of
+allocation-failure/cancellation recovery. Lint failure parity remains open.
 
 Finish this contract first; then take the nine-line Skia environment query,
 followed by the fourteen-line UI codec gate. Larger wrappers, generators and

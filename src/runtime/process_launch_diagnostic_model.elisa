@@ -1,0 +1,92 @@
+# Owned launch-failure context only; no PID, handle, host call or renderer.
+include "process_launch_failure_model.elisa"
+include "process_launch_vectors_model.elisa"
+
+module EsProcessLaunchDiagnostic:
+    public:
+        const module Limits:
+            # Requested spelling plus three candidate copies, excluding NULs.
+            BYTES: usize = 16380
+
+
+        struct Snapshot:
+            cause: EsProcessLaunchFailure::Payload
+            requested: darray[u8] = []
+            last_attempted: darray[u8] = []
+            first_denied: darray[u8] = []
+            last_denied: darray[u8] = []
+            first_denied_attempt: usize = 0
+            last_denied_attempt: usize = 0
+            candidate_count: usize = 0
+            context_bytes: usize = 0
+
+
+        error ContextError:
+            InvalidHistory
+            InvalidBudget
+            ContextLimit
+
+
+        # The private coordinator must provide the SAME unchanged storage used
+        # for this sequential search, after canonical no-child retirement. Pure
+        # data checks cannot prove provenance or authorize ownership release.
+        def snapshot(storage: EsProcessLaunchStorage::Prepared&, child: EsProcessSpawnOwner::Owner&, receipt: EsProcessLaunchFailure::Receipt&, max_context_bytes: usize = Limits::BYTES) -> Snapshot error[ContextError, EsProcessLaunchFailure::ReceiptError, EsProcessLaunchVectors::VectorError] can[Memory.Allocate, Abort.Panic]:
+            raise ContextError.InvalidBudget if max_context_bytes > Limits::BYTES
+            cause: EsProcessLaunchFailure::Payload = try EsProcessLaunchFailure::to_payload(receipt)
+            try require_failure_history(child, receipt)
+            _ = try EsProcessLaunchVectors::validate_storage(storage)
+            candidates: usize = storage.environment.executable_candidates.count
+            raise ContextError.InvalidHistory if child.attempts > candidates
+            # Missing/denied completed searches must have tried the whole list;
+            # a fatal spawn or an interrupted search may stop before the end.
+            if receipt.stage == EsProcessLaunchFailure::Stage.Spawn:
+                action: EsProcessExecSearch::Action = EsProcessExecSearch::after_failure(receipt.code)
+                raise ContextError.InvalidHistory if action != EsProcessExecSearch::Action.Stop and child.attempts != candidates
+            total: mutable usize = 0
+            try admit_bytes(total, storage.arguments[0].count - 1, max_context_bytes)
+            if child.attempts != 0:
+                try admit_bytes(total, storage.environment.executable_candidates[child.attempts - 1].count - 1, max_context_bytes)
+            if child.saw_denied:
+                try admit_bytes(total, storage.environment.executable_candidates[child.first_denied_attempt - 1].count - 1, max_context_bytes)
+                try admit_bytes(total, storage.environment.executable_candidates[child.last_denied_attempt - 1].count - 1, max_context_bytes)
+            # All indices, terminators, receipts and the aggregate copy budget
+            # are checked BEFORE allocating any diagnostic text.
+            result: mutable Snapshot = Snapshot{
+                cause: cause, requested: copy_text(storage.arguments[0]),
+                first_denied_attempt: child.first_denied_attempt,
+                last_denied_attempt: child.last_denied_attempt,
+                candidate_count: candidates, context_bytes: total
+            }
+            if child.attempts != 0:
+                result.last_attempted <- copy_text(storage.environment.executable_candidates[child.attempts - 1])
+            if child.saw_denied:
+                result.first_denied <- copy_text(storage.environment.executable_candidates[child.first_denied_attempt - 1])
+                result.last_denied <- copy_text(storage.environment.executable_candidates[child.last_denied_attempt - 1])
+            return result
+
+    private:
+        def require_failure_history(child: EsProcessSpawnOwner::Owner&, receipt: EsProcessLaunchFailure::Receipt&) -> void error[ContextError]:
+            raise ContextError.InvalidHistory if not EsProcessSpawnOwner::denial_history_valid(child)
+            raise ContextError.InvalidHistory if child.pid != 0 or child.diagnostic_pid != 0 or child.attempts != receipt.attempts or child.saw_denied != receipt.saw_denied
+            if child.state == EsProcessSpawnOwner::State.Fresh:
+                raise ContextError.InvalidHistory if receipt.stage != EsProcessLaunchFailure::Stage.Admission or child.resource_id != 0 or child.owner_token != 0 or child.code != 0
+                return
+            raise ContextError.InvalidHistory if child.state != EsProcessSpawnOwner::State.NoChild or child.resource_id == 0 or child.owner_token == 0
+            if child.attempts == 0:
+                raise ContextError.InvalidHistory if child.code != 0 or (receipt.stage != EsProcessLaunchFailure::Stage.Admission and receipt.stage != EsProcessLaunchFailure::Stage.Setup)
+            else:
+                raise ContextError.InvalidHistory if child.code != receipt.code or (receipt.stage != EsProcessLaunchFailure::Stage.AbortedSearch and receipt.stage != EsProcessLaunchFailure::Stage.Spawn)
+
+
+        def admit_bytes(total: mutable usize&, count: usize, limit: usize) -> void error[ContextError]:
+            raise ContextError.ContextLimit if total > limit or count > limit - total
+            total <- total + count
+
+
+        # Called only after full storage validation; no view or inner array is
+        # returned by alias. Arbitrary non-NUL bytes are preserved, not decoded.
+        def copy_text(encoded: darray[u8]&) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            copied: mutable darray[u8] = []
+            for index in 0..<(encoded.count - 1) |copied|:
+                copied.push(encoded[index])
+            return copied

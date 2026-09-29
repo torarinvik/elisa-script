@@ -1,0 +1,158 @@
+# Pure owned-byte snapshots; no interpreter, native call, process or renderer.
+include "../../src/runtime/process_launch_diagnostic_model.elisa"
+
+module EsLaunchDiagnosticFixture:
+    private:
+        def storage() -> EsProcessLaunchStorage::Prepared can[Memory.Allocate, Abort.Panic]:
+            return EsProcessLaunchStorage::Prepared{
+                arguments: [[116u8,111u8,111u8,108u8,0u8]], argument_bytes: 5, storage_bytes: 26,
+                environment: EsProcessEnvironmentPlan::Prepared{
+                    executable_candidates: [
+                        [97u8,47u8,116u8,111u8,111u8,108u8,0u8],
+                        [98u8,47u8,116u8,111u8,111u8,108u8,0u8],
+                        [99u8,47u8,116u8,111u8,111u8,108u8,0u8]
+                    ], search_bytes: 21
+                }
+            }
+
+
+        def exhausted_child() -> EsProcessSpawnOwner::Owner:
+            child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{resource_id: 11, owner_token: 7, state: EsProcessSpawnOwner::State.Reserved}
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(13, 0))
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(13, 0))
+            _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(2, 0))
+            EsProcessSpawnOwner::exhausted(child)
+            return child
+
+
+        def denied_receipt() -> EsProcessLaunchFailure::Receipt:
+            return EsProcessLaunchFailure::Receipt{stage: EsProcessLaunchFailure::Stage.Spawn, code: 13, attempts: 3, saw_denied: true}
+
+
+        def assert_invalid_history(storage: EsProcessLaunchStorage::Prepared&, child: EsProcessSpawnOwner::Owner&, receipt: EsProcessLaunchFailure::Receipt&) -> void can[Memory.Allocate, Abort.Panic]:
+            catch EsProcessLaunchDiagnostic::snapshot(storage, child, receipt):
+                ok _:
+                    assert false
+                error failure:
+                    assert failure == EsProcessLaunchDiagnostic::ContextError.InvalidHistory
+
+    public:
+        @test
+        def launch_diagnostic_copies_requested_and_denied_candidates_before_reuse() -> void:
+            can Memory.Allocate, Abort.Panic:
+                prepared: mutable EsProcessLaunchStorage::Prepared = storage()
+                child: mutable EsProcessSpawnOwner::Owner = exhausted_child()
+                receipt: mutable EsProcessLaunchFailure::Receipt = denied_receipt()
+                saved: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt, 22) else failure:
+                    assert false
+                    return
+                assert saved.cause.stage == 4 and saved.cause.code == 13 and saved.cause.attempts == 3
+                assert bytes_view(saved.requested) == "tool" and bytes_view(saved.last_attempted) == "c/tool"
+                assert bytes_view(saved.first_denied) == "a/tool" and bytes_view(saved.last_denied) == "b/tool"
+                assert saved.first_denied_attempt == 1 and saved.last_denied_attempt == 2
+                assert saved.candidate_count == 3 and saved.context_bytes == 22
+                prepared.arguments[0][0] <- 88u8
+                prepared.environment.executable_candidates[0][0] <- 88u8
+                prepared.environment.executable_candidates[1][0] <- 88u8
+                prepared.environment.executable_candidates[2][0] <- 88u8
+                child <- EsProcessSpawnOwner::Owner{}
+                receipt <- EsProcessLaunchFailure::Receipt{}
+                assert bytes_view(saved.requested) == "tool" and bytes_view(saved.first_denied) == "a/tool"
+                assert bytes_view(saved.last_attempted) == "c/tool" and bytes_view(saved.last_denied) == "b/tool"
+                assert saved.cause.code == 13 and saved.context_bytes == 22
+
+
+        @test
+        def launch_diagnostic_admits_budget_before_copying_any_bytes() -> void:
+            can Memory.Allocate, Abort.Panic:
+                prepared: EsProcessLaunchStorage::Prepared = storage()
+                child: EsProcessSpawnOwner::Owner = exhausted_child()
+                receipt: EsProcessLaunchFailure::Receipt = denied_receipt()
+                for limit in [0usize, 21usize]:
+                    catch EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt, limit):
+                        ok _:
+                            assert false
+                        error failure:
+                            assert failure == EsProcessLaunchDiagnostic::ContextError.ContextLimit
+                catch EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt, 16381):
+                    ok _:
+                        assert false
+                    error failure:
+                        assert failure == EsProcessLaunchDiagnostic::ContextError.InvalidBudget
+
+
+        @test
+        def launch_diagnostic_rejects_inconsistent_or_live_histories() -> void:
+            can Memory.Allocate, Abort.Panic:
+                prepared: EsProcessLaunchStorage::Prepared = storage()
+                child: mutable EsProcessSpawnOwner::Owner = exhausted_child()
+                receipt: EsProcessLaunchFailure::Receipt = denied_receipt()
+                child.last_denied_attempt <- 4
+                assert_invalid_history(prepared, child, receipt)
+                child <- exhausted_child()
+                child.state <- EsProcessSpawnOwner::State.Running
+                child.pid <- 41
+                assert_invalid_history(prepared, child, receipt)
+                child <- exhausted_child()
+                child.first_denied_attempt <- 0
+                assert_invalid_history(prepared, child, receipt)
+                child <- exhausted_child()
+                child.code <- 8
+                assert_invalid_history(prepared, child, receipt)
+                child <- exhausted_child()
+                child.attempts <- 4
+                longer: EsProcessLaunchFailure::Receipt = EsProcessLaunchFailure::Receipt{stage: EsProcessLaunchFailure::Stage.Spawn, code: 13, attempts: 4, saw_denied: true}
+                assert_invalid_history(prepared, child, longer)
+
+
+        @test
+        def launch_diagnostic_distinguishes_early_fatal_from_completed_exhaustion() -> void:
+            can Memory.Allocate, Abort.Panic:
+                prepared: EsProcessLaunchStorage::Prepared = storage()
+                child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{resource_id: 11, owner_token: 7, state: EsProcessSpawnOwner::State.Reserved}
+                _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(8, 0))
+                receipt: mutable EsProcessLaunchFailure::Receipt = EsProcessLaunchFailure::Receipt{stage: EsProcessLaunchFailure::Stage.Spawn, code: 8, attempts: 1}
+                saved: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt) else failure:
+                    assert false
+                    return
+                assert bytes_view(saved.last_attempted) == "a/tool" and saved.context_bytes == 10
+                assert saved.first_denied.count == 0 and saved.last_denied.count == 0
+                child.code <- 2
+                receipt.code <- 2
+                assert_invalid_history(prepared, child, receipt)
+                receipt.stage <- EsProcessLaunchFailure::Stage.AbortedSearch
+                interrupted: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt) else failure:
+                    assert false
+                    return
+                assert interrupted.cause.stage == 3 and interrupted.cause.code == 2
+                assert bytes_view(interrupted.last_attempted) == "a/tool"
+
+
+        @test
+        def launch_diagnostic_admission_copies_only_requested_bytes_without_decoding() -> void:
+            can Memory.Allocate, Abort.Panic:
+                prepared: mutable EsProcessLaunchStorage::Prepared = storage()
+                prepared.arguments[0][0] <- 255u8
+                prepared.arguments[0][1] <- 36u8
+                child: EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+                receipt: EsProcessLaunchFailure::Receipt = EsProcessLaunchFailure::Receipt{stage: EsProcessLaunchFailure::Stage.Admission}
+                saved: EsProcessLaunchDiagnostic::Snapshot = try EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt, 4) else failure:
+                    assert false
+                    return
+                assert saved.requested.count == 4 and saved.requested[0] == 255u8 and saved.requested[1] == 36u8
+                assert saved.last_attempted.count == 0 and saved.first_denied.count == 0 and saved.last_denied.count == 0
+                assert saved.context_bytes == 4 and saved.cause.stage == 1
+                # Interior NULs and stale byte-count receipts must not be copied.
+                prepared.arguments[0][1] <- 0u8
+                catch EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt):
+                    ok _:
+                        assert false
+                    error failure:
+                        assert failure == EsProcessLaunchVectors::VectorError.InvalidCString
+                prepared.arguments[0][1] <- 36u8
+                prepared.environment.search_bytes <- 20
+                catch EsProcessLaunchDiagnostic::snapshot(prepared, child, receipt):
+                    ok _:
+                        assert false
+                    error failure:
+                        assert failure == EsProcessLaunchVectors::VectorError.InvalidReceipt
