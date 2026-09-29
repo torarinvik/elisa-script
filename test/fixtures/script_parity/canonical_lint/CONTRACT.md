@@ -55,10 +55,11 @@ input; use the protocol's combined-stream bound.
 | RUFF_BIN empty | Same default as unset, not an empty executable |
 | RUFF_BIN absolute path with spaces | One executable, no word splitting |
 | RUFF_BIN relative path with spaces | Resolved in project root, not caller cwd |
+| RUFF_BIN bare name with spaces | One executable searched on fixture PATH, not split |
 | Invoke from unrelated cwd | Probe sees fixture project root |
 | Project path with spaces | Same cwd and four argv entries |
 | Extra arguments containing spaces/empty strings | None forwarded to Ruff |
-| Probe exits 0, 1, 2, or 23 | Exact status, no wrapper-added output |
+| Probe exits 0, 1, 2, 23, 126, 127, or 255 | Exact normal status, no wrapper-added output |
 | Binary stdin/stdout/stderr, including NUL and no final newline | Exact inherited bytes, no framing or newline added |
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
 
@@ -79,10 +80,16 @@ need dedicated cases; launcher source-path normalization is not proof of
 equivalence to `dirname "$0"`.
 
 `test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors
-four ordinary lint cases alongside the test-wrapper family: unset/empty RUFF_BIN,
-relative/absolute probe paths with spaces, ignored extras, binary streams,
-marker inheritance, and statuses 0/1/2/23. Each program is checked against
+eight ordinary lint cases before the test-wrapper family: unset/empty RUFF_BIN,
+relative/absolute probe paths and a bare PATH-searched name with spaces, ignored
+extras (including empty strings, glob/variable/semicolon literals and options),
+binary streams, marker inheritance, and normal statuses 0/1/2/23/126/127/255.
+The 126/127 cases are successful probe executions returning those statuses;
+they do not qualify failed exec diagnostics or error classification.
+Each program is checked against
 independently supplied expected probe bytes, not just against the other program.
+The reference must meet its independent expected observation before the
+candidate is launched for that case.
 The probe is checked first against literal golden stdout. A shared isolated
 read-only fixture is used for these dummy-tool cases; source/probe copies are
 hashed before and after the matrix. This does not provide independent mutable
