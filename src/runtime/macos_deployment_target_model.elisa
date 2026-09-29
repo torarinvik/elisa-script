@@ -1,0 +1,291 @@
+# Pure parser for the deployment targets printed by Apple's `otool -l`.
+#
+# This models the small Python helper used by package_macos_app.py. It does
+# not execute otool or inspect Mach-O files; those remain an adapter concern.
+
+module EsMacosDeploymentTarget:
+    public:
+        struct MacosVersion:
+            major: u64
+            minor: u64 = 0
+            patch: u64 = 0
+
+
+        const module Policy:
+            METAL_MINIMUM_MACOS: MacosVersion = MacosVersion{major: 26, minor: 0, patch: 0}
+
+
+        error MacosDeploymentTargetError:
+            NonMacosTarget
+            MalformedTarget
+            VersionComponentOverflow
+            NoDeploymentTarget
+
+
+    private:
+        const module Byte:
+            SPACE: u8 = 32
+            DOT: u8 = 46
+            ZERO: u8 = 48
+            NINE: u8 = 57
+            UNDERSCORE: u8 = 95
+            U64_MAX: u64 = 18446744073709551615u64
+
+
+        const enum VersionScanState of u8:
+            MajorDigits
+            MajorEnd
+            MinorDigits
+            MinorEnd
+            PatchDigits
+            PatchEnd
+            Complete
+            Invalid
+
+
+        struct LiteralMatch:
+            found: bool = false
+            start: usize = 0
+
+
+        struct VersionScan:
+            matched: bool = false
+            version: MacosVersion = MacosVersion{major: 0}
+            overflowed: bool = false
+
+
+        struct FieldVersion:
+            found: bool = false
+            version: MacosVersion = MacosVersion{major: 0}
+
+
+        struct SegmentTarget:
+            found: bool = false
+            version: MacosVersion = MacosVersion{major: 0}
+
+
+        def deployment_byte_is_word(byte: u8) -> bool:
+            return (byte >= 48 and byte <= 57) or (byte >= 65 and byte <= 90) or (byte >= 97 and byte <= 122) or byte == Byte::UNDERSCORE
+
+
+        def deployment_byte_is_digit(byte: u8) -> bool:
+            return byte >= Byte::ZERO and byte <= Byte::NINE
+
+
+        def deployment_byte_is_whitespace(byte: u8) -> bool:
+            return byte == 9 or byte == 10 or byte == 11 or byte == 12 or byte == 13 or byte == Byte::SPACE
+
+
+        def deployment_literal_at(source: sview, start: usize, literal: sview) -> bool:
+            literal_length: usize = sview_len(literal)
+            return false if start > sview_len(source) or literal_length > sview_len(source) - start
+            for offset in 0..<literal_length |source, literal|:
+                return false if sview_at(source, start + offset) != sview_at(literal, offset)
+            return true
+
+
+        def deployment_find_word(source: sview, word: sview, start: usize) -> LiteralMatch:
+            source_length: usize = sview_len(source)
+            word_length: usize = sview_len(word)
+            cursor: mutable usize = start
+            while cursor <= source_length and word_length <= source_length - cursor |source, word, cursor|:
+                if deployment_literal_at(source, cursor, word):
+                    before_is_boundary: bool = cursor == 0 or not deployment_byte_is_word(sview_at(source, cursor - 1))
+                    after: usize = cursor + word_length
+                    after_is_boundary: bool = after == source_length or not deployment_byte_is_word(sview_at(source, after))
+                    if before_is_boundary and after_is_boundary:
+                        return LiteralMatch{found: true, start: cursor}
+                cursor <- cursor + 1
+            return LiteralMatch{}
+
+
+        def deployment_find_literal(source: sview, literal: sview, start: usize) -> LiteralMatch:
+            source_length: usize = sview_len(source)
+            literal_length: usize = sview_len(literal)
+            cursor: mutable usize = start
+            while cursor <= source_length and literal_length <= source_length - cursor |source, literal, cursor|:
+                if deployment_literal_at(source, cursor, literal):
+                    before_is_boundary: bool = cursor == 0 or not deployment_byte_is_word(sview_at(source, cursor - 1))
+                    after: usize = cursor + literal_length
+                    after_is_boundary: bool = after == source_length or not deployment_byte_is_word(sview_at(source, after))
+                    if before_is_boundary and after_is_boundary:
+                        return LiteralMatch{found: true, start: cursor}
+                cursor <- cursor + 1
+            return LiteralMatch{}
+
+
+        def deployment_accumulate_digit(value: mutable u64&, digit: u8, overflowed: mutable bool&) -> void:
+            numeric_digit: u64 = (digit - Byte::ZERO).u64()
+            if value > (Byte::U64_MAX - numeric_digit) / 10u64:
+                overflowed <- true
+            elif not overflowed:
+                value <- value * 10u64 + numeric_digit
+
+
+        def deployment_scan_version(source: sview, start: usize) -> VersionScan:
+            length: usize = sview_len(source)
+            cursor: mutable usize = start
+            state: mutable VersionScanState = VersionScanState.MajorDigits
+            major: mutable u64 = 0
+            minor: mutable u64 = 0
+            patch: mutable u64 = 0
+            component_digits: mutable usize = 0
+            overflowed: mutable bool = false
+            while state != VersionScanState.Complete and state != VersionScanState.Invalid |source, cursor, state, major, minor, patch, component_digits, overflowed|:
+                byte: u8 = 0 if cursor >= length else sview_at(source, cursor)
+                match state:
+                    VersionScanState.MajorDigits:
+                        if cursor < length and deployment_byte_is_digit(byte):
+                            deployment_accumulate_digit(major, byte, overflowed)
+                            component_digits <- component_digits + 1
+                            cursor <- cursor + 1
+                        else:
+                            state <- VersionScanState.MajorEnd
+                    VersionScanState.MajorEnd:
+                        if component_digits == 0:
+                            state <- VersionScanState.Invalid
+                        elif cursor < length and byte == Byte::DOT:
+                            cursor <- cursor + 1
+                            component_digits <- 0
+                            state <- VersionScanState.MinorDigits
+                        elif cursor < length and deployment_byte_is_whitespace(byte):
+                            state <- VersionScanState.Complete
+                        else:
+                            state <- VersionScanState.Invalid
+                    VersionScanState.MinorDigits:
+                        if cursor < length and deployment_byte_is_digit(byte):
+                            deployment_accumulate_digit(minor, byte, overflowed)
+                            component_digits <- component_digits + 1
+                            cursor <- cursor + 1
+                        else:
+                            state <- VersionScanState.MinorEnd
+                    VersionScanState.MinorEnd:
+                        if component_digits == 0:
+                            state <- VersionScanState.Invalid
+                        elif cursor < length and byte == Byte::DOT:
+                            cursor <- cursor + 1
+                            component_digits <- 0
+                            state <- VersionScanState.PatchDigits
+                        elif cursor < length and deployment_byte_is_whitespace(byte):
+                            state <- VersionScanState.Complete
+                        else:
+                            state <- VersionScanState.Invalid
+                    VersionScanState.PatchDigits:
+                        if cursor < length and deployment_byte_is_digit(byte):
+                            deployment_accumulate_digit(patch, byte, overflowed)
+                            component_digits <- component_digits + 1
+                            cursor <- cursor + 1
+                        else:
+                            state <- VersionScanState.PatchEnd
+                    VersionScanState.PatchEnd:
+                        if component_digits == 0:
+                            state <- VersionScanState.Invalid
+                        elif cursor < length and deployment_byte_is_whitespace(byte):
+                            state <- VersionScanState.Complete
+                        else:
+                            state <- VersionScanState.Invalid
+                    VersionScanState.Complete:
+                        _ = byte
+                    VersionScanState.Invalid:
+                        _ = byte
+            if state != VersionScanState.Complete:
+                return VersionScan{}
+            return VersionScan{matched: true, version: MacosVersion{major: major, minor: minor, patch: patch}, overflowed: overflowed}
+
+
+        def deployment_find_version_field(source: sview, field: sview) -> FieldVersion error[MacosDeploymentTargetError]:
+            field_match: LiteralMatch = deployment_find_word(source, field, 0)
+            while field_match.found:
+                after_field: usize = field_match.start + sview_len(field)
+                if after_field < sview_len(source) and sview_at(source, after_field) == Byte::SPACE:
+                    scan: VersionScan = deployment_scan_version(source, after_field + 1)
+                    if scan.matched:
+                        raise MacosDeploymentTargetError.VersionComponentOverflow if scan.overflowed
+                        return FieldVersion{found: true, version: scan.version}
+                field_match <- deployment_find_word(source, field, field_match.start + 1)
+            return FieldVersion{}
+
+
+        def deployment_has_macos_platform(source: sview) -> bool:
+            field_match: LiteralMatch = deployment_find_word(source, "platform", 0)
+            while field_match.found:
+                after_field: usize = field_match.start + 8
+                if after_field < sview_len(source) and sview_at(source, after_field) == Byte::SPACE:
+                    value_start: usize = after_field + 1
+                    if deployment_literal_at(source, value_start, "1") and value_start + 1 < sview_len(source) and deployment_byte_is_whitespace(sview_at(source, value_start + 1)):
+                        return true
+                    if deployment_literal_at(source, value_start, "MACOS") and value_start + 5 < sview_len(source) and deployment_byte_is_whitespace(sview_at(source, value_start + 5)):
+                        return true
+                    if deployment_literal_at(source, value_start, "macOS") and value_start + 5 < sview_len(source) and deployment_byte_is_whitespace(sview_at(source, value_start + 5)):
+                        return true
+                field_match <- deployment_find_word(source, "platform", field_match.start + 1)
+            return false
+
+
+        def deployment_segment_target(segment: sview) -> SegmentTarget error[MacosDeploymentTargetError]:
+            modern_command: LiteralMatch = deployment_find_literal(segment, "cmd LC_BUILD_VERSION", 0)
+            if modern_command.found:
+                raise MacosDeploymentTargetError.NonMacosTarget if not deployment_has_macos_platform(segment)
+                minimum: FieldVersion = try deployment_find_version_field(segment, "minos")
+                raise MacosDeploymentTargetError.MalformedTarget if not minimum.found
+                return SegmentTarget{found: true, version: minimum.version}
+            legacy_command: LiteralMatch = deployment_find_literal(segment, "cmd LC_VERSION_MIN_MACOSX", 0)
+            if legacy_command.found:
+                version_field: FieldVersion = try deployment_find_version_field(segment, "version")
+                raise MacosDeploymentTargetError.MalformedTarget if not version_field.found
+                return SegmentTarget{found: true, version: version_field.version}
+            return SegmentTarget{}
+
+
+        def deployment_find_load_delimiter(source: sview, start: usize) -> usize:
+            length: usize = sview_len(source)
+            cursor: mutable usize = start
+            while cursor <= length and 13 <= length - cursor |source, cursor|:
+                if deployment_literal_at(source, cursor, "Load command "):
+                    digit_start: usize = cursor + 13
+                    digit_end: mutable usize = digit_start
+                    while digit_end < length and deployment_byte_is_digit(sview_at(source, digit_end)) |source, digit_end|:
+                        digit_end <- digit_end + 1
+                    return cursor if digit_end > digit_start
+                cursor <- cursor + 1
+            return length
+
+
+        def deployment_process_segment(source: sview, start: usize, end: usize, targets: mutable darray[MacosVersion]&) -> void error[MacosDeploymentTargetError] can[Memory.Allocate, Abort.Panic]:
+            segment: sview = string_view_slice(source, start.i64(), end.i64())
+            target: SegmentTarget = try deployment_segment_target(segment)
+            if target.found:
+                targets.push(target.version)
+
+
+        def deployment_u64_text(value: u64) -> sview can[Memory.Allocate, Abort.Panic]:
+            return f"{value}"
+
+
+    public:
+        def deployment_targets(load_commands: sview) -> darray[MacosVersion] error[MacosDeploymentTargetError] can[Memory.Allocate, Abort.Panic]:
+            length: usize = sview_len(load_commands)
+            targets: mutable darray[MacosVersion] = []
+            segment_start: mutable usize = 0
+            search_start: mutable usize = 0
+            delimiter: usize = deployment_find_load_delimiter(load_commands, search_start)
+            while delimiter < length |load_commands, targets, segment_start, search_start, delimiter|:
+                try deployment_process_segment(load_commands, segment_start, delimiter, targets)
+                digit_start: usize = delimiter + 13
+                search_start <- digit_start
+                while search_start < length and deployment_byte_is_digit(sview_at(load_commands, search_start)) |load_commands, search_start|:
+                    search_start <- search_start + 1
+                segment_start <- search_start
+                delimiter <- deployment_find_load_delimiter(load_commands, search_start)
+            try deployment_process_segment(load_commands, segment_start, length, targets)
+            raise MacosDeploymentTargetError.NoDeploymentTarget if targets.count == 0
+            return targets
+
+
+        def format_version(version: MacosVersion) -> sview can[Memory.Allocate, Abort.Panic]:
+            base: sview = deployment_u64_text(version.major) + "." + deployment_u64_text(version.minor)
+            return base if version.patch == 0 else base + "." + deployment_u64_text(version.patch)
+
+
+        def version_before(left: MacosVersion, right: MacosVersion) -> bool:
+            return left.major < right.major if left.major != right.major else left.minor < right.minor if left.minor != right.minor else left.patch < right.patch
