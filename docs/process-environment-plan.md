@@ -206,3 +206,10 @@ calls via a state machine and distinguish destroyable, already released and
 uncertain slots against the canonical ledger. Pure decision fixtures are authored
 but unrun. The complete runtime-budget/child/waiter coordinator is still absent;
 this is not a runnable streaming environment-overlay primitive or UI parity proof.
+
+The unwired IR/host seam now pairs the shared runtime Process counter with
+canonical child reservations before setup/spawn. Known no-child/unstarted
+outcomes can release it; live/unknown outcomes retain it, and exact-PID reaping
+must precede normal completion. This is authored accounting and private launch
+gating, not completed existing-waiter integration. Pure fixtures remain unrun;
+the full coordinator, native qualification and tiny UI CC wiring remain open.

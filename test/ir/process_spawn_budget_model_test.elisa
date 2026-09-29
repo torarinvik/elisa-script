@@ -1,0 +1,152 @@
+# Pure accounting observations. No native adapter, launcher, wait or signal.
+include "../../src/ir/process_spawn_budget_model.elisa"
+
+module EsSpawnBudgetFixture:
+    public:
+        def policy(processes: usize) -> EsIr::RuntimeResourcePolicy:
+            return EsIr::RuntimeResourcePolicy{
+                steps: EsIr::ES_RUNTIME_DEFAULT_MAX_STEPS,
+                elapsed_micros: EsIr::ES_RUNTIME_DEFAULT_MAX_ELAPSED_MICROS,
+                memory_bytes: EsIr::ES_RUNTIME_DEFAULT_MAX_MEMORY_BYTES,
+                open_handles: EsIr::ES_RUNTIME_DEFAULT_MAX_OPEN_HANDLES,
+                processes: processes,
+                output_bytes: EsIr::ES_RUNTIME_DEFAULT_MAX_OUTPUT_BYTES,
+                regex_work: EsIr::ES_RUNTIME_DEFAULT_MAX_REGEX_WORK,
+                retained_traces: EsIr::ES_RUNTIME_DEFAULT_MAX_RETAINED_TRACES,
+                concurrent_tasks: EsIr::ES_RUNTIME_DEFAULT_MAX_CONCURRENT_TASKS
+            }
+
+
+@test
+def spawn_budget_rejects_zero_capacity_and_rolls_back_duplicate_reservation() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        usage: mutable EsIr::RuntimeResourceUsage = EsIr::RuntimeResourceUsage{}
+        child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+        budget: mutable EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
+        denied: EsIr::RuntimeResourcePolicy = EsSpawnBudgetFixture::policy(0)
+        caught: mutable bool = false
+        catch EsProcessSpawnBudget::reserve(child, budget, ledger, usage, denied, 11, 7):
+            ok:
+                assert false
+            error failure:
+                caught <- failure == EsProcessSpawnBudget::BudgetError.ProcessLimit
+        assert caught and usage.processes == 0 and not budget.held
+        assert child.state == EsProcessSpawnOwner::State.Fresh and ledger.resources.count == 0
+        _ = try EsResource::resource_ledger_acquire(ledger, 11, EsResource::ResourceKind.File, 7) else failure:
+            assert false
+            return
+        allowed: EsIr::RuntimeResourcePolicy = EsSpawnBudgetFixture::policy(1)
+        rolled_back: mutable bool = false
+        catch EsProcessSpawnBudget::reserve(child, budget, ledger, usage, allowed, 11, 7):
+            ok:
+                assert false
+            error failure:
+                rolled_back <- failure == EsResource::ResourceContractError.DuplicateId
+        assert rolled_back and usage.processes == 0 and not budget.held
+        assert budget.resource_id == 0 and budget.owner_token == 0
+        assert child.state == EsProcessSpawnOwner::State.Fresh and ledger.active_entries == 1
+
+
+@test
+def spawn_budget_keeps_live_child_capacity_until_exact_reap_and_closes_once() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        usage: mutable EsIr::RuntimeResourceUsage = EsIr::RuntimeResourceUsage{}
+        policy: EsIr::RuntimeResourcePolicy = EsSpawnBudgetFixture::policy(2)
+        child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+        budget: mutable EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
+        try EsProcessSpawnBudget::reserve(child, budget, ledger, usage, policy, 11, 7) else failure:
+            assert false
+            return
+        assert usage.processes == 1 and budget.held
+        _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(0, 41))
+        unreaped: mutable bool = false
+        catch EsProcessSpawnBudget::release_reaped(child, budget, ledger, usage, 7):
+            ok:
+                assert false
+            error failure:
+                unreaped <- failure == EsProcessSpawnBudget::BudgetError.Unreaped
+        assert unreaped and usage.processes == 1 and budget.held
+        assert not EsProcessSpawnOwner::record_reap(child, 42, true)
+        assert not EsProcessSpawnOwner::record_reap(child, 41, false)
+        assert child.state == EsProcessSpawnOwner::State.Running
+        assert EsProcessSpawnOwner::record_reap(child, 41, true)
+        assert not EsProcessSpawnOwner::record_reap(child, 41, true)
+        assert child.state == EsProcessSpawnOwner::State.Reaped and child.pid == 41
+        stale: mutable EsProcessSpawnBudget::Reservation = budget
+        try EsProcessSpawnBudget::release_reaped(child, budget, ledger, usage, 7) else failure:
+            assert false
+            return
+        assert usage.processes == 0 and not budget.held and ledger.active_entries == 0
+        # Another active counter must not be stolen by a copied old receipt.
+        assert EsIr::runtime_resource_acquire(usage, policy, EsIr::RuntimeResourceCounter.Process)
+        double_close: mutable bool = false
+        catch EsProcessSpawnBudget::release_reaped(child, stale, ledger, usage, 7):
+            ok:
+                assert false
+            error failure:
+                double_close <- failure == EsProcessSpawnBudget::BudgetError.InvalidReservation
+        assert double_close and usage.processes == 1 and stale.held
+
+
+@test
+def spawn_budget_releases_unstarted_setup_but_retains_unknown_child_outcomes() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        usage: mutable EsIr::RuntimeResourceUsage = EsIr::RuntimeResourceUsage{}
+        policy: EsIr::RuntimeResourcePolicy = EsSpawnBudgetFixture::policy(1)
+        child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+        budget: mutable EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
+        try EsProcessSpawnBudget::reserve(child, budget, ledger, usage, policy, 11, 7) else failure:
+            assert false
+            return
+        try EsProcessSpawnBudget::release_unstarted(child, budget, ledger, usage, 7) else failure:
+            assert false
+            return
+        assert usage.processes == 0 and not budget.held and child.state == EsProcessSpawnOwner::State.NoChild
+        uncertain: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+        retained: mutable EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
+        try EsProcessSpawnBudget::reserve(uncertain, retained, ledger, usage, policy, 12, 7) else failure:
+            assert false
+            return
+        _ = EsProcessSpawnOwner::observe(uncertain, EsProcessSpawnAttempt::classify(-1, 41))
+        rejected: mutable bool = false
+        catch EsProcessSpawnBudget::release_no_child(uncertain, retained, ledger, usage, 7):
+            ok:
+                assert false
+            error failure:
+                rejected <- failure == EsProcessSpawnBudget::BudgetError.InvalidReservation
+        assert rejected and usage.processes == 1 and retained.held
+        assert uncertain.pid == 0 and uncertain.diagnostic_pid == 41
+        assert not EsProcessSpawnOwner::record_reap(uncertain, 41, true)
+        lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, 12, 7) else failure:
+            assert false
+            return
+        assert lease.state == EsResource::ResourceLeaseState.Acquired
+
+
+@test
+def spawn_budget_no_child_release_checks_owner_before_changing_capacity() -> void:
+    can Memory.Allocate, Abort.Panic:
+        ledger: mutable EsResource::ResourceLedger = EsResource::ResourceLedger{}
+        usage: mutable EsIr::RuntimeResourceUsage = EsIr::RuntimeResourceUsage{}
+        policy: EsIr::RuntimeResourcePolicy = EsSpawnBudgetFixture::policy(1)
+        child: mutable EsProcessSpawnOwner::Owner = EsProcessSpawnOwner::Owner{}
+        budget: mutable EsProcessSpawnBudget::Reservation = EsProcessSpawnBudget::Reservation{}
+        try EsProcessSpawnBudget::reserve(child, budget, ledger, usage, policy, 11, 7) else failure:
+            assert false
+            return
+        _ = EsProcessSpawnOwner::observe(child, EsProcessSpawnAttempt::classify(8, 999))
+        wrong_owner: mutable bool = false
+        catch EsProcessSpawnBudget::release_no_child(child, budget, ledger, usage, 8):
+            ok:
+                assert false
+            error failure:
+                wrong_owner <- failure == EsProcessSpawnBudget::BudgetError.InvalidReservation
+        assert wrong_owner and usage.processes == 1 and budget.held
+        try EsProcessSpawnBudget::release_no_child(child, budget, ledger, usage, 7) else failure:
+            assert false
+            return
+        assert usage.processes == 0 and not budget.held and ledger.active_entries == 0
+        assert child.pid == 0 and child.diagnostic_pid == 0

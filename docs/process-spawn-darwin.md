@@ -194,3 +194,39 @@ connect setup, spawn and waiter into a runnable public API. Pure fixtures cover
 ordered scheduling, early stops, forged receipts and uncertain/released cleanup
 decisions, but none were compiled or run. Native setup/finalization, ABI, state
 machine lowering and exact UI CC environment parity remain unqualified.
+
+## Shared process-budget pairing (source-only)
+
+`src/ir/process_spawn_budget_model.elisa` now pairs the existing runtime Process
+counter with the canonical Process reservation. Capacity is acquired before
+ledger allocation and retained immediately in caller-held state. Typed ledger
+admission failures roll back that counter; panics/cancellation still need the
+outer finalizer. Invalid policy, over-budget usage and zero/full process capacity
+are rejected before a launch. The model does not allocate a second independent
+process counter or reset usage for a child invocation.
+
+Known no-child outcomes and pristine pre-launch rollback close the canonical
+reservation before releasing its paired counter. Running or Unknown child
+observations cannot use those edges. A new Reaped observation preserves the PID
+but requires a fresh exact-PID confirmed wait report; counter completion requires
+Reaped and an acquired matching canonical lease. Copied stale receipts cannot
+close an already released lease to consume another active process slot. All
+records remain public data: the private coordinator must supply actual host wait
+evidence and exclusive access to the same child, ledger and per-run usage.
+
+The unwired private `src/ir/process_spawn_budget_darwin.elisa` seam retains child,
+attribute and budget owners together. Attribute setup and prepared-candidate
+spawn require a held matching Process reservation. Spawn immediately retains
+the child result before any fallible cleanup. Attribute finalization does not
+release the process budget. The portable helpers intentionally know nothing
+about signals, wait status, group quiescence or OS handles; no forged model field
+is signaling authority. This limit counts direct leaders, not escaped descendants,
+and does not claim an RSS or opaque-attribute allocation limit.
+
+The interpreter's existing waiter releases a process counter after confirmed
+reaping. Its actual new-backend handoff, status/deadline/group cleanup, error
+precedence, panic/cancellation finalization and source/bytecode/public-launcher
+wiring are still absent. No runtime includes the new native seam. The authored
+pure fixtures cover zero capacity, duplicate-ID rollback, live-child retention,
+exact reap, stale release, unstarted release, unknown outcomes and wrong owners;
+they remain uncompiled/unrun. No child, native attribute or waiter was executed.
