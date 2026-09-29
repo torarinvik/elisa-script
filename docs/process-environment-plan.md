@@ -200,3 +200,9 @@ step with retained-buffer binding checks, caller-held PID capture, canonical
 process reservations and no-child/unstarted release. It does not wait, signal or
 expose a runnable API. Runtime process-counter pairing, post-spawn cleanup/reap,
 waiter/deadline/source/bytecode/UI integration and qualification remain open.
+
+Private attribute preparation/finalization wrappers now order the three setup
+calls via a state machine and distinguish destroyable, already released and
+uncertain slots against the canonical ledger. Pure decision fixtures are authored
+but unrun. The complete runtime-budget/child/waiter coordinator is still absent;
+this is not a runnable streaming environment-overlay primitive or UI parity proof.

@@ -22,7 +22,7 @@ extend EsProcessSpawnDarwin:
 
 
         def initialize_attributes(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, id: u64, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Fresh or owner.resource_id != 0 or owner.handle != null
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Fresh or owner.receipt.code != 0 or owner.receipt.handle_present or owner.resource_id != 0 or owner.owner_token != 0 or owner.handle != null
             # Reserve the canonical ID before entering native initialization.
             # Owner is caller-held, so post-call ledger errors cannot lose its
             # actual slot/receipt through a failed value-return constructor.
@@ -41,7 +41,7 @@ extend EsProcessSpawnDarwin:
 
         def set_attribute_group(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Unsafe.PointerCast]:
             try require_attribute_owner(owner, ledger, owner_token)
-            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Initialized
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if EsProcessSpawnAttributes::preparation_step(owner.receipt) != EsProcessSpawnAttributes::PreparationStep.SetGroup
             slot: mutable void& = (&owner.handle).cast[mutable void&]
             code: i32 = native_spawnattr_setpgroup(slot, 0i32)
             owner.receipt <- EsProcessSpawnAttributes::group_set(code, owner.handle != null)
@@ -51,7 +51,7 @@ extend EsProcessSpawnDarwin:
 
         def set_attribute_flags(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> void error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Unsafe.PointerCast]:
             try require_attribute_owner(owner, ledger, owner_token)
-            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.GroupSet
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if EsProcessSpawnAttributes::preparation_step(owner.receipt) != EsProcessSpawnAttributes::PreparationStep.SetFlags
             slot: mutable void& = (&owner.handle).cast[mutable void&]
             code: i32 = native_spawnattr_setflags(slot, Flags::SETPGROUP)
             owner.receipt <- EsProcessSpawnAttributes::flags_set(code, owner.handle != null)
@@ -77,9 +77,63 @@ extend EsProcessSpawnDarwin:
 
         def spawn_configured_candidate(owner: AttributeOwner&, ledger: EsResource::ResourceLedger&, owner_token: u64, candidate: cstr, argv: void&, environment: void&) -> EsProcessSpawnAttempt::Attempt error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast]:
             try require_attribute_owner(owner, ledger, owner_token)
-            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.state != EsProcessSpawnAttributes::State.Configured
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if EsProcessSpawnAttributes::preparation_step(owner.receipt) != EsProcessSpawnAttributes::PreparationStep.Ready
             attributes: void& = (&owner.handle).cast[void&]
             # Every fallible ownership check precedes spawn. Return its fresh
             # receipt immediately; no attribute cleanup or ledger operation may
             # throw here and hide a successfully created PID from the parent.
             return spawn_candidate_raw(candidate, attributes, argv, environment)
+
+
+        def prepare_attributes(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, id: u64, owner_token: u64) -> EsProcessSpawnAttributes::Receipt error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.resource_id != 0 or owner.owner_token != 0 or owner.handle != null
+            step: mutable EsProcessSpawnAttributes::PreparationStep = EsProcessSpawnAttributes::preparation_step(owner.receipt)
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if step != EsProcessSpawnAttributes::PreparationStep.Initialize
+            # A fresh workflow performs at most init/group/flags, in that order.
+            # All failed native returns stop; their caller-held receipt survives
+            # even if a subsequent canonical-ledger operation raises an error.
+            machine over step while step != EsProcessSpawnAttributes::PreparationStep.Ready and step != EsProcessSpawnAttributes::PreparationStep.Stop:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, EsProcessSpawnAttributes::PreparationStep.Initialize:
+                    try initialize_attributes(owner, ledger, id, owner_token)
+                    step <- EsProcessSpawnAttributes::preparation_step(owner.receipt)
+                    -> Dispatch
+
+                Dispatch, EsProcessSpawnAttributes::PreparationStep.SetGroup:
+                    try set_attribute_group(owner, ledger, owner_token)
+                    step <- EsProcessSpawnAttributes::preparation_step(owner.receipt)
+                    -> Dispatch
+
+                Dispatch, EsProcessSpawnAttributes::PreparationStep.SetFlags:
+                    try set_attribute_flags(owner, ledger, owner_token)
+                    step <- EsProcessSpawnAttributes::preparation_step(owner.receipt)
+                    -> Dispatch
+
+                Dispatch, EsProcessSpawnAttributes::PreparationStep.Ready:
+                    break
+
+                Dispatch, EsProcessSpawnAttributes::PreparationStep.Stop:
+                    break
+            return owner.receipt
+
+
+        def finalize_attributes(owner: mutable AttributeOwner&, ledger: mutable EsResource::ResourceLedger&, owner_token: u64) -> EsProcessSpawnAttributes::Receipt error[EsProcessSpawnAttributes::AttributeError, EsResource::ResourceContractError] can[Blocking.IO, Memory.Release, Unsafe.PointerCast]:
+            raise EsProcessSpawnAttributes::AttributeError.InvalidOwner if owner_token == 0 or owner.owner_token != owner_token
+            raise EsProcessSpawnAttributes::AttributeError.InvalidState if owner.receipt.handle_present != (owner.handle != null)
+            lease: EsResource::ResourceLease = try EsResource::resource_lease_for_owner(ledger, owner.resource_id, owner_token)
+            raise EsProcessSpawnAttributes::AttributeError.WrongResourceKind if lease.kind != EsResource::ResourceKind.NativeAttribute
+            match EsProcessSpawnAttributes::finalization_step(owner.receipt):
+                EsProcessSpawnAttributes::FinalizationStep.Destroy:
+                    try destroy_attributes(owner, ledger, owner_token)
+                EsProcessSpawnAttributes::FinalizationStep.AlreadyReleased:
+                    raise EsProcessSpawnAttributes::AttributeError.ResourceNotAcquired if lease.state != EsResource::ResourceLeaseState.Released
+                EsProcessSpawnAttributes::FinalizationStep.RetainUncertain:
+                    # Do not retry an uncertain slot or turn Failed into release.
+                    raise EsProcessSpawnAttributes::AttributeError.ResourceNotAcquired if lease.state != EsResource::ResourceLeaseState.Failed
+                EsProcessSpawnAttributes::FinalizationStep.Invalid:
+                    raise EsProcessSpawnAttributes::AttributeError.InvalidState
+            # Native failure is a retained receipt, not proof of deallocation.
+            # No child owner is passed here; PID adoption cannot be overwritten.
+            return owner.receipt

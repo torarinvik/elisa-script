@@ -164,3 +164,33 @@ throw away its PID. No-child outcomes release the unused process budget; Unknown
 outcomes must not release it as if no child could exist. Reap/group/deadline/
 signal/finalization, runtime counter pairing, source/IR/bytecode integration and
 actual UI/package wiring are still missing. No process ran while authoring this.
+
+## Attribute preparation and finalization (source-only)
+
+The private `prepare_attributes` workflow now orders init, new-group selection
+and flags via an explicit state machine. A pristine owner is required; a fresh
+workflow has at most three native setup calls. Failed or uncertain native returns
+stop without attempting the next step. Its returned receipt must be Ready before
+any spawn; returning a setup receipt is not a success assertion. Typed ledger
+errors may still propagate with the caller-held owner intact, and the caller
+must then resolve reservations rather than abandon them. Allocation panics and
+effect cancellation do not have an implemented complete finalizer here.
+
+`finalize_attributes` chooses destruction only for internally consistent owned
+handle receipts, using the canonical owner/kind/lease checks before the host call.
+Known no-handle init failures and already released slots require a Released
+canonical lease. Uncertain init/configuration/destruction requires a Failed
+canonical lease and returns the uncertain receipt without retrying destruction.
+Failed does not mean deallocated or prove a released memory budget. Receipt/slot
+presence mismatches, forged success/error fields or inconsistent canonical states
+are rejected. An unreserved pristine owner has nothing to finalize and must be
+handled separately by the outer coordinator, not passed to this function.
+
+Neither operation takes a child owner; attribute cleanup cannot overwrite the
+captured PID. The outer coordinator must still retain/reap a Running child even
+if finalization raises an error or reports DestroyUncertain, and must keep the
+process budget reserved for unknown child outcomes. These wrappers do not yet
+connect setup, spawn and waiter into a runnable public API. Pure fixtures cover
+ordered scheduling, early stops, forged receipts and uncertain/released cleanup
+decisions, but none were compiled or run. Native setup/finalization, ABI, state
+machine lowering and exact UI CC environment parity remain unqualified.
