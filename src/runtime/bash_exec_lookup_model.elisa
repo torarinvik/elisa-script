@@ -40,6 +40,18 @@ module EsBashExecLookup:
             supplementary_groups: darray[u32] = []
 
 
+        const enum NamedUserHomeState of u8:
+            HomeFound
+            UserNotFound
+            LookupUnavailable
+
+
+        struct NamedUserHomeLookup:
+            username: darray[u8] = []
+            state: NamedUserHomeState = NamedUserHomeState.LookupUnavailable
+            home_directory: darray[u8] = []
+
+
         # The shell's current-user tilde value is supplied as an explicit
         # snapshot. An absent HOME still needs the shell's passwd fallback and
         # remains unsupported by this model adapter.
@@ -54,6 +66,10 @@ module EsBashExecLookup:
             # Indexed expansion uses PWD for the current-directory slot.
             directory_stack_present: bool = false
             directory_stack: darray[darray[u8]] = []
+            # Per-name lookup snapshots, not a full account database dump.
+            # UserNotFound means Bash leaves that tilde spelling unchanged;
+            # LookupUnavailable means the adapter did not provide an outcome.
+            named_user_homes: darray[NamedUserHomeLookup] = []
 
 
         struct PathDirectory:
@@ -90,6 +106,8 @@ module EsBashExecLookup:
             DirectNameMustBypassPath
             CandidatePathLimitExceeded
             TildeExpansionUnsupported
+            TildeSnapshotUnavailable
+            InvalidTildeContext
 
 
         # Model the non-AFS Bash 3.2 file_status permission-bit check. This
@@ -158,9 +176,21 @@ module EsBashExecLookup:
             raise LookupError.InvalidSearchPlan if directory.tilde_expansion_candidate != (sview_at(path_value, directory.start) == 126u8)
             return string_view_slice(path_value, directory.start.i64(), (directory.start + directory.length).i64())
 
+    private:
+        struct TildePrefixResolution:
+            prefix: sview
+            expanded: bool
+
 
         def resolve_directory_stack_entry(directory: sview, digits_start: usize, prefix_end: usize, from_right: bool, tilde: PathTildeContext&) -> sview error[LookupError]:
             stack_count: usize = tilde.directory_stack.count
+            if not tilde.directory_stack_present:
+                index_is_zero: mutable bool = true
+                for index in digits_start..<prefix_end |directory, index_is_zero|:
+                    index_is_zero <- false if sview_at(directory, index) != 48u8
+                raise LookupError.TildeSnapshotUnavailable if from_right or not index_is_zero or not tilde.pwd_present
+                return bytes_view(tilde.pwd_directory)
+
             requested_index: mutable usize = 0
             for index in digits_start..<prefix_end |directory, requested_index|:
                 byte: u8 = sview_at(directory, index)
@@ -171,23 +201,61 @@ module EsBashExecLookup:
                 requested_index <- requested_index * 10 + digit
 
             if not from_right and requested_index == 0:
-                raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
+                raise LookupError.TildeSnapshotUnavailable if not tilde.pwd_present
                 return bytes_view(tilde.pwd_directory)
 
-            raise LookupError.TildeExpansionUnsupported if not tilde.directory_stack_present
             if from_right and requested_index == stack_count:
-                raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
+                raise LookupError.TildeSnapshotUnavailable if not tilde.pwd_present
                 return bytes_view(tilde.pwd_directory)
             selected_index: usize = stack_count - requested_index - 1 if from_right else requested_index - 1
             raise LookupError.TildeExpansionUnsupported if selected_index >= stack_count
             return bytes_view(tilde.directory_stack[selected_index])
 
 
+        def tilde_word_is_decimal(directory: sview, digits_start: usize, prefix_end: usize) -> bool:
+            return false if digits_start >= prefix_end
+            for index in digits_start..<prefix_end |directory|:
+                byte: u8 = sview_at(directory, index)
+                return false if byte < 48u8 or byte > 57u8
+            return true
+
+
+        def resolve_named_user_prefix(directory: sview, prefix_end: usize, tilde: PathTildeContext&) -> TildePrefixResolution error[LookupError]:
+            username: sview = string_view_slice(directory, 1, prefix_end.i64())
+            matched: mutable bool = false
+            lookup_state: mutable NamedUserHomeState = NamedUserHomeState.LookupUnavailable
+            home_prefix: mutable sview = ""
+            for entry in tilde.named_user_homes:
+                raise LookupError.InvalidTildeContext if sview_contains_byte(bytes_view(entry.username), 0u8)
+                if bytes_view(entry.username) == username:
+                    raise LookupError.InvalidTildeContext if matched
+                    matched <- true
+                    lookup_state <- entry.state
+                    home_prefix <- bytes_view(entry.home_directory)
+            raise LookupError.TildeExpansionUnsupported if not matched
+            if lookup_state == NamedUserHomeState.UserNotFound:
+                return TildePrefixResolution{prefix: directory, expanded: false}
+            raise LookupError.TildeSnapshotUnavailable if lookup_state == NamedUserHomeState.LookupUnavailable
+            raise LookupError.InvalidTildeContext if lookup_state != NamedUserHomeState.HomeFound
+            return TildePrefixResolution{prefix: home_prefix, expanded: true}
+
+
+        def resolve_tilde_word_prefix(directory: sview, digits_start: usize, prefix_end: usize, from_right: bool, tilde: PathTildeContext&) -> TildePrefixResolution error[LookupError]:
+            if tilde_word_is_decimal(directory, digits_start, prefix_end):
+                catch resolve_directory_stack_entry(directory, digits_start, prefix_end, from_right, tilde):
+                    ok stack_entry:
+                        return TildePrefixResolution{prefix: stack_entry, expanded: true}
+                    error failure:
+                        raise failure if failure != LookupError.TildeExpansionUnsupported
+            return try resolve_named_user_prefix(directory, prefix_end, tilde)
+
+
+    public:
         # Match Bash's HOME, PWD and OLDPWD prefixes when supplied as explicit
         # snapshots. Do not normalize bytes: repeated separators are significant
-        # to the subsequent sh_makepath-compatible join. Indexed stack entries
-        # use their separate snapshot; named users and passwd fallback remain
-        # unsupported.
+        # to the subsequent sh_makepath-compatible join. Numeric stack entries
+        # and named-user lookups use their separate snapshots. A confirmed
+        # missing named user leaves its original tilde spelling unchanged.
         def resolve_path_directory(directory: sview, tilde: PathTildeContext&) -> darray[u8] error[LookupError] can[Memory.Allocate, Abort.Panic]:
             directory_length: usize = sview_len(directory)
             raise LookupError.PathLimitExceeded if directory_length > Limits::PATH_BYTES
@@ -218,7 +286,9 @@ module EsBashExecLookup:
                         digits_start <- 2
                         from_right <- first_prefix_byte == 45u8
                     raise LookupError.TildeExpansionUnsupported if digits_start >= suffix_start
-                    prefix <- try resolve_directory_stack_entry(directory, digits_start, suffix_start, from_right, tilde)
+                    tilde_prefix: TildePrefixResolution = try resolve_tilde_word_prefix(directory, digits_start, suffix_start, from_right, tilde)
+                    prefix <- tilde_prefix.prefix
+                    suffix_start <- directory_length if not tilde_prefix.expanded
 
             prefix_length: usize = sview_len(prefix)
             raise LookupError.PathLimitExceeded if prefix_length > Limits::PATH_BYTES
