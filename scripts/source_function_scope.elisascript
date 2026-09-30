@@ -1,0 +1,195 @@
+# Bounded streaming scanner for source audits that reason about one function.
+# It mirrors awk's indentation-delimited function scope without loading an
+# entire source file into memory. Limits are explicit: 64 MiB source bytes,
+# 1 MiB per line, and 16 MiB retained for one selected function body.
+
+include "../src/runtime/encoding.elisa"
+include "../src/runtime/file_posix.elisa"
+include "../src/runtime/directory_posix.elisa"
+include "../src/runtime/stdio_posix.elisa"
+include "../src/runtime/stream_posix.elisa"
+
+using EsEncoding
+using EsRuntime
+
+
+module EsSourceFunctionScope:
+    private:
+        const module Limits:
+            SOURCE_BYTES: usize = EsRuntime::FILE_STREAM_DEFAULT_MAX_BYTES
+            LINE_BYTES: usize = 1048576
+            FUNCTION_BODY_BYTES: usize = 16777216
+            PATH_BYTES: usize = 4095
+
+
+        const enum ScanPhase of u8:
+            FindFunction
+            CollectFunction
+            Done
+
+
+        const enum SearchPhase of u8:
+            Scan
+            Done
+
+
+        def append_line(body: mutable darray[u8]&, line: darray[u8]) -> bool can[Memory.Allocate, Abort.Panic]:
+            return false if body.count >= Limits::FUNCTION_BODY_BYTES
+            remaining_bytes: usize = Limits::FUNCTION_BODY_BYTES - body.count
+            return false if line.count >= remaining_bytes
+            for byte in line |body|:
+                body.push(byte)
+            body.push(10u8)
+            return true
+
+
+        def starts_function_declaration(line: sview) -> bool:
+            declaration_prefix: sview = "        def "
+            return false if sview_len(line) < sview_len(declaration_prefix)
+            return string_view_prefix(line, sview_len(declaration_prefix).i64()) == declaration_prefix
+
+
+    public:
+        const enum Error of u8:
+            InvalidPath
+            OpenFailed
+            ReadFailed
+            FunctionTooLarge
+            CloseFailed
+
+
+        struct FunctionBody:
+            found: bool
+            text: sview
+
+
+        def read_function_body(input_path: Path, declaration: sview) -> FunctionBody error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            path_length: usize = sview_len(path_text)
+            raise Error.InvalidPath if path_length == 0 or path_length > Limits::PATH_BYTES or declaration == "" or sview_contains_byte(path_text, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, Limits::SOURCE_BYTES, FileStreamEncoding.Bytes) else err:
+                raise Error.OpenFailed
+            phase: mutable ScanPhase = ScanPhase.FindFunction
+            line: mutable darray[u8] = []
+            body: mutable darray[u8] = []
+            found: mutable bool = false
+            machine over phase while phase != ScanPhase.Done:
+                state Scan
+                start Scan
+
+                Scan, ScanPhase.FindFunction:
+                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- ScanPhase.Done
+                        -> Scan
+                    line_text: sview = bytes_view(line)
+                    if line_text.index(declaration) >= 0:
+                        found <- true
+                        phase <- ScanPhase.CollectFunction
+                        if not append_line(body, line):
+                            _ = try file_stream_close(stream) else false
+                            raise Error.FunctionTooLarge
+                    -> Scan
+
+                Scan, ScanPhase.CollectFunction:
+                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- ScanPhase.Done
+                        -> Scan
+                    line_text: sview = bytes_view(line)
+                    if starts_function_declaration(line_text) and line_text.index(declaration) < 0:
+                        if not append_line(body, line):
+                            _ = try file_stream_close(stream) else false
+                            raise Error.FunctionTooLarge
+                        phase <- ScanPhase.Done
+                        -> Scan
+                    if not append_line(body, line):
+                        _ = try file_stream_close(stream) else false
+                        raise Error.FunctionTooLarge
+                    -> Scan
+
+                Scan, ScanPhase.Done:
+                    break
+
+            closed: bool = try file_stream_close(stream) else err:
+                false
+            raise Error.CloseFailed if not closed
+            return FunctionBody{found: found, text: bytes_view(body)}
+
+
+        # Search one physical source line at a time. Supplying a nonempty
+        # second needle requires its literal to follow the first on
+        # that same line, matching ordered `first.*second` ripgrep expressions
+        # without retaining the entire file in memory.
+        def contains_file_line(input_path: Path, first: sview, second: sview = "") -> bool error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            path_length: usize = sview_len(path_text)
+            raise Error.InvalidPath if path_length == 0 or path_length > Limits::PATH_BYTES or first == "" or sview_contains_byte(path_text, 0u8) or sview_contains_byte(first, 0u8) or sview_contains_byte(second, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, Limits::SOURCE_BYTES, FileStreamEncoding.Bytes) else err:
+                raise Error.OpenFailed
+            line: mutable darray[u8] = []
+            found: mutable bool = false
+            phase: mutable SearchPhase = SearchPhase.Scan
+            machine over phase while phase != SearchPhase.Done:
+                state Search
+                start Search
+
+                Search, SearchPhase.Scan:
+                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- SearchPhase.Done
+                        -> Search
+                    line_text: sview = bytes_view(line)
+                    first_match: i64 = line_text.index(first)
+                    if first_match >= 0:
+                        if second == "" or string_view_suffix(line_text, first_match + sview_len(first).i64()).index(second) >= 0:
+                            found <- true
+                            phase <- SearchPhase.Done
+                            -> Search
+                    -> Search
+
+                Search, SearchPhase.Done:
+                    break
+
+            closed: bool = try file_stream_close(stream) else err:
+                false
+            raise Error.CloseFailed if not closed
+            return found
+
+
+        def contains(source: sview, needle: sview) -> bool:
+            return source.index(needle) >= 0
+
+
+        def matching_line_count(source: sview, needle: sview) -> usize:
+            return 0 if needle == ""
+            line_start: mutable usize = 0
+            matches: mutable usize = 0
+            source_length: usize = sview_len(source)
+            while line_start < source_length:
+                line_end: mutable usize = line_start
+                while line_end < source_length and sview_at(source, line_end) != 10u8:
+                    line_end <- line_end + 1
+                line_length: usize = line_end - line_start
+                line: sview = string_view_prefix(string_view_suffix(source, line_start.i64()), line_length.i64())
+                matches <- matches + 1 if line.index(needle) >= 0
+                line_start <- line_end + 1
+            return matches
