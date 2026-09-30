@@ -112,15 +112,15 @@ slot. The twenty-first omits HOME and guards against treating it as an empty
 prefix that selects the caller's directory. The twenty-second uses the staged
 reference shell file as the first CDPATH entry and the valid caller directory
 second, verifying that the search continues after a non-directory candidate.
-The twenty-third sets HOME to an explicit empty string with `CDPATH=~`; tilde
-expansion yields an empty prefix, so the relative project path resolves from
-the test cwd. Bash still prints the selected directory because the raw CDPATH
-component is nonempty. The
-twenty-fourth repeats that distinction with an explicitly empty OLDPWD and
-`CDPATH=~-`. The candidate now distinguishes empty OLDPWD from an unset one
-when expanding `~-`, while retaining the raw-entry print rule. Account-home
-fallback, named-user and nonzero indexed directory-stack CDPATH tilde forms
-remain open. It also
+The twenty-third sets HOME to an explicit empty string and uses a tilde prefix
+followed by the caller's absolute path as the CDPATH entry. Empty HOME leaves
+that suffix as the selected path; Bash still prints it because the raw CDPATH
+component is nonempty. The twenty-fourth repeats that distinction with an
+explicitly empty OLDPWD and a `~-` prefix followed by the same absolute suffix.
+These avoid relying on Bash 3.2's empty-result path-join edge. The candidate
+distinguishes empty OLDPWD from an unset one when expanding `~-`, while
+retaining the raw-entry print rule. Account-home fallback, named-user and
+nonzero indexed directory-stack tilde forms remain open. It also
 validates inherited logical `PWD` against
 the physical cwd, preserves it for `OLDPWD`, and computes new logical `PWD`
 lexically before verifying its physical target. Odd `//`, path-race and
