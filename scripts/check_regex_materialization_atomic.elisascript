@@ -1,0 +1,145 @@
+# Bounded Elisascript port of check_regex_materialization_atomic.sh.
+# Function-scoped and file-wide assertions use the shared streaming scanner.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsRegexMaterializationAtomicAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            BYTECODE: sview = "src/bytecode/bytecode.elisa"
+            INTERPRETER_FIXTURE: sview = "test/ir/elisascript_interpreter_test.elisa"
+            BYTECODE_FIXTURE: sview = "test/ir/elisascript_bytecode_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            SPLIT_FUNCTION: sview = "def evaluate_regex_split"
+            FIND_FUNCTION: sview = "def evaluate_regex_find"
+            FIELDS_LOCAL: sview = "fields: mutable darray[RegexMatchSpan] = []"
+            FIELDS_PREFLIGHT: sview = "runtime_storage_span_u32_valid(storage, fields.count)"
+            MATCHES_LOCAL: sview = "matches: mutable darray[RegexMatchSpan] = []"
+            MATCHES_PREFLIGHT: sview = "runtime_storage_span_u32_valid(storage, matches.count)"
+            RESULT_START: sview = "result_start: u32 = storage.count.u32()"
+            STORAGE_PUSH: sview = "storage.push(runtime_text"
+            MATCHER_BUDGET: sview = "regex_work_account(machine, budget)"
+            BYTECODE_SPLIT: sview = "regex_split_value(storage, regex_text.text, regex_pattern.text)"
+            BYTECODE_FIND: sview = "regex_find_value(storage, regex_text.text, regex_pattern.text)"
+            INTERPRETER_FIXTURE: sview = "split_regex"
+            BYTECODE_FIXTURE: sview = "find_regex"
+            DOCS_RESULT_COUNT: sview = "exact result count"
+            DOCS_FAILURE_ATOMIC: sview = "failure-atomic"
+            LEDGER_RESULT_COUNT: sview = "exact result count"
+            LEDGER_ROLLBACK: sview = "RegexSplit.*roll back"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "regex materialization audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "regex materialization audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "regex materialization audit: missing "
+            READ_FAILED: sview = "regex materialization audit: unable to read source: "
+            MISSING_MARKERS: sview = "regex materialization audit: missing local span/preflight markers in "
+            WRONG_ORDER: sview = "regex materialization audit: shared storage is touched before exact preflight in "
+            MISSING_BUDGET: sview = "regex materialization audit: missing matcher budget check in "
+            SUCCESS: sview = "regex materialization audit: split/find preflight exact local span counts before publication"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct SearchCheck:
+            input: Path
+            first: sview
+            second: sview = ""
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def has_line(path: Path, first: sview, second: sview = "") -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_line(path, first, second):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def assert_atomic(path: Path, definition: sview, local_pattern: sview, preflight_pattern: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(path, definition) else err:
+                diagnostic(Messages::READ_FAILED + f"{path}")
+                return ExitStatus::IO_FAILURE
+            local_line: usize = EsSourceFunctionScope::first_line_number(body.text, local_pattern)
+            preflight_line: usize = EsSourceFunctionScope::first_line_number(body.text, preflight_pattern)
+            result_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::RESULT_START)
+            push_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::STORAGE_PUSH)
+            if local_line == 0 or preflight_line == 0 or result_line == 0 or push_line == 0:
+                diagnostic(Messages::MISSING_MARKERS + f"{definition}")
+                return ExitStatus::FAILURE
+            if local_line >= preflight_line or preflight_line >= result_line or result_line >= push_line:
+                diagnostic(Messages::WRONG_ORDER + f"{definition}")
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::MATCHER_BUDGET):
+                diagnostic(Messages::MISSING_BUDGET + f"{definition}")
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::INTERPRETER),
+                root.joinpath(Inputs::BYTECODE),
+                root.joinpath(Inputs::INTERPRETER_FIXTURE),
+                root.joinpath(Inputs::BYTECODE_FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = assert_atomic(inputs[0], Patterns::SPLIT_FUNCTION, Patterns::FIELDS_LOCAL, Patterns::FIELDS_PREFLIGHT)
+            return status if status != 0i64
+            status <- assert_atomic(inputs[0], Patterns::FIND_FUNCTION, Patterns::MATCHES_LOCAL, Patterns::MATCHES_PREFLIGHT)
+            return status if status != 0i64
+
+            checks: darray[SearchCheck] = [
+                SearchCheck{input: inputs[1], first: Patterns::BYTECODE_SPLIT},
+                SearchCheck{input: inputs[1], first: Patterns::BYTECODE_FIND},
+                SearchCheck{input: inputs[2], first: Patterns::INTERPRETER_FIXTURE},
+                SearchCheck{input: inputs[3], first: Patterns::BYTECODE_FIXTURE},
+                SearchCheck{input: inputs[4], first: Patterns::DOCS_RESULT_COUNT},
+                SearchCheck{input: inputs[4], first: Patterns::DOCS_FAILURE_ATOMIC},
+                SearchCheck{input: inputs[5], first: Patterns::LEDGER_RESULT_COUNT},
+                SearchCheck{input: inputs[5], first: "RegexSplit", second: "roll back"}
+            ]
+            for check in checks:
+                status <- has_line(check.input, check.first, check.second)
+                return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsRegexMaterializationAtomicAudit::run_default()
