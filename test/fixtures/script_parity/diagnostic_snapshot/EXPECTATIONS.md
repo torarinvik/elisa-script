@@ -54,6 +54,11 @@ is not passed through `path_real`, since it must remain absent. None of these
 expectations have been executed; the standing compiler validation hold remains
 in force.
 
+The shell reference pins its field-extraction AWK invocation to `LC_ALL=C`, so
+the `[[:space:]]` grammar is stable and agrees with the candidate's ASCII
+whitespace matcher regardless of the caller's locale. The launcher also gives
+both children the same explicit `LC_ALL=C` environment.
+
 The shell reference and Elisascript candidate both resolve an omitted or empty
 path relative to their own script locations. The public-launcher parity source
 also runs both the omitted-argument and explicit-empty-argument forms with `/`

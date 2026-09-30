@@ -24,6 +24,10 @@ rg -Fq 'include "../src/runtime/bounded_text_posix.elisa"' "$candidate" || { ech
 rg -Fq 'EsBoundedText::read_utf8(input_path, Limits::SOURCE_BYTES)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not use bounded UTF-8 read" >&2; exit 1; }
 rg -Fq 'if fields.count >= Limits::FIELDS:' "$candidate" || { echo "diagnostic snapshot audit: candidate does not bound field admission" >&2; exit 1; }
 rg -Fq 'fields.push(field_name)' "$candidate" || { echo "diagnostic snapshot audit: candidate does not retain parsed fields" >&2; exit 1; }
+reference_field_assignment='fields=$('
+reference_locale='LC_ALL=C'
+reference_awk=' awk '
+rg -Fq "${reference_field_assignment}${reference_locale}${reference_awk}" "$script_dir/check_diagnostic_snapshot.sh" || { echo "diagnostic snapshot audit: reference field extraction is locale-dependent" >&2; exit 1; }
 for required in 'MAX_BYTES: usize = 16777216' 'maximum_bytes - bytes.count' 'probe_capacity: usize = remaining + 1' 'DarwinOpenFlags::NONBLOCK' 'ReadError.LimitExceeded' 'text_is_valid_utf8' 'stable_file(opened, final_opened)'; do
     rg -Fq "$required" "$bounded_reader" || { echo "diagnostic snapshot audit: shared reader is missing $required" >&2; exit 1; }
 done
@@ -59,7 +63,7 @@ if [[ $(LC_ALL=C tail -c 1 "$runner" | od -An -tu1 | tr -d '[:space:]') == "13" 
     exit 1
 fi
 
-fields=$(awk '
+fields=$(LC_ALL=C awk '
     BEGIN { cr=sprintf("%c", 13) }
     { sub(cr "$", "") }
     /^        struct ElisascriptProgramDiagnostic:/ { inside=1; next }
