@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Eleven observations cover directory variables:
+eleven ordinary lint cases. Twelve observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -70,15 +70,15 @@ Additional observations cover a missing first `CDPATH` entry followed by the
 valid caller directory, an empty first entry that must select the caller
 directory without printing, and a relative `.` entry. An existing `CDPATH`
 directory without the project is also searched before Bash falls back to the
-ordinary relative operand, without printing a selected-directory line. An
-absolute-source-path control supplies nonempty
-`CDPATH` and expects no extra line, because Bash only consults `CDPATH` for a
-relative `cd` operand. These implementations and observations are
-source-authored and unrun; other relative `CDPATH` entries, alternate no-match
-conditions and symlinked `CDPATH` cases remain open.
-These cases are source-authored and unrun; `//`, path-race and complex `..`
-semantics remain open. The seven actual exec-failure cases follow, so the lint
-wave has thirty observations total.
+ordinary relative operand, without printing a selected-directory line. A
+symlinked `CDPATH` entry verifies that Bash's logical `PWD` retains the alias
+spelling while resolving to the physical project root. An absolute-source-path
+control supplies nonempty `CDPATH` and expects no extra line, because Bash only
+consults `CDPATH` for a relative `cd` operand. These implementations and
+observations are source-authored and unrun; other relative `CDPATH` entries,
+alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
+path-race and complex `..` semantics remain open. The seven actual exec-failure
+cases follow, so the lint wave has thirty-one observations total.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
