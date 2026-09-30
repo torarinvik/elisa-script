@@ -22,6 +22,8 @@ Its semantic source also includes an escaped-quote comment before a later
 independent raw-source regex searches.
 The positive registry fixture gives the first following `def` line a quoted
 comment token, pinning the shell reference's inclusive `sed` range endpoint.
+Text after its closing quote pins `rg -o`'s non-overlapping match behavior: the
+closing quote of one match is not also treated as the opener of another name.
 The positive semantic fixture also includes quoted hyphenated and digit-leading
 near-misses; they must not be counted as identifiers by either scanner.
 
