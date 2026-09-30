@@ -269,19 +269,21 @@ symlinks, maps every stat failure to absence, and treats directories as present
 but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
 `observe_search_plan` now validates the owned plan. Direct-name mode observes
 the exact command spelling once without applying PATH candidate preference;
-PATH mode rejects unsupported tilde expansion before any stat query, then joins
-and observes components in order, retaining exact spellings, and stops after
-the first executable candidate just as Bash does. If none is executable, it
-applies the selector to the observed prefix after exhausting PATH. The adapter
-has not been compiled or exercised; the caller must prevent concurrent
-credential changes during capture.
+PATH mode validates the plan, joins and observes components in order, retaining
+exact spellings, and stops after the first executable candidate just as Bash
+does. An unsupported tilde component is rejected only when reached, before its
+stat query, so an earlier executable can end the search without needing that
+expansion. If all reached components are supported and none is executable, it
+applies the selector after exhausting PATH. The adapter has not been compiled
+or exercised; the caller must prevent concurrent credential changes during
+capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
 check with no `bash` candidate in its private first PATH directory and `/bin`
-second, plus an unvisited `/usr/bin` suffix. It verifies the retained candidate
-spellings and selected index using stat/credential observations only; it does
-not launch Bash or the selected executable. The test is uncompiled and unrun,
-and does not qualify this adapter for the lint wrapper.
+second, plus unvisited `/usr/bin` and tilde-expansion suffixes. It verifies the
+retained candidate spellings and selected index using stat/credential
+observations only; it does not launch Bash or the selected executable. The test
+is uncompiled and unrun, and does not qualify this adapter for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
