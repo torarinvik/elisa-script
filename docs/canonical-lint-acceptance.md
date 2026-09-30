@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Twelve observations cover directory variables:
+eleven ordinary lint cases. Fourteen observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -82,16 +82,16 @@ consults `CDPATH` for a relative `cd` operand. These implementations and
 observations are source-authored and unrun; other relative `CDPATH` entries,
 alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
 path-race and complex `..` semantics remain open. The seven actual exec-failure
-cases follow, so the lint wave has thirty-one observations total.
+cases follow, so the lint wave has thirty-three observations total.
 
 Source review of Bash 3.2's `absolute_pathname` also showed that a `cd`
 operand beginning with `./` or `../` bypasses `CDPATH`, in addition to an
 absolute operand. The companion now checks that raw spelling before
-normalization, and a pure fixture pins the rule. The dormant native matrix
-still lacks dedicated `./scripts/...` and `../project/scripts/...` cases with
-nonempty `CDPATH`; those remain required observations before acceptance. Bash
-also applies tilde expansion to `CDPATH` entries, which the current model does
-not yet implement.
+normalization, and a pure fixture pins the rule. Two dormant native cases now
+invoke relative source paths beginning with `./` and `../` while `CDPATH` is
+nonempty; both require no CDPATH output line. These are authored, not observed.
+Bash also applies tilde expansion to `CDPATH` entries, which the current model
+does not yet implement.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
