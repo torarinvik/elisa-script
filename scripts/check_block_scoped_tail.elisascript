@@ -1,7 +1,8 @@
-# Streaming Elisascript port of check_block_scoped_tail.sh.
-# Keep the shell oracle until the public-launcher parity contract is qualified.
+# Bounded Elisascript port of check_block_scoped_tail.sh.
+# Source checks use the shared scanner without launching rg.
 
 include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
 
 module EsBlockScopedTailAudit:
     private:
@@ -15,36 +16,39 @@ module EsBlockScopedTailAudit:
 
 
         const module Patterns:
-            SCOPED_VALUE_BLOCK: sview = "def answer\\(\\) -> i64:\\n[[:space:]]+value: i64 =\\n[[:space:]]+hidden: i64 = 41\\n[[:space:]]+hidden \\+ 1\\n[[:space:]]+value"
-            PROCESS_CAPTURE: sview = "capture_process_result(executable(\"/usr/bin/true\"), [], empty_input)"
-            TAIL_ARITHMETIC: sview = "result.exit_status + answer() - 42"
-            LOWERING_CASE: sview = "function_tail_returns_scoped_block_value"
-            SEMANTIC_CASE: sview = "scoped_process_value_block_is_not_a_thread_submission"
-            ARGUMENTS_TYPE: sview = "arguments: darray[sview]"
-            FLOW_RULE: sview = "tail_is_value"
-            LOWERING_DIAGNOSTIC: sview = "function tail expression does not match its return type"
-            SUBMIT_ANNOTATION: sview = "annotation.name == \"__submit\""
-            SUBMIT_LINE_RULE: sview = "submit_line == block_line.line"
+            SCOPED_VALUE_BLOCK: Regex = regex"""def answer\(\) -> i64:
+[[:space:]]+value: i64 =
+[[:space:]]+hidden: i64 = 41
+[[:space:]]+hidden \+ 1
+[[:space:]]+value"""
+            PROCESS_CAPTURE: Regex = regex"capture_process_result\(executable\(\"/usr/bin/true\"\), \[\], empty_input\)"
+            TAIL_ARITHMETIC: Regex = regex"result\.exit_status \+ answer\(\) - 42"
+            LOWERING_CASE: Regex = regex"function_tail_returns_scoped_block_value"
+            SEMANTIC_CASE: Regex = regex"scoped_process_value_block_is_not_a_thread_submission"
+            ARGUMENTS_TYPE: Regex = regex"arguments: darray\[sview\]"
+            FLOW_RULE: Regex = regex"tail_is_value"
+            LOWERING_DIAGNOSTIC: Regex = regex"function tail expression does not match its return type"
+            SUBMIT_ANNOTATION: Regex = regex"annotation\.name == \"__submit\""
+            SUBMIT_LINE_RULE: Regex = regex"submit_line == block_line\.line"
 
 
         const module Messages:
             MISSING_ROOT: sview = "block-tail audit: missing repository root"
             UNRESOLVED_ROOT: sview = "block-tail audit: unable to resolve repository root"
             MISSING_INPUT: sview = "block-tail audit: missing "
-            RG_UNAVAILABLE: sview = "block-tail audit: unable to run rg"
-            READ_FAILED: sview = "block-tail audit: rg failed to run"
+            READ_FAILED: sview = "block-tail audit: unable to read source: "
+            SUCCESS: sview = "block-tail audit: fixture and source-level lowering/semantic/closure coverage are present; runtime behavior is not asserted"
 
 
         const enum SearchMode of u8:
-            Regex
-            MultilineRegex
-            Fixed
+            Line
+            FullText
 
 
         struct SearchCheck:
             input: Path
-            pattern: sview
-            mode: SearchMode
+            pattern: Regex
+            mode: SearchMode = SearchMode.Line
 
 
         def diagnostic(message: sview) -> void can[Console.Write]:
@@ -53,37 +57,58 @@ module EsBlockScopedTailAudit:
 
         def searches(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
             return [
-                SearchCheck{input: inputs[0], pattern: Patterns::SCOPED_VALUE_BLOCK, mode: SearchMode.MultilineRegex},
-                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_CAPTURE, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[0], pattern: Patterns::TAIL_ARITHMETIC, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[1], pattern: Patterns::LOWERING_CASE, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[2], pattern: Patterns::SEMANTIC_CASE, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[2], pattern: Patterns::ARGUMENTS_TYPE, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[5], pattern: Patterns::FLOW_RULE, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[3], pattern: Patterns::LOWERING_DIAGNOSTIC, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[4], pattern: Patterns::SUBMIT_ANNOTATION, mode: SearchMode.Fixed},
-                SearchCheck{input: inputs[4], pattern: Patterns::SUBMIT_LINE_RULE, mode: SearchMode.Fixed}
+                SearchCheck{input: inputs[0], pattern: Patterns::SCOPED_VALUE_BLOCK, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_CAPTURE},
+                SearchCheck{input: inputs[0], pattern: Patterns::TAIL_ARITHMETIC},
+                SearchCheck{input: inputs[1], pattern: Patterns::LOWERING_CASE},
+                SearchCheck{input: inputs[2], pattern: Patterns::SEMANTIC_CASE},
+                SearchCheck{input: inputs[2], pattern: Patterns::ARGUMENTS_TYPE},
+                SearchCheck{input: inputs[5], pattern: Patterns::FLOW_RULE},
+                SearchCheck{input: inputs[3], pattern: Patterns::LOWERING_DIAGNOSTIC},
+                SearchCheck{input: inputs[4], pattern: Patterns::SUBMIT_ANNOTATION},
+                SearchCheck{input: inputs[4], pattern: Patterns::SUBMIT_LINE_RULE}
             ]
 
 
-        def execute(checks: darray[SearchCheck]) -> i64 can[Environment.Read, File.Read, Directory.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
-            rg: Executable = try executable("rg") else err:
-                diagnostic(Messages::RG_UNAVAILABLE)
-                return 127i64
+        def has_line_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_line(path, pattern):
+                ok found:
+                    return 1i64 if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return 2i64
+
+
+        def has_full_text_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_text(path, pattern):
+                ok found:
+                    return 1i64 if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return 2i64
+
+
+        def has_match(check: SearchCheck) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            match check.mode:
+                SearchMode.Line:
+                    return has_line_match(check.input, check.pattern)
+                SearchMode.FullText:
+                    return has_full_text_match(check.input, check.pattern)
+                _:
+                    return 1i64
+
+
+        def execute(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
             for check in checks:
-                arguments: darray[sview] = when check.mode:
-                    SearchMode.Regex -> ["-q", check.pattern, f"{check.input}"]
-                    SearchMode.MultilineRegex -> ["-U", "-q", check.pattern, f"{check.input}"]
-                    SearchMode.Fixed -> ["-Fq", check.pattern, f"{check.input}"]
-                status: i64 = try run_process(rg, arguments, 0i64) else err:
-                    diagnostic(Messages::READ_FAILED)
-                    return 127i64
+                status: i64 = has_match(check)
                 return status if status != 0i64
             return 0i64
 
 
     public:
-        def run_root(repository_root: Path) -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
             if not is_directory(repository_root):
                 diagnostic(Messages::MISSING_ROOT)
                 return 1i64
@@ -105,17 +130,17 @@ module EsBlockScopedTailAudit:
             status: i64 = execute(searches(inputs))
             return status if status != 0i64
 
-            print("block-tail audit: fixture and source-level lowering/semantic/closure coverage are present; runtime behavior is not asserted")
+            print(Messages::SUCCESS)
             return 0i64
 
 
-        def run_default() -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
             root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
                 diagnostic(Messages::UNRESOLVED_ROOT)
                 return 1i64
             return run_root(root)
 
 
-def main(arguments: darray[sview]) -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
     _ = arguments
     return EsBlockScopedTailAudit::run_default()
