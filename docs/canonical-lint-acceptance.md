@@ -64,8 +64,11 @@ through nonempty `CDPATH` from the fixture root's parent. Bash's reference emits
 the selected absolute directory before the probe output in that case. The
 runtime now keeps normalized `Script::source_path()` separate from the original
 `Script::invocation_path()` spelling, with interpreter and bytecode support; the
-candidate derives its root from that spelling, checks colon-separated
+candidate derives its root from that spelling using a private shell-style
+`dirname` operation rather than general `Fs::parent`, checks colon-separated
 `CDPATH` entries for relative roots, and emits the selected directory line.
+Pure source fixtures pin empty, slash-free, trailing-slash, repeated-slash, root,
+and unnormalized `..` spellings; they are authored but uncompiled/unrun.
 Additional observations cover a missing first `CDPATH` entry followed by the
 valid caller directory, an empty first entry that must select the caller
 directory without printing, and a relative `.` entry. An existing `CDPATH`
