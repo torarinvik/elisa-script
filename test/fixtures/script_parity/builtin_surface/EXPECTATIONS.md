@@ -53,6 +53,11 @@ candidate status/stdout/stderr directly (rather than pinning checkout-specific
 counts) to ensure each implementation defaults to the repository containing
 its own script, not the caller's working directory.
 
+The launcher also compares both scripts with `/` as the explicit source root.
+The shell reference appends `/` plus each relative source path, preserving a
+double-leading slash in diagnostics (`//vendor/...`); the candidate preserves
+that same displayed spelling while its filesystem `Path` resolves the input.
+
 The launcher digest is checked against a caller-supplied SHA-256 before and
 after the matrix. This detects changes relative to that supplied value but
 does not establish trusted launcher build provenance.
