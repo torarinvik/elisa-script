@@ -97,9 +97,10 @@ spelling and nonempty `CDPATH`. Both operands are relative, so successful
 nonempty `CDPATH` matches print the resulting logical directory before the
 probe's independently pinned new/old `PWD` bytes. Only `dirname` is inside
 the reference's command substitution; `cd` itself runs directly and continues
-to the probe. A fifteenth sets `HOME` so a `~/...` CDPATH entry resolves to the
-fixture caller directory, pinning common current-user tilde expansion. The
-candidate preserves the raw source operand separately from
+to the probe. A fifteenth sets `HOME` so a `~//...` CDPATH entry resolves to
+the fixture caller directory, pinning current-user expansion and preservation
+of repeated suffix separators. The candidate preserves the raw source operand
+separately from
 normalized `Script::source_path()` through `Script::invocation_path()`, and
 uses it for relative-root `CDPATH` lookup and output. These cases are authored
 but uncompiled/unrun; alternate relative entries, additional no-match

@@ -82,9 +82,10 @@ consults `CDPATH` for a relative `cd` operand. These implementations and
 observations are source-authored and unrun; other relative `CDPATH` entries,
 alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
 path-race and complex `..` semantics remain open. One isolated case expands a
-`~/...` `CDPATH` entry from an explicit `HOME` value before resolving the
-relative wrapper root. Named-user, `~+`/`~-`, and directory-stack tilde entries
-remain open in the wrapper. The seven actual exec-failure cases follow, so the
+`~//...` `CDPATH` entry from an explicit `HOME` value before resolving the
+relative wrapper root, preserving the repeated suffix separator. Named-user,
+`~+`/`~-`, and directory-stack tilde entries remain open in the wrapper. The
+seven actual exec-failure cases follow, so the
 lint wave has thirty-four observations total.
 
 Source review of Bash 3.2's `absolute_pathname` showed that only absolute `cd`
