@@ -275,10 +275,11 @@ applying the pure selector. This source has not been compiled or exercised; the
 caller must prevent concurrent credential changes during capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
-check with a missing first PATH component and `/bin/bash` second. It verifies
-the retained candidate spellings and selected index using stat/credential
-observations only; it does not launch Bash or the selected executable. The test
-is uncompiled and unrun, and does not qualify this adapter for the lint wrapper.
+check with no `bash` candidate in its private first PATH directory and `/bin`
+second. It verifies the retained candidate spellings and selected index using
+stat/credential observations only; it does not launch Bash or the selected
+executable. The test is uncompiled and unrun, and does not qualify this adapter
+for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
