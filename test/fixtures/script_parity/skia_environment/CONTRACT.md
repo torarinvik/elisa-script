@@ -21,7 +21,12 @@ platform slice: they do not establish replacement parity for Skia's Windows
 recipe execution. That requires a Windows environment backend and a
 platform-specific qualification path, or an explicitly agreed exclusion before
 any Skia caller is migrated. A future integration comparison must include the
-caller boundary as well as the script's direct stdout contract.
+caller boundary as well as the script's direct stdout contract. The observed
+caller strictly decodes the captured stdout as UTF-8 and calls Python `str.rstrip`
+on the result; Elisascript's shared text trimming now models Python's Unicode
+whitespace set rather than only ASCII bytes. Interpreter and bytecode fixtures
+cover Unicode separators, Python's U+001C..U+001F whitespace controls, and a
+non-whitespace zero-width space. They are source-authored and unexecuted.
 
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and
