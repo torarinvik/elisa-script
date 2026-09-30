@@ -21,6 +21,14 @@ for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$
     fi
 done
 
+unicode_fixture_bytes="$(wc -c < "$unicode_boundary_fixture" | tr -d '[:space:]')"
+unicode_fixture_lines="$(wc -l < "$unicode_boundary_fixture" | tr -d '[:space:]')"
+unicode_boundary_pair_count="$(rg -F -c 'scanner_pair_matches("test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input")' "$fixture" || true)"
+if [ "$unicode_fixture_bytes" -gt 32768 ] || [ "$unicode_fixture_lines" -ne 1 ] || [ "$unicode_boundary_pair_count" != 1 ]; then
+    printf 'W09 Unicode audit: boundary parity fixture must stay one line, <=32 KiB, and run as one pair\n' >&2
+    exit 1
+fi
+
 rg -Fq 'SOURCE_BYTES: usize = 8388608' "$candidate"
 rg -Fq 'SOURCE_LINES: usize = 131072' "$candidate"
 rg -Fq 'if len(source) > Limits::SOURCE_BYTES:' "$candidate"

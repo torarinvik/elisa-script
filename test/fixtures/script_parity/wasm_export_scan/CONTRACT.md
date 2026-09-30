@@ -373,10 +373,13 @@ gap between printable U+0377 and U+037A. The generated one-line malformed-name
 fixture now concatenates every range start, midpoint, end, and immediate
 neighbors that can be represented in a single strict-UTF-8 scanner line; one
 scanner/Python differential pair checks all of those diagnostic escapes at
-once. It excludes U+0085/U+2028/U+2029 because they split source lines, and
-surrogates because strict UTF-8 cannot encode them. The runtime-built
-malformed-type input separately exercises C0/NUL/DEL and Latin-1 escaping; the
-malformed-name case covers ASCII space/punctuation plus Unicode whitespace.
+once. The source audit caps that input at 32 KiB, requires one line, and pins
+exactly one candidate/Python pair so boundary coverage cannot regress into a
+process-per-codepoint loop. It excludes U+0085/U+2028/U+2029 because they split
+source lines, and surrogates because strict UTF-8 cannot encode them. The
+runtime-built malformed-type input separately exercises C0/NUL/DEL and Latin-1
+escaping; the malformed-name case covers ASCII space/punctuation plus Unicode
+whitespace.
 These remain unexecuted source contracts. A candidate-only self-check also
 probes every declared range's start, midpoint, end, and immediate neighbors;
 it checks interval and binary-lookup consistency against the generated table,
