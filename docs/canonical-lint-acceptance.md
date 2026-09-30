@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Seven observations cover directory variables:
+eleven ordinary lint cases. Nine observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -66,13 +66,16 @@ runtime now keeps normalized `Script::source_path()` separate from the original
 `Script::invocation_path()` spelling, with interpreter and bytecode support; the
 candidate derives its root from that spelling, checks colon-separated
 `CDPATH` entries for relative roots, and emits the selected directory line.
-An absolute-source-path control supplies the same nonempty `CDPATH` and expects
-no extra line, because Bash only consults `CDPATH` for a relative `cd` operand.
-These implementations and observations are source-authored and unrun; empty,
-relative, multi-entry, no-match and symlinked `CDPATH` cases remain open.
+Additional observations cover a missing first `CDPATH` entry followed by the
+valid caller directory, and an empty first entry that must select the caller
+directory without printing. An absolute-source-path control supplies nonempty
+`CDPATH` and expects no extra line, because Bash only consults `CDPATH` for a
+relative `cd` operand. These implementations and observations are
+source-authored and unrun; relative `CDPATH` entries, no-match fallback and
+symlinked `CDPATH` cases remain open.
 These cases are source-authored and unrun; `//`, path-race and complex `..`
 semantics remain open. The seven actual exec-failure cases follow, so the lint
-wave has twenty-six observations total.
+wave has twenty-eight observations total.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
