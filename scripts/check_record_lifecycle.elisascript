@@ -1,0 +1,187 @@
+# Bounded Elisascript port of check_record_lifecycle.sh.
+# Regex source checks stream through the shared scanner without rg/awk.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsRecordLifecycleAudit:
+    private:
+        const module Inputs:
+            MODEL: sview = "src/runtime/record_lifecycle_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            MODULE: Regex = regex"^module EsRecordLifecycle:"
+            MODEL_IMPORT: Regex = regex"include \"\.\./runtime/record_lifecycle_model\.elisa\""
+            STATE: Regex = regex"const enum RecordLifecycleState of u8"
+            EVENT: Regex = regex"const enum RecordLifecycleEvent of u8"
+            POLICY: Regex = regex"struct RecordLifecyclePolicy:"
+            SESSION: Regex = regex"struct RecordLifecycleSession:"
+            ERROR: Regex = regex"error RecordLifecycleError:"
+            VALIDATE: Regex = regex"def validate_record_lifecycle\("
+            ADVANCE: Regex = regex"def advance_record_lifecycle\("
+            MAX_FILES: Regex = regex"RECORD_LIFECYCLE_MAX_FILES"
+            MAX_RECORDS: Regex = regex"RECORD_LIFECYCLE_MAX_RECORDS"
+            NAME_VALID: Regex = regex"record_lifecycle_name_valid"
+            CURRENT_NAME_VALID: Regex = regex"session.file_open and not record_lifecycle_name_valid\(session.current_file\)"
+            EMPTY_FILE_COUNT: Regex = regex"session.file_open and session.file_count == 0"
+            CLOSED_FILE_RECORD_COUNT: Regex = regex"not session.file_open and session.file_record_count != 0"
+            RECORDS_WITHOUT_FILES: Regex = regex"session.record_count != 0 and session.file_count == 0"
+            PLANNED_OPEN: Regex = regex"session.state == RecordLifecycleState.Planned and \(session.file_open or session.record_open"
+            FILE_NOT_OPEN: Regex = regex"RecordLifecycleError.FileNotOpen"
+            RECORD_NOT_OPEN: Regex = regex"RecordLifecycleError.RecordNotOpen"
+            EMPTY_FILE_NOT_ALLOWED: Regex = regex"RecordLifecycleError.EmptyFileNotAllowed"
+            RECORD_BEGIN: Regex = regex"RecordLifecycleEvent.RecordBegin"
+            FILE_END: Regex = regex"RecordLifecycleEvent.FileEnd"
+            CANCEL: Regex = regex"RecordLifecycleEvent.Cancel"
+            FORGED_PLANNED_COUNTERS: Regex = regex"forged_planned_counters"
+            MULTILINE_RECORD_END: Regex = regex"""elif event == RecordLifecycleEvent.RecordEnd:
+                raise RecordLifecycleError.InvalidState if session.state != RecordLifecycleState.Running
+                raise RecordLifecycleError.RecordNotOpen if not session.record_open
+                raise RecordLifecycleError.RecordLimitExceeded if session.record_count >= session.policy.max_records"""
+            FIXTURE_IMPORT: Regex = regex"using EsRecordLifecycle"
+            FIXTURE_CONTRACT: Regex = regex"typed_record_lifecycle_contract_orders_file_and_record_hooks"
+            FIXTURE_FILE_BEGIN: Regex = regex"RecordLifecycleEvent.FileBegin"
+            FIXTURE_RECORD_END: Regex = regex"RecordLifecycleEvent.RecordEnd"
+            FIXTURE_FILE_NOT_OPEN: Regex = regex"RecordLifecycleError.FileNotOpen"
+            FIXTURE_OVERFLOW_END: Regex = regex"overflow_end"
+            DOCS_SESSION: Regex = regex"EsRecordLifecycle::RecordLifecycleSession"
+            LEDGER_ITEM: Regex = regex"ES-SCRIPT-026"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "record lifecycle audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "record lifecycle audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "record lifecycle audit: missing "
+            READ_FAILED: sview = "record lifecycle audit: unable to read source: "
+            SUCCESS: sview = "record lifecycle audit: bounded file/record hook ordering and cleanup are present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        const enum SearchMode of u8:
+            Line
+            FullText
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: Regex
+            mode: SearchMode = SearchMode.Line
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def has_line_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_line(path, pattern):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def has_full_text_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_text(path, pattern):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def has_match(check: SearchCheck) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            match check.mode:
+                SearchMode.Line:
+                    return has_line_match(check.input, check.pattern)
+                SearchMode.FullText:
+                    return has_full_text_match(check.input, check.pattern)
+                _:
+                    return ExitStatus.FAILURE
+
+
+        def searches(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[0], pattern: Patterns::MODULE},
+                SearchCheck{input: inputs[1], pattern: Patterns::MODEL_IMPORT},
+                SearchCheck{input: inputs[0], pattern: Patterns::STATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::EVENT},
+                SearchCheck{input: inputs[0], pattern: Patterns::POLICY},
+                SearchCheck{input: inputs[0], pattern: Patterns::SESSION},
+                SearchCheck{input: inputs[0], pattern: Patterns::ERROR},
+                SearchCheck{input: inputs[0], pattern: Patterns::VALIDATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::ADVANCE},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_FILES},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_RECORDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::NAME_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::CURRENT_NAME_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::EMPTY_FILE_COUNT},
+                SearchCheck{input: inputs[0], pattern: Patterns::CLOSED_FILE_RECORD_COUNT},
+                SearchCheck{input: inputs[0], pattern: Patterns::RECORDS_WITHOUT_FILES},
+                SearchCheck{input: inputs[0], pattern: Patterns::PLANNED_OPEN},
+                SearchCheck{input: inputs[0], pattern: Patterns::FILE_NOT_OPEN},
+                SearchCheck{input: inputs[0], pattern: Patterns::RECORD_NOT_OPEN},
+                SearchCheck{input: inputs[0], pattern: Patterns::EMPTY_FILE_NOT_ALLOWED},
+                SearchCheck{input: inputs[0], pattern: Patterns::RECORD_BEGIN},
+                SearchCheck{input: inputs[0], pattern: Patterns::FILE_END},
+                SearchCheck{input: inputs[0], pattern: Patterns::CANCEL},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_PLANNED_COUNTERS},
+                SearchCheck{input: inputs[0], pattern: Patterns::MULTILINE_RECORD_END, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_IMPORT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_CONTRACT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_FILE_BEGIN},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_RECORD_END},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_FILE_NOT_OPEN},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_OVERFLOW_END},
+                SearchCheck{input: inputs[3], pattern: Patterns::DOCS_SESSION},
+                SearchCheck{input: inputs[4], pattern: Patterns::LEDGER_ITEM}
+            ]
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::MODEL),
+                root.joinpath(Inputs::IR),
+                root.joinpath(Inputs::FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            for check in searches(inputs):
+                status: i64 = has_match(check)
+                return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsRecordLifecycleAudit::run_default()

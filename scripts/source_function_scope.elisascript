@@ -1,7 +1,6 @@
-# Bounded streaming scanner for source audits with line and function scope.
-# Function extraction mirrors awk's indentation-delimited scope without
-# loading an entire source file. Limits are explicit: 64 MiB source bytes,
-# 1 MiB per line, and 16 MiB retained for one selected function body.
+# Bounded streaming scanner for line, full-text, and function-scope audits.
+# Function extraction mirrors awk's indentation-delimited scope. Limits are
+# explicit: 64 MiB source bytes, 1 MiB per line, and 16 MiB per function body.
 
 include "../src/runtime/encoding.elisa"
 include "../src/runtime/file_posix.elisa"
@@ -247,6 +246,49 @@ module EsSourceFunctionScope:
                 false
             raise Error.CloseFailed if not closed
             return found
+
+
+        # Search a bounded complete source buffer when a regex intentionally
+        # spans line boundaries (the source bytes and LF delimiters are kept).
+        def contains_file_regex_text(input_path: Path, pattern: Regex) -> bool error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            path_length: usize = sview_len(path_text)
+            raise Error.InvalidPath if path_length == 0 or path_length > Limits::PATH_BYTES or sview_contains_byte(path_text, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, Limits::SOURCE_BYTES, FileStreamEncoding.Bytes) else err:
+                raise Error.OpenFailed
+            line: mutable darray[u8] = []
+            source: mutable darray[u8] = []
+            phase: mutable SearchPhase = SearchPhase.Scan
+            machine over phase while phase != SearchPhase.Done:
+                state Search
+                start Search
+
+                Search, SearchPhase.Scan:
+                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- SearchPhase.Done
+                        -> Search
+                    for byte in line |source|:
+                        source.push(byte)
+                    source.push(10u8) if not record.eof
+                    phase <- SearchPhase.Done if record.eof
+                    -> Search
+
+                Search, SearchPhase.Done:
+                    break
+
+            closed: bool = try file_stream_close(stream) else err:
+                false
+            raise Error.CloseFailed if not closed
+            return pattern.search(bytes_view(source))
 
 
         # Count nonoverlapping literal matches across a bounded byte stream.
