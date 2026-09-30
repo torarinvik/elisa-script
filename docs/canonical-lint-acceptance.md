@@ -273,12 +273,10 @@ account-home snapshot as the fallback for bare `~`/`~/...` only when HOME is
 absent; an explicitly empty HOME still wins. It also accepts a per-name lookup
 snapshot: a supplied home expands, a confirmed miss preserves the original
 tilde spelling, and a missing/unavailable snapshot fails closed. These are
-model features only; the Darwin adapter does not query the passwd database.
+model features of the explicit-snapshot observer.
 Bash's `tilde_expand_word` copies the original spelling when `getpwnam` returns
 no entry, and uses the account database for bare `~`/`~/...` only when HOME is
-unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)). Neither the named-user nor current-user lookup
-provider is implemented. Unavailable or out-of-range stack indexes fail
-explicitly. Pure fixtures cover selection, permission classification, invalid
+unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)). The Darwin process-environment adapter now performs bounded lazy `getpwnam_r` lookup for a reached named user and `getpwuid_r` only when bare `~` needs the account-home fallback; a missing named user retains its original spelling. The returned passwd fields are copied only from their caller-owned result buffer. These native layouts/lookups remain uncompiled and unqualified. The explicit-snapshot observer still requires caller-provided account/name facts. Unavailable or out-of-range stack indexes fail explicitly. Pure fixtures cover selection, permission classification, invalid
 directory-as-executable observations, PATH planning, tilde byte preservation
 (including HOME fallback, PWD/OLDPWD, indexed stack, and named-user
 snapshots), forged-plan rejection, and joining; they are uncompiled and unrun.
@@ -298,9 +296,11 @@ candidate preference. A slashless command with an empty PATH is retained as an
 unsearched literal name, matching Bash's early return without stat. PATH mode
 validates the plan, joins and observes components in order, retaining exact
 spellings, and stops after the first executable candidate just as Bash does.
-Current-user `~` and `~/...` components are expanded from a caller-supplied HOME
-snapshot, while `~+` and `~-` use caller-supplied PWD and OLDPWD snapshots;
-indexed stack and named-user forms also require explicit caller snapshots;
+The explicit-snapshot observer resolves current-user `~`/`~/...` from HOME or
+account-home data, `~+`/`~-` from PWD/OLDPWD, and indexed/named-user forms from
+caller snapshots. The process-environment observer lazily reads exported HOME,
+PWD, and OLDPWD, and queries passwd only for a reached named user or missing
+HOME fallback; indexed directory-stack forms still require caller state.
 unsupported tilde forms are rejected only when reached, before their stat
 query, so an earlier executable can end the search without needing that
 expansion. `resolve_reached_path_directory_from_process_environment` resolves
@@ -308,9 +308,18 @@ one already-reached directory and reads only the exported process `HOME`,
 `PWD`, or `OLDPWD` value its tilde form needs. Unused environment values cannot
 block an earlier executable. `observe_search_plan_with_process_environment`
 uses that resolver in the ordered candidate loop and still stops at the first
-executable. These APIs do not capture shell-only variables, account homes,
-named-user lookups, or directory-stack state; callers must exclude concurrent
-environment mutation for each lookup and provide the remaining snapshots.
+A checked `invocation_path_from_observation` projection now copies a selected
+candidate into owned bytes, revalidates the selection against all observed
+candidate facts, and leaves NotFound unavailable. Pure fixtures cover executable
+selection, non-executable fallback, independent ownership, direct-name handoff,
+and rejection of a forged selection index. This runtime-side handoff is not yet
+used by the lint port: importing `src/runtime` by a checkout-relative path would
+make the companion depend on this repository layout instead of a stable public
+process API. The port still passes the configured name to `run_process`, whose
+legacy `execvp` lookup can differ from Bash. The process-environment observer
+does not capture shell-only variables or directory-stack state; the explicit-
+snapshot observer requires those shell facts from its caller. Both require
+concurrent environment mutation to be excluded during each lookup.
 If all reached components are supported and none is executable, it applies the
 selector after exhausting PATH. The adapter has not been compiled or exercised;
 the caller must keep credential and shell-directory snapshots stable during
@@ -325,8 +334,11 @@ private first PATH directory and `/bin` second, and unvisited `/usr/bin` and
 tilde-expansion suffixes. It verifies retained candidate spellings and
 selection using stat/credential observations only; separate cases cover
 refusal of reached unsupported tilde forms and snapshot-based tilde expansion
-before joining. No case launches Bash or the selected executable. The tests
-are uncompiled and unrun, and do not qualify this adapter for the lint wrapper.
+before joining. Pure invocation-path fixtures also pin executable selection,
+non-executable fallback, copied-path ownership, direct-name behavior, and
+malformed selection rejection. No case launches Bash or the selected
+executable. The tests are uncompiled and unrun, so source integration does not
+qualify this adapter or the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.

@@ -37,6 +37,7 @@ module EsBashExecLookupPosix:
             PasswordHomePointerOutsideBuffer
             PasswordHomeStringUnterminated
             PasswordHomeLimitExceeded
+            InvalidInvocationPathObservation
 
 
         struct ObservedPathCandidate:
@@ -51,6 +52,11 @@ module EsBashExecLookupPosix:
             unsearched_name: darray[u8] = []
             candidates: darray[ObservedPathCandidate] = []
             selection: EsBashExecLookup::Selection = EsBashExecLookup::Selection{}
+
+
+        struct InvocationPath:
+            available: bool = false
+            bytes: darray[u8] = []
 
 
     private:
@@ -334,9 +340,10 @@ module EsBashExecLookupPosix:
         # stat-derived facts. A slashless command with empty PATH is returned
         # literally without a stat, as Bash does. Other direct-name mode
         # observes the command once without PATH candidate preference.
-        # HOME, account-home fallback, PWD, OLDPWD, indexed stack entries and
-        # named-user results use supplied snapshots; this adapter does not
-        # query the passwd database.
+        # This explicit-snapshot variant uses caller-supplied HOME,
+        # account-home, PWD, OLDPWD, indexed-stack and named-user results; it
+        # does not query the passwd database. The process-environment variant
+        # below performs bounded lazy passwd lookups where required.
         # Unsupported or unavailable forms fail when reached, before stat;
         # a confirmed missing account keeps Bash's unchanged spelling.
         def observe_search_plan(plan: EsBashExecLookup::PathSearchPlan&, command: sview, credentials: EsBashExecLookup::CredentialSnapshot, tilde: EsBashExecLookup::PathTildeContext&) -> SearchObservation error[EsBashExecLookup::LookupError, ObservationError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
@@ -389,6 +396,51 @@ module EsBashExecLookupPosix:
                         return result
             result.selection <- try EsBashExecLookup::select_path_candidate(facts)
             return result
+
+
+        # Turn a checked Bash lookup observation into the exact path to hand to
+        # a direct process launch. This avoids asking libc execvp to repeat a
+        # PATH search with potentially different empty-component semantics.
+        # NotFound remains unavailable so the caller can preserve its existing
+        # launch/error path until parent-side exec receipts are wired.
+        def invocation_path_from_observation(observation: SearchObservation) -> InvocationPath error[ObservationError, EsBashExecLookup::LookupError] can[Memory.Allocate, Abort.Panic]:
+            if observation.mode == EsBashExecLookup::SearchMode.DirectName:
+                raise ObservationError.InvalidInvocationPathObservation if observation.path_selection_available
+                raise ObservationError.InvalidInvocationPathObservation if observation.unsearched_name_returned and observation.candidates.count != 0
+                if observation.unsearched_name_returned:
+                    name: sview = bytes_view(observation.unsearched_name)
+                    raise ObservationError.InvalidInvocationPathObservation if sview_len(name) > EsBashExecLookup::Limits::COMMAND_BYTES
+                    raise ObservationError.InvalidInvocationPathObservation if name == "" or sview_contains_byte(name, 0u8)
+                    return InvocationPath{available: true, bytes: try copy_environment_bytes(name)}
+                return InvocationPath{} if observation.candidates.count == 0
+                raise ObservationError.InvalidInvocationPathObservation if observation.candidates.count != 1
+                candidate: ObservedPathCandidate = observation.candidates[0]
+                candidate_path: sview = bytes_view(candidate.path)
+                raise ObservationError.InvalidInvocationPathObservation if sview_len(candidate_path) > EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
+                raise ObservationError.InvalidInvocationPathObservation if candidate_path == "" or sview_contains_byte(candidate_path, 0u8)
+                return InvocationPath{available: true, bytes: try copy_environment_bytes(candidate_path)}
+
+            raise ObservationError.InvalidInvocationPathObservation if observation.mode != EsBashExecLookup::SearchMode.PathDirectories or not observation.path_selection_available or observation.unsearched_name_returned
+            raise ObservationError.InvalidInvocationPathObservation if observation.candidates.count > EsBashExecLookup::Limits::PATH_ENTRIES
+            facts: mutable darray[EsBashExecLookup::PathCandidate] = []
+            for candidate in observation.candidates |facts|:
+                candidate_path: sview = bytes_view(candidate.path)
+                raise ObservationError.InvalidInvocationPathObservation if sview_len(candidate_path) > EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
+                raise ObservationError.InvalidInvocationPathObservation if candidate_path == "" or sview_contains_byte(candidate_path, 0u8)
+                facts.push(candidate.observation)
+            expected: EsBashExecLookup::Selection = try EsBashExecLookup::select_path_candidate(facts)
+            raise ObservationError.InvalidInvocationPathObservation if expected.kind != observation.selection.kind or expected.index != observation.selection.index
+            return InvocationPath{} if expected.kind == EsBashExecLookup::SelectionKind.NotFound
+            raise ObservationError.InvalidInvocationPathObservation if expected.kind != EsBashExecLookup::SelectionKind.Executable and expected.kind != EsBashExecLookup::SelectionKind.NonExecutableFallback
+            raise ObservationError.InvalidInvocationPathObservation if expected.index >= observation.candidates.count
+            selected: ObservedPathCandidate = observation.candidates[expected.index]
+            raise ObservationError.InvalidInvocationPathObservation if not selected.observation.exists or selected.observation.directory
+            raise ObservationError.InvalidInvocationPathObservation if expected.kind == EsBashExecLookup::SelectionKind.Executable and not selected.observation.executable
+            raise ObservationError.InvalidInvocationPathObservation if expected.kind == EsBashExecLookup::SelectionKind.NonExecutableFallback and selected.observation.executable
+            selected_path: sview = bytes_view(selected.path)
+            raise ObservationError.InvalidInvocationPathObservation if sview_len(selected_path) > EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
+            raise ObservationError.InvalidInvocationPathObservation if selected_path == "" or sview_contains_byte(selected_path, 0u8)
+            return InvocationPath{available: true, bytes: try copy_environment_bytes(selected_path)}
 
 
         # Process-environment variant of the ordered PATH observer. It uses
