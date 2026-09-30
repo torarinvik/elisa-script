@@ -61,7 +61,7 @@ clean-environment physical and symlink-alias roots, an inherited valid logical
 the fixture root's parent with `PWD` omitted, relative invocation through the
 project's symlink alias with inherited logical `PWD`, and relative invocation
 through nonempty `CDPATH` from the fixture root's parent. Bash's reference emits
-the selected absolute directory before the probe output in that case. The
+the selected logical directory before the probe output in that case. The
 runtime now keeps normalized `Script::source_path()` separate from the original
 `Script::invocation_path()` spelling, with interpreter and bytecode support; the
 candidate derives its root from that spelling using a private shell-style
@@ -84,14 +84,13 @@ alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
 path-race and complex `..` semantics remain open. The seven actual exec-failure
 cases follow, so the lint wave has thirty-three observations total.
 
-Source review of Bash 3.2's `absolute_pathname` also showed that a `cd`
-operand beginning with `./` or `../` bypasses `CDPATH`, in addition to an
-absolute operand. The companion now checks that raw spelling before
-normalization, and a pure fixture pins the rule. Two dormant native cases now
-invoke relative source paths beginning with `./` and `../` while `CDPATH` is
-nonempty; both require no CDPATH output line. These are authored, not observed.
-Bash also applies tilde expansion to `CDPATH` entries, which the current model
-does not yet implement.
+Source review of Bash 3.2's `absolute_pathname` showed that only absolute `cd`
+operands bypass `CDPATH`; relative operands beginning with `./` or `../` still
+search it. The companion checks the raw spelling before normalization, and
+the two native cases now expect CDPATH's selected-directory output before the
+probe bytes when a nonempty entry matches. These cases are authored, not
+observed. Bash also applies tilde expansion to `CDPATH` entries, which the
+current model does not yet implement.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact

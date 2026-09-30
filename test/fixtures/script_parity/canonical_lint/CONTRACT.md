@@ -93,13 +93,15 @@ searches through a symlinked `CDPATH` entry, expecting the logical alias in the
 selected-directory line and exported `PWD` while the probe's physical cwd
 remains the project root. A thirteenth invokes through a `./<project>/scripts`
 spelling with nonempty `CDPATH`; a fourteenth starts with a `../` source
-spelling and nonempty `CDPATH`. Both expect ordinary relative `cd` behavior,
-no selected-directory line, and the independently pinned new/old `PWD` bytes.
-The candidate preserves the raw source operand separately from normalized
-`Script::source_path()` through `Script::invocation_path()`, and uses it for
-relative-root `CDPATH` lookup and output. These cases are authored but
-uncompiled/unrun; alternate relative entries, additional no-match conditions
-and other symlinked `CDPATH` shapes remain open. It also
+spelling and nonempty `CDPATH`. Both operands are relative, so successful
+nonempty `CDPATH` matches print the resulting logical directory before the
+probe's independently pinned new/old `PWD` bytes. Only `dirname` is inside
+the reference's command substitution; `cd` itself runs directly and continues
+to the probe. The candidate preserves the raw source operand separately from
+normalized `Script::source_path()` through `Script::invocation_path()`, and
+uses it for relative-root `CDPATH` lookup and output. These cases are authored
+but uncompiled/unrun; alternate relative entries, additional no-match
+conditions and other symlinked `CDPATH` shapes remain open. It also
 validates inherited logical `PWD` against
 the physical cwd, preserves it for `OLDPWD`, and computes new logical `PWD`
 lexically before verifying its physical target. Odd `//`, path-race and
