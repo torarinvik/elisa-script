@@ -84,6 +84,15 @@ alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
 path-race and complex `..` semantics remain open. The seven actual exec-failure
 cases follow, so the lint wave has thirty-one observations total.
 
+Source review of Bash 3.2's `absolute_pathname` also showed that a `cd`
+operand beginning with `./` or `../` bypasses `CDPATH`, in addition to an
+absolute operand. The companion now checks that raw spelling before
+normalization, and a pure fixture pins the rule. The dormant native matrix
+still lacks dedicated `./scripts/...` and `../project/scripts/...` cases with
+nonempty `CDPATH`; those remain required observations before acceptance. Bash
+also applies tilde expansion to `CDPATH` entries, which the current model does
+not yet implement.
+
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
 expected status, and empty `error_text`. Matching streams/status cannot admit
