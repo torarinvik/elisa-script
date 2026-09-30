@@ -67,7 +67,7 @@ input; use the protocol's combined-stream bound.
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
 | Ruff stand-in replaces itself with a process terminated by SIGTERM | Reference is signaled (`Crash`, status 143, empty streams); candidate must match the terminal outcome, not merely complete with status 143 |
 
-Fourteen additional isolated observations cover exported directory variables. Two
+Fifteen additional isolated observations cover exported directory variables. Two
 start in `/` with a replacement environment that omits `PWD` and `OLDPWD`,
 then record the NUL-delimited values after entering the project via its
 physical path and a symlink alias. A third starts in `/` with `PWD` set to a
@@ -97,11 +97,14 @@ spelling and nonempty `CDPATH`. Both operands are relative, so successful
 nonempty `CDPATH` matches print the resulting logical directory before the
 probe's independently pinned new/old `PWD` bytes. Only `dirname` is inside
 the reference's command substitution; `cd` itself runs directly and continues
-to the probe. The candidate preserves the raw source operand separately from
+to the probe. A fifteenth sets `HOME` so a `~/...` CDPATH entry resolves to the
+fixture caller directory, pinning common current-user tilde expansion. The
+candidate preserves the raw source operand separately from
 normalized `Script::source_path()` through `Script::invocation_path()`, and
 uses it for relative-root `CDPATH` lookup and output. These cases are authored
 but uncompiled/unrun; alternate relative entries, additional no-match
-conditions and other symlinked `CDPATH` shapes remain open. It also
+conditions and other symlinked `CDPATH` shapes remain open. Named-user, `~+`,
+`~-`, and directory-stack CDPATH tilde forms remain open. It also
 validates inherited logical `PWD` against
 the physical cwd, preserves it for `OLDPWD`, and computes new logical `PWD`
 lexically before verifying its physical target. Odd `//`, path-race and
@@ -155,14 +158,14 @@ directory-environment probe are identity-checked and copied; three Ruff probe al
 exactly eleven lint cases are selected. No
 canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
 wave. These eleven are ordinary argv/status cases; the matrix additionally
-runs one signal-termination case, fourteen directory-environment cases, and seven
-exec-failure cases, for thirty-three observations total in the lint wave.
+runs one signal-termination case, fifteen directory-environment cases, and seven
+exec-failure cases, for thirty-four observations total in the lint wave.
 Source/case count checks reject silently
 empty or reduced selections. The wider twenty-one ordinary-case selection
 remains available through an explicit
 `public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
-with the same signal, all fourteen directory-environment cases, and exec-failure
-checks, that wave has forty-three observations. The default test does not advance to it automatically. Wave
+with the same signal, all fifteen directory-environment cases, and exec-failure
+checks, that wave has forty-four observations. The default test does not advance to it automatically. Wave
 selection does not grant execution authorization or prove that a preceding
 wave passed.
 Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`

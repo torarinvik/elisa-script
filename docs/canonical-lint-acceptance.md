@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Fourteen observations cover directory variables:
+eleven ordinary lint cases. Fifteen observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -81,16 +81,20 @@ control supplies nonempty `CDPATH` and expects no extra line, because Bash only
 consults `CDPATH` for a relative `cd` operand. These implementations and
 observations are source-authored and unrun; other relative `CDPATH` entries,
 alternate no-match conditions, additional symlinked `CDPATH` shapes, `//`,
-path-race and complex `..` semantics remain open. The seven actual exec-failure
-cases follow, so the lint wave has thirty-three observations total.
+path-race and complex `..` semantics remain open. One isolated case expands a
+`~/...` `CDPATH` entry from an explicit `HOME` value before resolving the
+relative wrapper root. Named-user, `~+`/`~-`, and directory-stack tilde entries
+remain open in the wrapper. The seven actual exec-failure cases follow, so the
+lint wave has thirty-four observations total.
 
 Source review of Bash 3.2's `absolute_pathname` showed that only absolute `cd`
 operands bypass `CDPATH`; relative operands beginning with `./` or `../` still
 search it. The companion checks the raw spelling before normalization, and
 the two native cases now expect CDPATH's selected-directory output before the
 probe bytes when a nonempty entry matches. These cases are authored, not
-observed. Bash also applies tilde expansion to `CDPATH` entries, which the
-current model does not yet implement.
+observed. Bash also accepts named-user, `~+`/`~-`, and directory-stack forms in
+`CDPATH`; the candidate only handles the common HOME-based `~` and `~/...`
+forms when `HOME` is available.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
