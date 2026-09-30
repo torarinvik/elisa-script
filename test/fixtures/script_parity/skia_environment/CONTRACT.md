@@ -33,7 +33,7 @@ a usable interpreted-script replacement until its FFI path is qualified.
 An additional source-only candidate,
 `scripts/get_skia_environment_interpreted.elisascript`, now uses the public
 `has_environment` and `get_environment_bounded` builtins, with no native extern
-declaration or pointer cast in the candidate. It preserves the model's 4,096-byte
+declaration or pointer cast in the candidate. It preserves the model's 1 MiB
 name admission and 1 MiB pre-copy value budget. Both candidates and the original
 remain separate; the dormant native matrix below does not test the interpreted
 companion. Its separate public-launcher tool is described below; actual
@@ -59,11 +59,13 @@ Under the ordinary well-formed POSIX environment contract, empty keys and keys
 containing `=` cannot name entries, so the candidate skips libc lookup and prints
 `None`. Embedded NUL is likewise an impossible dictionary key and cannot be
 supplied by native argv; model fixtures still cover it without C truncation.
-This classification first admits the 4,096-byte name budget. Longer arguments
+This classification first admits the 1 MiB name budget. Longer arguments
 are rejected with status 2 before any key-byte scan or host lookup, including
 arguments containing `=` or NUL. Within the budget, impossible keys still print
 `None`. This deliberate resource-policy boundary is not arbitrary-input Python
-parity; both source candidates use the same typed classification.
+parity, but it exceeds practical per-argument and process-environment limits on
+the supported host platforms; both source candidates use the same typed
+classification.
 Malformed process environments with empty/duplicate keys need separate handling.
 
 ## Typed host boundary and remaining backend work
@@ -102,7 +104,7 @@ a registry row or source candidate is not evidence of observed parity.
 
 ## Explicit differences, not accepted parity
 
-Names admit at most 4,096 bytes and values at most 1 MiB. The copy accepts a NUL
+Names admit at most 1 MiB and values at most 1 MiB. The copy accepts a NUL
 terminator at the exact value boundary and rejects the next payload byte. These
 are model policies, not an OS limit, arbitrary-input reference parity or an RSS
 guard. Native platform restrictions on environment sizes still apply.
@@ -136,7 +138,7 @@ Pure source fixtures cover absent/empty/literal-None values, added LF, preserved
 spaces/metacharacters/Unicode/raw bytes, impossible keys, NUL rejection, forged
 absent values and name/value admission boundaries. They have not compiled/run
 and do not prove the native adapter reads an environment correctly.
-Additional pure fixtures cover a valid 4,096-byte key, `=` at that boundary,
+Additional pure fixtures cover a valid 1 MiB key, `=` at that boundary,
 and oversized keys with invalid bytes at both ends. Classification and native
 name validation both reject oversized inputs with `LookupError.NameLimit`.
 
