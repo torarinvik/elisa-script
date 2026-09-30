@@ -48,11 +48,61 @@ module EsBashExecLookupPosix:
 
 
     private:
+        const enum ReachedTildeEnvironmentNeed of u8:
+            None
+            Home
+            WorkingDirectory
+            PreviousWorkingDirectory
+
+
         def copy_environment_bytes(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
             owned: mutable darray[u8] = []
             for byte in value |owned|:
                 owned.push(byte)
             return owned
+
+
+        def reached_tilde_environment_need(directory: sview, tilde: EsBashExecLookup::PathTildeContext&) -> ReachedTildeEnvironmentNeed:
+            directory_length: usize = sview_len(directory)
+            return ReachedTildeEnvironmentNeed::None if directory_length == 0 or sview_at(directory, 0) != 126u8
+
+            prefix_end: mutable usize = 1
+            while prefix_end < directory_length and sview_at(directory, prefix_end) != 47u8 |directory, prefix_end|:
+                prefix_end <- prefix_end + 1
+            word_length: usize = prefix_end - 1
+            return ReachedTildeEnvironmentNeed::Home if word_length == 0
+            return ReachedTildeEnvironmentNeed::WorkingDirectory if word_length == 1 and sview_at(directory, 1) == 43u8
+            return ReachedTildeEnvironmentNeed::PreviousWorkingDirectory if word_length == 1 and sview_at(directory, 1) == 45u8
+
+            digits_start: mutable usize = 1
+            from_right: mutable bool = false
+            first_byte: u8 = sview_at(directory, 1)
+            if first_byte == 43u8 or first_byte == 45u8:
+                digits_start <- 2
+                from_right <- first_byte == 45u8
+            return ReachedTildeEnvironmentNeed::None if digits_start >= prefix_end
+
+            if not from_right:
+                index_is_zero: mutable bool = true
+                for index in digits_start..<prefix_end |directory|:
+                    byte: u8 = sview_at(directory, index)
+                    return ReachedTildeEnvironmentNeed::None if byte < 48u8 or byte > 57u8
+                    index_is_zero <- false if byte != 48u8
+                return ReachedTildeEnvironmentNeed::WorkingDirectory if index_is_zero
+                return ReachedTildeEnvironmentNeed::None
+
+            return ReachedTildeEnvironmentNeed::None if not tilde.directory_stack_present
+            requested_index: mutable usize = 0
+            stack_count: usize = tilde.directory_stack.count
+            for index in digits_start..<prefix_end |directory, requested_index|:
+                byte: u8 = sview_at(directory, index)
+                return ReachedTildeEnvironmentNeed::None if byte < 48u8 or byte > 57u8
+                digit: usize = (byte - 48u8).usize()
+                return ReachedTildeEnvironmentNeed::None if digit > stack_count
+                return ReachedTildeEnvironmentNeed::None if requested_index > (stack_count - digit) / 10
+                requested_index <- requested_index * 10 + digit
+            return ReachedTildeEnvironmentNeed::WorkingDirectory if requested_index == stack_count
+            return ReachedTildeEnvironmentNeed::None
 
 
         @link_name(geteuid)
@@ -83,6 +133,29 @@ module EsBashExecLookupPosix:
                 raise ObservationError.InvalidTildeEnvironmentVariable if variable != TildeEnvironmentVariable::Home
             value: EsEnvironmentLookup::Value = try EsEnvironmentLookup::lookup(name)
             return TildeEnvironmentSnapshot{present: value.present, bytes: try copy_environment_bytes(value.bytes)}
+
+
+        # Resolve one already-reached PATH component, loading only the process
+        # variable its tilde form can consult. Stack/account and named-user
+        # data remain explicit context snapshots.
+        def resolve_reached_path_directory_from_process_environment(directory: sview, tilde: mutable EsBashExecLookup::PathTildeContext&) -> darray[u8] error[EsBashExecLookup::LookupError, EsEnvironmentLookup::LookupError, ObservationError] can[Environment.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            directory_length: usize = sview_len(directory)
+            raise EsBashExecLookup::LookupError.PathLimitExceeded if directory_length > EsBashExecLookup::Limits::PATH_BYTES
+            raise EsBashExecLookup::LookupError.SearchInputContainsNul if sview_contains_byte(directory, 0u8)
+            need: ReachedTildeEnvironmentNeed = reached_tilde_environment_need(directory, tilde)
+            if need == ReachedTildeEnvironmentNeed::Home:
+                snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::Home)
+                tilde.home_present <- snapshot.present
+                tilde.home_directory <- snapshot.bytes
+            else if need == ReachedTildeEnvironmentNeed::WorkingDirectory:
+                snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::WorkingDirectory)
+                tilde.pwd_present <- snapshot.present
+                tilde.pwd_directory <- snapshot.bytes
+            else if need == ReachedTildeEnvironmentNeed::PreviousWorkingDirectory:
+                snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::PreviousWorkingDirectory)
+                tilde.oldpwd_present <- snapshot.present
+                tilde.oldpwd_directory <- snapshot.bytes
+            return try EsBashExecLookup::resolve_path_directory(directory, tilde)
 
 
         # Capture the ids Bash 3.2 uses around group membership plus the
