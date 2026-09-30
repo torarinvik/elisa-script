@@ -50,6 +50,10 @@ module EsBashExecLookup:
             pwd_directory: darray[u8] = []
             oldpwd_present: bool = false
             oldpwd_directory: darray[u8] = []
+            # Pushed entries after the current directory, in `dirs -l` order.
+            # Indexed expansion uses PWD for the current-directory slot.
+            directory_stack_present: bool = false
+            directory_stack: darray[darray[u8]] = []
 
 
         struct PathDirectory:
@@ -155,10 +159,35 @@ module EsBashExecLookup:
             return string_view_slice(path_value, directory.start.i64(), (directory.start + directory.length).i64())
 
 
+        def resolve_directory_stack_entry(directory: sview, digits_start: usize, prefix_end: usize, from_right: bool, tilde: PathTildeContext&) -> sview error[LookupError]:
+            stack_count: usize = tilde.directory_stack.count
+            requested_index: mutable usize = 0
+            for index in digits_start..<prefix_end |directory, requested_index|:
+                byte: u8 = sview_at(directory, index)
+                raise LookupError.TildeExpansionUnsupported if byte < 48u8 or byte > 57u8
+                digit: usize = (byte - 48u8).usize()
+                raise LookupError.TildeExpansionUnsupported if digit > stack_count
+                raise LookupError.TildeExpansionUnsupported if requested_index > (stack_count - digit) / 10
+                requested_index <- requested_index * 10 + digit
+
+            if not from_right and requested_index == 0:
+                raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
+                return bytes_view(tilde.pwd_directory)
+
+            raise LookupError.TildeExpansionUnsupported if not tilde.directory_stack_present
+            if from_right and requested_index == stack_count:
+                raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
+                return bytes_view(tilde.pwd_directory)
+            selected_index: usize = stack_count - requested_index - 1 if from_right else requested_index - 1
+            raise LookupError.TildeExpansionUnsupported if selected_index >= stack_count
+            return bytes_view(tilde.directory_stack[selected_index])
+
+
         # Match Bash's HOME, PWD and OLDPWD prefixes when supplied as explicit
         # snapshots. Do not normalize bytes: repeated separators are significant
-        # to the subsequent sh_makepath-compatible join. Named-user, directory-
-        # stack, and passwd fallback forms require more shell state.
+        # to the subsequent sh_makepath-compatible join. Indexed stack entries
+        # use their separate snapshot; named users and passwd fallback remain
+        # unsupported.
         def resolve_path_directory(directory: sview, tilde: PathTildeContext&) -> darray[u8] error[LookupError] can[Memory.Allocate, Abort.Panic]:
             directory_length: usize = sview_len(directory)
             raise LookupError.PathLimitExceeded if directory_length > Limits::PATH_BYTES
@@ -171,18 +200,25 @@ module EsBashExecLookup:
                 suffix_start <- 1
                 while suffix_start < directory_length and sview_at(directory, suffix_start) != 47u8 |directory, suffix_start|:
                     suffix_start <- suffix_start + 1
-                username_length: usize = suffix_start - 1
-                if username_length == 0:
+                tilde_word_length: usize = suffix_start - 1
+                if tilde_word_length == 0:
                     raise LookupError.TildeExpansionUnsupported if not tilde.home_present
                     prefix <- bytes_view(tilde.home_directory)
-                else if username_length == 1 and sview_at(directory, 1) == 43u8:
+                else if tilde_word_length == 1 and sview_at(directory, 1) == 43u8:
                     raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
                     prefix <- bytes_view(tilde.pwd_directory)
-                else if username_length == 1 and sview_at(directory, 1) == 45u8:
+                else if tilde_word_length == 1 and sview_at(directory, 1) == 45u8:
                     raise LookupError.TildeExpansionUnsupported if not tilde.oldpwd_present
                     prefix <- bytes_view(tilde.oldpwd_directory)
                 else:
-                    raise LookupError.TildeExpansionUnsupported
+                    digits_start: mutable usize = 1
+                    from_right: mutable bool = false
+                    first_prefix_byte: u8 = sview_at(directory, 1)
+                    if first_prefix_byte == 43u8 or first_prefix_byte == 45u8:
+                        digits_start <- 2
+                        from_right <- first_prefix_byte == 45u8
+                    raise LookupError.TildeExpansionUnsupported if digits_start >= suffix_start
+                    prefix <- try resolve_directory_stack_entry(directory, digits_start, suffix_start, from_right, tilde)
 
             prefix_length: usize = sview_len(prefix)
             raise LookupError.PathLimitExceeded if prefix_length > Limits::PATH_BYTES

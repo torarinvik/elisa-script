@@ -249,8 +249,9 @@ Its bounded PATH planner preserves direct-name bypass, empty/interior component
 behavior, and source-observed omission of a trailing empty component. Named
 directories are retained as owned PATH byte spans and mark leading-tilde
 components. The pure model resolves current-user `~`/`~/...` using an explicit
-HOME snapshot and `~+`/`~-` using explicit PWD/OLDPWD snapshots;
-`join_search_candidate` then matches Bash's
+HOME snapshot, `~+`/`~-` using explicit PWD/OLDPWD snapshots, and indexed
+`~N`/`~+N`/`~-N` using explicit pushed entries in `dirs -l` order after the
+current directory. `join_search_candidate` then matches Bash's
 `sh_makepath` joining after tilde expansion: an empty directory means `.`, a
 separator is added only when needed, and existing slash spelling is preserved
 without normalization ([Apple Bash 3.2 `makepath.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/sh/makepath.c#L490-L613)).
@@ -258,15 +259,19 @@ Inputs over 64 KiB PATH or 4,096 components fail explicitly, so those bounds
 are runtime policy, not a claim about unrestricted Bash behavior. The pure
 model byte-concatenates `~` and `~/...` from an explicit HOME snapshot, and
 `~+`/`~-` from explicit PWD/OLDPWD snapshots, preserving suffix separator
-bytes. Bash 3.2 maps these special prefixes to the corresponding shell
-variables ([Apple Bash `general.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/general.c));
-named users, `~+N`/`~-N` directory-stack forms, and HOME's account-database
-fallback remain explicit gaps. Bash 3.2 uses HOME for bare `~`/`~/...` and falls
+bytes. It supports `~N`, `~+N`, and `~-N` from a caller-supplied snapshot of
+pushed entries in `dirs -l` order after the current directory; index zero and
+the current slot from the right use the explicit PWD value. Bash 3.2 installs
+numeric stack expansion when `PUSHD_AND_POPD` is enabled and delegates indexing
+to its directory-stack implementation ([Apple Bash `general.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/general.c#L3306-L3343),
+[Apple Bash `pushd.def`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/pushd.def#L2582-L2668)). Named users and HOME's
+account-database fallback remain explicit gaps; unavailable or out-of-range
+stack indexes fail explicitly. Bash 3.2 uses HOME for bare `~`/`~/...` and falls
 back to the account database only when HOME is unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)); this adapter does not yet implement
 that fallback. Pure fixtures cover selection, permission classification,
 invalid directory-as-executable observations, PATH planning, tilde byte
-preservation (including PWD/OLDPWD prefix expansion), forged-plan rejection,
-and joining; they are uncompiled and
+preservation (including PWD/OLDPWD and indexed directory-stack expansion),
+forged-plan rejection, and joining; they are uncompiled and
 unrun. A renderer and local Bash source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
@@ -297,8 +302,8 @@ check with no `bash` candidate in its private first PATH directory and `/bin`
 second, plus unvisited `/usr/bin` and tilde-expansion suffixes. It verifies the
 retained candidate spellings and selected index using stat/credential
 observations only; separate cases cover refusal of a reached unsupported tilde
-form and current-HOME/PWD/OLDPWD expansion before joining. No case launches Bash
-or the selected executable. The tests are uncompiled and unrun, and do not
+form and current-HOME/PWD/OLDPWD/directory-stack expansion before joining. No
+case launches Bash or the selected executable. The tests are uncompiled and unrun, and do not
 qualify this adapter for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
