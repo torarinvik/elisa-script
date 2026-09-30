@@ -51,7 +51,10 @@ The shared runner explicitly progresses through cwd change, environment
 selection, mode decoding, and tool launch. An invalid canonical mode produces
 status 2 and usage on stderr without launching the tool, even if the configured
 Python executable does not exist. An inaccessible root fails before mode
-decoding, matching the shell's order on ordinary inputs.
+decoding, matching the shell's order on ordinary inputs. Usage includes the
+unmodified invocation spelling (`$0`), not the compiler's normalized source
+path; pure source fixtures pin relative spellings, but launcher-level
+diagnostic-byte observations remain required.
 
 ## Authored pure fixtures and required launcher cases
 
