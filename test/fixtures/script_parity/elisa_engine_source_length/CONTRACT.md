@@ -22,9 +22,10 @@ It resolves the full `Script::source_path()` before taking its parent, matching
 script symlink. It preserves the plan/root ordering, exact suffix set,
 per-root path ordering, 600-line threshold, and ordinary success/violation
 output. Its reader uses a fixed 16 KiB buffer and strict incremental UTF-8/
-newline state. Matching file symlinks are read through their targets,
-descendant directory symlinks are not traversed, and the configured root itself
-is inspected as a directory.
+newline state; open/stat/read calls retry `EINTR` rather than imposing an
+arbitrary small retry limit on harmless signal interruptions. Matching file
+symlinks are read through their targets, descendant directory symlinks are not
+traversed, and the configured root itself is inspected as a directory.
 
 This is only a source port and pure-policy fixture. Discovery/read errors are
 not Python-traceback compatible: the candidate fails closed with a concise
