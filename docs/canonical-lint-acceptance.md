@@ -264,17 +264,19 @@ pushed entries in `dirs -l` order after the current directory; index zero and
 the current slot from the right use the explicit PWD value. Bash 3.2 installs
 numeric stack expansion when `PUSHD_AND_POPD` is enabled and delegates indexing
 to its directory-stack implementation ([Apple Bash `general.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/general.c#L3306-L3343),
-[Apple Bash `pushd.def`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/pushd.def#L2582-L2668)). The pure resolver also accepts an explicit per-name
-lookup snapshot: a supplied home expands, a confirmed miss preserves the
-original tilde spelling, and a missing/unavailable snapshot fails closed. This
-is model support only; the Darwin adapter does not query the passwd database.
+[Apple Bash `pushd.def`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/pushd.def#L2582-L2668)). The pure resolver accepts an explicit current-user
+account-home snapshot as the fallback for bare `~`/`~/...` only when HOME is
+absent; an explicitly empty HOME still wins. It also accepts a per-name lookup
+snapshot: a supplied home expands, a confirmed miss preserves the original
+tilde spelling, and a missing/unavailable snapshot fails closed. These are
+model features only; the Darwin adapter does not query the passwd database.
 Bash's `tilde_expand_word` copies the original spelling when `getpwnam` returns
 no entry, and uses the account database for bare `~`/`~/...` only when HOME is
-unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)). Neither the named-user lookup provider nor HOME's
-account-database fallback is implemented. Unavailable or out-of-range stack
-indexes fail explicitly. Pure fixtures cover selection, permission
-classification, invalid directory-as-executable observations, PATH planning,
-tilde byte preservation (including PWD/OLDPWD, indexed stack, and named-user
+unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)). Neither the named-user nor current-user lookup
+provider is implemented. Unavailable or out-of-range stack indexes fail
+explicitly. Pure fixtures cover selection, permission classification, invalid
+directory-as-executable observations, PATH planning, tilde byte preservation
+(including HOME fallback, PWD/OLDPWD, indexed stack, and named-user
 snapshots), forged-plan rejection, and joining; they are uncompiled and unrun.
 A renderer and local Bash source/build qualification remain open.
 
