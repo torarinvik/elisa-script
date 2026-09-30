@@ -1,0 +1,227 @@
+# Bounded Elisascript port of check_record_materializer.sh.
+# Line and multiline source checks use the shared bounded scanner.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsRecordMaterializerAudit:
+    private:
+        const module Inputs:
+            MODEL: sview = "src/runtime/record_materializer_model.elisa"
+            RECORD_MODEL: sview = "src/runtime/record_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            MODULE: Regex = regex"^module EsRecordMaterialize:"
+            IR_IMPORT: Regex = regex"include \"\.\./runtime/record_materializer_model\.elisa\""
+            RECORD_MODULE: Regex = regex"^module EsRecord:"
+            STATE: Regex = regex"const enum RecordMaterializerState of u8"
+            EVENT: Regex = regex"const enum RecordMaterializerEvent of u8"
+            RECORD: Regex = regex"struct MaterializedRecord:"
+            MATERIALIZER: Regex = regex"struct RecordMaterializer:"
+            ERROR: Regex = regex"error RecordMaterializerError:"
+            VALIDATE: Regex = regex"def validate_record_materializer\("
+            ADVANCE: Regex = regex"def advance_record_materializer\("
+            MAX_RECORDS: Regex = regex"RECORD_MATERIALIZER_MAX_RECORDS"
+            MAX_FIELDS: Regex = regex"RECORD_MATERIALIZER_MAX_FIELDS"
+            MAX_TEXT_BYTES: Regex = regex"RECORD_MATERIALIZER_MAX_TEXT_BYTES"
+            POLICY_VALID: Regex = regex"record_materializer_policy_valid"
+            RECORD_VALID: Regex = regex"record_materializer_record_valid"
+            FIELD_VALID: Regex = regex"record_materializer_field_valid"
+            IDLE_RECORD_VALID: Regex = regex"record_materializer_idle_record_valid"
+            FIELD_ORDER: Regex = regex"RecordMaterializerError.FieldOrderInvalid"
+            ACCOUNTING: Regex = regex"RecordMaterializerError.AccountingInvalid"
+            TEXT_LIMIT: Regex = regex"RecordMaterializerError.TextLimitExceeded"
+            PLANNED: Regex = regex"RecordMaterializerState.Planned"
+            COLLECTING: Regex = regex"RecordMaterializerState.Collecting"
+            SEALED: Regex = regex"RecordMaterializerState.Sealed"
+            STATE_VALID: Regex = regex"state != RecordMaterializerState.Planned and state != RecordMaterializerState.Collecting"
+            BEGIN_RECORD: Regex = regex"RecordMaterializerEvent.BeginRecord"
+            END_RECORD: Regex = regex"RecordMaterializerEvent.EndRecord"
+            SEAL: Regex = regex"RecordMaterializerEvent.Seal"
+            CANCEL: Regex = regex"RecordMaterializerEvent.Cancel"
+            TRUNCATE: Regex = regex"materializer.fields.truncate"
+            CURRENT_FIELD_START: Regex = regex"materializer.current_field_start > materializer.fields.count"
+            CURRENT_FIELD_COUNT: Regex = regex"materializer.current_field_count > materializer.fields.count - materializer.current_field_start"
+            ITEM_FIELD_START: Regex = regex"item.field_start > materializer.fields.count"
+            ITEM_FIELD_COUNT: Regex = regex"item.field_count > materializer.fields.count - item.field_start"
+            EMPTY_CURRENT_RECORD: Regex = regex"current_record <- Record\{source: \"\"\}"
+            CLOSED_RECORD_FIELDS: Regex = regex"not materializer\.record_open and \(materializer\.current_field_start != 0 or materializer\.current_field_count != 0\)"
+            END_RECORD_SEQUENCE: Regex = regex"""elif event == RecordMaterializerEvent.EndRecord:
+                raise RecordMaterializerError.InvalidState if materializer.state != RecordMaterializerState.Collecting
+                raise RecordMaterializerError.RecordNotOpen if not materializer.record_open
+                raise RecordMaterializerError.RecordLimitExceeded if materializer.records.count >= RECORD_MATERIALIZER_MAX_RECORDS"""
+            FIXTURE_IMPORT: Regex = regex"using EsRecordMaterialize"
+            FIXTURE_CONTRACT: Regex = regex"typed_record_materializer_contract_is_ordered_and_bounded"
+            FIXTURE_FIELD_ORDER: Regex = regex"RecordMaterializerError.FieldOrderInvalid"
+            FIXTURE_ACCOUNTING: Regex = regex"RecordMaterializerError.AccountingInvalid"
+            FORGED_PLANNED: Regex = regex"forged_planned"
+            FORGED_IDLE: Regex = regex"forged_idle"
+            FORGED_CURSOR: Regex = regex"forged_cursor"
+            FIXTURE_SEALED: Regex = regex"RecordMaterializerState.Sealed"
+            FIXTURE_CANCELLED: Regex = regex"RecordMaterializerState.Cancelled"
+            EMPTY_MATERIALIZER: Regex = regex"empty: mutable RecordMaterializer"
+            EMPTY_SEAL: Regex = regex"advance_record_materializer\(empty, RecordMaterializerEvent\.Seal\)"
+            DOCS_MATERIALIZER: Regex = regex"EsRecordMaterialize::RecordMaterializer"
+            LEDGER_ITEM: Regex = regex"ES-SCRIPT-023"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "record materializer audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "record materializer audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "record materializer audit: missing "
+            READ_FAILED: sview = "record materializer audit: unable to read source: "
+            SUCCESS: sview = "record materializer audit: bounded ordered lifecycle and ownership checks are present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        const enum SearchMode of u8:
+            Line
+            FullText
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: Regex
+            mode: SearchMode = SearchMode.Line
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def line_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_line(path, pattern):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def full_text_match(path: Path, pattern: Regex) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_text(path, pattern):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def has_match(check: SearchCheck) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            match check.mode:
+                SearchMode.Line:
+                    return line_match(check.input, check.pattern)
+                SearchMode.FullText:
+                    return full_text_match(check.input, check.pattern)
+                _:
+                    return ExitStatus.FAILURE
+
+
+        def searches(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[0], pattern: Patterns::MODULE},
+                SearchCheck{input: inputs[2], pattern: Patterns::IR_IMPORT},
+                SearchCheck{input: inputs[1], pattern: Patterns::RECORD_MODULE},
+                SearchCheck{input: inputs[0], pattern: Patterns::STATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::EVENT},
+                SearchCheck{input: inputs[0], pattern: Patterns::RECORD},
+                SearchCheck{input: inputs[0], pattern: Patterns::MATERIALIZER},
+                SearchCheck{input: inputs[0], pattern: Patterns::ERROR},
+                SearchCheck{input: inputs[0], pattern: Patterns::VALIDATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::ADVANCE},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_RECORDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_FIELDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_TEXT_BYTES},
+                SearchCheck{input: inputs[0], pattern: Patterns::POLICY_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::RECORD_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::FIELD_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::IDLE_RECORD_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::FIELD_ORDER},
+                SearchCheck{input: inputs[0], pattern: Patterns::ACCOUNTING},
+                SearchCheck{input: inputs[0], pattern: Patterns::TEXT_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::PLANNED},
+                SearchCheck{input: inputs[0], pattern: Patterns::COLLECTING},
+                SearchCheck{input: inputs[0], pattern: Patterns::SEALED},
+                SearchCheck{input: inputs[0], pattern: Patterns::STATE_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::BEGIN_RECORD},
+                SearchCheck{input: inputs[0], pattern: Patterns::END_RECORD},
+                SearchCheck{input: inputs[0], pattern: Patterns::SEAL},
+                SearchCheck{input: inputs[0], pattern: Patterns::CANCEL},
+                SearchCheck{input: inputs[0], pattern: Patterns::TRUNCATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::CURRENT_FIELD_START},
+                SearchCheck{input: inputs[0], pattern: Patterns::CURRENT_FIELD_COUNT},
+                SearchCheck{input: inputs[0], pattern: Patterns::ITEM_FIELD_START},
+                SearchCheck{input: inputs[0], pattern: Patterns::ITEM_FIELD_COUNT},
+                SearchCheck{input: inputs[0], pattern: Patterns::EMPTY_CURRENT_RECORD},
+                SearchCheck{input: inputs[0], pattern: Patterns::CLOSED_RECORD_FIELDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::END_RECORD_SEQUENCE, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_IMPORT},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_CONTRACT},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_FIELD_ORDER},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_ACCOUNTING},
+                SearchCheck{input: inputs[3], pattern: Patterns::FORGED_PLANNED},
+                SearchCheck{input: inputs[3], pattern: Patterns::FORGED_IDLE},
+                SearchCheck{input: inputs[3], pattern: Patterns::FORGED_CURSOR},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_SEALED},
+                SearchCheck{input: inputs[3], pattern: Patterns::FIXTURE_CANCELLED},
+                SearchCheck{input: inputs[3], pattern: Patterns::EMPTY_MATERIALIZER},
+                SearchCheck{input: inputs[3], pattern: Patterns::EMPTY_SEAL},
+                SearchCheck{input: inputs[4], pattern: Patterns::DOCS_MATERIALIZER},
+                SearchCheck{input: inputs[5], pattern: Patterns::LEDGER_ITEM}
+            ]
+
+
+        def execute(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for check in checks:
+                status: i64 = has_match(check)
+                return status if status != 0i64
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::MODEL),
+                root.joinpath(Inputs::RECORD_MODEL),
+                root.joinpath(Inputs::IR),
+                root.joinpath(Inputs::FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: i64 = execute(searches(inputs))
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsRecordMaterializerAudit::run_default()
