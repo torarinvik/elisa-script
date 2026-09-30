@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Twenty-one observations cover directory variables:
+eleven ordinary lint cases. Twenty-two observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -87,9 +87,11 @@ relative wrapper root, preserving the repeated suffix separator. Two more cases
 expand `~+` and `~-` from explicit PWD and OLDPWD values. Three additional
 cases exercise the current directory-stack slot through `~0`, `~+0`, and `~-0`.
 One more omits HOME and guards against treating that state as an empty prefix
-that selects the caller's directory. Account-home fallback when HOME is unset,
+that selects the caller's directory. Another places a file first in CDPATH and
+the valid caller directory second, checking that a failed `cd` candidate does
+not stop the search. Account-home fallback when HOME is unset,
 named-user, and nonzero indexed directory-stack tilde entries remain open in the
-wrapper. The seven actual exec-failure cases follow, so the lint wave has forty
+wrapper. The seven actual exec-failure cases follow, so the lint wave has forty-one
 observations total.
 
 Source review of Bash 3.2's `absolute_pathname` showed that only absolute `cd`
