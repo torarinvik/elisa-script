@@ -44,8 +44,11 @@ qualification, the pinned local StructPy compiler selectors and an active
 *external* RSS guard. It is authored but uncompiled and unrun; the current dirty
 differential runner fails its committed-source pin.
 
-Python `argparse` help/error wording and long-option abbreviation, remaining
-malformed-argument edge cases, Unicode whitespace accepted by its regex,
-generation-mode file mutation and failure parity, dependency closure, and real
-memory/timeout enforcement remain open. The original and callers remain
-unchanged. Do not run a compiler or parity validation under the current hold.
+Python `argparse` help/error wording and dash-leading option values remain
+open. The pure CLI fixtures cover unambiguous long-option abbreviations and
+ambiguous-prefix rejection; the dormant public-launcher check now uses
+abbreviated `--compiler-root`, `--output`, and `--check` forms. Unicode
+whitespace accepted by Python's regex, generation-mode file mutation and
+failure parity, dependency closure, and real memory/timeout enforcement remain
+open. The original and callers remain unchanged. Do not run a compiler or
+parity validation under the current hold.
