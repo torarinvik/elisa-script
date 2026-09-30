@@ -5,20 +5,29 @@
 
 module EsMacosDeploymentTarget:
     public:
+        # Python int is not machine-word-limited. Store canonical decimal
+        # digits rather than imposing a fixed-width limit on tool output.
+        struct DecimalInteger:
+            # Parsed values keep the backing bytes here for the lifetime of text.
+            text: sview
+            owned: darray[u8] = []
+
+
         struct MacosVersion:
-            major: u64
-            minor: u64 = 0
-            patch: u64 = 0
+            major: DecimalInteger = DecimalInteger{text: "0"}
+            minor: DecimalInteger = DecimalInteger{text: "0"}
+            patch: DecimalInteger = DecimalInteger{text: "0"}
 
 
         const module Policy:
-            METAL_MINIMUM_MACOS: MacosVersion = MacosVersion{major: 26, minor: 0, patch: 0}
+            METAL_MINIMUM_MACOS_MAJOR: sview = "26"
+            METAL_MINIMUM_MACOS_MINOR: sview = "0"
+            METAL_MINIMUM_MACOS_PATCH: sview = "0"
 
 
         error MacosDeploymentTargetError:
             NonMacosTarget
             MalformedTarget
-            VersionComponentOverflow
             NoDeploymentTarget
 
 
@@ -29,7 +38,6 @@ module EsMacosDeploymentTarget:
             ZERO: u8 = 48
             NINE: u8 = 57
             UNDERSCORE: u8 = 95
-            U64_MAX: u64 = 18446744073709551615u64
 
 
         const enum VersionScanState of u8:
@@ -50,18 +58,17 @@ module EsMacosDeploymentTarget:
 
         struct VersionScan:
             matched: bool = false
-            version: MacosVersion = MacosVersion{major: 0}
-            overflowed: bool = false
+            version: MacosVersion = MacosVersion{}
 
 
         struct FieldVersion:
             found: bool = false
-            version: MacosVersion = MacosVersion{major: 0}
+            version: MacosVersion = MacosVersion{}
 
 
         struct SegmentTarget:
             found: bool = false
-            version: MacosVersion = MacosVersion{major: 0}
+            version: MacosVersion = MacosVersion{}
 
 
         def deployment_byte_is_word(byte: u8) -> bool:
@@ -114,31 +121,57 @@ module EsMacosDeploymentTarget:
             return LiteralMatch{}
 
 
-        def deployment_accumulate_digit(value: mutable u64&, digit: u8, overflowed: mutable bool&) -> void:
-            numeric_digit: u64 = (digit - Byte::ZERO).u64()
-            if value > (Byte::U64_MAX - numeric_digit) / 10u64:
-                overflowed <- true
-            elif not overflowed:
-                value <- value * 10u64 + numeric_digit
+        def deployment_decimal_from_literal(source: sview) -> DecimalInteger can[Memory.Allocate, Abort.Panic]:
+            digits: mutable darray[u8] = []
+            for byte in source |digits|:
+                digits.push(byte)
+            canonical: sview = bytes_view(digits)
+            return DecimalInteger{text: canonical, owned: digits}
 
 
-        def deployment_scan_version(source: sview, start: usize) -> VersionScan:
+        def deployment_decimal_from_range(source: sview, start: usize, end: usize) -> DecimalInteger can[Memory.Allocate, Abort.Panic]:
+            normalized_start: mutable usize = start
+            while normalized_start < end and sview_at(source, normalized_start) == Byte::ZERO |source, normalized_start, end|:
+                normalized_start <- normalized_start + 1
+            digits: mutable darray[u8] = []
+            if normalized_start == end:
+                digits.push(Byte::ZERO)
+            else:
+                for index in normalized_start..<end |source, digits|:
+                    digits.push(sview_at(source, index))
+            canonical: sview = bytes_view(digits)
+            return DecimalInteger{text: canonical, owned: digits}
+
+
+        def deployment_decimal_before(left: DecimalInteger, right: DecimalInteger) -> bool:
+            left_length: usize = sview_len(left.text)
+            right_length: usize = sview_len(right.text)
+            return left_length < right_length if left_length != right_length
+            for index in 0..<left_length |left, right|:
+                left_byte: u8 = sview_at(left.text, index)
+                right_byte: u8 = sview_at(right.text, index)
+                return left_byte < right_byte if left_byte != right_byte
+            return false
+
+
+        def deployment_scan_version(source: sview, start: usize) -> VersionScan can[Memory.Allocate, Abort.Panic]:
             length: usize = sview_len(source)
             cursor: mutable usize = start
             state: mutable VersionScanState = VersionScanState.MajorDigits
-            major: mutable u64 = 0
-            minor: mutable u64 = 0
-            patch: mutable u64 = 0
+            major_end: mutable usize = start
+            minor_start: mutable usize = 0
+            minor_end: mutable usize = 0
+            patch_start: mutable usize = 0
+            patch_end: mutable usize = 0
             component_digits: mutable usize = 0
-            overflowed: mutable bool = false
-            while state != VersionScanState.Complete and state != VersionScanState.Invalid |source, cursor, state, major, minor, patch, component_digits, overflowed|:
+            while state != VersionScanState.Complete and state != VersionScanState.Invalid |source, cursor, state, major_end, minor_start, minor_end, patch_start, patch_end, component_digits|:
                 byte: u8 = 0 if cursor >= length else sview_at(source, cursor)
                 match state:
                     VersionScanState.MajorDigits:
                         if cursor < length and deployment_byte_is_digit(byte):
-                            deployment_accumulate_digit(major, byte, overflowed)
                             component_digits <- component_digits + 1
                             cursor <- cursor + 1
+                            major_end <- cursor
                         else:
                             state <- VersionScanState.MajorEnd
                     VersionScanState.MajorEnd:
@@ -146,6 +179,7 @@ module EsMacosDeploymentTarget:
                             state <- VersionScanState.Invalid
                         elif cursor < length and byte == Byte::DOT:
                             cursor <- cursor + 1
+                            minor_start <- cursor
                             component_digits <- 0
                             state <- VersionScanState.MinorDigits
                         elif cursor < length and deployment_byte_is_whitespace(byte):
@@ -154,9 +188,9 @@ module EsMacosDeploymentTarget:
                             state <- VersionScanState.Invalid
                     VersionScanState.MinorDigits:
                         if cursor < length and deployment_byte_is_digit(byte):
-                            deployment_accumulate_digit(minor, byte, overflowed)
                             component_digits <- component_digits + 1
                             cursor <- cursor + 1
+                            minor_end <- cursor
                         else:
                             state <- VersionScanState.MinorEnd
                     VersionScanState.MinorEnd:
@@ -164,6 +198,7 @@ module EsMacosDeploymentTarget:
                             state <- VersionScanState.Invalid
                         elif cursor < length and byte == Byte::DOT:
                             cursor <- cursor + 1
+                            patch_start <- cursor
                             component_digits <- 0
                             state <- VersionScanState.PatchDigits
                         elif cursor < length and deployment_byte_is_whitespace(byte):
@@ -172,9 +207,9 @@ module EsMacosDeploymentTarget:
                             state <- VersionScanState.Invalid
                     VersionScanState.PatchDigits:
                         if cursor < length and deployment_byte_is_digit(byte):
-                            deployment_accumulate_digit(patch, byte, overflowed)
                             component_digits <- component_digits + 1
                             cursor <- cursor + 1
+                            patch_end <- cursor
                         else:
                             state <- VersionScanState.PatchEnd
                     VersionScanState.PatchEnd:
@@ -190,17 +225,19 @@ module EsMacosDeploymentTarget:
                         _ = byte
             if state != VersionScanState.Complete:
                 return VersionScan{}
-            return VersionScan{matched: true, version: MacosVersion{major: major, minor: minor, patch: patch}, overflowed: overflowed}
+            major: DecimalInteger = deployment_decimal_from_range(source, start, major_end)
+            minor: DecimalInteger = DecimalInteger{text: "0"} if minor_end == 0 else deployment_decimal_from_range(source, minor_start, minor_end)
+            patch: DecimalInteger = DecimalInteger{text: "0"} if patch_end == 0 else deployment_decimal_from_range(source, patch_start, patch_end)
+            return VersionScan{matched: true, version: MacosVersion{major: major, minor: minor, patch: patch}}
 
 
-        def deployment_find_version_field(source: sview, field: sview) -> FieldVersion error[MacosDeploymentTargetError]:
+        def deployment_find_version_field(source: sview, field: sview) -> FieldVersion error[MacosDeploymentTargetError] can[Memory.Allocate, Abort.Panic]:
             field_match: LiteralMatch = deployment_find_word(source, field, 0)
             while field_match.found:
                 after_field: usize = field_match.start + sview_len(field)
                 if after_field < sview_len(source) and sview_at(source, after_field) == Byte::SPACE:
                     scan: VersionScan = deployment_scan_version(source, after_field + 1)
                     if scan.matched:
-                        raise MacosDeploymentTargetError.VersionComponentOverflow if scan.overflowed
                         return FieldVersion{found: true, version: scan.version}
                 field_match <- deployment_find_word(source, field, field_match.start + 1)
             return FieldVersion{}
@@ -222,7 +259,7 @@ module EsMacosDeploymentTarget:
             return false
 
 
-        def deployment_segment_target(segment: sview) -> SegmentTarget error[MacosDeploymentTargetError]:
+        def deployment_segment_target(segment: sview) -> SegmentTarget error[MacosDeploymentTargetError] can[Memory.Allocate, Abort.Panic]:
             modern_command: LiteralMatch = deployment_find_literal(segment, "cmd LC_BUILD_VERSION", 0)
             if modern_command.found:
                 raise MacosDeploymentTargetError.NonMacosTarget if not deployment_has_macos_platform(segment)
@@ -258,11 +295,15 @@ module EsMacosDeploymentTarget:
                 targets.push(target.version)
 
 
-        def deployment_u64_text(value: u64) -> sview can[Memory.Allocate, Abort.Panic]:
-            return f"{value}"
-
-
     public:
+        def metal_minimum_macos() -> MacosVersion can[Memory.Allocate, Abort.Panic]:
+            return MacosVersion{
+                major: deployment_decimal_from_literal(Policy::METAL_MINIMUM_MACOS_MAJOR),
+                minor: deployment_decimal_from_literal(Policy::METAL_MINIMUM_MACOS_MINOR),
+                patch: deployment_decimal_from_literal(Policy::METAL_MINIMUM_MACOS_PATCH)
+            }
+
+
         def deployment_targets(load_commands: sview) -> darray[MacosVersion] error[MacosDeploymentTargetError] can[Memory.Allocate, Abort.Panic]:
             length: usize = sview_len(load_commands)
             targets: mutable darray[MacosVersion] = []
@@ -283,9 +324,12 @@ module EsMacosDeploymentTarget:
 
 
         def format_version(version: MacosVersion) -> sview can[Memory.Allocate, Abort.Panic]:
-            base: sview = deployment_u64_text(version.major) + "." + deployment_u64_text(version.minor)
-            return base if version.patch == 0 else base + "." + deployment_u64_text(version.patch)
+            base: sview = version.major.text + "." + version.minor.text
+            return base if version.patch.text == "0" else base + "." + version.patch.text
 
 
         def version_before(left: MacosVersion, right: MacosVersion) -> bool:
-            return left.major < right.major if left.major != right.major else left.minor < right.minor if left.minor != right.minor else left.patch < right.patch
+            return deployment_decimal_before(left.major, right.major) if left.major.text != right.major.text
+            return deployment_decimal_before(left.minor, right.minor) if left.minor.text != right.minor.text
+            return deployment_decimal_before(left.patch, right.patch) if left.patch.text != right.patch.text
+            return false
