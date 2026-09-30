@@ -1,0 +1,151 @@
+# Bounded Elisascript port of check_split_capacity.sh.
+# Scoped source checks stream through the shared scanner without awk/rg.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsSplitCapacityAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            BYTECODE: sview = "src/bytecode/bytecode.elisa"
+            INTERPRETER_FIXTURE: sview = "test/ir/elisascript_interpreter_test.elisa"
+            BYTECODE_FIXTURE: sview = "test/ir/elisascript_bytecode_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            PUBLISHER_PREFLIGHT: sview = "runtime_storage_span_u32_valid(storage, fields.count)"
+            PUBLISHER_RESULT_START: sview = "result_start: u32 = storage.count.u32()"
+            PUBLISHER_PUSH: sview = "storage.push(runtime_text(field))"
+            SPLIT_LOCAL_PARTS: sview = "parts: mutable darray[sview] = []"
+            SPLIT_PUBLISH: sview = "publish_split_fields"
+            SPLIT_OLD_VALIDATION: sview = "runtime_storage_text_fields_u32_valid"
+            SPLIT_OLD_PUSH: sview = "storage.push(runtime_text"
+            INTERPRETER_PUBLISHER: sview = "def publish_split_fields"
+            BYTECODE_PUBLISHER: sview = "def bytecode_direct_publish_split_fields"
+            INTERPRETER_SPLIT: sview = "def evaluate_split("
+            BYTECODE_SPLIT: sview = "def bytecode_direct_split("
+            INTERPRETER_FIXTURE: sview = "interpreter_splits_text_into_typed_fields"
+            BYTECODE_FIXTURE: sview = "bytecode_direct_text_fields_match_reference_interpreter"
+            BYTECODE_RSplit_FIXTURE: sview = "bytecode_direct_python_text_rsplit_matches_reference_interpreter"
+            DOCS: sview = "Text split, line-split, and regex result builders"
+            LEDGER: sview = "General text `Split`/`rsplit` now collect local views"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "split capacity audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "split capacity audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "split capacity audit: missing "
+            READ_FAILED: sview = "split capacity audit: unable to read source: "
+            MISSING_PUBLISHER_MARKERS: sview = "split capacity audit: missing publisher markers in "
+            PUBLISHER_ORDER: sview = "split capacity audit: publisher touches shared storage before exact preflight in "
+            SUCCESS: sview = "split capacity audit: exact local field counts are preflighted before publication"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: sview
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def assert_publisher(path: Path, definition: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(path, definition) else err:
+                diagnostic(Messages::READ_FAILED + f"{path}")
+                return ExitStatus::IO_FAILURE
+            preflight_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::PUBLISHER_PREFLIGHT)
+            result_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::PUBLISHER_RESULT_START)
+            push_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::PUBLISHER_PUSH)
+            if preflight_line == 0 or result_line == 0 or push_line == 0:
+                diagnostic(Messages::MISSING_PUBLISHER_MARKERS + f"{path}")
+                return ExitStatus::FAILURE
+            if preflight_line >= result_line or result_line >= push_line:
+                diagnostic(Messages::PUBLISHER_ORDER + f"{path}")
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def assert_split(path: Path, definition: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(path, definition) else err:
+                diagnostic(Messages::READ_FAILED + f"{path}")
+                return ExitStatus::IO_FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::SPLIT_LOCAL_PARTS):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::SPLIT_PUBLISH):
+                return ExitStatus::FAILURE
+            if EsSourceFunctionScope::contains(body.text, Patterns::SPLIT_OLD_VALIDATION):
+                return ExitStatus::FAILURE
+            if EsSourceFunctionScope::contains(body.text, Patterns::SPLIT_OLD_PUSH):
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def postcondition_searches(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[2], pattern: Patterns::INTERPRETER_FIXTURE},
+                SearchCheck{input: inputs[3], pattern: Patterns::BYTECODE_FIXTURE},
+                SearchCheck{input: inputs[3], pattern: Patterns::BYTECODE_RSplit_FIXTURE},
+                SearchCheck{input: inputs[4], pattern: Patterns::DOCS},
+                SearchCheck{input: inputs[5], pattern: Patterns::LEDGER}
+            ]
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::INTERPRETER),
+                root.joinpath(Inputs::BYTECODE),
+                root.joinpath(Inputs::INTERPRETER_FIXTURE),
+                root.joinpath(Inputs::BYTECODE_FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = assert_publisher(inputs[0], Patterns::INTERPRETER_PUBLISHER)
+            return status if status != 0i64
+            status <- assert_publisher(inputs[1], Patterns::BYTECODE_PUBLISHER)
+            return status if status != 0i64
+            status <- assert_split(inputs[0], Patterns::INTERPRETER_SPLIT)
+            return status if status != 0i64
+            status <- assert_split(inputs[1], Patterns::BYTECODE_SPLIT)
+            return status if status != 0i64
+
+            for check in postcondition_searches(inputs):
+                catch EsSourceFunctionScope::contains_file_line(check.input, check.pattern):
+                    ok found:
+                        return ExitStatus::FAILURE if not found
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{check.input}")
+                        return ExitStatus::IO_FAILURE
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsSplitCapacityAudit::run_default()
