@@ -12,6 +12,7 @@ matrix.
 | --- | ---: | --- | --- |
 | `positive` | 0 | `module\tfiles\tpublic_sections\tprivate_sections\nEsArtifactCache\t{SOURCE_ROOT}/cache.elisa;\t1\t0\nEsBytecode\t{SOURCE_ROOT}/bytecode.elisa;\t1\t0\nEsDifferential\t{SOURCE_ROOT}/differential.elisa;\t1\t0\nEsDriver\t{SOURCE_ROOT}/driver/elisascript.elisa;\t1\t0\nEsIr\t{SOURCE_ROOT}/ir/ir_model.elisa;{SOURCE_ROOT}/ir/lower_ast.elisa;\t2\t0\nEsIrArtifact\t{SOURCE_ROOT}/ir_artifact.elisa;\t1\t0\nEsRuntime\t{SOURCE_ROOT}/runtime.elisa;{SOURCE_ROOT}/runtime/adapter.elisa;\t1\t1\n` | empty |
 | `positive` with `positive/missing_parser_tokens.elisa` as parser source | 1 | empty | `check_namespace_manifest: parse diagnostic renderer omits ParseErrorKind.UnexpectedToken\n` |
+| missing runner source with a trailing-slash source root | 1 | empty | `check_namespace_manifest: runner source is missing: {SOURCE_ROOT}//ir/runner.elisa\n` |
 | `duplicate` | 1 | empty | `check_namespace_manifest: duplicate module declarations:\nClash\n` |
 | `unknown_using` | 1 | empty | `check_namespace_manifest: using imports undeclared module: MissingNamespace\n` |
 | `undeclared_extension` | 1 | empty | `check_namespace_manifest: extension targets undeclared module: MissingModule\n` |
@@ -30,7 +31,9 @@ matrix.
 These cases cover the initial A02 acceptance surface: a successful manifest,
 an omitted parser renderer variant, duplicate-module collision, undeclared
 import and extension, leaked private ABI call, missing literal include, and
-public POSIX ABI declaration. The positive parser fixture uses the
+public POSIX ABI declaration. The missing-runner case supplies a root ending
+in `/` and requires the diagnostic to preserve the shell's doubled separator
+before `ir/runner.elisa`. The positive parser fixture uses the
 same indentation structure as the vendored parser source. The full reference
 additionally checks unknown imports/extensions, leaked `_impl` calls, bytecode
 and lowerer renderer exhaustiveness, diagnostic reset completeness, and the
