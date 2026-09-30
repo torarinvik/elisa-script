@@ -1,0 +1,229 @@
+# Bounded Elisascript port of check_process_capture.sh.
+# Line and bounded full-text regex checks stream through the shared scanner.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsProcessCaptureAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            DIFFERENTIAL: sview = "src/testing/differential.elisa"
+            PROCESS_RUNTIME: sview = "src/runtime/process_posix.elisa"
+            SOURCE_FILE: sview = "src/ir/source_file.elisa"
+            TESTS: sview = "test/differential/elisascript_differential_test.elisa"
+            INTERPRETER_TESTS: sview = "test/ir/elisascript_interpreter_test.elisa"
+
+
+        const module Patterns:
+            TEMPFILE: Regex = regex"elisascript_posix_tmpfile\(\)"
+            PIPE_APIS: Regex = regex"elisascript_posix_pipe\(|\bpipe\("
+            PROCESS_SETPGID: Regex = regex"def process_setpgid_parent\("
+            PROCESS_TERMINATE: Regex = regex"def process_wait_terminate\("
+            GROUP_HAS_MEMBERS: Regex = regex"def process_wait_group_has_members\("
+            GROUP_QUIESCENT: Regex = regex"def process_wait_group_quiescent\("
+            DIFFERENTIAL_SETPGID: Regex = regex"def differential_setpgid_parent\("
+            DIFFERENTIAL_TERMINATE: Regex = regex"def differential_terminate_process\("
+            PROCESS_WAIT_MODULE: Regex = regex"const module ProcessWait:"
+            WAIT_NOHANG: Regex = regex"ProcessWait::NOHANG"
+            POLL_MICROSECONDS: Regex = regex"ProcessWait::POLL_MICROSECONDS"
+            TERM_GRACE: Regex = regex"ProcessWait::TERM_GRACE_POLLS"
+            MAX_POLLS: Regex = regex"ProcessWait::MAX_POLLS"
+            POSIX_RETRY_MODULE: Regex = regex"const module PosixRetry:"
+            EINTR_RETRIES: Regex = regex"PosixRetry::EINTR_RETRIES"
+            DIFFERENTIAL_TERM_GRACE: Regex = regex"DIFFERENTIAL_TERM_GRACE_POLLS"
+            PROCESS_SIGNAL_TERM: Regex = regex"process_wait_signal\(-waiter\.pid, ProcessWait::SIGNAL_TERM\)"
+            PROCESS_SIGNAL_KILL: Regex = regex"process_wait_signal\(-waiter\.pid, ProcessWait::SIGNAL_KILL\)"
+            DIFFERENTIAL_SIGNAL_TERM: Regex = regex"differential_signal_process\(-pid, DIFFERENTIAL_SIGNAL_TERM\)"
+            DIFFERENTIAL_SIGNAL_KILL: Regex = regex"differential_signal_process\(-pid, DIFFERENTIAL_SIGNAL_KILL\)"
+            TERMINATE_WAITER: Regex = regex"process_wait_terminate\(waiter\)"
+            GROUP_CLEANUP_ORDER: Regex = regex"waiter\.group_ready and not process_wait_group_quiescent\(waiter\.pid\):[\s\S]{0,768}process_wait_terminate_group\(waiter\)"
+            DIFFERENTIAL_TERMINATE_CALL: Regex = regex"differential_terminate_process\(pid, group_ready, status\)"
+            WAITPID_IMPL: Regex = regex"elisascript_posix_waitpid_impl"
+            WRITE_STREAM: Regex = regex"def write_stream_fully\("
+            READ_STREAM: Regex = regex"def read_stream_fully\("
+            STREAM_ERROR: Regex = regex"amount == 0 or amount > remaining or ferror\(stream\) != 0"
+            WRITER_ERROR: Regex = regex"amount == 0 or amount > remaining or ferror\(writer\.stream\) != 0"
+            DIFFERENTIAL_WRITE: Regex = regex"def differential_write_stream_fully\("
+            DIFFERENTIAL_STREAM_ERROR: Regex = regex"amount == 0 or amount > remaining or ferror\(stream\) != 0"
+            DIFFERENTIAL_READ: Regex = regex"def differential_read_stream_fully\("
+            SOURCE_READ: Regex = regex"def elisascript_read_stream_fully\("
+            SOURCE_STREAM_ERROR: Regex = regex"amount == 0 or amount > remaining or ferror\(stream\) != 0"
+            STDOUT_STREAM: Regex = regex"if waiter\.stdout_stream != null:"
+            STDERR_STREAM: Regex = regex"if waiter\.stderr_stream != null:"
+            STREAM_PAIR_LIMIT: Regex = regex"def differential_stream_text_pair_within_limit\("
+            CHECK_PAIR_LIMIT: Regex = regex"if not differential_stream_pair_within_limit\(stdout_size, stderr_size, invocation\.max_output_bytes\)"
+            PREDECESSOR_TIMEOUT: Regex = regex"if polls >= invocation\.timeout_steps - 1"
+            WAITER_TIMEOUT: Regex = regex"if waiter\.polls >= ProcessWait::MAX_POLLS"
+            OVERSIZED_INPUTS: Regex = regex"differential_process_capture_adapter_rejects_oversized_inputs"
+            AGGREGATE_BUDGET: Regex = regex"differential_process_capture_adapter_enforces_aggregate_stream_budget"
+            OUTPUT_LIMIT_DIAGNOSTIC: Regex = regex"process capture exceeds output limit"
+            INPUT_BUDGET_DIAGNOSTIC: Regex = regex"process capture inputs exceed differential budget"
+            STRUCTURE_DIAGNOSTIC: Regex = regex"process capture inputs are structurally invalid"
+            DESCENDANT_QUIESCENCE: Regex = regex"interpreter_rejects_capture_before_descendant_group_quiescence"
+            TIMEOUT: Regex = regex"timeout"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "process capture audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "process capture audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "process capture audit: missing "
+            READ_FAILED: sview = "process capture audit: unable to read source: "
+            SUCCESS: sview = "process capture audit: temporary-file streams, paired limits, bounded polling, and group cleanup are present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        const enum SearchMode of u8:
+            Line
+            FullText
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: Regex
+            mode: SearchMode = SearchMode.Line
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def has_match(check: SearchCheck) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            match check.mode:
+                SearchMode.Line:
+                    catch EsSourceFunctionScope::contains_file_regex_line(check.input, check.pattern):
+                        ok found:
+                            return ExitStatus::FAILURE if not found
+                            return 0i64
+                        error _:
+                            diagnostic(Messages::READ_FAILED + f"{check.input}")
+                            return ExitStatus::IO_FAILURE
+                SearchMode.FullText:
+                    catch EsSourceFunctionScope::contains_file_regex_text(check.input, check.pattern):
+                        ok found:
+                            return ExitStatus::FAILURE if not found
+                            return 0i64
+                        error _:
+                            diagnostic(Messages::READ_FAILED + f"{check.input}")
+                            return ExitStatus::IO_FAILURE
+                _:
+                    return ExitStatus::FAILURE
+
+
+        def tempfile_checks(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[0], pattern: Patterns::TEMPFILE},
+                SearchCheck{input: inputs[1], pattern: Patterns::TEMPFILE}
+            ]
+
+
+        def safety_checks(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_SETPGID},
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_TERMINATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::GROUP_HAS_MEMBERS},
+                SearchCheck{input: inputs[0], pattern: Patterns::GROUP_QUIESCENT},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_SETPGID},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_TERMINATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_WAIT_MODULE},
+                SearchCheck{input: inputs[0], pattern: Patterns::WAIT_NOHANG},
+                SearchCheck{input: inputs[0], pattern: Patterns::POLL_MICROSECONDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::TERM_GRACE},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_POLLS},
+                SearchCheck{input: inputs[0], pattern: Patterns::POSIX_RETRY_MODULE},
+                SearchCheck{input: inputs[0], pattern: Patterns::EINTR_RETRIES},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_TERM_GRACE},
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_SIGNAL_TERM},
+                SearchCheck{input: inputs[0], pattern: Patterns::PROCESS_SIGNAL_KILL},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_SIGNAL_TERM},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_SIGNAL_KILL},
+                SearchCheck{input: inputs[0], pattern: Patterns::TERMINATE_WAITER},
+                SearchCheck{input: inputs[0], pattern: Patterns::GROUP_CLEANUP_ORDER, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_TERMINATE_CALL},
+                SearchCheck{input: inputs[2], pattern: Patterns::WAITPID_IMPL},
+                SearchCheck{input: inputs[0], pattern: Patterns::WRITE_STREAM},
+                SearchCheck{input: inputs[0], pattern: Patterns::READ_STREAM},
+                SearchCheck{input: inputs[0], pattern: Patterns::STREAM_ERROR, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[0], pattern: Patterns::WRITER_ERROR, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_WRITE},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_STREAM_ERROR, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[1], pattern: Patterns::DIFFERENTIAL_READ},
+                SearchCheck{input: inputs[3], pattern: Patterns::SOURCE_READ},
+                SearchCheck{input: inputs[3], pattern: Patterns::SOURCE_STREAM_ERROR, mode: SearchMode.FullText},
+                SearchCheck{input: inputs[0], pattern: Patterns::STDOUT_STREAM},
+                SearchCheck{input: inputs[0], pattern: Patterns::STDERR_STREAM},
+                SearchCheck{input: inputs[1], pattern: Patterns::STREAM_PAIR_LIMIT},
+                SearchCheck{input: inputs[1], pattern: Patterns::CHECK_PAIR_LIMIT},
+                SearchCheck{input: inputs[1], pattern: Patterns::PREDECESSOR_TIMEOUT},
+                SearchCheck{input: inputs[0], pattern: Patterns::WAITER_TIMEOUT},
+                SearchCheck{input: inputs[4], pattern: Patterns::OVERSIZED_INPUTS},
+                SearchCheck{input: inputs[4], pattern: Patterns::AGGREGATE_BUDGET},
+                SearchCheck{input: inputs[4], pattern: Patterns::OUTPUT_LIMIT_DIAGNOSTIC},
+                SearchCheck{input: inputs[4], pattern: Patterns::INPUT_BUDGET_DIAGNOSTIC},
+                SearchCheck{input: inputs[4], pattern: Patterns::STRUCTURE_DIAGNOSTIC},
+                SearchCheck{input: inputs[5], pattern: Patterns::DESCENDANT_QUIESCENCE},
+                SearchCheck{input: inputs[1], pattern: Patterns::TIMEOUT}
+            ]
+
+
+        def forbidden_pipe_apis_absent(interpreter: Path, differential: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            paths: darray[Path] = [interpreter, differential]
+            for path in paths:
+                catch EsSourceFunctionScope::contains_file_regex_line(path, Patterns::PIPE_APIS):
+                    ok found:
+                        return ExitStatus::FAILURE if found
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{path}")
+                        return ExitStatus::IO_FAILURE
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::INTERPRETER),
+                root.joinpath(Inputs::DIFFERENTIAL),
+                root.joinpath(Inputs::PROCESS_RUNTIME),
+                root.joinpath(Inputs::SOURCE_FILE),
+                root.joinpath(Inputs::TESTS),
+                root.joinpath(Inputs::INTERPRETER_TESTS)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = 0i64
+            for check in tempfile_checks(inputs):
+                status <- has_match(check)
+                return status if status != 0i64
+
+            status <- forbidden_pipe_apis_absent(inputs[0], inputs[1])
+            return status if status != 0i64
+
+            for check in safety_checks(inputs):
+                status <- has_match(check)
+                return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsProcessCaptureAudit::run_default()
