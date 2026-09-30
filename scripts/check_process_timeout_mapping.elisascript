@@ -1,0 +1,184 @@
+# Bounded Elisascript port of check_process_timeout_mapping.sh.
+# Awk function scopes and line-order checks use the shared bounded scanner.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsProcessTimeoutAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            PROCESS_AUDIT: sview = "scripts/check_process_capture.sh"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            TIMED_OUT_FIELD: sview = "timed_out: mutable bool = false"
+            TIMED_OUT_SET: sview = "waiter.timed_out <- true"
+            WAIT_FUNCTION: sview = "        def process_wait_next("
+            POLL_LIMIT: sview = "if waiter.polls >= ProcessWait::MAX_POLLS:"
+            TERMINATE: sview = "process_wait_terminate(waiter)"
+            FAILED: sview = "waiter.failed <- true"
+            WAITPID: sview = "elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)"
+            OUTPUT_EXCEEDED: sview = "if process_wait_output_exceeded(waiter):"
+            SLEEP: sview = "if not process_wait_sleep():"
+            MAPPING_TIMEOUT: sview = "if waiter.timed_out:"
+            MAPPING_FAILURE: sview = "machine.failure <- InterpretFailure.Time"
+            OUTPUT_CHECK: sview = "if waiter.output_exceeded:"
+            DOCS_LEDGER_REGEX: Regex = regex"typed.*Time|InterpretFailure\.Time|timeout.*typed"
+            EVALUATE_RUN: sview = "        def evaluate_run_process("
+            CAPTURE_STREAM: sview = "        def evaluate_capture_process_stream("
+            CAPTURE_RESULT: sview = "        def evaluate_capture_process_result("
+            CAPTURE_STDIN: sview = "        def evaluate_capture_process_stream_with_stdin("
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "process timeout audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "process timeout audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "process timeout audit: missing "
+            READ_FAILED: sview = "process timeout audit: unable to read source: "
+            SUCCESS: sview = "process timeout audit: bounded wait exhaustion maps to typed Time after output-limit precedence and cleanup"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct FunctionCheck:
+            definition: sview
+            check_output_precedence: bool
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def read_body(path: Path, definition: sview) -> EsSourceFunctionScope::FunctionBody error[EsSourceFunctionScope::Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            return EsSourceFunctionScope::read_function_body(path, definition)
+
+
+        def wait_block_is_valid(path: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try read_body(path, Patterns::WAIT_FUNCTION) else err:
+                diagnostic(Messages::READ_FAILED + f"{path}")
+                return ExitStatus::IO_FAILURE
+            if not body.found:
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::POLL_LIMIT):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::TIMED_OUT_SET):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::TERMINATE):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::FAILED):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::WAITPID):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::OUTPUT_EXCEEDED):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::SLEEP):
+                return ExitStatus::FAILURE
+
+            output_first: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::OUTPUT_EXCEEDED)
+            output_last: usize = EsSourceFunctionScope::last_line_number(body.text, Patterns::OUTPUT_EXCEEDED)
+            timeout_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::POLL_LIMIT)
+            sleep_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::SLEEP)
+            if output_first == 0 or output_last <= output_first or timeout_line == 0 or sleep_line == 0:
+                return ExitStatus::FAILURE
+            if output_last >= timeout_line or timeout_line >= sleep_line:
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def timeout_mapping_is_valid(path: Path, check: FunctionCheck) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try read_body(path, check.definition) else err:
+                diagnostic(Messages::READ_FAILED + f"{path}")
+                return ExitStatus::IO_FAILURE
+            if not body.found or body.text == "":
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::MAPPING_TIMEOUT):
+                return ExitStatus::FAILURE
+            if not EsSourceFunctionScope::contains(body.text, Patterns::MAPPING_FAILURE):
+                return ExitStatus::FAILURE
+            if check.check_output_precedence:
+                output_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::OUTPUT_CHECK)
+                timeout_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::MAPPING_TIMEOUT)
+                if output_line == 0 or timeout_line == 0 or output_line >= timeout_line:
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def timeout_mapping_checks() -> darray[FunctionCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                FunctionCheck{definition: Patterns::EVALUATE_RUN, check_output_precedence: false},
+                FunctionCheck{definition: Patterns::CAPTURE_STREAM, check_output_precedence: true},
+                FunctionCheck{definition: Patterns::CAPTURE_RESULT, check_output_precedence: true},
+                FunctionCheck{definition: Patterns::CAPTURE_STDIN, check_output_precedence: true}
+            ]
+
+
+        def docs_or_ledger_match(docs: Path, ledger: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            read_failed: mutable bool = false
+            docs_found: bool = try EsSourceFunctionScope::contains_file_regex_line(docs, Patterns::DOCS_LEDGER_REGEX) else err:
+                diagnostic(Messages::READ_FAILED + f"{docs}")
+                read_failed <- true
+                false
+            ledger_found: bool = try EsSourceFunctionScope::contains_file_regex_line(ledger, Patterns::DOCS_LEDGER_REGEX) else err:
+                diagnostic(Messages::READ_FAILED + f"{ledger}")
+                read_failed <- true
+                false
+            return 0i64 if docs_found or ledger_found
+            return ExitStatus::IO_FAILURE if read_failed
+            return ExitStatus::FAILURE
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::INTERPRETER),
+                root.joinpath(Inputs::PROCESS_AUDIT),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = try EsSourceFunctionScope::contains_file_line(inputs[0], Patterns::TIMED_OUT_FIELD) else err:
+                diagnostic(Messages::READ_FAILED + f"{inputs[0]}")
+                return ExitStatus::IO_FAILURE
+            return ExitStatus::FAILURE if not status
+            status = try EsSourceFunctionScope::contains_file_line(inputs[0], Patterns::TIMED_OUT_SET) else err:
+                diagnostic(Messages::READ_FAILED + f"{inputs[0]}")
+                return ExitStatus::IO_FAILURE
+            return ExitStatus::FAILURE if not status
+
+            status = wait_block_is_valid(inputs[0])
+            return status if status != 0i64
+            for check in timeout_mapping_checks():
+                status = timeout_mapping_is_valid(inputs[0], check)
+                return status if status != 0i64
+
+            status = docs_or_ledger_match(inputs[2], inputs[3])
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsProcessTimeoutAudit::run_default()
