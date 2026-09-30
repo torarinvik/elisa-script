@@ -42,7 +42,10 @@ and after the matrix. It is source-only and remains unexecuted while compiler
 validation is suspended. Each shell-reference result must satisfy its literal
 or success-prefix oracle before the candidate is launched; a mismatched
 reference receipt now fails closed rather than being paired with candidate
-output.
+output. A pure fixture pins completed-status, exact-diagnostic, host-error,
+spawn-failure, and successful-default-prefix admission behavior; it is not
+runtime evidence until explicitly authorized and run. A case with neither a
+golden nor a success contract is rejected instead of silently admitted.
 
 The positive source root contains `ignored.elisa`, which redeclares
 `EsRuntime`, and a local `.gitignore` that excludes it. The exact positive
