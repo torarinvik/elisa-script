@@ -6,10 +6,23 @@ include "bash_exec_lookup_model.elisa"
 using EsRuntime
 
 module EsBashExecLookupPosix:
+    using EsEnvironmentLookup
+
     public:
         const module Limits:
             CANDIDATE_PATH_BYTES: usize = EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
             SUPPLEMENTARY_GROUPS: usize = 1024
+
+
+        const enum TildeEnvironmentVariable of u8:
+            Home
+            WorkingDirectory
+            PreviousWorkingDirectory
+
+
+        struct TildeEnvironmentSnapshot:
+            present: bool = false
+            bytes: darray[u8] = []
 
 
         error ObservationError:
@@ -17,6 +30,7 @@ module EsBashExecLookupPosix:
             CandidatePathContainsNul
             CredentialGroupLimitExceeded
             CredentialGroupObservationInvalid
+            InvalidTildeEnvironmentVariable
 
 
         struct ObservedPathCandidate:
@@ -34,6 +48,13 @@ module EsBashExecLookupPosix:
 
 
     private:
+        def copy_environment_bytes(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            owned: mutable darray[u8] = []
+            for byte in value |owned|:
+                owned.push(byte)
+            return owned
+
+
         @link_name(geteuid)
         extern bash_lookup_effective_user() -> u32
 
@@ -48,6 +69,22 @@ module EsBashExecLookupPosix:
 
 
     public:
+        # Read one exported tilde variable at a time. Callers should do this
+        # only for a reached PATH component so unused values cannot block an
+        # earlier executable. The host must exclude concurrent environment
+        # mutation for each individual lookup/copy.
+        def process_tilde_environment_value(variable: TildeEnvironmentVariable) -> TildeEnvironmentSnapshot error[EsEnvironmentLookup::LookupError, ObservationError] can[Environment.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            name: mutable sview = "HOME"
+            if variable == TildeEnvironmentVariable::WorkingDirectory:
+                name <- "PWD"
+            else if variable == TildeEnvironmentVariable::PreviousWorkingDirectory:
+                name <- "OLDPWD"
+            else:
+                raise ObservationError.InvalidTildeEnvironmentVariable if variable != TildeEnvironmentVariable::Home
+            value: EsEnvironmentLookup::Value = try EsEnvironmentLookup::lookup(name)
+            return TildeEnvironmentSnapshot{present: value.present, bytes: try copy_environment_bytes(value.bytes)}
+
+
         # Capture the ids Bash 3.2 uses around group membership plus the
         # supplementary list returned by getgroups(2). Bash falls back to
         # real/effective GIDs when getgroups fails; preserve that behavior with

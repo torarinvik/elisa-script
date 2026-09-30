@@ -299,19 +299,26 @@ snapshot, while `~+` and `~-` use caller-supplied PWD and OLDPWD snapshots;
 indexed stack and named-user forms also require explicit caller snapshots;
 unsupported tilde forms are rejected only when reached, before their stat
 query, so an earlier executable can end the search without needing that
-expansion. If all reached components are supported and none is executable, it
-applies the selector after exhausting PATH. The adapter has not been compiled
-or exercised; the caller must keep credential and shell-directory snapshots
-stable during capture.
+expansion. The adapter can copy one exported process `HOME`, `PWD`, or `OLDPWD`
+value at a time into an owned snapshot. Callers can defer each read until its
+tilde form is reached, so an unused environment value cannot block an earlier
+executable. This does not capture shell-only variables, account homes,
+named-user lookups, or directory-stack state; callers must exclude concurrent
+environment mutation for each lookup and provide the remaining snapshots.
+If all reached components are supported and none is executable, it applies the
+selector after exhausting PATH. The adapter has not been compiled or exercised;
+the caller must keep credential and shell-directory snapshots stable during
+capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
-check with no `bash` candidate in its private first PATH directory and `/bin`
-second, plus unvisited `/usr/bin` and tilde-expansion suffixes. It verifies the
-retained candidate spellings and selected index using stat/credential
-observations only; separate cases cover refusal of a reached unsupported tilde
-form and current-HOME/PWD/OLDPWD/directory-stack expansion before joining. No
-case launches Bash or the selected executable. The tests are uncompiled and unrun, and do not
-qualify this adapter for the lint wrapper.
+check that individual process-environment snapshots copy the same exported
+values as the environment adapter, plus a search with no `bash` candidate in its
+private first PATH directory and `/bin` second, and unvisited `/usr/bin` and
+tilde-expansion suffixes. It verifies retained candidate spellings and
+selection using stat/credential observations only; separate cases cover
+refusal of reached unsupported tilde forms and snapshot-based tilde expansion
+before joining. No case launches Bash or the selected executable. The tests
+are uncompiled and unrun, and do not qualify this adapter for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
