@@ -67,6 +67,8 @@ renders only the first-range `Missing` variant, and expects the later
 remain unexecuted. The diagnostic-reset fixture now uses the source checker's
 required indentation and includes a reset-helper prefix decoy; the actual
 reset still omits `stale`, so both implementations should report that field.
+The renderer fixture deliberately uses four-space indentation, which both
+shell range patterns and the candidate must accept.
 
 The shell reference and candidate also resolve omitted or empty source-root and
 parser-token arguments relative to their own script directories. The launcher
