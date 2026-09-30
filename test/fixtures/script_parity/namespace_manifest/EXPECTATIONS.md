@@ -57,6 +57,12 @@ The added negative fixtures also cover a POSIX ABI declaration outside
 completeness, and the required-module set. Full runtime parity remains
 unverified while compiler validation is held.
 
+The positive renderer fixture also places its only `IssueKind.Missing` spelling
+in a second `bytecode_issue_detail`-prefix-to-`runtime_error_detail`-prefix
+range. This pins the shell reference's repeated `sed` range behavior and the
+candidate's corresponding resumable scan; it does not change manifest output.
+The fixture and candidate remain unexecuted.
+
 The shell reference and candidate also resolve omitted or empty source-root and
 parser-token arguments relative to their own script directories. The launcher
 matrix invokes no arguments and an empty first argument from `/`, requiring
