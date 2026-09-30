@@ -1,0 +1,242 @@
+# Typed validator for WasmBrowser's explicit no-selection GL bridge record.
+module EsGlBridgeEvaluation:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+
+    public:
+        error GlBridgeEvaluationError:
+            InvalidJson
+            InvalidRoot
+            SchemaMismatch
+            StatusMismatch
+            ConsumerMismatch
+            ContractMismatch
+            FixtureMismatch
+            ContractDocumentMismatch
+
+
+        def validate_gl_bridge_evaluation_sources(json_source: sview, contract_source: sview) -> bool error[GlBridgeEvaluationError] can[Memory.Allocate, Abort.Panic]:
+            raise GlBridgeEvaluationError.InvalidJson if len(json_source) > Limits::JSON_BYTES or len(contract_source) > Limits::CONTRACT_BYTES
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::JSON_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::RECORDS, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
+            json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(json_source, decode_limits, json_policy) else err:
+                raise GlBridgeEvaluationError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise GlBridgeEvaluationError.InvalidJson
+            return try validate_gl_bridge_evaluation_document(document, contract_source)
+
+
+    private:
+        def validate_gl_bridge_evaluation_document(document: JsonDocument&, contract_source: sview) -> bool error[GlBridgeEvaluationError] can[Memory.Allocate, Abort.Panic]:
+            raise GlBridgeEvaluationError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise GlBridgeEvaluationError.InvalidRoot if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            schema_index: usize = gl_bridge_member_index(document, root_index, Keys::SCHEMA)
+            raise GlBridgeEvaluationError.SchemaMismatch if not gl_bridge_text_equals(document, schema_index, Values::SCHEMA)
+            status_index: usize = gl_bridge_member_index(document, root_index, Keys::STATUS)
+            raise GlBridgeEvaluationError.StatusMismatch if not gl_bridge_text_equals(document, status_index, Values::UNSELECTED)
+
+            consumer_index: usize = gl_bridge_member_index(document, root_index, Keys::CURRENT_CONSUMER)
+            raise GlBridgeEvaluationError.ConsumerMismatch if consumer_index == JSON_INDEX_NONE or consumer_index >= document.nodes.count or document.nodes[consumer_index].kind != JsonNodeKind.Object
+            requirement_index: usize = gl_bridge_member_index(document, consumer_index, Keys::GUEST_GL_REQUIREMENT)
+            raise GlBridgeEvaluationError.ConsumerMismatch if not gl_bridge_text_equals(document, requirement_index, Values::NONE)
+
+            contract_index: usize = gl_bridge_member_index(document, root_index, Keys::REQUIRED_CONTRACT)
+            raise GlBridgeEvaluationError.ContractMismatch if contract_index == JSON_INDEX_NONE or contract_index >= document.nodes.count or document.nodes[contract_index].kind != JsonNodeKind.Object
+            try gl_bridge_validate_contract_members(document, contract_index) else err:
+                raise GlBridgeEvaluationError.ContractMismatch
+
+            fixture_index: usize = gl_bridge_member_index(document, root_index, Keys::REQUIRED_FIXTURE)
+            raise GlBridgeEvaluationError.FixtureMismatch if fixture_index == JSON_INDEX_NONE or fixture_index >= document.nodes.count or document.nodes[fixture_index].kind != JsonNodeKind.Object
+            try gl_bridge_validate_fixture(document, fixture_index) else err:
+                raise GlBridgeEvaluationError.FixtureMismatch
+
+            raise GlBridgeEvaluationError.ContractDocumentMismatch if not gl_bridge_contract_document_valid(contract_source)
+            return true
+
+
+        def gl_bridge_validate_contract_members(document: JsonDocument&, object_index: usize) -> bool error[GlBridgeEvaluationError]:
+            for key in gl_bridge_contract_keys() |document, object_index|:
+                value_index: usize = gl_bridge_member_index(document, object_index, key)
+                raise GlBridgeEvaluationError.ContractMismatch if value_index == JSON_INDEX_NONE or not gl_bridge_text_nonempty(document, value_index)
+            owner: JsonNode = document.nodes[object_index]
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner|:
+                member: JsonMember = document.members[member_index]
+                raise GlBridgeEvaluationError.ContractMismatch if not gl_bridge_text_in_list(gl_bridge_member_key(document, member), gl_bridge_contract_keys())
+            return true
+
+
+        def gl_bridge_validate_fixture(document: JsonDocument&, object_index: usize) -> bool error[GlBridgeEvaluationError]:
+            status_index: usize = gl_bridge_member_index(document, object_index, Keys::FIXTURE_STATUS)
+            raise GlBridgeEvaluationError.FixtureMismatch if not gl_bridge_text_equals(document, status_index, Values::FIXTURE_BLOCKED)
+            cases_index: usize = gl_bridge_member_index(document, object_index, Keys::CASES)
+            raise GlBridgeEvaluationError.FixtureMismatch if cases_index == JSON_INDEX_NONE or cases_index >= document.nodes.count or not gl_bridge_node_truthy(document, cases_index)
+            platforms_index: usize = gl_bridge_member_index(document, object_index, Keys::PLATFORMS)
+            raise GlBridgeEvaluationError.FixtureMismatch if not gl_bridge_platforms_contain_required(document, platforms_index)
+            return true
+
+
+        def gl_bridge_platforms_contain_required(document: JsonDocument&, node_index: usize) -> bool:
+            return false if node_index == JSON_INDEX_NONE or node_index >= document.nodes.count
+            platforms: JsonNode = document.nodes[node_index]
+            desktop_found: mutable bool = false
+            gles_found: mutable bool = false
+            if platforms.kind == JsonNodeKind.Array:
+                for ordinal in 0..<platforms.child_count |document, platforms, desktop_found, gles_found|:
+                    child: JsonArrayChild = document.children[platforms.child_start + ordinal]
+                    return false if child.value_index >= document.nodes.count or document.nodes[child.value_index].kind == JsonNodeKind.Array or document.nodes[child.value_index].kind == JsonNodeKind.Object
+                    desktop_found <- true if gl_bridge_text_equals(document, child.value_index, Values::DESKTOP_GL)
+                    gles_found <- true if gl_bridge_text_equals(document, child.value_index, Values::GLES_EGL)
+            elif platforms.kind == JsonNodeKind.Object:
+                for member_index in platforms.member_start..<(platforms.member_start + platforms.member_count) |document, platforms, desktop_found, gles_found|:
+                    member: JsonMember = document.members[member_index]
+                    key: sview = gl_bridge_member_key(document, member)
+                    desktop_found <- true if key == Values::DESKTOP_GL
+                    gles_found <- true if key == Values::GLES_EGL
+            return desktop_found and gles_found
+
+
+        def gl_bridge_contract_document_valid(source: sview) -> bool:
+            for heading in gl_bridge_contract_headings() |source|:
+                return false if not gl_bridge_text_contains(source, heading)
+            return gl_bridge_text_contains(source, ContractHeadings::NO_SELECTION)
+
+
+        def gl_bridge_text_contains(source: sview, expected: sview) -> bool:
+            return false if len(expected) > len(source)
+            last_offset: usize = len(source) - len(expected)
+            for offset in 0..=last_offset |source, expected|:
+                matched: mutable bool = true
+                for index in 0..<len(expected) |source, expected, offset, matched|:
+                    matched <- false if sview_at(source, offset + index) != sview_at(expected, index)
+                    break if not matched
+                return true if matched
+            return false
+
+
+        def gl_bridge_contract_keys() -> darray[sview]:
+            return [ContractKeys::GUEST_FUNCTION_ABI, ContractKeys::HANDLE_MODEL, ContractKeys::BUFFER_VALIDATION, ContractKeys::CONTEXT_LIFETIME, ContractKeys::THREAD_AFFINITY, ContractKeys::SYNCHRONIZATION, ContractKeys::ERROR_SEMANTICS, ContractKeys::QUOTAS, ContractKeys::HOST_AVAILABILITY]
+
+
+        def gl_bridge_contract_headings() -> darray[sview]:
+            return [ContractHeadings::GUEST_ABI, ContractHeadings::HANDLES, ContractHeadings::LIFETIME, ContractHeadings::ERRORS, ContractHeadings::QUOTAS, ContractHeadings::HOST_BACKEND, ContractHeadings::GUEST_FIXTURE]
+
+
+        def gl_bridge_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return JSON_INDEX_NONE if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            found: mutable usize = JSON_INDEX_NONE
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner, key, found|:
+                member: JsonMember = document.members[member_index]
+                found <- member_index if gl_bridge_member_key(document, member) == key
+            return found
+
+
+        def gl_bridge_member_key(document: JsonDocument&, member: JsonMember) -> sview:
+            key_bytes: sview = bytes_view(document.key_bytes)
+            return string_view_slice(key_bytes, member.key_start.i64(), (member.key_start + member.key_bytes).i64())
+
+
+        def gl_bridge_text_equals(document: JsonDocument&, node_index: usize, expected: sview) -> bool:
+            return false if not gl_bridge_text_nonempty_or_empty(document, node_index)
+            node: JsonNode = document.nodes[node_index]
+            return false if node.kind != JsonNodeKind.Text or node.scalar_bytes != len(expected)
+            return gl_bridge_text(document, node_index) == expected
+
+
+        def gl_bridge_text_nonempty(document: JsonDocument&, node_index: usize) -> bool:
+            return node_index < document.nodes.count and document.nodes[node_index].kind == JsonNodeKind.Text and document.nodes[node_index].scalar_bytes != 0
+
+
+        def gl_bridge_text_nonempty_or_empty(document: JsonDocument&, node_index: usize) -> bool:
+            return node_index < document.nodes.count and document.nodes[node_index].kind == JsonNodeKind.Text
+
+
+        def gl_bridge_text(document: JsonDocument&, node_index: usize) -> sview:
+            node: JsonNode = document.nodes[node_index]
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def gl_bridge_text_in_list(value: sview, values: darray[sview]) -> bool:
+            for expected in values:
+                return true if value == expected
+            return false
+
+
+        def gl_bridge_node_truthy(document: JsonDocument&, node_index: usize) -> bool:
+            return false if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                return false
+            elif node.kind == JsonNodeKind.Bool:
+                return node.bool_value
+            elif node.kind == JsonNodeKind.Text:
+                return node.scalar_bytes != 0
+            elif node.kind == JsonNodeKind.Array:
+                return node.child_count != 0
+            elif node.kind == JsonNodeKind.Object:
+                return node.member_count != 0
+            elif node.kind == JsonNodeKind.Number:
+                lexeme: sview = gl_bridge_text(document, node_index)
+                for byte in lexeme:
+                    return true if byte == 49u8 or byte == 50u8 or byte == 51u8 or byte == 52u8 or byte == 53u8 or byte == 54u8 or byte == 55u8 or byte == 56u8 or byte == 57u8
+                    break if byte == 101u8 or byte == 69u8
+                return false
+            return false
+
+
+        const module Limits:
+            JSON_BYTES: usize = 1048576
+            CONTRACT_BYTES: usize = 1048576
+            TOKENS: usize = 65536
+            RECORDS: usize = 4096
+            FIELDS: usize = 16384
+            FIELD_BYTES: usize = 65536
+
+
+        const module Keys:
+            SCHEMA: sview = "schema"
+            STATUS: sview = "status"
+            CURRENT_CONSUMER: sview = "current_consumer"
+            GUEST_GL_REQUIREMENT: sview = "guest_gl_requirement"
+            REQUIRED_CONTRACT: sview = "required_contract"
+            REQUIRED_FIXTURE: sview = "required_fixture"
+            FIXTURE_STATUS: sview = "status"
+            CASES: sview = "cases"
+            PLATFORMS: sview = "platforms"
+
+
+        const module Values:
+            SCHEMA: sview = "wasmbrowser.gl_bridge_evaluation.v1"
+            UNSELECTED: sview = "unselected"
+            NONE: sview = "none"
+            FIXTURE_BLOCKED: sview = "blocked_missing_pinned_consumer"
+            DESKTOP_GL: sview = "desktop GL"
+            GLES_EGL: sview = "GLES/EGL"
+
+
+        const module ContractKeys:
+            GUEST_FUNCTION_ABI: sview = "guest_function_abi"
+            HANDLE_MODEL: sview = "handle_model"
+            BUFFER_VALIDATION: sview = "buffer_validation"
+            CONTEXT_LIFETIME: sview = "context_lifetime"
+            THREAD_AFFINITY: sview = "thread_affinity"
+            SYNCHRONIZATION: sview = "synchronization"
+            ERROR_SEMANTICS: sview = "error_semantics"
+            QUOTAS: sview = "quotas"
+            HOST_AVAILABILITY: sview = "host_availability"
+
+
+        const module ContractHeadings:
+            GUEST_ABI: sview = "## Guest ABI and dispatch"
+            HANDLES: sview = "## Handles and buffers"
+            LIFETIME: sview = "## Lifetime and thread affinity"
+            ERRORS: sview = "## Errors"
+            QUOTAS: sview = "## Quotas"
+            HOST_BACKEND: sview = "## Host backend availability"
+            GUEST_FIXTURE: sview = "## Required guest-path fixture"
+            NO_SELECTION: sview = "no GL bridge selected"
