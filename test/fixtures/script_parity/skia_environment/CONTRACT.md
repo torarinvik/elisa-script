@@ -26,7 +26,13 @@ caller strictly decodes the captured stdout as UTF-8 and calls Python `str.rstri
 on the result; Elisascript's shared text trimming now models Python's Unicode
 whitespace set rather than only ASCII bytes. Interpreter and bytecode fixtures
 cover Unicode separators, Python's U+001C..U+001F whitespace controls, and a
-non-whitespace zero-width space. They are source-authored and unexecuted.
+non-whitespace zero-width space. A separate pure caller-boundary model now
+composes strict UTF-8 validation with the same right-trim operation; its
+fixtures cover empty output, printed values, embedded newlines, Unicode
+whitespace and invalid UTF-8. These source fixtures are unexecuted and do not
+connect the model to a live recipe or process capture. The typed invalid-UTF-8
+classification is not yet Python's exact `UnicodeDecodeError` text or recipe
+framework exception propagation.
 
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and
