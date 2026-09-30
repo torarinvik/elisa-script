@@ -53,8 +53,12 @@ status 2 and usage on stderr without launching the tool, even if the configured
 Python executable does not exist. An inaccessible root fails before mode
 decoding, matching the shell's order on ordinary inputs. Usage includes the
 unmodified invocation spelling (`$0`), not the compiler's normalized source
-path; pure source fixtures pin relative spellings, but launcher-level
-diagnostic-byte observations remain required.
+path. The gated launcher matrix has two invalid-mode vectors (`./scripts/...`
+and `scripts/...`) with a deliberately missing `PYTHON_BIN`. Each shell and
+candidate stderr is checked against its own literal golden bytes because the
+visible script extensions necessarily differ; both must return status 2 with
+empty stdout and the usage diagnostic before trying to construct or launch the
+missing interpreter.
 
 ## Authored pure fixtures and required launcher cases
 
@@ -83,6 +87,11 @@ reference and candidate, so physical cwd bytes can be compared exactly. Copied
 scripts/probes are hashed before and after the matrix; cleanup rejects unknown
 remaining files instead of recursively sweeping them. This does not replace
 independent mutable worlds for tools with filesystem side effects.
+
+The two separate canonical invalid-mode vectors also run in `CanonicalOnly`
+and `WrapperFamily`; each reference is admitted against its own literal golden
+stderr before its candidate is started. These diagnostic observations remain
+unqualified until explicitly authorized execution.
 
 `test/script_parity/canonical_test_cases.elisa` owns the ten independent
 test-wrapper expectations and imports only the data-only lint case types, not
@@ -149,13 +158,15 @@ forced-mode and argument-forwarding behavior. It stages both unchanged shell
 scripts because the reference campaign shim execs its sibling canonical wrapper,
 but stages only the campaign Elisascript entry point and shared implementation.
 It does not run lint ordinary, signal, or exec-failure cases. The broader
-`WrapperFamily` wave remains unchanged and explicit.
+`WrapperFamily` wave remains explicit and adds the canonical invalid-mode
+diagnostics described above.
 
-The seven-case `CanonicalOnly` wave separately exercises the mode parser,
-forwarded pytest argv, and Python selection for the shared 26-line runner. It
-stages the canonical shell reference and its Elisascript entry/helper, without
-the campaign shim or lint assets. It also skips lint signal and exec-failure
-cases.
+The seven ordinary-case `CanonicalOnly` wave separately exercises the mode
+parser, forwarded pytest argv, and Python selection for the shared runner. It
+adds two invalid-mode diagnostic cases for raw relative invocation spellings.
+It stages the canonical shell reference and its Elisascript entry/helper,
+without the campaign shim or lint assets. It also skips lint signal and
+exec-failure cases.
 
 Each wrapper wave hashes the live shell reference or references it uses against
 the unchanged snapshots before setup and after cleanup. `CanonicalOnly` checks
@@ -172,12 +183,11 @@ unqualified. Bash's 126/127 execution failures/diagnostics are not reproduced
 by the runner; host/cwd/environment failures use candidate-specific messages.
 Logical PWD and symlink spelling also need dedicated qualification.
 
-Usage text uses the candidate's absolute source path; Bash uses the invocation's
-raw `$0`. Besides the different `.elisascript` filename, these may differ in
-relative/symlink spelling. Status 2, usage shape, and no-launch behavior can be
-specified now, but exact invalid-mode stderr equality is not claimed. Do not
-silently normalize this difference in an exact comparator. A future language
-invocation-path API or explicitly approved diagnostic policy must resolve it.
+Invalid-mode usage keeps the caller's raw invocation spelling in both Bash and
+Elisascript. The `.sh` and `.elisascript` names produce intentionally different
+literal stderr oracles; there is no claim that the raw streams are identical.
+The two current launcher vectors cover relative spellings only; symlink and
+absolute invocation spellings remain open.
 
 No compiler, pytest, pure fixture, or public launcher ran for this change.
 Validation remains disabled until explicitly reauthorized. Keep both originals
