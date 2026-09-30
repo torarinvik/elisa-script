@@ -1,0 +1,248 @@
+# Typed validator for representative cross-platform compatibility matrices.
+module EsCompatibilityFixtureMatrix:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+
+    public:
+        error FixtureMatrixError:
+            InvalidJson
+            InvalidRoot
+            SchemaMismatch
+            CoveragePolicyMissing
+            InvalidAxes
+            InvalidAxisValues
+            InvalidCases
+            InvalidCase
+            DuplicateCaseId
+            AxisValueUnsupported
+            InvalidStatus
+            EvidenceMissing
+            EvidencePathMissing
+            PrerequisiteMissing
+            RequiredLocationsMissing
+
+
+        def validate_fixture_matrix_source(source: sview, project_root: Path) -> usize error[FixtureMatrixError] can[File.Read, Memory.Allocate, Abort.Panic]:
+            raise FixtureMatrixError.InvalidJson if len(source) > Limits::INPUT_BYTES
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::CASES, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
+            json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, decode_limits, json_policy) else err:
+                raise FixtureMatrixError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise FixtureMatrixError.InvalidJson
+            return try validate_fixture_matrix_document(document, project_root)
+
+
+        def validate_fixture_matrix_document(document: JsonDocument&, project_root: Path) -> usize error[FixtureMatrixError] can[File.Read, Memory.Allocate, Abort.Panic]:
+            raise FixtureMatrixError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise FixtureMatrixError.InvalidRoot if root_index >= document.nodes.count
+            root: JsonNode = document.nodes[root_index]
+            raise FixtureMatrixError.InvalidRoot if root.kind != JsonNodeKind.Object
+
+            schema_index: usize = matrix_member_index(document, root_index, Keys::SCHEMA)
+            raise FixtureMatrixError.SchemaMismatch if schema_index == JSON_INDEX_NONE or schema_index >= document.nodes.count
+            schema_node: JsonNode = document.nodes[schema_index]
+            raise FixtureMatrixError.SchemaMismatch if schema_node.kind != JsonNodeKind.Text or matrix_text(document, schema_index) != Schema::NAME
+            policy_index: usize = matrix_member_index(document, root_index, Keys::COVERAGE_POLICY)
+            raise FixtureMatrixError.CoveragePolicyMissing if policy_index == JSON_INDEX_NONE or not matrix_node_truthy(document, policy_index)
+
+            axes_index: usize = matrix_member_index(document, root_index, Keys::AXES)
+            raise FixtureMatrixError.InvalidAxes if axes_index == JSON_INDEX_NONE or axes_index >= document.nodes.count
+            axes: JsonNode = document.nodes[axes_index]
+            raise FixtureMatrixError.InvalidAxes if axes.kind != JsonNodeKind.Object
+            axis_names: darray[sview] = matrix_axis_names()
+            for member_index in axes.member_start..<(axes.member_start + axes.member_count) |document, axis_names|:
+                member: JsonMember = document.members[member_index]
+                key: sview = matrix_member_key(document, member)
+                raise FixtureMatrixError.InvalidAxes if not matrix_text_in_list(key, axis_names)
+            axis_values: mutable darray[usize] = []
+            for name in axis_names |document, axes_index, axis_values|:
+                value_index: usize = matrix_member_index(document, axes_index, name)
+                raise FixtureMatrixError.InvalidAxes if value_index == JSON_INDEX_NONE or value_index >= document.nodes.count
+                value_node: JsonNode = document.nodes[value_index]
+                raise FixtureMatrixError.InvalidAxisValues if value_node.kind != JsonNodeKind.Array or value_node.child_count == 0 or value_node.child_count > Limits::AXIS_VALUES
+                for child_index in value_node.child_start..<(value_node.child_start + value_node.child_count) |document, value_node|:
+                    child: JsonArrayChild = document.children[child_index]
+                    raise FixtureMatrixError.InvalidAxisValues if child.value_index >= document.nodes.count or document.nodes[child.value_index].kind != JsonNodeKind.Text
+                axis_values.push(value_index)
+
+            cases_index: usize = matrix_member_index(document, root_index, Keys::CASES)
+            raise FixtureMatrixError.InvalidCases if cases_index == JSON_INDEX_NONE or cases_index >= document.nodes.count
+            cases_node: JsonNode = document.nodes[cases_index]
+            raise FixtureMatrixError.InvalidCases if cases_node.kind != JsonNodeKind.Array or cases_node.child_count == 0 or cases_node.child_count > Limits::CASES
+            case_ids: mutable darray[sview] = []
+            saw_local: mutable bool = false
+            saw_remote: mutable bool = false
+
+            for ordinal in 0..<cases_node.child_count |document, cases_node, axis_names, axis_values, case_ids, saw_local, saw_remote, project_root|:
+                case_edge: JsonArrayChild = document.children[cases_node.child_start + ordinal]
+                case_index: usize = case_edge.value_index
+                raise FixtureMatrixError.InvalidCase if case_index >= document.nodes.count or document.nodes[case_index].kind != JsonNodeKind.Object
+
+                id_index: usize = matrix_member_index(document, case_index, Keys::ID)
+                raise FixtureMatrixError.InvalidCase if id_index == JSON_INDEX_NONE or id_index >= document.nodes.count or document.nodes[id_index].kind != JsonNodeKind.Text
+                case_id: sview = matrix_text(document, id_index)
+                for previous_id in case_ids:
+                    raise FixtureMatrixError.DuplicateCaseId if previous_id == case_id
+                case_ids.push(case_id)
+
+                for axis_index in 0..<axis_names.count |document, case_index, axis_names, axis_values, case_id|:
+                    selected_index: usize = matrix_member_index(document, case_index, axis_names[axis_index])
+                    raise FixtureMatrixError.InvalidCase if selected_index == JSON_INDEX_NONE or selected_index >= document.nodes.count or document.nodes[selected_index].kind != JsonNodeKind.Text
+                    selected: sview = matrix_text(document, selected_index)
+                    raise FixtureMatrixError.AxisValueUnsupported if not matrix_array_contains_text(document, axis_values[axis_index], selected)
+
+                status_index: usize = matrix_member_index(document, case_index, Keys::STATUS)
+                raise FixtureMatrixError.InvalidStatus if status_index == JSON_INDEX_NONE or status_index >= document.nodes.count or document.nodes[status_index].kind != JsonNodeKind.Text
+                status: sview = matrix_text(document, status_index)
+                raise FixtureMatrixError.InvalidStatus if not matrix_status_allowed(status)
+
+                location_index: usize = matrix_member_index(document, case_index, Keys::EXECUTION_LOCATION)
+                raise FixtureMatrixError.InvalidCase if location_index == JSON_INDEX_NONE or location_index >= document.nodes.count or document.nodes[location_index].kind != JsonNodeKind.Text
+                location: sview = matrix_text(document, location_index)
+                saw_local <- true if location == Locations::LOCAL
+                saw_remote <- true if location == Locations::REMOTE
+
+                if status == Status::SUPPORTED or status == Status::PARTIAL:
+                    evidence_index: usize = matrix_member_index(document, case_index, Keys::EVIDENCE)
+                    raise FixtureMatrixError.EvidenceMissing if evidence_index == JSON_INDEX_NONE or evidence_index >= document.nodes.count
+                    evidence_node: JsonNode = document.nodes[evidence_index]
+                    raise FixtureMatrixError.EvidenceMissing if evidence_node.kind != JsonNodeKind.Array or evidence_node.child_count == 0 or evidence_node.child_count > Limits::EVIDENCE
+                    for evidence_ordinal in 0..<evidence_node.child_count |document, evidence_node, project_root, case_id|:
+                        evidence_edge: JsonArrayChild = document.children[evidence_node.child_start + evidence_ordinal]
+                        raise FixtureMatrixError.EvidenceMissing if evidence_edge.value_index >= document.nodes.count or document.nodes[evidence_edge.value_index].kind != JsonNodeKind.Text
+                        evidence_path: sview = matrix_text(document, evidence_edge.value_index)
+                        resolved_path: Path = project_root.joinpath(evidence_path)
+                        evidence_exists: bool = try path_exists(resolved_path) else false
+                        raise FixtureMatrixError.EvidencePathMissing if not evidence_exists
+                elif status == Status::BLOCKED:
+                    prerequisite_index: usize = matrix_member_index(document, case_index, Keys::MISSING_PREREQUISITE)
+                    raise FixtureMatrixError.PrerequisiteMissing if prerequisite_index == JSON_INDEX_NONE or prerequisite_index >= document.nodes.count or not matrix_node_truthy(document, prerequisite_index)
+
+            raise FixtureMatrixError.RequiredLocationsMissing if not saw_local or not saw_remote
+            return cases_node.child_count
+
+
+    private:
+        const module Limits:
+            INPUT_BYTES: usize = 1048576
+            TOKENS: usize = 65536
+            CASES: usize = 4096
+            AXIS_VALUES: usize = 256
+            EVIDENCE: usize = 256
+            FIELDS: usize = 16384
+            FIELD_BYTES: usize = 65536
+
+
+        const module Schema:
+            NAME: sview = "wasmbrowser.fixture_matrix.v1"
+
+
+        const module Keys:
+            SCHEMA: sview = "schema"
+            COVERAGE_POLICY: sview = "coverage_policy"
+            AXES: sview = "axes"
+            CASES: sview = "cases"
+            ID: sview = "id"
+            STATUS: sview = "status"
+            EVIDENCE: sview = "evidence"
+            MISSING_PREREQUISITE: sview = "missing_prerequisite"
+            EXECUTION_LOCATION: sview = "execution_location"
+
+
+        const module Status:
+            SUPPORTED: sview = "supported"
+            PARTIAL: sview = "partial"
+            BLOCKED: sview = "blocked"
+            UNSUPPORTED: sview = "unsupported"
+
+
+        const module Locations:
+            LOCAL: sview = "local"
+            REMOTE: sview = "remote-worker"
+
+
+        const module Axes:
+            LANGUAGE: sview = "language"
+            FRAMEWORK: sview = "framework"
+            RUNTIME_PROFILE: sview = "runtime_profile"
+            DELIVERY_MODE: sview = "delivery_mode"
+            EXECUTION_LOCATION: sview = "execution_location"
+            OS: sview = "os"
+            CPU_ARCHITECTURE: sview = "cpu_architecture"
+            GRAPHICS_CAPABILITY: sview = "graphics_capability"
+
+
+        def matrix_axis_names() -> darray[sview]:
+            return [Axes::LANGUAGE, Axes::FRAMEWORK, Axes::RUNTIME_PROFILE, Axes::DELIVERY_MODE, Axes::EXECUTION_LOCATION, Axes::OS, Axes::CPU_ARCHITECTURE, Axes::GRAPHICS_CAPABILITY]
+
+
+        def matrix_member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != len(key)
+            for offset in 0..<member.key_bytes |document, member, key|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        def matrix_member_key(document: JsonDocument&, member: JsonMember) -> sview:
+            key_bytes: sview = bytes_view(document.key_bytes)
+            return string_view_slice(key_bytes, member.key_start.i64(), (member.key_start + member.key_bytes).i64())
+
+
+        # Source-order overwrite reproduces json.loads()' last-duplicate-wins
+        # dictionary behavior without repeated whole-document validation.
+        def matrix_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            owner: JsonNode = document.nodes[object_index]
+            found: mutable usize = JSON_INDEX_NONE
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner, key, found|:
+                member: JsonMember = document.members[member_index]
+                found <- member_index if matrix_member_key_equals(document, member, key)
+            return found
+
+
+        def matrix_text(document: JsonDocument&, node_index: usize) -> sview:
+            node: JsonNode = document.nodes[node_index]
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def matrix_node_truthy(document: JsonDocument&, node_index: usize) -> bool:
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                return false
+            elif node.kind == JsonNodeKind.Bool:
+                return node.bool_value
+            elif node.kind == JsonNodeKind.Text:
+                return node.scalar_bytes != 0
+            elif node.kind == JsonNodeKind.Array:
+                return node.child_count != 0
+            elif node.kind == JsonNodeKind.Object:
+                return node.member_count != 0
+            elif node.kind == JsonNodeKind.Number:
+                lexeme: sview = matrix_text(document, node_index)
+                for byte in lexeme:
+                    return true if byte == 49u8 or byte == 50u8 or byte == 51u8 or byte == 52u8 or byte == 53u8 or byte == 54u8 or byte == 55u8 or byte == 56u8 or byte == 57u8
+                    break if byte == 101u8 or byte == 69u8
+                return false
+            return false
+
+
+        def matrix_text_in_list(value: sview, values: darray[sview]) -> bool:
+            for expected in values:
+                return true if value == expected
+            return false
+
+
+        def matrix_array_contains_text(document: JsonDocument&, array_index: usize, value: sview) -> bool:
+            array: JsonNode = document.nodes[array_index]
+            for ordinal in 0..<array.child_count |document, array|:
+                child: JsonArrayChild = document.children[array.child_start + ordinal]
+                return true if matrix_text(document, child.value_index) == value
+            return false
+
+
+        def matrix_status_allowed(status: sview) -> bool:
+            return status == Status::SUPPORTED or status == Status::PARTIAL or status == Status::BLOCKED or status == Status::UNSUPPORTED
