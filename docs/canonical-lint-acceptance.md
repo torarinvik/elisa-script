@@ -270,16 +270,18 @@ but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
 `observe_search_plan` now validates the owned plan. Direct-name mode observes
 the exact command spelling once without applying PATH candidate preference;
 PATH mode rejects unsupported tilde expansion before any stat query, then joins
-and observes every component in order, retaining each exact spelling and
-applying the pure selector. This source has not been compiled or exercised; the
-caller must prevent concurrent credential changes during capture.
+and observes components in order, retaining exact spellings, and stops after
+the first executable candidate just as Bash does. If none is executable, it
+applies the selector to the observed prefix after exhausting PATH. The adapter
+has not been compiled or exercised; the caller must prevent concurrent
+credential changes during capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
 check with no `bash` candidate in its private first PATH directory and `/bin`
-second. It verifies the retained candidate spellings and selected index using
-stat/credential observations only; it does not launch Bash or the selected
-executable. The test is uncompiled and unrun, and does not qualify this adapter
-for the lint wrapper.
+second, plus an unvisited `/usr/bin` suffix. It verifies the retained candidate
+spellings and selected index using stat/credential observations only; it does
+not launch Bash or the selected executable. The test is uncompiled and unrun,
+and does not qualify this adapter for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
