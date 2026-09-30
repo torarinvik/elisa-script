@@ -67,7 +67,7 @@ input; use the protocol's combined-stream bound.
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
 | Ruff stand-in replaces itself with a process terminated by SIGTERM | Reference is signaled (`Crash`, status 143, empty streams); candidate must match the terminal outcome, not merely complete with status 143 |
 
-Five additional isolated observations cover exported directory variables. Two
+Six additional isolated observations cover exported directory variables. Two
 start in `/` with a replacement environment that omits `PWD` and `OLDPWD`,
 then record the NUL-delimited values after entering the project via its
 physical path and a symlink alias. A third starts in `/` with `PWD` set to a
@@ -77,10 +77,13 @@ the project root's parent, with `PWD` omitted, and checks the absolute new and
 old directories. Each expected byte sequence is independently constructed from
 the invoked root and expected old directory. A fifth combines a relative
 `./scripts/...` invocation with a valid symlinked `PWD` pointing at the same
-project directory. The candidate validates inherited
-logical `PWD` against the physical cwd, preserves it for `OLDPWD`, and computes
-new logical `PWD` lexically before verifying its physical target. Odd `//`,
-path-race and complex `..` cases remain open.
+project directory. A sixth invokes the wrapper through a relative source path
+with nonempty `CDPATH` set to the caller directory; Bash resolves the relative
+`cd` operand there and emits the selected absolute directory before the probe's
+bytes. The current candidate does not model that shell behavior. The candidate
+validates inherited logical `PWD` against the physical cwd, preserves it for
+`OLDPWD`, and computes new logical `PWD` lexically before verifying its
+physical target. Odd `//`, path-race and complex `..` cases remain open.
 
 ## Known gaps: do not claim full exec parity
 
@@ -130,14 +133,14 @@ directory-environment probe are identity-checked and copied; three Ruff probe al
 exactly eleven lint cases are selected. No
 canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
 wave. These eleven are ordinary argv/status cases; the matrix additionally
-runs one signal-termination case, five `PWD`/`OLDPWD` cases, and seven
-exec-failure cases, for twenty-four observations total in the lint wave.
+runs one signal-termination case, six directory-environment cases, and seven
+exec-failure cases, for twenty-five observations total in the lint wave.
 Source/case count checks reject silently
 empty or reduced selections. The wider twenty-one ordinary-case selection
 remains available through an explicit
 `public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
-with the same signal, all five `PWD`/`OLDPWD` cases, and exec-failure checks,
-that wave has thirty-four observations. The default test does not advance to it automatically. Wave
+with the same signal, all six directory-environment cases, and exec-failure
+checks, that wave has thirty-five observations. The default test does not advance to it automatically. Wave
 selection does not grant execution authorization or prove that a preceding
 wave passed.
 Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`
