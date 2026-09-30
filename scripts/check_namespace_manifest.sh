@@ -72,6 +72,18 @@ for source_discovery_invariant in \
         exit 1
     fi
 done
+for direct_audit_invariant in \
+    'DIRECT_AUDIT_TOTAL_BYTES: usize = 8388608' \
+    'direct_bytes > Limits::DIRECT_AUDIT_TOTAL_BYTES' \
+    'audit_file_text(files, root_text, Paths::IR_MODEL_SUFFIX, direct_audit_bytes)' \
+    'audit_file_text(files, root_text, Paths::LOWER_AST_SUFFIX, direct_audit_bytes)' \
+    'audit_file_text(files, root_text, Paths::RUNNER_SUFFIX, direct_audit_bytes)' \
+    'audit_file_text(files, root_text, Paths::DRIVER_SUFFIX, direct_audit_bytes)'; do
+    if ! grep -F "$direct_audit_invariant" "$candidate_file" >/dev/null 2>&1; then
+        echo "check_namespace_manifest: direct audit read omits bounded path invariant: $direct_audit_invariant" >&2
+        exit 1
+    fi
+done
 if grep -F '.iterdir()' "$candidate_file" >/dev/null 2>&1; then
     echo "check_namespace_manifest: source discovery bypasses ripgrep ignore rules" >&2
     exit 1

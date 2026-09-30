@@ -10,7 +10,7 @@ matrix.
 
 | Fixture | Status | Stdout | Stderr |
 | --- | ---: | --- | --- |
-| `positive` | 0 | `module\tfiles\tpublic_sections\tprivate_sections\nEsArtifactCache\t{SOURCE_ROOT}/cache.elisa;\t1\t0\nEsBytecode\t{SOURCE_ROOT}/bytecode.elisa;\t1\t0\nEsDifferential\t{SOURCE_ROOT}/differential.elisa;\t1\t0\nEsDriver\t{SOURCE_ROOT}/driver/elisascript.elisa;\t1\t0\nEsIr\t{SOURCE_ROOT}/ir/ir_model.elisa;{SOURCE_ROOT}/ir/lower_ast.elisa;{SOURCE_ROOT}/ir/runner.elisa;\t2\t1\nEsIrArtifact\t{SOURCE_ROOT}/ir_artifact.elisa;\t1\t0\nEsRuntime\t{SOURCE_ROOT}/runtime.elisa;{SOURCE_ROOT}/runtime/adapter.elisa;\t1\t1\n` | empty |
+| `positive` | 0 | `module\tfiles\tpublic_sections\tprivate_sections\nEsArtifactCache\t{SOURCE_ROOT}/cache.elisa;\t1\t0\nEsBytecode\t{SOURCE_ROOT}/bytecode.elisa;\t1\t0\nEsDifferential\t{SOURCE_ROOT}/differential.elisa;\t1\t0\nEsDriver\t{SOURCE_ROOT}/driver/elisascript.elisa;\t1\t0\nEsIr\t{SOURCE_ROOT}/ir/ir_model.elisa;{SOURCE_ROOT}/ir/lower_ast.elisa;\t2\t0\nEsIrArtifact\t{SOURCE_ROOT}/ir_artifact.elisa;\t1\t0\nEsRuntime\t{SOURCE_ROOT}/runtime.elisa;{SOURCE_ROOT}/runtime/adapter.elisa;\t1\t1\n` | empty |
 | `positive` with `positive/missing_parser_tokens.elisa` as parser source | 1 | empty | `check_namespace_manifest: parse diagnostic renderer omits ParseErrorKind.UnexpectedToken\n` |
 | `duplicate` | 1 | empty | `check_namespace_manifest: duplicate module declarations:\nClash\n` |
 | `unknown_using` | 1 | empty | `check_namespace_manifest: using imports undeclared module: MissingNamespace\n` |
@@ -48,9 +48,12 @@ runtime evidence until explicitly authorized and run. A case with neither a
 golden nor a success contract is rejected instead of silently admitted.
 
 The positive source root contains `ignored.elisa`, which redeclares
-`EsRuntime`, and a local `.gitignore` that excludes it. The exact positive
-manifest therefore also checks that the candidate follows the reference's
-ripgrep ignore rules rather than auditing ignored source files.
+`EsRuntime`, and a local `.gitignore` that excludes it. It also excludes
+`ir/runner.elisa` from ripgrep enumeration even though the shell reference
+opens that file directly for its diagnostic-reset audit. The expected manifest
+omits the runner file but the audit must still succeed; this checks both
+ripgrep ignore parity and the distinction between discovery and direct audit
+inputs.
 
 The added negative fixtures also cover a POSIX ABI declaration outside
 `EsRuntime`, both diagnostic renderer exhaustiveness checks, diagnostic reset

@@ -18,6 +18,7 @@ module EsNamespaceManifestAudit:
             ENUMERATION_TIMEOUT_MICROS: i64 = 30000000
             SOURCE_FILE_BYTES: usize = 2097152
             SOURCE_TOTAL_BYTES: usize = 16777216
+            DIRECT_AUDIT_TOTAL_BYTES: usize = 8388608
 
 
         const module Paths:
@@ -113,20 +114,28 @@ module EsNamespaceManifestAudit:
             return suffix if root == "/" else root + suffix
 
 
-        def file_text(files: darray[SourceFile], root: sview, suffix: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+        def audit_file_text(files: darray[SourceFile], root: sview, suffix: sview, direct_bytes: mutable usize&) -> BoundedSourceRead can[Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Blocking.IO, Unsafe.PointerCast]:
             target: sview = rooted_source_path(root, suffix)
             for file in files:
                 if file.path == target:
-                    return file.text
-            return ""
+                    return BoundedSourceRead{text: file.text}
 
+            target_path: Path = path(target)
+            if not is_file(target_path):
+                return BoundedSourceRead{}
+            source_size: usize = try file_size(target_path) else err:
+                return BoundedSourceRead{failure: true}
+            if source_size > Limits::SOURCE_FILE_BYTES:
+                return BoundedSourceRead{exceeded_limit: true}
+            current_size: usize = try file_size(target_path) else err:
+                return BoundedSourceRead{failure: true}
+            if current_size != source_size or current_size > Limits::SOURCE_FILE_BYTES:
+                return BoundedSourceRead{changed: true}
+            if direct_bytes > Limits::DIRECT_AUDIT_TOTAL_BYTES or source_size > Limits::DIRECT_AUDIT_TOTAL_BYTES - direct_bytes:
+                return BoundedSourceRead{exceeded_limit: true}
 
-        def has_file(files: darray[SourceFile], root: sview, suffix: sview) -> bool can[Memory.Allocate, Abort.Panic]:
-            target: sview = rooted_source_path(root, suffix)
-            for file in files:
-                if file.path == target:
-                    return true
-            return false
+            direct_bytes <- direct_bytes + source_size
+            return read_namespace_source(target_path, source_size)
 
 
         def extract_region(source: sview, start_prefix: sview, end_prefix: sview) -> sview can[Memory.Allocate, Abort.Panic]:
@@ -514,10 +523,22 @@ module EsNamespaceManifestAudit:
             if has_include_failure(files):
                 return 1i64
 
-            ir_model: sview = file_text(files, root_text, Paths::IR_MODEL_SUFFIX)
-            lower_ast: sview = file_text(files, root_text, Paths::LOWER_AST_SUFFIX)
-            runner: sview = file_text(files, root_text, Paths::RUNNER_SUFFIX)
-            driver: sview = file_text(files, root_text, Paths::DRIVER_SUFFIX)
+            direct_audit_bytes: mutable usize = 0
+            ir_model_read: BoundedSourceRead = audit_file_text(files, root_text, Paths::IR_MODEL_SUFFIX, direct_audit_bytes)
+            lower_ast_read: BoundedSourceRead = audit_file_text(files, root_text, Paths::LOWER_AST_SUFFIX, direct_audit_bytes)
+            runner_read: BoundedSourceRead = audit_file_text(files, root_text, Paths::RUNNER_SUFFIX, direct_audit_bytes)
+            driver_read: BoundedSourceRead = audit_file_text(files, root_text, Paths::DRIVER_SUFFIX, direct_audit_bytes)
+            if ir_model_read.failure or lower_ast_read.failure or runner_read.failure or driver_read.failure:
+                write_diagnostic("check_namespace_manifest: unable to read source file used by an audit")
+                return 2i64
+            if ir_model_read.changed or lower_ast_read.changed or runner_read.changed or driver_read.changed or ir_model_read.exceeded_limit or lower_ast_read.exceeded_limit or runner_read.exceeded_limit or driver_read.exceeded_limit:
+                write_diagnostic("check_namespace_manifest: source file used by an audit changed or exceeds audit limit")
+                return 2i64
+
+            ir_model: sview = ir_model_read.text
+            lower_ast: sview = lower_ast_read.text
+            runner: sview = runner_read.text
+            driver: sview = driver_read.text
 
             issue_kinds: darray[sview] = extract_enum_members(ir_model, "        const enum IssueKind of u8:", "        struct Issue:")
             issue_renderer: sview = extract_region(driver, "        def bytecode_issue_detail", "        def runtime_error_detail")
@@ -529,8 +550,9 @@ module EsNamespaceManifestAudit:
             if render_missing(lower_issue_kinds, lower_issue_renderer, "LowerIssueKind.", "source diagnostic renderer omits "):
                 return 1i64
 
-            if not has_file(files, root_text, Paths::RUNNER_SUFFIX):
-                write_diagnostic(f"check_namespace_manifest: runner source is missing: {root_text}/ir/runner.elisa")
+            runner_path: sview = rooted_source_path(root_text, Paths::RUNNER_SUFFIX)
+            if not is_file(path(runner_path)):
+                write_diagnostic(f"check_namespace_manifest: runner source is missing: {runner_path}")
                 return 1i64
 
             runner_lines: darray[sview] = split_lines(runner)
