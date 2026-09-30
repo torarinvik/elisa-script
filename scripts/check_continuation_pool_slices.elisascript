@@ -1,0 +1,200 @@
+# Bounded Elisascript port of check_continuation_pool_slices.sh.
+# Source checks stream through the shared scanner without launching rg.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsContinuationPoolSlicesAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            INTERPRETER_TESTS: sview = "test/ir/elisascript_interpreter_test.elisa"
+            IR_TESTS: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            POLICY: sview = "docs/continuation-policy.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            LIMITS_MODULE: sview = "const module ContinuationLimits:"
+            FRAMES: sview = "ContinuationLimits::FRAMES"
+            VALUES: sview = "ContinuationLimits::VALUES"
+            RESUMPTIONS: sview = "ContinuationLimits::RESUMPTIONS"
+            VALUE_SNAPSHOT_START: sview = "value_snapshot_start: usize"
+            VALUE_SNAPSHOT_COUNT: sview = "value_snapshot_count: usize"
+            PAIRED_COUNTS: sview = "frame.snapshot_count != frame.value_snapshot_count"
+            ID_START_BOUNDS: sview = "frame.snapshot_start > machine.continuation_ids.count"
+            ID_COUNT_BOUNDS: sview = "frame.snapshot_count > machine.continuation_ids.count - frame.snapshot_start"
+            VALUE_START_BOUNDS: sview = "frame.value_snapshot_start > machine.continuation_values.count"
+            VALUE_COUNT_BOUNDS: sview = "frame.value_snapshot_count > machine.continuation_values.count - frame.value_snapshot_start"
+            HANDLER_START_BOUNDS: sview = "frame.handler_snapshot_start > machine.continuation_handlers.count"
+            HANDLER_COUNT_BOUNDS: sview = "frame.handler_snapshot_count > machine.continuation_handlers.count - frame.handler_snapshot_start"
+            VALUE_REPLAY_INDEX: sview = "machine.continuation_values[frame.value_snapshot_start + offset]"
+            REPLAY_VALUE_INDEX: sview = "machine.continuation_values[replay_frame.value_snapshot_start + offset]"
+            VALUE_TRUNCATION: sview = "machine.continuation_values.truncate(value_snapshot_start)"
+            VALUE_CAPACITY: sview = "continuation_pool_append_fits(machine.continuation_values.count, values.count"
+            REPLAY_START_BOUNDS: sview = "if continuation.replay_start > machine.continuation_frames.count"
+            REPLAY_COUNT_BOUNDS: sview = "if continuation.replay_count > machine.continuation_frames.count - continuation.replay_start"
+            FRAME_STORAGE_VALID: sview = "continuation_frame_storage_valid(machine, frame)"
+            OLD_VALUE_INDEX: Regex = regex"continuation_values\[frame\.snapshot_start"
+            REPEATED_RESUMES: sview = "interpreter_executes_repeated_resumes_for_multi_shot_handler"
+            REPLAY_FRAMES: sview = "interpreter_replays_multi_shot_helper_and_caller_frames"
+            IMMUTABLE_SNAPSHOT: sview = "interpreter_rejects_multi_shot_mutable_snapshot_views"
+            MALFORMED_METADATA: sview = "verifier_rejects_malformed_continuation_capture_metadata"
+            SNAPSHOT_DESCRIPTION: sview = "Snapshot ids, values, handler names"
+            INDEPENDENT_SLICES: sview = "independent starts and counts for its SSA-id"
+            LEDGER_ENTRY: sview = "ES-EFF-001"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "continuation pool audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "continuation pool audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "continuation pool audit: missing "
+            READ_FAILED: sview = "continuation pool audit: unable to read source: "
+            INTERPRETER_OMITS: sview = "continuation pool audit: interpreter omits "
+            MISSING_FIXTURE: sview = "continuation pool audit: missing runtime fixture "
+            OLD_VALUE_INDEX: sview = "continuation pool audit: active snapshot still uses the id-pool start for values"
+            SUCCESS: sview = "continuation pool audit: id/value starts, paired counts, replay indexing, and reclamation are present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: sview
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def interpreter_checks(interpreter: Path) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: interpreter, pattern: Patterns::LIMITS_MODULE},
+                SearchCheck{input: interpreter, pattern: Patterns::FRAMES},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUES},
+                SearchCheck{input: interpreter, pattern: Patterns::RESUMPTIONS},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_SNAPSHOT_START},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_SNAPSHOT_COUNT},
+                SearchCheck{input: interpreter, pattern: Patterns::PAIRED_COUNTS},
+                SearchCheck{input: interpreter, pattern: Patterns::ID_START_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::ID_COUNT_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_START_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_COUNT_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::HANDLER_START_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::HANDLER_COUNT_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_REPLAY_INDEX},
+                SearchCheck{input: interpreter, pattern: Patterns::REPLAY_VALUE_INDEX},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_TRUNCATION},
+                SearchCheck{input: interpreter, pattern: Patterns::VALUE_CAPACITY},
+                SearchCheck{input: interpreter, pattern: Patterns::REPLAY_START_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::REPLAY_COUNT_BOUNDS},
+                SearchCheck{input: interpreter, pattern: Patterns::FRAME_STORAGE_VALID}
+            ]
+
+
+        def interpreter_required(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for check in checks:
+                catch EsSourceFunctionScope::contains_file_line(check.input, check.pattern):
+                    ok found:
+                        if not found:
+                            diagnostic(Messages::INTERPRETER_OMITS + check.pattern)
+                            return ExitStatus::FAILURE
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{check.input}")
+                        return ExitStatus::IO_FAILURE
+            return 0i64
+
+
+        def obsolete_value_index_absent(interpreter: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_regex_line(interpreter, Patterns::OLD_VALUE_INDEX):
+                ok found:
+                    if found:
+                        diagnostic(Messages::OLD_VALUE_INDEX)
+                        return ExitStatus::FAILURE
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{interpreter}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def runtime_fixtures(interpreter_tests: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            checks: darray[SearchCheck] = [
+                SearchCheck{input: interpreter_tests, pattern: Patterns::REPEATED_RESUMES},
+                SearchCheck{input: interpreter_tests, pattern: Patterns::REPLAY_FRAMES},
+                SearchCheck{input: interpreter_tests, pattern: Patterns::IMMUTABLE_SNAPSHOT}
+            ]
+            for check in checks:
+                catch EsSourceFunctionScope::contains_file_line(check.input, check.pattern):
+                    ok found:
+                        if not found:
+                            diagnostic(Messages::MISSING_FIXTURE + check.pattern)
+                            return ExitStatus::FAILURE
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{check.input}")
+                        return ExitStatus::IO_FAILURE
+            return 0i64
+
+
+        def quiet_required(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for check in checks:
+                catch EsSourceFunctionScope::contains_file_line(check.input, check.pattern):
+                    ok found:
+                        return ExitStatus::FAILURE if not found
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{check.input}")
+                        return ExitStatus::IO_FAILURE
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            interpreter: Path = root.joinpath(Inputs::INTERPRETER)
+            interpreter_tests: Path = root.joinpath(Inputs::INTERPRETER_TESTS)
+            ir_tests: Path = root.joinpath(Inputs::IR_TESTS)
+            docs: Path = root.joinpath(Inputs::DOCS)
+            policy: Path = root.joinpath(Inputs::POLICY)
+            ledger: Path = root.joinpath(Inputs::LEDGER)
+            inputs: darray[Path] = [interpreter, interpreter_tests, ir_tests, docs, policy, ledger]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = interpreter_required(interpreter_checks(interpreter))
+            return status if status != 0i64
+            status = obsolete_value_index_absent(interpreter)
+            return status if status != 0i64
+            status = runtime_fixtures(interpreter_tests)
+            return status if status != 0i64
+
+            tail_checks: darray[SearchCheck] = [
+                SearchCheck{input: ir_tests, pattern: Patterns::MALFORMED_METADATA},
+                SearchCheck{input: docs, pattern: Patterns::SNAPSHOT_DESCRIPTION},
+                SearchCheck{input: policy, pattern: Patterns::INDEPENDENT_SLICES},
+                SearchCheck{input: ledger, pattern: Patterns::LEDGER_ENTRY}
+            ]
+            status = quiet_required(tail_checks)
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsContinuationPoolSlicesAudit::run_default()
