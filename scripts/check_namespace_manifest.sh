@@ -213,7 +213,7 @@ diagnostic_fields="$(awk '
         print field
     }
 ' "$runner_source")"
-reset_start="$(rg -n '^        def elisascript_program_diagnostic_reset' "$runner_source" | cut -d: -f1)"
+reset_start="$(rg -n '^        def elisascript_program_diagnostic_reset\(' "$runner_source" | cut -d: -f1)"
 reset_end="$(rg -n '^        # Parse argv after the launcher name' "$runner_source" | cut -d: -f1)"
 reset_body="$(sed -n "${reset_start},${reset_end}p" "$runner_source")"
 for diagnostic_field in $diagnostic_fields; do
