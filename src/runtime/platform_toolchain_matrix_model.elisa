@@ -1,0 +1,126 @@
+# Typed validator for WasmBrowser's platform/toolchain claims matrix.
+module EsPlatformToolchainMatrix:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+
+    public:
+        error PlatformToolchainMatrixError:
+            InvalidJson
+            InvalidRoot
+            SchemaMismatch
+            InvalidTargets
+            InvalidTarget
+            DuplicateTarget
+            MissingRequiredField
+            InvalidFieldType
+
+
+        def validate_platform_toolchain_matrix_source(source: sview) -> usize error[PlatformToolchainMatrixError] can[Memory.Allocate, Abort.Panic]:
+            raise PlatformToolchainMatrixError.InvalidJson if len(source) > Limits::INPUT_BYTES
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::TARGETS, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
+            json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, decode_limits, json_policy) else err:
+                raise PlatformToolchainMatrixError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise PlatformToolchainMatrixError.InvalidJson
+            return try validate_platform_toolchain_matrix_document(document)
+
+
+    private:
+        def validate_platform_toolchain_matrix_document(document: JsonDocument&) -> usize error[PlatformToolchainMatrixError] can[Memory.Allocate, Abort.Panic]:
+            raise PlatformToolchainMatrixError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise PlatformToolchainMatrixError.InvalidRoot if root_index >= document.nodes.count
+            root: JsonNode = document.nodes[root_index]
+            raise PlatformToolchainMatrixError.InvalidRoot if root.kind != JsonNodeKind.Object
+
+            schema_index: usize = matrix_member_index(document, root_index, Keys::SCHEMA)
+            raise PlatformToolchainMatrixError.SchemaMismatch if schema_index == JSON_INDEX_NONE or schema_index >= document.nodes.count
+            schema_node: JsonNode = document.nodes[schema_index]
+            raise PlatformToolchainMatrixError.SchemaMismatch if schema_node.kind != JsonNodeKind.Text or matrix_text(document, schema_index) != Schema::NAME
+
+            targets_index: usize = matrix_member_index(document, root_index, Keys::TARGETS)
+            raise PlatformToolchainMatrixError.InvalidTargets if targets_index == JSON_INDEX_NONE or targets_index >= document.nodes.count
+            targets_node: JsonNode = document.nodes[targets_index]
+            raise PlatformToolchainMatrixError.InvalidTargets if targets_node.kind != JsonNodeKind.Array or targets_node.child_count == 0 or targets_node.child_count > Limits::TARGETS
+
+            required: darray[sview] = required_fields()
+            string_keys: darray[sview] = string_fields()
+            target_names: mutable darray[sview] = []
+            for ordinal in 0..<targets_node.child_count |document, targets_node, required, string_keys, target_names|:
+                target_edge: JsonArrayChild = document.children[targets_node.child_start + ordinal]
+                target_index: usize = target_edge.value_index
+                raise PlatformToolchainMatrixError.InvalidTarget if target_index >= document.nodes.count or document.nodes[target_index].kind != JsonNodeKind.Object
+
+                for key in required |document, target_index|:
+                    field_index: usize = matrix_member_index(document, target_index, key)
+                    raise PlatformToolchainMatrixError.MissingRequiredField if field_index == JSON_INDEX_NONE or field_index >= document.nodes.count
+
+                name_index: usize = matrix_member_index(document, target_index, Keys::TARGET)
+                raise PlatformToolchainMatrixError.InvalidTarget if name_index == JSON_INDEX_NONE or name_index >= document.nodes.count or document.nodes[name_index].kind != JsonNodeKind.Text
+                target_name: sview = matrix_text(document, name_index)
+                for previous_name in target_names:
+                    raise PlatformToolchainMatrixError.DuplicateTarget if previous_name == target_name
+                target_names.push(target_name)
+
+                for key in string_keys |document, target_index|:
+                    field_index: usize = matrix_member_index(document, target_index, key)
+                    raise PlatformToolchainMatrixError.InvalidFieldType if field_index == JSON_INDEX_NONE or field_index >= document.nodes.count or document.nodes[field_index].kind != JsonNodeKind.Text
+
+            return targets_node.child_count
+
+
+        const module Limits:
+            INPUT_BYTES: usize = 1048576
+            TOKENS: usize = 65536
+            TARGETS: usize = 8192
+            FIELDS: usize = 65536
+            FIELD_BYTES: usize = 65536
+
+
+        const module Schema:
+            NAME: sview = "wasmbrowser.platform-toolchain-matrix/v1"
+
+
+        const module Keys:
+            SCHEMA: sview = "schema"
+            TARGETS: sview = "targets"
+            TARGET: sview = "target"
+            BUILD: sview = "build"
+            RUN: sview = "run"
+            DEVICE: sview = "device"
+            PHYSICAL_DEVICE_VALIDATION: sview = "physical_device_validation"
+            LEGAL_DISTRIBUTION: sview = "legal_distribution"
+
+
+        def required_fields() -> darray[sview]:
+            return [Keys::TARGET, Keys::BUILD, Keys::RUN, Keys::DEVICE, Keys::PHYSICAL_DEVICE_VALIDATION, Keys::LEGAL_DISTRIBUTION]
+
+
+        def string_fields() -> darray[sview]:
+            return [Keys::BUILD, Keys::RUN, Keys::DEVICE, Keys::PHYSICAL_DEVICE_VALIDATION, Keys::LEGAL_DISTRIBUTION]
+
+
+        def matrix_member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != len(key)
+            for offset in 0..<member.key_bytes |document, member, key|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        # Keep the last duplicate member, matching Python json.loads object lookup.
+        def matrix_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            owner: JsonNode = document.nodes[object_index]
+            found: mutable usize = JSON_INDEX_NONE
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner, key, found|:
+                member: JsonMember = document.members[member_index]
+                found <- member_index if matrix_member_key_equals(document, member, key)
+            return found
+
+
+        def matrix_text(document: JsonDocument&, node_index: usize) -> sview:
+            node: JsonNode = document.nodes[node_index]
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
