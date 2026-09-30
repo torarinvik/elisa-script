@@ -1,0 +1,234 @@
+# Typed validator for WasmBrowser's explicit backend-reuse decision record.
+module EsBackendReuseEvaluation:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+
+    public:
+        error BackendReuseEvaluationError:
+            InvalidJson
+            InvalidRoot
+            SchemaMismatch
+            InvalidCandidates
+            InvalidCandidate
+            CandidateNameMismatch
+            InvalidSelection
+
+
+        def validate_backend_reuse_evaluation_source(source: sview) -> bool error[BackendReuseEvaluationError] can[Memory.Allocate, Abort.Panic]:
+            raise BackendReuseEvaluationError.InvalidJson if len(source) > Limits::INPUT_BYTES
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::CANDIDATES, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
+            json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, decode_limits, json_policy) else err:
+                raise BackendReuseEvaluationError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise BackendReuseEvaluationError.InvalidJson
+            return try validate_backend_reuse_evaluation_document(document)
+
+
+    private:
+        def validate_backend_reuse_evaluation_document(document: JsonDocument&) -> bool error[BackendReuseEvaluationError] can[Memory.Allocate, Abort.Panic]:
+            raise BackendReuseEvaluationError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise BackendReuseEvaluationError.InvalidRoot if root_index >= document.nodes.count
+            raise BackendReuseEvaluationError.InvalidRoot if document.nodes[root_index].kind != JsonNodeKind.Object
+
+            schema_index: usize = evaluation_member_index(document, root_index, Keys::SCHEMA)
+            raise BackendReuseEvaluationError.SchemaMismatch if not evaluation_text_equals(document, schema_index, Schema::NAME)
+
+            candidates_index: usize = evaluation_member_index(document, root_index, Keys::CANDIDATES)
+            raise BackendReuseEvaluationError.InvalidCandidates if candidates_index == JSON_INDEX_NONE or candidates_index >= document.nodes.count
+            raise BackendReuseEvaluationError.InvalidCandidates if document.nodes[candidates_index].kind != JsonNodeKind.Array
+            candidates: JsonNode = document.nodes[candidates_index]
+            raise BackendReuseEvaluationError.InvalidCandidates if candidates.child_count > Limits::CANDIDATES
+
+            expected_names: darray[sview] = expected_candidate_names()
+            candidate_names: mutable darray[sview] = []
+            for ordinal in 0..<candidates.child_count |document, candidates, expected_names, candidate_names|:
+                edge: JsonArrayChild = document.children[candidates.child_start + ordinal]
+                candidate_index: usize = edge.value_index
+                raise BackendReuseEvaluationError.InvalidCandidate if candidate_index >= document.nodes.count
+                raise BackendReuseEvaluationError.InvalidCandidate if document.nodes[candidate_index].kind != JsonNodeKind.Object
+
+                name_index: usize = evaluation_member_index(document, candidate_index, Keys::NAME)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_is_text(document, name_index)
+                candidate_name: sview = evaluation_text(document, name_index)
+                raise BackendReuseEvaluationError.CandidateNameMismatch if not evaluation_candidate_name_allowed(candidate_name, expected_names)
+                candidate_names.push(candidate_name)
+
+                revision_index: usize = evaluation_member_index(document, candidate_index, Keys::REVISION)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_is_text(document, revision_index)
+                raise BackendReuseEvaluationError.InvalidCandidate if evaluation_text_scalar_count(evaluation_text(document, revision_index)) != 40
+
+                source_index: usize = evaluation_member_index(document, candidate_index, Keys::SOURCE)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_is_text(document, source_index)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_text(document, source_index).starts_with(Prefixes::HTTPS)
+
+                license_index: usize = evaluation_member_index(document, candidate_index, Keys::LICENSE)
+                missing_index: usize = evaluation_member_index(document, candidate_index, Keys::MISSING_OR_MISMATCHED)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_truthy(document, license_index) or not evaluation_truthy(document, missing_index)
+
+                experiment_index: usize = evaluation_member_index(document, candidate_index, Keys::BUILD_EXPERIMENT)
+                raise BackendReuseEvaluationError.InvalidCandidate if experiment_index == JSON_INDEX_NONE or experiment_index >= document.nodes.count
+                raise BackendReuseEvaluationError.InvalidCandidate if document.nodes[experiment_index].kind != JsonNodeKind.Object
+                command_index: usize = evaluation_member_index(document, experiment_index, Keys::COMMAND)
+                status_index: usize = evaluation_member_index(document, experiment_index, Keys::STATUS)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_truthy(document, command_index) or not evaluation_truthy(document, status_index)
+
+                decision_index: usize = evaluation_member_index(document, candidate_index, Keys::DECISION)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_is_text(document, decision_index)
+                decision: sview = evaluation_text(document, decision_index)
+                raise BackendReuseEvaluationError.InvalidCandidate if not evaluation_decision_allowed(decision)
+
+                fixture_index: usize = evaluation_member_index(document, candidate_index, Keys::FIXTURE)
+                raise BackendReuseEvaluationError.InvalidCandidate if fixture_index == JSON_INDEX_NONE or fixture_index >= document.nodes.count
+                raise BackendReuseEvaluationError.InvalidCandidate if evaluation_text_equals(document, fixture_index, Values::FIXTURE_PASSED)
+
+            for expected_name in expected_names:
+                raise BackendReuseEvaluationError.CandidateNameMismatch if not evaluation_name_present(expected_name, candidate_names)
+
+            selection_index: usize = evaluation_member_index(document, root_index, Keys::SELECTION)
+            raise BackendReuseEvaluationError.InvalidSelection if selection_index == JSON_INDEX_NONE or selection_index >= document.nodes.count
+            raise BackendReuseEvaluationError.InvalidSelection if document.nodes[selection_index].kind != JsonNodeKind.Object
+            selection_status: usize = evaluation_member_index(document, selection_index, Keys::STATUS)
+            raise BackendReuseEvaluationError.InvalidSelection if not evaluation_text_equals(document, selection_status, Values::NO_SELECTION)
+            selected_candidate: usize = evaluation_member_index(document, selection_index, Keys::SELECTED_CANDIDATE)
+            raise BackendReuseEvaluationError.InvalidSelection if selected_candidate == JSON_INDEX_NONE or selected_candidate >= document.nodes.count
+            raise BackendReuseEvaluationError.InvalidSelection if document.nodes[selected_candidate].kind != JsonNodeKind.Null
+            required_evidence: usize = evaluation_member_index(document, selection_index, Keys::REQUIRED_NEXT_EVIDENCE)
+            raise BackendReuseEvaluationError.InvalidSelection if not evaluation_truthy(document, required_evidence)
+            return true
+
+
+        const module Limits:
+            INPUT_BYTES: usize = 1048576
+            TOKENS: usize = 65536
+            CANDIDATES: usize = 4096
+            FIELDS: usize = 65536
+            FIELD_BYTES: usize = 65536
+
+
+        const module Schema:
+            NAME: sview = "wasmbrowser.backend_reuse_evaluation.v1"
+
+
+        const module Prefixes:
+            HTTPS: sview = "https://"
+
+
+        const module Keys:
+            SCHEMA: sview = "schema"
+            CANDIDATES: sview = "candidates"
+            NAME: sview = "name"
+            REVISION: sview = "revision"
+            SOURCE: sview = "source"
+            LICENSE: sview = "license"
+            MISSING_OR_MISMATCHED: sview = "missing_or_mismatched"
+            BUILD_EXPERIMENT: sview = "build_experiment"
+            COMMAND: sview = "command"
+            STATUS: sview = "status"
+            DECISION: sview = "decision"
+            FIXTURE: sview = "fixture"
+            SELECTION: sview = "selection"
+            SELECTED_CANDIDATE: sview = "selected_candidate"
+            REQUIRED_NEXT_EVIDENCE: sview = "required_next_evidence"
+
+
+        const module Values:
+            NO_SELECTION: sview = "none"
+            FIXTURE_PASSED: sview = "passed"
+            DEFER: sview = "defer"
+            REJECT_AS_DEPENDENCY: sview = "reject-as-dependency; retain-as-reference"
+
+
+        def expected_candidate_names() -> darray[sview]:
+            return ["GLFW", "Webrogue SDK", "wasi-gfx-runtime"]
+
+
+        def evaluation_member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
+            return false if member.key_bytes != len(key)
+            for offset in 0..<member.key_bytes |document, member, key|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(key, offset)
+            return true
+
+
+        # Python json.loads uses the last duplicate object member.
+        def evaluation_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return JSON_INDEX_NONE if object_index >= document.nodes.count
+            return JSON_INDEX_NONE if document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            found: mutable usize = JSON_INDEX_NONE
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner, key, found|:
+                member: JsonMember = document.members[member_index]
+                found <- member_index if evaluation_member_key_equals(document, member, key)
+            return found
+
+
+        def evaluation_is_text(document: JsonDocument&, node_index: usize) -> bool:
+            return false if node_index == JSON_INDEX_NONE
+            return false if node_index >= document.nodes.count
+            return document.nodes[node_index].kind == JsonNodeKind.Text
+
+
+        def evaluation_text(document: JsonDocument&, node_index: usize) -> sview:
+            node: JsonNode = document.nodes[node_index]
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def evaluation_text_equals(document: JsonDocument&, node_index: usize, expected: sview) -> bool:
+            return false if not evaluation_is_text(document, node_index)
+            return evaluation_text(document, node_index) == expected
+
+
+        def evaluation_text_scalar_count(value: sview) -> usize:
+            offset: mutable usize = 0
+            count: mutable usize = 0
+            while offset < len(value):
+                first: u8 = sview_at(value, offset)
+                width: usize = 1 if first < 128
+                width <- 2 if first >= 194 and first <= 223
+                width <- 3 if first >= 224 and first <= 239
+                width <- 4 if first >= 240
+                offset <- offset + width
+                count <- count + 1
+            return count
+
+
+        def evaluation_truthy(document: JsonDocument&, node_index: usize) -> bool:
+            return false if node_index == JSON_INDEX_NONE or node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                return false
+            elif node.kind == JsonNodeKind.Bool:
+                return node.bool_value
+            elif node.kind == JsonNodeKind.Text:
+                return node.scalar_bytes != 0
+            elif node.kind == JsonNodeKind.Array:
+                return node.child_count != 0
+            elif node.kind == JsonNodeKind.Object:
+                return node.member_count != 0
+            elif node.kind == JsonNodeKind.Number:
+                lexeme: sview = evaluation_text(document, node_index)
+                for byte in lexeme:
+                    break if byte == 69u8 or byte == 101u8
+                    return true if byte >= 49u8 and byte <= 57u8
+                return false
+            return false
+
+
+        def evaluation_decision_allowed(value: sview) -> bool:
+            return value == Values::DEFER or value == Values::REJECT_AS_DEPENDENCY
+
+
+        def evaluation_candidate_name_allowed(value: sview, expected_names: darray[sview]) -> bool:
+            for expected in expected_names:
+                return true if value == expected
+            return false
+
+
+        def evaluation_name_present(value: sview, names: darray[sview]) -> bool:
+            for name in names:
+                return true if name == value
+            return false
