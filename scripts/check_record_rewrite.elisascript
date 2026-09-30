@@ -1,0 +1,196 @@
+# Bounded Elisascript port of check_record_rewrite.sh.
+# Regex source checks stream through the shared scanner without rg.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsRecordRewriteAudit:
+    private:
+        const module Inputs:
+            MODEL: sview = "src/runtime/record_rewrite_model.elisa"
+            IR: sview = "src/ir/ir.elisa"
+            FIXTURE: sview = "test/ir/elisascript_ir_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            MODULE: Regex = regex"^module EsRecordRewrite:"
+            MODEL_IMPORT: Regex = regex"include \"\.\./runtime/record_rewrite_model\.elisa\""
+            SYMLINK_MODE: Regex = regex"const enum RecordRewriteSymlinkMode of u8"
+            STATE: Regex = regex"const enum RecordRewriteState of u8"
+            EVENT: Regex = regex"const enum RecordRewriteEvent of u8"
+            PLAN: Regex = regex"struct RecordRewritePlan:"
+            SESSION: Regex = regex"struct RecordRewriteSession:"
+            ERROR: Regex = regex"error RecordRewriteError:"
+            VALIDATE: Regex = regex"def validate_record_rewrite_session\("
+            ADVANCE: Regex = regex"def advance_record_rewrite\("
+            MAX_PATH_BYTES: Regex = regex"RECORD_REWRITE_MAX_PATH_BYTES"
+            MAX_OUTPUT_BYTES: Regex = regex"RECORD_REWRITE_MAX_OUTPUT_BYTES"
+            MAX_APPENDS: Regex = regex"RECORD_REWRITE_MAX_APPENDS"
+            PATH_VALID: Regex = regex"record_rewrite_path_valid"
+            SYMLINK_MODE_VALID: Regex = regex"record_rewrite_symlink_mode_valid"
+            PATH_COLLISION: Regex = regex"RecordRewriteError.PathCollision"
+            OUTPUT_LIMIT: Regex = regex"RecordRewriteError.OutputLimitExceeded"
+            DIRECTORY_SYNC_STAGED: Regex = regex"session.directory_synced and not session.staged_synced"
+            COMMIT_UNSYNCED: Regex = regex"session.commit_acknowledged and not session.staged_synced"
+            COMMIT_DIRECTORY_SYNC: Regex = regex"session.commit_acknowledged and session.plan.require_directory_sync"
+            STAGING: Regex = regex"session.state == RecordRewriteState.Staging"
+            COMMITTING_ROLLBACK_ACK: Regex = regex"session.state == RecordRewriteState.Committing and session.rollback_acknowledged"
+            COMMITTED_UNSYNCED: Regex = regex"session.state == RecordRewriteState.Committed and not session.staged_synced"
+            ROLLING_BACK_ACK: Regex = regex"session.state == RecordRewriteState.RollingBack and session.rollback_acknowledged"
+            FAILED_ACK_STATE: Regex = regex"session.state == RecordRewriteState.Failed and \(session.commit_acknowledged or session.rollback_acknowledged\)"
+            CANCELLED_ACK_STATE: Regex = regex"session.state == RecordRewriteState.Cancelled and \(session.commit_acknowledged or session.rollback_acknowledged\)"
+            COMMITTED_DIRECTORY_SYNC: Regex = regex"session.state == RecordRewriteState.Committed and session.plan.require_directory_sync"
+            COMMITTING_DIRECTORY_SYNC: Regex = regex"session.state == RecordRewriteState.Committing and session.plan.require_directory_sync"
+            SYNC: Regex = regex"RecordRewriteEvent.Sync"
+            DIRECTORY_SYNC: Regex = regex"RecordRewriteEvent.DirectorySync"
+            COMMIT_ACK: Regex = regex"RecordRewriteEvent.CommitAck"
+            BEGIN_ROLLBACK: Regex = regex"RecordRewriteEvent.BeginRollback"
+            ROLLBACK_ACK: Regex = regex"RecordRewriteEvent.RollbackAck"
+            DIRECTORY_SYNC_EVENT: Regex = regex"return event in .*RecordRewriteEvent.DirectorySync"
+            OUTPUT_BYTES_LIMIT: Regex = regex"session.output_bytes > session.plan.max_output_bytes"
+            APPENDED_BYTES_LIMIT: Regex = regex"appended_bytes > session.plan.max_output_bytes - session.output_bytes"
+            FIXTURE_IMPORT: Regex = regex"using EsRecordRewrite"
+            FIXTURE_CONTRACT: Regex = regex"typed_record_rewrite_contract_is_transactional_and_recoverable"
+            FIXTURE_SYNC: Regex = regex"RecordRewriteEvent.Sync"
+            FIXTURE_DIRECTORY_SYNC: Regex = regex"RecordRewriteEvent.DirectorySync"
+            FIXTURE_COMMIT_ACK: Regex = regex"RecordRewriteEvent.CommitAck"
+            FIXTURE_ROLLBACK_ACK: Regex = regex"RecordRewriteEvent.RollbackAck"
+            FIXTURE_PATH_COLLISION: Regex = regex"RecordRewriteError.PathCollision"
+            FORGED_ACK: Regex = regex"forged_impossible_ack"
+            FORGED_COMMITTED_SYNC: Regex = regex"forged_committed_sync"
+            FORGED_ROLLBACK_DIRECTORY: Regex = regex"forged_rollback_directory"
+            FORGED_FAILED_DIRECTORY: Regex = regex"forged_failed_directory"
+            FORGED_CANCELLED_DIRECTORY: Regex = regex"forged_cancelled_directory"
+            FORGED_ROLLED_BACK_COMMIT: Regex = regex"forged_rolled_back_commit"
+            FORGED_COMMIT_DIRECTORY: Regex = regex"forged_commit_directory"
+            DOCS_SESSION: Regex = regex"EsRecordRewrite::RecordRewriteSession"
+            LEDGER_ITEM: Regex = regex"ES-SCRIPT-025"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "record rewrite audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "record rewrite audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "record rewrite audit: missing "
+            READ_FAILED: sview = "record rewrite audit: unable to read source: "
+            SUCCESS: sview = "record rewrite audit: staged sync, commit, rollback, and collision checks are present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: Regex
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def searches(inputs: darray[Path]) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
+            return [
+                SearchCheck{input: inputs[0], pattern: Patterns::MODULE},
+                SearchCheck{input: inputs[1], pattern: Patterns::MODEL_IMPORT},
+                SearchCheck{input: inputs[0], pattern: Patterns::SYMLINK_MODE},
+                SearchCheck{input: inputs[0], pattern: Patterns::STATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::EVENT},
+                SearchCheck{input: inputs[0], pattern: Patterns::PLAN},
+                SearchCheck{input: inputs[0], pattern: Patterns::SESSION},
+                SearchCheck{input: inputs[0], pattern: Patterns::ERROR},
+                SearchCheck{input: inputs[0], pattern: Patterns::VALIDATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::ADVANCE},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_PATH_BYTES},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_OUTPUT_BYTES},
+                SearchCheck{input: inputs[0], pattern: Patterns::MAX_APPENDS},
+                SearchCheck{input: inputs[0], pattern: Patterns::PATH_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::SYMLINK_MODE_VALID},
+                SearchCheck{input: inputs[0], pattern: Patterns::PATH_COLLISION},
+                SearchCheck{input: inputs[0], pattern: Patterns::OUTPUT_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::DIRECTORY_SYNC_STAGED},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMIT_UNSYNCED},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMIT_DIRECTORY_SYNC},
+                SearchCheck{input: inputs[0], pattern: Patterns::STAGING},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMITTING_ROLLBACK_ACK},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMITTED_UNSYNCED},
+                SearchCheck{input: inputs[0], pattern: Patterns::ROLLING_BACK_ACK},
+                SearchCheck{input: inputs[0], pattern: Patterns::FAILED_ACK_STATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::CANCELLED_ACK_STATE},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMITTED_DIRECTORY_SYNC},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMITTING_DIRECTORY_SYNC},
+                SearchCheck{input: inputs[0], pattern: Patterns::SYNC},
+                SearchCheck{input: inputs[0], pattern: Patterns::DIRECTORY_SYNC},
+                SearchCheck{input: inputs[0], pattern: Patterns::COMMIT_ACK},
+                SearchCheck{input: inputs[0], pattern: Patterns::BEGIN_ROLLBACK},
+                SearchCheck{input: inputs[0], pattern: Patterns::ROLLBACK_ACK},
+                SearchCheck{input: inputs[0], pattern: Patterns::DIRECTORY_SYNC_EVENT},
+                SearchCheck{input: inputs[0], pattern: Patterns::OUTPUT_BYTES_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::APPENDED_BYTES_LIMIT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_IMPORT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_CONTRACT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_SYNC},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_DIRECTORY_SYNC},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_COMMIT_ACK},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_ROLLBACK_ACK},
+                SearchCheck{input: inputs[2], pattern: Patterns::FIXTURE_PATH_COLLISION},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_ACK},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_COMMITTED_SYNC},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_ROLLBACK_DIRECTORY},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_FAILED_DIRECTORY},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_CANCELLED_DIRECTORY},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_ROLLED_BACK_COMMIT},
+                SearchCheck{input: inputs[2], pattern: Patterns::FORGED_COMMIT_DIRECTORY},
+                SearchCheck{input: inputs[3], pattern: Patterns::DOCS_SESSION},
+                SearchCheck{input: inputs[4], pattern: Patterns::LEDGER_ITEM}
+            ]
+
+
+        def execute(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for check in checks:
+                catch EsSourceFunctionScope::contains_file_regex_line(check.input, check.pattern):
+                    ok found:
+                        return ExitStatus::FAILURE if not found
+                    error _:
+                        diagnostic(Messages::READ_FAILED + f"{check.input}")
+                        return ExitStatus::IO_FAILURE
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::MODEL),
+                root.joinpath(Inputs::IR),
+                root.joinpath(Inputs::FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            status: i64 = execute(searches(inputs))
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsRecordRewriteAudit::run_default()
