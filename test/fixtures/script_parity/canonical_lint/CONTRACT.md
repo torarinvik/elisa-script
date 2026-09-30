@@ -87,7 +87,8 @@ operand. An eighth makes the first `CDPATH` entry missing and the second the
 caller directory; it expects the latter selection and output. A ninth puts an
 empty entry first, followed by the caller directory, and expects the current
 directory selection without an output line. A tenth uses the relative `.`
-entry and expects CDPATH selection/output. An eleventh searches an existing
+entry in POSIX mode and expects successful CDPATH selection/output even though
+the mode rejects an unmatched fallback. An eleventh searches an existing
 `tools` directory that does not contain the project, then expects Bash's
 ordinary relative-operand fallback without a CDPATH output line. A twelfth
 searches through a symlinked `CDPATH` entry, expecting the logical alias in the
