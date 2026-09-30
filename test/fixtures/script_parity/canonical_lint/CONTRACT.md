@@ -30,10 +30,13 @@ experiments/brainworkshop_canonical
 
 Extra wrapper arguments are ignored. Stdin, stdout, stderr, and the environment
 are inherited rather than captured; normal Ruff exit statuses are returned
-unchanged. No shell, Python interpreter, or legacy wrapper is launched by the
-candidate. Ruff remains an explicit lint-tool dependency, not an orchestration
-language replacement target. Timeout zero deliberately disables the process
-runner's default deadline, matching the reference's lack of a deadline.
+unchanged. Like Bash `cd`, the candidate updates exported `OLDPWD` and `PWD`
+before launching Ruff. A dedicated probe checks those values from a clean
+environment. No shell, Python interpreter, or legacy wrapper is launched by
+the candidate. Ruff remains an explicit lint-tool dependency, not an
+orchestration language replacement target. Timeout zero deliberately disables
+the process runner's default deadline, matching the reference's lack of a
+deadline.
 
 ## Required differential cases (not executed)
 
@@ -64,6 +67,12 @@ input; use the protocol's combined-stream bound.
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
 | Ruff stand-in replaces itself with a process terminated by SIGTERM | Reference is signaled (`Crash`, status 143, empty streams); candidate must match the terminal outcome, not merely complete with status 143 |
 
+An additional isolated observation starts each wrapper in `/` with a replacement
+environment that omits both `PWD` and `OLDPWD`. A fixed probe records the two
+NUL-terminated values after the wrapper changes to the fixture project root;
+the independent expected bytes are `<root>\0/\0`. This checks Bash's ordinary
+exported-directory-variable behavior separately from the existing argv probe.
+
 ## Known gaps: do not claim full exec parity
 
 The current `run_process` forks and waits in a separate process group instead
@@ -84,8 +93,9 @@ failures. The current runner's child uses 127 for any failed exec and emits no
 equivalent Bash diagnostic. Directory/environment/host-runner failures have
 candidate-specific diagnostics and status 1. These are not accepted as exact
 reference parity. Bash's logical `cd`/PWD handling and symlink spelling also
-need dedicated cases; launcher source-path normalization is not proof of
-equivalence to `dirname "$0"`.
+need dedicated cases; the clean-environment observation establishes only the
+non-symlink physical-path case. Launcher source-path normalization is not proof
+of equivalence to `dirname "$0"`.
 
 `test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors
 eleven ordinary lint cases before the test-wrapper family: unset/empty RUFF_BIN,
@@ -105,18 +115,19 @@ exec-failure cases run after ordinary cases. This does not provide independent
 mutable filesystem worlds for future tools that write files.
 
 The dormant entry now defaults to `EsCanonicalWrapperScope::Wave.LintOnly`:
-the lint reference, candidate, shared invocation model and signal probe are
-identity-checked and copied; three Ruff probe aliases are installed, and
+the lint reference, candidate, shared invocation model, signal probe and
+directory-environment probe are identity-checked and copied; three Ruff probe aliases are installed, and
 exactly eleven lint cases are selected. No
 canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
 wave. These eleven are ordinary argv/status cases; the matrix additionally
-runs one signal-termination case and seven exec-failure cases, for nineteen
-observations total in the lint wave. Source/case count checks reject silently
+runs one signal-termination case, one `PWD`/`OLDPWD` case, and seven
+exec-failure cases, for twenty observations total in the lint wave.
+Source/case count checks reject silently
 empty or reduced selections. The wider twenty-one ordinary-case selection
 remains available through an explicit
 `public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
-with the same signal and exec-failure checks, that wave has twenty-nine
-observations. The default test does not advance to it automatically. Wave
+with the same signal, `PWD`/`OLDPWD`, and exec-failure checks, that wave has
+thirty observations. The default test does not advance to it automatically. Wave
 selection does not grant execution authorization or prove that a preceding
 wave passed.
 Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`
