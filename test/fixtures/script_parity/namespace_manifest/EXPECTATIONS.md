@@ -64,7 +64,9 @@ candidate's corresponding resumable scan; it does not change manifest output.
 The `bytecode_renderer_missing` fixture repeats the `IssueKind` enum range,
 renders only the first-range `Missing` variant, and expects the later
 `Supplement` variant to be reported missing. These fixtures and the candidate
-remain unexecuted.
+remain unexecuted. The diagnostic-reset fixture now uses the source checker's
+required indentation and includes a reset-helper prefix decoy; the actual
+reset still omits `stale`, so both implementations should report that field.
 
 The shell reference and candidate also resolve omitted or empty source-root and
 parser-token arguments relative to their own script directories. The launcher
