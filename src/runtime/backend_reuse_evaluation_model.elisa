@@ -18,9 +18,11 @@ module EsBackendReuseEvaluation:
 
         def validate_backend_reuse_evaluation_source(source: sview) -> bool error[BackendReuseEvaluationError] can[Memory.Allocate, Abort.Panic]:
             raise BackendReuseEvaluationError.InvalidJson if len(source) > Limits::INPUT_BYTES
+            python_compatible_source: darray[u8] = evaluation_normalize_python_constants(source)
+            parse_source: sview = bytes_view(python_compatible_source)
             decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::CANDIDATES, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
             json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
-            lexed: JsonLexedSource = try lex_json(source, decode_limits, json_policy) else err:
+            lexed: JsonLexedSource = try lex_json(parse_source, decode_limits, json_policy) else err:
                 raise BackendReuseEvaluationError.InvalidJson
             document: JsonDocument = try parse_json_document(lexed) else err:
                 raise BackendReuseEvaluationError.InvalidJson
@@ -142,8 +144,83 @@ module EsBackendReuseEvaluation:
             REJECT_AS_DEPENDENCY: sview = "reject-as-dependency; retain-as-reference"
 
 
+        const module PythonConstants:
+            NAN: sview = "NaN"
+            POSITIVE_INFINITY: sview = "Infinity"
+            NEGATIVE_INFINITY: sview = "-Infinity"
+            REPLACEMENT: u8 = 49
+
+
         def expected_candidate_names() -> darray[sview]:
             return ["GLFW", "Webrogue SDK", "wasi-gfx-runtime"]
+
+
+        # CPython json.loads accepts these three non-RFC number tokens. This
+        # checker's observations use only their type and truthiness (except for
+        # string comparisons), so projecting them to integer 1 preserves every
+        # predicate here without weakening the shared strict JSON parser.
+        def evaluation_normalize_python_constants(source: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            normalized: mutable darray[u8] = []
+            inside_string: mutable bool = false
+            escaped: mutable bool = false
+            offset: mutable usize = 0
+            while offset < len(source) |source, normalized, inside_string, escaped, offset|:
+                byte: u8 = sview_at(source, offset)
+                if inside_string:
+                    normalized.push(byte)
+                    if escaped:
+                        escaped <- false
+                    elif byte == 92u8:
+                        escaped <- true
+                    elif byte == 34u8:
+                        inside_string <- false
+                    offset <- offset + 1
+                elif byte == 34u8:
+                    normalized.push(byte)
+                    inside_string <- true
+                    offset <- offset + 1
+                else:
+                    token_bytes: usize = evaluation_python_constant_bytes(source, offset)
+                    if token_bytes != 0:
+                        normalized.push(PythonConstants::REPLACEMENT)
+                        offset <- offset + token_bytes
+                    else:
+                        normalized.push(byte)
+                        offset <- offset + 1
+            return normalized
+
+
+        def evaluation_python_constant_bytes(source: sview, offset: usize) -> usize:
+            return 0 if not evaluation_json_value_boundary_before(source, offset)
+            token_bytes: mutable usize = 0
+            if evaluation_source_matches_at(source, offset, PythonConstants::NEGATIVE_INFINITY):
+                token_bytes <- len(PythonConstants::NEGATIVE_INFINITY)
+            elif evaluation_source_matches_at(source, offset, PythonConstants::NAN):
+                token_bytes <- len(PythonConstants::NAN)
+            elif evaluation_source_matches_at(source, offset, PythonConstants::POSITIVE_INFINITY):
+                token_bytes <- len(PythonConstants::POSITIVE_INFINITY)
+            return 0 if token_bytes == 0 or not evaluation_json_value_boundary_after(source, offset + token_bytes)
+            return token_bytes
+
+
+        def evaluation_source_matches_at(source: sview, offset: usize, expected: sview) -> bool:
+            return false if offset > len(source)
+            return false if len(expected) > len(source) - offset
+            for index in 0..<len(expected) |source, offset, expected|:
+                return false if sview_at(source, offset + index) != sview_at(expected, index)
+            return true
+
+
+        def evaluation_json_value_boundary_before(source: sview, offset: usize) -> bool:
+            return true if offset == 0
+            previous: u8 = sview_at(source, offset - 1)
+            return previous == 32u8 or previous == 9u8 or previous == 10u8 or previous == 13u8 or previous == 44u8 or previous == 58u8 or previous == 91u8 or previous == 123u8
+
+
+        def evaluation_json_value_boundary_after(source: sview, offset: usize) -> bool:
+            return true if offset == len(source)
+            following: u8 = sview_at(source, offset)
+            return following == 32u8 or following == 9u8 or following == 10u8 or following == 13u8 or following == 44u8 or following == 93u8 or following == 125u8
 
 
         def evaluation_member_key_equals(document: JsonDocument&, member: JsonMember, key: sview) -> bool:
