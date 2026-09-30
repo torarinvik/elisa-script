@@ -282,8 +282,10 @@ capture.
 check with no `bash` candidate in its private first PATH directory and `/bin`
 second, plus unvisited `/usr/bin` and tilde-expansion suffixes. It verifies the
 retained candidate spellings and selected index using stat/credential
-observations only; it does not launch Bash or the selected executable. The test
-is uncompiled and unrun, and does not qualify this adapter for the lint wrapper.
+observations only; a separate case records the adapter's explicit refusal when
+a tilde component is reached. Neither case launches Bash or the selected
+executable. The tests are uncompiled and unrun, and do not qualify this adapter
+for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
