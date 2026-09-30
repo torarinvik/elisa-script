@@ -1,7 +1,8 @@
-# Streaming Elisascript port of check_copy_path_safety.sh.
-# Keep the shell oracle until its public-launcher parity contract is qualified.
+# Bounded Elisascript port of check_copy_path_safety.sh.
+# Source checks use the shared scanner without launching rg.
 
 include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
 
 module EsCopyPathSafetyAudit:
     private:
@@ -31,13 +32,13 @@ module EsCopyPathSafetyAudit:
             MISSING_ROOT: sview = "copy-path audit: missing repository root"
             UNRESOLVED_ROOT: sview = "copy-path audit: unable to resolve repository root"
             MISSING_INPUT: sview = "copy-path audit: missing "
-            RG_UNAVAILABLE: sview = "copy-path audit: unable to run rg"
-            RG_FAILED_TO_RUN: sview = "copy-path audit: rg failed to run"
+            READ_FAILED: sview = "copy-path audit: unable to read source: "
+            SUCCESS: sview = "copy-path audit: identical source/destination is rejected before truncating open"
 
 
         const enum SearchMode of u8:
-            Regex
-            MultilineRegex
+            Line
+            FullText
 
 
         struct SearchCheck:
@@ -52,39 +53,56 @@ module EsCopyPathSafetyAudit:
 
         def searches(interpreter: Path, docs: Path, ledger: Path) -> darray[SearchCheck] can[Memory.Allocate, Abort.Panic]:
             return [
-                SearchCheck{input: interpreter, pattern: Patterns::COPY_PATH, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::IDENTICAL_PATHS, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::REJECT_BEFORE_OPEN, mode: SearchMode.MultilineRegex},
-                SearchCheck{input: interpreter, pattern: Patterns::SOURCE_STAT, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::DESTINATION_STAT, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::SOURCE_IDENTITY, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::DESTINATION_IDENTITY, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::SAME_INODE, mode: SearchMode.Regex},
-                SearchCheck{input: interpreter, pattern: Patterns::BOTH_EXIST, mode: SearchMode.Regex},
-                SearchCheck{input: docs, pattern: Patterns::DOCS_SELF_COPY, mode: SearchMode.Regex},
-                SearchCheck{input: docs, pattern: Patterns::DOCS_ALIAS, mode: SearchMode.Regex},
-                SearchCheck{input: ledger, pattern: Patterns::LEDGER_SELF_COPY, mode: SearchMode.Regex},
-                SearchCheck{input: ledger, pattern: Patterns::LEDGER_ALIAS, mode: SearchMode.Regex}
+                SearchCheck{input: interpreter, pattern: Patterns::COPY_PATH, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::IDENTICAL_PATHS, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::REJECT_BEFORE_OPEN, mode: SearchMode.FullText},
+                SearchCheck{input: interpreter, pattern: Patterns::SOURCE_STAT, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::DESTINATION_STAT, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::SOURCE_IDENTITY, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::DESTINATION_IDENTITY, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::SAME_INODE, mode: SearchMode.Line},
+                SearchCheck{input: interpreter, pattern: Patterns::BOTH_EXIST, mode: SearchMode.Line},
+                SearchCheck{input: docs, pattern: Patterns::DOCS_SELF_COPY, mode: SearchMode.Line},
+                SearchCheck{input: docs, pattern: Patterns::DOCS_ALIAS, mode: SearchMode.Line},
+                SearchCheck{input: ledger, pattern: Patterns::LEDGER_SELF_COPY, mode: SearchMode.Line},
+                SearchCheck{input: ledger, pattern: Patterns::LEDGER_ALIAS, mode: SearchMode.Line}
             ]
 
 
-        def execute(checks: darray[SearchCheck]) -> i64 can[Environment.Read, File.Read, Directory.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
-            rg: Executable = try executable("rg") else err:
-                diagnostic(Messages::RG_UNAVAILABLE)
-                return 127i64
+        def has_line_match(path: Path, pattern_text: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            pattern: Regex = regex(pattern_text)
+            catch EsSourceFunctionScope::contains_file_regex_line(path, pattern):
+                ok found:
+                    return 1i64 if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return 2i64
+
+
+        def has_full_text_match(path: Path, pattern_text: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            pattern: Regex = regex(pattern_text)
+            catch EsSourceFunctionScope::contains_file_regex_text(path, pattern):
+                ok found:
+                    return 1i64 if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return 2i64
+
+
+        def execute(checks: darray[SearchCheck]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
             for check in checks:
-                arguments: darray[sview] = when check.mode:
-                    SearchMode.Regex -> ["-q", check.pattern, f"{check.input}"]
-                    SearchMode.MultilineRegex -> ["-U", "-q", check.pattern, f"{check.input}"]
-                status: i64 = try run_process(rg, arguments, 0i64) else err:
-                    diagnostic(Messages::RG_FAILED_TO_RUN)
-                    return 127i64
+                status: i64 = when check.mode:
+                    SearchMode.Line -> has_line_match(check.input, check.pattern)
+                    SearchMode.FullText -> has_full_text_match(check.input, check.pattern)
+                    _ -> 1i64
                 return status if status != 0i64
             return 0i64
 
 
     public:
-        def run_root(repository_root: Path) -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
             if not is_directory(repository_root):
                 diagnostic(Messages::MISSING_ROOT)
                 return 1i64
@@ -103,17 +121,17 @@ module EsCopyPathSafetyAudit:
             status: i64 = execute(searches(inputs[0], inputs[1], inputs[2]))
             return status if status != 0i64
 
-            print("copy-path audit: identical source/destination is rejected before truncating open")
+            print(Messages::SUCCESS)
             return 0i64
 
 
-        def run_default() -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
             root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
                 diagnostic(Messages::UNRESOLVED_ROOT)
                 return 1i64
             return run_root(root)
 
 
-def main(arguments: darray[sview]) -> i64 can[Environment.Read, Directory.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
     _ = arguments
     return EsCopyPathSafetyAudit::run_default()
