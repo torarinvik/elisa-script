@@ -360,16 +360,18 @@ the type span for public-launcher coverage; `unicode_repr.input` adds process-
 level coverage for representative format/private-use/noncharacter scalars.
 Newline-dense inputs check that 131,072 lines reach the ordinary no-export
 diagnostic while 131,073 lines hit the candidate-only line-view cap, without
-entering Python. The candidate's `python_repr` currently uses hand-maintained
-Unicode exclusions, while Elisa's general `Text.isprintable()` predicate is
-deliberately ASCII-only; neither is evidence of complete Python `str!r`
-printability parity. These are static source contracts, not executed evidence;
-the selected `repr` cases do not prove full Unicode printability parity.
-Acceptance requires a complete contract for Python 3.14.7 / UCD 16.0.0
-printability (including unassigned and private-use scalars), plus differential
-coverage that exercises every non-printable range boundary and representative
-interior values. Prefer one generated/shared Unicode-property range source over
-continuing to grow the diagnostic's ad-hoc exception list. A
+entering Python. `python_repr` now uses a private, versioned Unicode 16.0.0
+range table generated from the official `UnicodeData.txt`; the range predicate
+matches Python 3.14's rule that L/M/N/P/S categories plus U+0020 are printable,
+so unassigned and private-use scalars are covered instead of maintained as
+hand-picked exceptions. The generated-source comment records the UCD input
+SHA-256 and Unicode License v3 attribution. Elisa's general `Text.isprintable()`
+predicate remains deliberately ASCII-only; the scanner uses this narrow,
+version-pinned helper instead. These are static source contracts, not executed
+evidence. The differential sample now includes the U+0378..U+0379 unassigned
+gap between printable U+0377 and U+037A, but does not yet exercise every table
+boundary and representative interior value. Full generated boundary coverage
+and runtime parity remain required for acceptance. A
 candidate-only generated input also
 exercises rejection of 4,097 parameters before storing the excess parameter
 slice or creating `Parameter` records, without entering Python. The bounded

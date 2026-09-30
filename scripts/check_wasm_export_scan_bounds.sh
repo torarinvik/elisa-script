@@ -11,8 +11,9 @@ fixture="$repo_root/test/script_parity/wasm_export_scan_test.elisascript"
 launcher_fixture="$repo_root/test/script_parity/wasm_export_scan_launcher_test.elisascript"
 reference="$repo_root/scripts/wasm_export_scan_reference.py"
 contract="$repo_root/test/fixtures/script_parity/wasm_export_scan/CONTRACT.md"
+unicode_data="$repo_root/scripts/wasm_export_scan_unicode16.elisascript"
 
-for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$contract"; do
+for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$contract" "$unicode_data"; do
     if [ ! -f "$required_file" ]; then
         printf 'W09 bounds audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -140,6 +141,19 @@ rg -Fq 'symlink_parent_written: usize = write_fixture_text(source_file, "include
 rg -Fq 'def dangling_symlink_include_cases_match()' "$fixture"
 rg -Fq 'resolves every existing component before processing a following `..`' "$contract"
 rg -Fq 'dangling symlink, it reads the link target and prepends that' "$contract"
+rg -Fq 'include "wasm_export_scan_unicode16.elisascript"' "$candidate"
+rg -Fq 'EsWasmUnicode16::is_nonprintable(codepoint)' "$candidate"
+rg -Fq 'UCD_VERSION: sview = "16.0.0"' "$unicode_data"
+rg -Fq 'RANGE_COUNT: usize = 737' "$unicode_data"
+rg -Fq 'NONPRINTABLE_STARTS: u32[737]' "$unicode_data"
+rg -Fq 'NONPRINTABLE_ENDS: u32[737]' "$unicode_data"
+rg -Fq 'middle <- lower + ((upper - lower) / 2)' "$unicode_data"
+rg -Fq 'U+0378..U+0379 unassigned gap' "$fixture"
+rg -Fq 'Full generated boundary coverage and runtime parity remain required for acceptance.' "$contract"
+if rg -Fq 'python_extra_nonprintable' "$candidate"; then
+    printf 'W09 Unicode audit: remove hand-maintained printability exceptions\n' >&2
+    exit 1
+fi
 line_guard_count="$(rg -F -c 'if lines.count >= Limits::SOURCE_LINES:' "$candidate" || true)"
 if [ "$line_guard_count" != 2 ]; then
     printf 'W09 bounds audit: both source-line append sites must enforce the metadata cap\n' >&2
@@ -326,8 +340,6 @@ rg -Fq '1,048,576' "$contract"
 rg -Fq 'aggregate weighted work ceiling' "$contract"
 rg -Fq 'multiple' "$contract"
 rg -Fq 'case chains 60 relative links whose targets each contain 400 `./` components' "$contract"
-rg -Fq 'python_extra_nonprintable(codepoint: usize)' "$candidate"
-rg -Fq 'codepoint >= 917504 and codepoint <= 917535 or codepoint >= 917536 and codepoint <= 917631' "$candidate"
 rg -Fq 'append_utf8_scalar(source_bytes, 917504u64)' "$fixture"
 rg -Fq 'append_utf8_scalar(source_bytes, 917506u64)' "$fixture"
 rg -Fq 'append_utf8_scalar(source_bytes, 917535u64)' "$fixture"
