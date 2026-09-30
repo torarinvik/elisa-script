@@ -12,6 +12,8 @@ module EsBashExecLookupPosix:
         const module Limits:
             CANDIDATE_PATH_BYTES: usize = EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
             SUPPLEMENTARY_GROUPS: usize = 1024
+            PASSWD_BUFFER_BYTES: usize = 65536
+            PASSWD_USERNAME_BYTES: usize = 1024
 
 
         const enum TildeEnvironmentVariable of u8:
@@ -31,6 +33,10 @@ module EsBashExecLookupPosix:
             CredentialGroupLimitExceeded
             CredentialGroupObservationInvalid
             InvalidTildeEnvironmentVariable
+            PasswordDatabaseLookupUnavailable
+            PasswordHomePointerOutsideBuffer
+            PasswordHomeStringUnterminated
+            PasswordHomeLimitExceeded
 
 
         struct ObservedPathCandidate:
@@ -48,6 +54,22 @@ module EsBashExecLookupPosix:
 
 
     private:
+        # Darwin arm64's pwd.h `struct passwd`. Keep this ABI declaration
+        # private to the Darwin adapter; reentrant libc APIs write the full
+        # record into caller-owned storage.
+        struct DarwinPasswdRecord:
+            name: u8&?
+            password: u8&?
+            user: u32
+            group: u32
+            changed: i64
+            class_name: u8&?
+            gecos: u8&?
+            home_directory: u8&?
+            shell: u8&?
+            expires: i64
+
+
         const enum ReachedTildeEnvironmentNeed of u8:
             None
             Home
@@ -114,8 +136,103 @@ module EsBashExecLookupPosix:
         @link_name(getegid)
         extern bash_lookup_effective_group() -> u32
 
+        @link_name(getuid)
+        extern bash_lookup_real_user() -> u32 can[Blocking.IO]
+
+        @link_name(getpwuid_r)
+        extern bash_lookup_getpwuid(user: u32, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
+
+        @link_name(getpwnam_r)
+        extern bash_lookup_getpwnam(name: cstr, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
+
         @link_name(getgroups)
         extern bash_lookup_getgroups(count: i32, groups: mutable u32&?) -> i32 can[Blocking.IO]
+
+
+        def copy_passwd_home_bytes(home_pointer: u8&?, buffer: darray[u8]&) -> darray[u8] error[ObservationError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return [] if home_pointer == null
+            home: u8& = home_pointer
+
+            # POSIX *_r results point into the supplied buffer. Locate the
+            # borrowed string by pointer identity first, then copy only within
+            # that allocation; never scan an unbounded libc pointer.
+            start: mutable usize = buffer.count
+            for index in 0..<buffer.count |buffer, start|:
+                element_pointer: u8& = (&buffer[index]).cast[u8&]
+                if element_pointer == home:
+                    start <- index
+                    break
+            raise ObservationError.PasswordHomePointerOutsideBuffer if start == buffer.count
+
+            owned: mutable darray[u8] = []
+            for index in start..<buffer.count |buffer, owned|:
+                byte: u8 = buffer[index]
+                return owned if byte == 0u8
+                raise ObservationError.PasswordHomeLimitExceeded if owned.count >= EsBashExecLookup::Limits::PATH_BYTES
+                owned.push(byte)
+            raise ObservationError.PasswordHomeStringUnterminated
+
+
+        def zeroed_passwd_buffer() -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            buffer: mutable darray[u8] = []
+            buffer.reserve(Limits::PASSWD_BUFFER_BYTES)
+            for _ in 0..<Limits::PASSWD_BUFFER_BYTES |buffer|:
+                buffer.push(0u8)
+            return buffer
+
+
+        def current_account_home_directory() -> darray[u8] error[ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            record: mutable DarwinPasswdRecord = zeroed
+            buffer: mutable darray[u8] = zeroed_passwd_buffer()
+            result: mutable DarwinPasswdRecord&? = null
+            result_pointer: mutable DarwinPasswdRecord&?& = (&result).cast[mutable DarwinPasswdRecord&?&]
+            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
+            status: i32 = bash_lookup_getpwuid(bash_lookup_real_user(), record, buffer_pointer, buffer.count, result_pointer)
+            raise ObservationError.PasswordDatabaseLookupUnavailable if status != 0
+            return [] if result == null
+            return try copy_passwd_home_bytes(record.home_directory, buffer)
+
+
+        def named_user_home_lookup(username: sview) -> EsBashExecLookup::NamedUserHomeLookup error[ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            username_length: usize = sview_len(username)
+            owned_name: mutable darray[u8] = []
+            if username_length > Limits::PASSWD_USERNAME_BYTES:
+                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.LookupUnavailable}
+            owned_name.reserve(username_length + 1)
+            for index in 0..<username_length |username, owned_name|:
+                owned_name.push(sview_at(username, index))
+            owned_name.push(0u8)
+
+            record: mutable DarwinPasswdRecord = zeroed
+            buffer: mutable darray[u8] = zeroed_passwd_buffer()
+            result: mutable DarwinPasswdRecord&? = null
+            result_pointer: mutable DarwinPasswdRecord&?& = (&result).cast[mutable DarwinPasswdRecord&?&]
+            username_pointer: cstr = (&owned_name[0]).cast[cstr]
+            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
+            status: i32 = bash_lookup_getpwnam(username_pointer, record, buffer_pointer, buffer.count, result_pointer)
+            if status != 0:
+                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.LookupUnavailable}
+            if result == null:
+                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.UserNotFound}
+            home: darray[u8] = try copy_passwd_home_bytes(record.home_directory, buffer)
+            return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.HomeFound, home_directory: home}
+
+
+        def resolve_path_directory_with_named_user_lookup(directory: sview, tilde: mutable EsBashExecLookup::PathTildeContext&) -> darray[u8] error[EsBashExecLookup::LookupError, ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            catch EsBashExecLookup::resolve_path_directory(directory, tilde):
+                ok resolved:
+                    return resolved
+                error failure:
+                    raise failure if failure != EsBashExecLookup::LookupError.TildeExpansionUnsupported
+
+            directory_length: usize = sview_len(directory)
+            prefix_end: mutable usize = 1
+            while prefix_end < directory_length and sview_at(directory, prefix_end) != 47u8 |directory, prefix_end|:
+                prefix_end <- prefix_end + 1
+            username: sview = string_view_slice(directory, 1, prefix_end.i64())
+            lookup: EsBashExecLookup::NamedUserHomeLookup = try named_user_home_lookup(username)
+            tilde.named_user_homes.push(lookup)
+            return try EsBashExecLookup::resolve_path_directory(directory, tilde)
 
 
     public:
@@ -135,10 +252,10 @@ module EsBashExecLookupPosix:
             return TildeEnvironmentSnapshot{present: value.present, bytes: try copy_environment_bytes(value.bytes)}
 
 
-        # Resolve one already-reached PATH component, loading only the process
-        # variable its tilde form can consult. Stack/account and named-user
-        # data remain explicit context snapshots.
-        def resolve_reached_path_directory_from_process_environment(directory: sview, tilde: mutable EsBashExecLookup::PathTildeContext&) -> darray[u8] error[EsBashExecLookup::LookupError, EsEnvironmentLookup::LookupError, ObservationError] can[Environment.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+        # Resolve one already-reached PATH component. Load only the selected
+        # environment variable, and consult the account database only when
+        # HOME is absent or a named-user fallback is actually reached.
+        def resolve_reached_path_directory_from_process_environment(directory: sview, tilde: mutable EsBashExecLookup::PathTildeContext&) -> darray[u8] error[EsBashExecLookup::LookupError, EsEnvironmentLookup::LookupError, ObservationError] can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             directory_length: usize = sview_len(directory)
             raise EsBashExecLookup::LookupError.PathLimitExceeded if directory_length > EsBashExecLookup::Limits::PATH_BYTES
             raise EsBashExecLookup::LookupError.SearchInputContainsNul if sview_contains_byte(directory, 0u8)
@@ -147,6 +264,9 @@ module EsBashExecLookupPosix:
                 snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::Home)
                 tilde.home_present <- snapshot.present
                 tilde.home_directory <- snapshot.bytes
+                if not snapshot.present and not tilde.account_home_present:
+                    tilde.account_home_directory <- try current_account_home_directory()
+                    tilde.account_home_present <- true
             else if need == ReachedTildeEnvironmentNeed::WorkingDirectory:
                 snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::WorkingDirectory)
                 tilde.pwd_present <- snapshot.present
@@ -155,7 +275,7 @@ module EsBashExecLookupPosix:
                 snapshot: TildeEnvironmentSnapshot = try process_tilde_environment_value(TildeEnvironmentVariable::PreviousWorkingDirectory)
                 tilde.oldpwd_present <- snapshot.present
                 tilde.oldpwd_directory <- snapshot.bytes
-            return try EsBashExecLookup::resolve_path_directory(directory, tilde)
+            return try resolve_path_directory_with_named_user_lookup(directory, tilde)
 
 
         # Capture the ids Bash 3.2 uses around group membership plus the
@@ -274,7 +394,7 @@ module EsBashExecLookupPosix:
         # Process-environment variant of the ordered PATH observer. It uses
         # the reached-directory resolver for each tilde component, so neither
         # an unused environment value nor a suffix after an executable is read.
-        # Account-home, named-user and directory-stack outcomes stay explicit.
+        # Directory-stack entries remain explicit because they are shell state.
         def observe_search_plan_with_process_environment(plan: EsBashExecLookup::PathSearchPlan&, command: sview, credentials: EsBashExecLookup::CredentialSnapshot, tilde: mutable EsBashExecLookup::PathTildeContext&) -> SearchObservation error[EsBashExecLookup::LookupError, ObservationError, EsEnvironmentLookup::LookupError] can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
             try EsBashExecLookup::validate_path_search_plan(plan, command)
             return try observe_search_plan(plan, command, credentials, tilde) if plan.mode == EsBashExecLookup::SearchMode.DirectName
