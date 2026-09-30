@@ -48,6 +48,21 @@ module EsSourceFunctionScope:
             return true
 
 
+        def literal_occurrence_count(source: sview, needle: sview) -> usize:
+            needle_length: usize = sview_len(needle)
+            return 0 if needle_length == 0 or needle_length > sview_len(source)
+            cursor: mutable usize = 0
+            matches: mutable usize = 0
+            source_length: usize = sview_len(source)
+            while cursor <= source_length - needle_length:
+                suffix: sview = string_view_suffix(source, cursor.i64())
+                relative: i64 = suffix.index(needle)
+                break if relative < 0
+                matches <- matches + 1
+                cursor <- cursor + relative.usize() + needle_length
+            return matches
+
+
         def starts_function_declaration(line: sview) -> bool:
             declaration_prefix: sview = "        def "
             return false if sview_len(line) < sview_len(declaration_prefix)
@@ -136,7 +151,7 @@ module EsSourceFunctionScope:
         # second needle requires its literal to follow the first on
         # that same line, matching ordered `first.*second` ripgrep expressions
         # without retaining the entire file in memory.
-        def contains_file_line(input_path: Path, first: sview, second: sview = "") -> bool error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+        def contains_file_line(input_path: Path, first: sview, second: sview = "", line_prefix: bool = false) -> bool error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
             path_text: sview = f"{input_path}"
             path_length: usize = sview_len(path_text)
             raise Error.InvalidPath if path_length == 0 or path_length > Limits::PATH_BYTES or first == "" or sview_contains_byte(path_text, 0u8) or sview_contains_byte(first, 0u8) or sview_contains_byte(second, 0u8)
@@ -163,7 +178,11 @@ module EsSourceFunctionScope:
                         phase <- SearchPhase.Done
                         -> Search
                     line_text: sview = bytes_view(line)
-                    first_match: i64 = line_text.index(first)
+                    first_match: mutable i64 = -1
+                    if line_prefix:
+                        first_match <- 0 if line_text.startswith(first)
+                    else:
+                        first_match <- line_text.index(first)
                     if first_match >= 0:
                         if second == "" or string_view_suffix(line_text, first_match + sview_len(first).i64()).index(second) >= 0:
                             found <- true
@@ -178,6 +197,47 @@ module EsSourceFunctionScope:
                 false
             raise Error.CloseFailed if not closed
             return found
+
+
+        # Count nonoverlapping literal matches across a bounded byte stream.
+        # Since a literal cannot span the line delimiter for the current audit
+        # callers, summing per-line `rg -F -o` equivalents preserves its count.
+        def occurrences_in_file(input_path: Path, needle: sview) -> usize error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            path_length: usize = sview_len(path_text)
+            raise Error.InvalidPath if path_length == 0 or path_length > Limits::PATH_BYTES or needle == "" or sview_contains_byte(path_text, 0u8) or sview_contains_byte(needle, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr]
+
+            stream: mutable FileStream = try file_stream_open(path_pointer, FileStreamMode.ReadBinary, Limits::SOURCE_BYTES, FileStreamEncoding.Bytes) else err:
+                raise Error.OpenFailed
+            line: mutable darray[u8] = []
+            matches: mutable usize = 0
+            phase: mutable SearchPhase = SearchPhase.Scan
+            machine over phase while phase != SearchPhase.Done:
+                state Search
+                start Search
+
+                Search, SearchPhase.Scan:
+                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- SearchPhase.Done
+                        -> Search
+                    matches <- matches + literal_occurrence_count(bytes_view(line), needle)
+                    -> Search
+
+                Search, SearchPhase.Done:
+                    break
+
+            closed: bool = try file_stream_close(stream) else err:
+                false
+            raise Error.CloseFailed if not closed
+            return matches
 
 
         def contains(source: sview, needle: sview) -> bool:
