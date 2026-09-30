@@ -59,6 +59,7 @@ module EsCanonicalWrappersLauncherParity:
             FAMILY_SOURCES: usize = 10
             LINT_CASES: usize = 11
             LINT_DIRECTORY_ENV_CASES: usize = 14
+            LINT_CDPATH_CAPTURE_FAILURE_CASES: usize = 6
             CAMPAIGN_CASES: usize = 3
             CANONICAL_CASES: usize = 7
             CANONICAL_USAGE_CASES: usize = 2
@@ -575,6 +576,46 @@ module EsCanonicalWrappersLauncherParity:
             return comparison.equal
 
 
+        def cdpath_command_substitution_failure_case(selected_case: DirectoryEnvironmentCase) -> bool:
+            return when selected_case:
+                DirectoryEnvironmentCase.CdpathRelativeSourcePath -> true
+                DirectoryEnvironmentCase.CdpathLaterEntryRelativeSourcePath -> true
+                DirectoryEnvironmentCase.CdpathRelativeEntryRelativeSourcePath -> true
+                DirectoryEnvironmentCase.CdpathSymlinkEntryRelativeSourcePath -> true
+                DirectoryEnvironmentCase.CdpathDotRelativeSourcePath -> true
+                DirectoryEnvironmentCase.CdpathDotDotRelativeSourcePath -> true
+                _ -> false
+
+
+        def cdpath_command_substitution_failure_observation(run: DifferentialRun) -> bool:
+            return completed_status(run, 1i64) and run.stdout == "" and run.stderr != ""
+
+
+        def cdpath_command_substitution_failure_matches(case_name: sview, reference: DifferentialRunner, candidate: DifferentialRunner) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # The reference captures cd's CDPATH line with pwd, then its outer
+            # cd fails. Independent invariants admit failure; exact diagnostics
+            # still require reference/candidate byte equality.
+            reference_run: DifferentialRun = try run_differential_process(reference) else err:
+                exec_failure_notice(case_name, "cdpath-reference-run-error-no-receipt")
+                return false
+            if not cdpath_command_substitution_failure_observation(reference_run):
+                exec_failure_evidence(case_name, "cdpath-reference-failure-contract", reference_run, 1i64)
+                return false
+            candidate_run: DifferentialRun = try run_differential_process(candidate) else err:
+                exec_failure_notice(case_name, "cdpath-candidate-run-error-no-receipt")
+                exec_failure_evidence(case_name, "cdpath-reference-before-candidate-error", reference_run, 1i64)
+                return false
+            if not cdpath_command_substitution_failure_observation(candidate_run):
+                exec_failure_evidence(case_name, "cdpath-reference-before-candidate", reference_run, 1i64)
+                exec_failure_evidence(case_name, "cdpath-candidate-failure-contract", candidate_run, 1i64)
+                return false
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            if not comparison.equal:
+                exec_failure_evidence(case_name, "cdpath-reference-comparison", reference_run, 1i64)
+                exec_failure_evidence(case_name, "cdpath-candidate-comparison", candidate_run, 1i64)
+            return comparison.equal
+
+
         def pwd_environment_case_matches(auth: Authorization, root: TemporaryRoot, selected_case: DirectoryEnvironmentCase) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Directory.Read, Unsafe.PointerCast, Console.Write, Console.Format]:
             selected_root: mutable Path = root.path
             case_name: sview = when selected_case:
@@ -674,11 +715,8 @@ module EsCanonicalWrappersLauncherParity:
                 stdin_binary: true, stdin_bytes: input,
                 timeout_steps: Tools::TIMEOUT_STEPS, max_output_bytes: Tools::OUTPUT_BYTES
             }
+            return cdpath_command_substitution_failure_matches(case_name, reference, candidate) if cdpath_command_substitution_failure_case(selected_case)
             expected: mutable darray[u8] = []
-            if selected_case == DirectoryEnvironmentCase.CdpathRelativeSourcePath or selected_case == DirectoryEnvironmentCase.CdpathLaterEntryRelativeSourcePath or selected_case == DirectoryEnvironmentCase.CdpathRelativeEntryRelativeSourcePath or selected_case == DirectoryEnvironmentCase.CdpathSymlinkEntryRelativeSourcePath:
-                for byte in EsProcessProbe::text_bytes(expected_new_pwd) |expected|:
-                    expected.push(byte)
-                expected.push(10u8)
             for byte in EsProcessProbe::text_bytes(expected_new_pwd) |expected|:
                 expected.push(byte)
             expected.push(0u8)
@@ -874,6 +912,32 @@ module EsCanonicalWrappersLauncherParity:
         # Data-only assertion bodies, not an execution opt-in. This full file
         # also contains the separately gated native matrix: never auto-run the
         # bundle merely to execute these admission assertions.
+        @test
+        def cdpath_command_substitution_cases_require_failure_observations() -> void:
+            can Memory.Allocate, Abort.Panic:
+                failing_cases: darray[DirectoryEnvironmentCase] = [
+                    DirectoryEnvironmentCase.CdpathRelativeSourcePath,
+                    DirectoryEnvironmentCase.CdpathLaterEntryRelativeSourcePath,
+                    DirectoryEnvironmentCase.CdpathRelativeEntryRelativeSourcePath,
+                    DirectoryEnvironmentCase.CdpathSymlinkEntryRelativeSourcePath,
+                    DirectoryEnvironmentCase.CdpathDotRelativeSourcePath,
+                    DirectoryEnvironmentCase.CdpathDotDotRelativeSourcePath
+                ]
+                assert failing_cases.count == Coverage::LINT_CDPATH_CAPTURE_FAILURE_CASES
+                for selected_case in failing_cases:
+                    assert cdpath_command_substitution_failure_case(selected_case)
+                assert not cdpath_command_substitution_failure_case(DirectoryEnvironmentCase.AbsoluteSourcePathWithCdpath)
+                assert not cdpath_command_substitution_failure_case(DirectoryEnvironmentCase.CdpathEmptyEntryRelativeSourcePath)
+                assert not cdpath_command_substitution_failure_case(DirectoryEnvironmentCase.CdpathNoMatchFallbackRelativeSourcePath)
+
+                accepted: DifferentialRun = DifferentialRun{observations: [], exit_status: 1i64, stderr: "reference diagnostic\n"}
+                assert cdpath_command_substitution_failure_observation(accepted)
+                assert not cdpath_command_substitution_failure_observation(DifferentialRun{observations: [], exit_status: 0i64, stderr: "reference diagnostic\n"})
+                assert not cdpath_command_substitution_failure_observation(DifferentialRun{observations: [], exit_status: 1i64, stdout: "unexpected", stderr: "reference diagnostic\n"})
+                assert not cdpath_command_substitution_failure_observation(DifferentialRun{observations: [], exit_status: 1i64})
+                assert not cdpath_command_substitution_failure_observation(DifferentialRun{observations: [], exit_status: 1i64, stderr: "reference diagnostic\n", error_text: "host failure"})
+
+
         @test
         def canonical_ordinary_admission_rejects_host_errors_and_incomplete_records() -> void:
             can Memory.Allocate, Abort.Panic:
