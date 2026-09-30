@@ -302,10 +302,11 @@ query, so an earlier executable can end the search without needing that
 expansion. `resolve_reached_path_directory_from_process_environment` resolves
 one already-reached directory and reads only the exported process `HOME`,
 `PWD`, or `OLDPWD` value its tilde form needs. Unused environment values cannot
-block an earlier executable. This does not capture shell-only variables,
-account homes, named-user lookups, or directory-stack state; callers must
-exclude concurrent environment mutation for each lookup and provide the
-remaining snapshots.
+block an earlier executable. `observe_search_plan_with_process_environment`
+uses that resolver in the ordered candidate loop and still stops at the first
+executable. These APIs do not capture shell-only variables, account homes,
+named-user lookups, or directory-stack state; callers must exclude concurrent
+environment mutation for each lookup and provide the remaining snapshots.
 If all reached components are supported and none is executable, it applies the
 selector after exhausting PATH. The adapter has not been compiled or exercised;
 the caller must keep credential and shell-directory snapshots stable during
@@ -314,7 +315,8 @@ capture.
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
 check that individual process-environment snapshots copy the same exported
 values as the environment adapter, plus reached-directory tilde resolution
-from those values and a search with no `bash` candidate in its
+from those values and early termination before an unreached tilde suffix, plus
+a search with no `bash` candidate in its
 private first PATH directory and `/bin` second, and unvisited `/usr/bin` and
 tilde-expansion suffixes. It verifies retained candidate spellings and
 selection using stat/credential observations only; separate cases cover
