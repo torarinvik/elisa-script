@@ -328,7 +328,8 @@ it asserts the shared weighted path-work rejection without invoking Python.
 A checked-in `annotations.input`/`annotations.expected.json` pair pins
 last-annotation-wins, survival across blank and `#` comment lines, clearing by
 ordinary code, and non-inheritance by implicit `main`; it is included in both
-the default and build-payload public-launcher comparisons. A generated
+the default and build-payload public-launcher comparisons. Its non-ASCII link
+name also pins UTF-8 JSON preservation. A generated
 link-name case places `@link_name("")` after a nonempty annotation and compares
 the omitted optional key with Python. Generated temporary inputs
 also cover CRLF/bare-CR normalization, all additional Python `splitlines`
