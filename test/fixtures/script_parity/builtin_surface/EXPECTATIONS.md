@@ -8,7 +8,7 @@ not been executed while compiler validation is suspended.
 
 | Fixture | Status | Stdout | Stderr |
 | --- | ---: | --- | --- |
-| `positive` | 0 | `semantic_seed_count\t7\nlowerer_global_count\t1\nbuiltin surface audit: semantic seeds cover all direct global spellings; registry identity handles global lowering\n` | empty |
+| `positive` | 0 | `semantic_seed_count\t8\nlowerer_global_count\t1\nbuiltin surface audit: semantic seeds cover all direct global spellings; registry identity handles global lowering\n` | empty |
 | `missing_registry_row` | 1 | `semantic_seed_count\t1\nlowerer_global_count\t1\n` | `missing_registry_row\tlegacy_call\n` |
 | `mismatched_consumer` | 1 | `semantic_seed_count\t2\nlowerer_global_count\t1\n` | `missing_registry_row\tunregistered_call\nmissing_semantic_seed\tunregistered_call\n` |
 
@@ -27,6 +27,9 @@ closing quote of one match is not also treated as the opener of another name.
 The positive semantic fixture also repeats the seed marker in a comment after
 an earlier `]`; the shell AWK rule resets its terminator position to the suffix
 of that repeated marker, so the later `followup_seed` remains captured.
+The positive registry fixture also adds a later marker-prefix function; the
+shell's `sed` address range restarts there, and its `registry_supplement` name
+contributes to the distinct seed count.
 The positive semantic fixture also includes quoted hyphenated and digit-leading
 near-misses; they must not be counted as identifiers by either scanner.
 
