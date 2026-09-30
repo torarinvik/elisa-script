@@ -247,17 +247,22 @@ before its supplementary list ([Apple Bash 3.2 `general.c`](https://github.com/a
 This intentionally does not substitute `access(X_OK)` or claim ACL behavior.
 Its bounded PATH planner preserves direct-name bypass, empty/interior component
 behavior, and source-observed omission of a trailing empty component. Named
-directories are retained as owned PATH byte spans; leading-tilde expansion is
-marked but not performed. `join_search_candidate` now matches Bash's
+directories are retained as owned PATH byte spans and mark leading-tilde
+components. The pure model resolves current-user `~`/`~/...` using an explicit
+HOME snapshot; `join_search_candidate` then matches Bash's
 `sh_makepath` joining after tilde expansion: an empty directory means `.`, a
 separator is added only when needed, and existing slash spelling is preserved
 without normalization ([Apple Bash 3.2 `makepath.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/sh/makepath.c#L490-L613)).
 Inputs over 64 KiB PATH or 4,096 components fail explicitly, so those bounds
-are runtime policy, not a claim about unrestricted Bash behavior. Pure fixtures
-cover selection, permission classification, invalid directory-as-executable
-observations, PATH planning, forged-plan rejection, and joining; they are
-uncompiled and unrun. Tilde expansion, a renderer, and local Bash source/build
-qualification remain open.
+are runtime policy, not a claim about unrestricted Bash behavior. The pure
+model now byte-concatenates `~` and `~/...` from an explicit HOME snapshot;
+named users and `~+`/`~-` shell hooks remain explicit gaps. Bash 3.2 uses HOME
+for bare `~`/`~/...` and falls back to the account database only when HOME is
+unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)); this adapter does not yet implement
+that fallback. Pure fixtures cover selection, permission classification,
+invalid directory-as-executable observations, PATH planning, tilde byte
+preservation, forged-plan rejection, and joining; they are uncompiled and
+unrun. A renderer and local Bash source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
 captures effective UID, real and effective GIDs, and the supplementary group
@@ -273,21 +278,22 @@ candidate preference. A slashless command with an empty PATH is retained as an
 unsearched literal name, matching Bash's early return without stat. PATH mode
 validates the plan, joins and observes components in order, retaining exact
 spellings, and stops after the first executable candidate just as Bash does.
-An unsupported tilde component is rejected only when reached, before its stat
-query, so an earlier executable can end the search without needing that
+Current-user `~` and `~/...` components are expanded from a caller-supplied HOME
+snapshot; unsupported tilde forms are rejected only when reached, before their
+stat query, so an earlier executable can end the search without needing that
 expansion. If all reached components are supported and none is executable, it
 applies the selector after exhausting PATH. The adapter has not been compiled
-or exercised; the caller must prevent concurrent credential changes during
+or exercised; the caller must keep credential and HOME snapshots stable during
 capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
 check with no `bash` candidate in its private first PATH directory and `/bin`
 second, plus unvisited `/usr/bin` and tilde-expansion suffixes. It verifies the
 retained candidate spellings and selected index using stat/credential
-observations only; a separate case records the adapter's explicit refusal when
-a tilde component is reached. Neither case launches Bash or the selected
-executable. The tests are uncompiled and unrun, and do not qualify this adapter
-for the lint wrapper.
+observations only; separate cases cover refusal of a reached unsupported tilde
+form and current-HOME expansion before joining. No case launches Bash or the
+selected executable. The tests are uncompiled and unrun, and do not qualify this
+adapter for the lint wrapper.
 
 Consequently, retained access-denied attempt numbers alone do not identify a
 shell-selected pathname or distinguish a directory from a nonexecutable file.
