@@ -1,0 +1,394 @@
+# Typed validator for WasmBrowser's Qt and wxWidgets compatibility inventory.
+module EsFrameworkFixtureMatrix:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+    using EsBoundedText
+    using EsPythonJsonProjection
+
+    public:
+        error FrameworkFixtureMatrixError:
+            InvalidJson
+            InvalidRoot
+            SchemaMismatch
+            PolicyMissing
+            InvalidQtRecord
+            SurfaceCoverageMismatch
+            InvalidSurface
+            MissingPrerequisite
+            GeneralCandidatesMissing
+            AuditCoverageMismatch
+            InvalidAudit
+            ContractFileMissing
+            ContractUnreadable
+            TimerRequirementMissing
+            ImplementationMissing
+            TimerExportMissing
+            QtAdaptationMissing
+            InvalidWxWidgetsRecord
+
+
+        def validate_framework_fixture_matrix_source(source: sview, project_root: Path) -> bool error[FrameworkFixtureMatrixError] can[Blocking.IO, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise FrameworkFixtureMatrixError.InvalidJson if len(source) > Limits::JSON_BYTES
+            python_compatible_source: darray[u8] = normalize_truthy_nonfinite_json_constants(source)
+            parse_source: sview = bytes_view(python_compatible_source)
+            decode_limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::JSON_BYTES, tokens: Limits::TOKENS, depth: 64, records: Limits::RECORDS, fields: Limits::FIELDS, field_bytes: Limits::FIELD_BYTES}
+            json_policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(parse_source, decode_limits, json_policy) else err:
+                raise FrameworkFixtureMatrixError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise FrameworkFixtureMatrixError.InvalidJson
+            return try framework_validate_document(document, project_root)
+
+
+    private:
+        def framework_validate_document(document: JsonDocument&, project_root: Path) -> bool error[FrameworkFixtureMatrixError] can[Blocking.IO, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise FrameworkFixtureMatrixError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise FrameworkFixtureMatrixError.InvalidRoot if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            schema_index: usize = framework_member_index(document, root_index, Keys::SCHEMA)
+            raise FrameworkFixtureMatrixError.SchemaMismatch if not framework_text_equals(document, schema_index, Values::SCHEMA)
+            policy_index: usize = framework_member_index(document, root_index, Keys::POLICY)
+            raise FrameworkFixtureMatrixError.PolicyMissing if not framework_node_truthy(document, policy_index)
+
+            qt_index: usize = framework_member_index(document, root_index, Keys::QT)
+            raise FrameworkFixtureMatrixError.InvalidQtRecord if qt_index == JSON_INDEX_NONE or qt_index >= document.nodes.count or document.nodes[qt_index].kind != JsonNodeKind.Object
+            qt_status: sview = framework_text(document, framework_member_index(document, qt_index, Keys::STATUS))
+            raise FrameworkFixtureMatrixError.InvalidQtRecord if not framework_status_allowed(qt_status)
+            raise FrameworkFixtureMatrixError.InvalidQtRecord if not framework_node_truthy(document, framework_member_index(document, qt_index, Keys::BACKEND))
+
+            surfaces_index: usize = framework_member_index(document, qt_index, Keys::REQUIRED_SURFACES)
+            surfaces_valid: bool = try framework_validate_surfaces(document, surfaces_index)
+            raise FrameworkFixtureMatrixError.SurfaceCoverageMismatch if not surfaces_valid
+            candidates_index: usize = framework_member_index(document, qt_index, Keys::GENERAL_INTERFACE_CANDIDATES)
+            raise FrameworkFixtureMatrixError.GeneralCandidatesMissing if not framework_node_truthy(document, candidates_index)
+
+            audit_index: usize = framework_member_index(document, qt_index, Keys::GENERAL_INTERFACE_AUDIT)
+            audit_valid: bool = try framework_validate_audit(document, audit_index, project_root)
+            raise FrameworkFixtureMatrixError.InvalidAudit if not audit_valid
+            raise FrameworkFixtureMatrixError.QtAdaptationMissing if not framework_node_truthy(document, framework_member_index(document, qt_index, Keys::QT_SPECIFIC_ADAPTATION))
+
+            wx_index: usize = framework_member_index(document, root_index, Keys::WXWIDGETS)
+            wx_valid: bool = try framework_validate_wxwidgets(document, wx_index)
+            raise FrameworkFixtureMatrixError.InvalidWxWidgetsRecord if not wx_valid
+            return true
+
+
+        def framework_validate_surfaces(document: JsonDocument&, array_index: usize) -> bool error[FrameworkFixtureMatrixError] can[Memory.Allocate, Abort.Panic]:
+            expected_ids: darray[sview] = framework_surface_ids()
+            try framework_array_covers_names(document, array_index, expected_ids) else err:
+                raise FrameworkFixtureMatrixError.SurfaceCoverageMismatch
+            surfaces: JsonNode = document.nodes[array_index]
+            for ordinal in 0..<surfaces.child_count |document, surfaces|:
+                edge: JsonArrayChild = document.children[surfaces.child_start + ordinal]
+                item_index: usize = edge.value_index
+                raise FrameworkFixtureMatrixError.InvalidSurface if item_index >= document.nodes.count or document.nodes[item_index].kind != JsonNodeKind.Object
+                status_index: usize = framework_member_index(document, item_index, Keys::STATUS)
+                raise FrameworkFixtureMatrixError.InvalidSurface if status_index == JSON_INDEX_NONE
+                status: sview = framework_text(document, status_index)
+                raise FrameworkFixtureMatrixError.InvalidSurface if not framework_status_allowed(status)
+                if status == Values::BLOCKED:
+                    prerequisite_index: usize = framework_member_index(document, item_index, Keys::MISSING_PREREQUISITE)
+                    raise FrameworkFixtureMatrixError.MissingPrerequisite if not framework_node_truthy(document, prerequisite_index)
+            return true
+
+
+        def framework_validate_audit(document: JsonDocument&, array_index: usize, project_root: Path) -> bool error[FrameworkFixtureMatrixError] can[Blocking.IO, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise FrameworkFixtureMatrixError.AuditCoverageMismatch if array_index == JSON_INDEX_NONE or array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            expected_ids: darray[sview] = framework_audit_ids()
+            try framework_array_covers_names(document, array_index, expected_ids) else err:
+                raise FrameworkFixtureMatrixError.AuditCoverageMismatch
+            audit: JsonNode = document.nodes[array_index]
+            for ordinal in 0..<audit.child_count |document, audit, project_root|:
+                edge: JsonArrayChild = document.children[audit.child_start + ordinal]
+                item_index: usize = edge.value_index
+                raise FrameworkFixtureMatrixError.InvalidAudit if item_index >= document.nodes.count or document.nodes[item_index].kind != JsonNodeKind.Object
+                item_id_index: usize = framework_member_index(document, item_index, Keys::ID)
+                status_index: usize = framework_member_index(document, item_index, Keys::STATUS)
+                raise FrameworkFixtureMatrixError.InvalidAudit if item_id_index == JSON_INDEX_NONE or status_index == JSON_INDEX_NONE
+                item_id: sview = framework_text(document, item_id_index)
+                status: sview = framework_text(document, status_index)
+                raise FrameworkFixtureMatrixError.InvalidAudit if not framework_audit_status_allowed(status)
+
+                if status == Values::PRESENT:
+                    contract_index: usize = framework_member_index(document, item_index, Keys::CONTRACT)
+                    raise FrameworkFixtureMatrixError.ContractFileMissing if not framework_text_node(document, contract_index) or not framework_file_is_file(project_root, framework_text(document, contract_index))
+                elif status == Values::SPECIFIED_GAP or status == Values::IMPLEMENTED_UNVERIFIED or status == Values::IMPLEMENTED_TESTED:
+                    raise FrameworkFixtureMatrixError.InvalidAudit if item_id != Values::BOUNDED_TIMERS
+                    contract_index: usize = framework_member_index(document, item_index, Keys::CONTRACT)
+                    raise FrameworkFixtureMatrixError.ContractFileMissing if not framework_text_node(document, contract_index) or not framework_file_is_file(project_root, framework_text(document, contract_index))
+                    next_step_index: usize = framework_member_index(document, item_index, Keys::NEXT_STEP)
+                    raise FrameworkFixtureMatrixError.InvalidAudit if not framework_node_truthy(document, next_step_index)
+                    timer_contract_path: Path = project_root.joinpath(framework_text(document, contract_index))
+                    timer_contract: sview = try EsBoundedText::read_utf8(timer_contract_path, Limits::FILE_BYTES) else err:
+                        raise FrameworkFixtureMatrixError.ContractUnreadable
+                    try framework_require_timer_contract(timer_contract) else err:
+                        raise FrameworkFixtureMatrixError.TimerRequirementMissing
+                    if status == Values::IMPLEMENTED_UNVERIFIED or status == Values::IMPLEMENTED_TESTED:
+                        implementation_index: usize = framework_member_index(document, item_index, Keys::IMPLEMENTATION)
+                        raise FrameworkFixtureMatrixError.ImplementationMissing if not framework_node_truthy(document, implementation_index) or document.nodes[implementation_index].kind != JsonNodeKind.Array
+                        implementation: JsonNode = document.nodes[implementation_index]
+                        for source_ordinal in 0..<implementation.child_count |document, implementation, project_root|:
+                            source_edge: JsonArrayChild = document.children[implementation.child_start + source_ordinal]
+                            source_index: usize = source_edge.value_index
+                            raise FrameworkFixtureMatrixError.ImplementationMissing if not framework_text_node(document, source_index) or not framework_file_is_file(project_root, framework_text(document, source_index))
+                        timer_api_path: Path = project_root.joinpath(Paths::TIMER_API)
+                        timer_api_source: sview = try EsBoundedText::read_utf8(timer_api_path, Limits::FILE_BYTES) else err:
+                            raise FrameworkFixtureMatrixError.TimerExportMissing
+                        try framework_require_timer_exports(timer_api_source) else err:
+                            raise FrameworkFixtureMatrixError.TimerExportMissing
+                else:
+                    raise FrameworkFixtureMatrixError.InvalidAudit if item_id == Values::BOUNDED_TIMERS
+                    next_step_index: usize = framework_member_index(document, item_index, Keys::NEXT_STEP)
+                    raise FrameworkFixtureMatrixError.InvalidAudit if not framework_node_truthy(document, next_step_index)
+            return true
+
+
+        def framework_validate_wxwidgets(document: JsonDocument&, object_index: usize) -> bool error[FrameworkFixtureMatrixError]:
+            raise FrameworkFixtureMatrixError.InvalidWxWidgetsRecord if object_index == JSON_INDEX_NONE or object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            status_index: usize = framework_member_index(document, object_index, Keys::STATUS)
+            backend_index: usize = framework_member_index(document, object_index, Keys::BACKEND)
+            assumptions_index: usize = framework_member_index(document, object_index, Keys::NATIVE_WIDGET_ASSUMPTIONS)
+            changes_index: usize = framework_member_index(document, object_index, Keys::SOURCE_CHANGES_REQUIRED)
+            raise FrameworkFixtureMatrixError.InvalidWxWidgetsRecord if status_index == JSON_INDEX_NONE or not framework_status_allowed(framework_text(document, status_index))
+            raise FrameworkFixtureMatrixError.InvalidWxWidgetsRecord if not framework_node_truthy(document, backend_index) or not framework_node_truthy(document, assumptions_index) or not framework_node_truthy(document, changes_index)
+            if framework_text(document, status_index) == Values::BLOCKED:
+                prerequisite_index: usize = framework_member_index(document, object_index, Keys::MISSING_PREREQUISITE)
+                raise FrameworkFixtureMatrixError.MissingPrerequisite if not framework_node_truthy(document, prerequisite_index)
+            return true
+
+
+        def framework_require_timer_contract(source: sview) -> bool error[FrameworkFixtureMatrixError] can[Memory.Allocate, Abort.Panic]:
+            requirements: darray[sview] = framework_timer_requirements()
+            for requirement in requirements |source, requirements|:
+                raise FrameworkFixtureMatrixError.TimerRequirementMissing if not framework_text_contains(source, requirement)
+            return true
+
+
+        def framework_require_timer_exports(source: sview) -> bool error[FrameworkFixtureMatrixError] can[Memory.Allocate, Abort.Panic]:
+            exports: darray[sview] = framework_timer_exports()
+            for export_name in exports |source, exports|:
+                wrapper: sview = "c_" + export_name
+                raise FrameworkFixtureMatrixError.TimerExportMissing if not framework_text_contains(source, "def " + wrapper + "(")
+                raise FrameworkFixtureMatrixError.TimerExportMissing if not framework_text_contains(source, "export fn " + export_name + "()")
+                raise FrameworkFixtureMatrixError.TimerExportMissing if not framework_text_contains(source, "= " + wrapper)
+            return true
+
+
+        def framework_array_covers_names(document: JsonDocument&, array_index: usize, expected_names: darray[sview]) -> bool error[FrameworkFixtureMatrixError] can[Memory.Allocate, Abort.Panic]:
+            raise FrameworkFixtureMatrixError.InvalidAudit if array_index == JSON_INDEX_NONE or array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            values: JsonNode = document.nodes[array_index]
+            found_names: mutable darray[sview] = []
+            for ordinal in 0..<values.child_count |document, values, expected_names, found_names|:
+                edge: JsonArrayChild = document.children[values.child_start + ordinal]
+                item_index: usize = edge.value_index
+                raise FrameworkFixtureMatrixError.InvalidAudit if item_index >= document.nodes.count or document.nodes[item_index].kind != JsonNodeKind.Object
+                id_index: usize = framework_member_index(document, item_index, Keys::ID)
+                raise FrameworkFixtureMatrixError.InvalidAudit if not framework_text_node(document, id_index)
+                item_id: sview = framework_text(document, id_index)
+                raise FrameworkFixtureMatrixError.InvalidAudit if not framework_text_in_list(item_id, expected_names)
+                if not framework_text_in_list(item_id, found_names):
+                    found_names.push(item_id)
+            raise FrameworkFixtureMatrixError.AuditCoverageMismatch if found_names.count != expected_names.count
+            for expected in expected_names:
+                raise FrameworkFixtureMatrixError.AuditCoverageMismatch if not framework_text_in_list(expected, found_names)
+            return true
+
+
+        def framework_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return JSON_INDEX_NONE if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            found: mutable usize = JSON_INDEX_NONE
+            for member_index in owner.member_start..<(owner.member_start + owner.member_count) |document, owner, key, found|:
+                member: JsonMember = document.members[member_index]
+                found <- member_index if framework_member_key(document, member) == key
+            return found
+
+
+        def framework_member_key(document: JsonDocument&, member: JsonMember) -> sview:
+            key_bytes: sview = bytes_view(document.key_bytes)
+            return string_view_slice(key_bytes, member.key_start.i64(), (member.key_start + member.key_bytes).i64())
+
+
+        def framework_text_node(document: JsonDocument&, node_index: usize) -> bool:
+            return node_index < document.nodes.count and document.nodes[node_index].kind == JsonNodeKind.Text
+
+
+        def framework_text(document: JsonDocument&, node_index: usize) -> sview:
+            node: JsonNode = document.nodes[node_index]
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def framework_text_equals(document: JsonDocument&, node_index: usize, expected: sview) -> bool:
+            return framework_text_node(document, node_index) and framework_text(document, node_index) == expected
+
+
+        def framework_node_truthy(document: JsonDocument&, node_index: usize) -> bool:
+            return false if node_index == JSON_INDEX_NONE or node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                return false
+            elif node.kind == JsonNodeKind.Bool:
+                return node.bool_value
+            elif node.kind == JsonNodeKind.Text:
+                return node.scalar_bytes != 0
+            elif node.kind == JsonNodeKind.Array:
+                return node.child_count != 0
+            elif node.kind == JsonNodeKind.Object:
+                return node.member_count != 0
+            elif node.kind == JsonNodeKind.Number:
+                lexeme: sview = framework_text(document, node_index)
+                for byte in lexeme:
+                    return true if byte >= 49u8 and byte <= 57u8
+                    break if byte == 101u8 or byte == 69u8
+                return false
+            return false
+
+
+        def framework_status_allowed(status: sview) -> bool:
+            return status == Values::SUPPORTED or status == Values::PARTIAL or status == Values::BLOCKED
+
+
+        def framework_audit_status_allowed(status: sview) -> bool:
+            return status == Values::PRESENT or status == Values::GAP or status == Values::SPECIFIED_GAP or status == Values::IMPLEMENTED_UNVERIFIED or status == Values::IMPLEMENTED_TESTED
+
+
+        def framework_file_is_file(project_root: Path, relative_path: sview) -> bool can[Blocking.IO, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            candidate: Path = project_root.joinpath(relative_path)
+            return try is_file(candidate) else false
+
+
+        def framework_text_contains(source: sview, expected: sview) -> bool:
+            return false if len(expected) > len(source)
+            final_offset: usize = len(source) - len(expected)
+            offset: mutable usize = 0
+            while offset <= final_offset |source, expected, final_offset, offset|:
+                matched: mutable bool = true
+                for index in 0..<len(expected) |source, expected, offset, matched|:
+                    matched <- false if sview_at(source, offset + index) != sview_at(expected, index)
+                    break if not matched
+                return true if matched
+                offset <- offset + 1
+            return false
+
+
+        def framework_text_in_list(value: sview, values: darray[sview]) -> bool:
+            for expected in values:
+                return true if value == expected
+            return false
+
+
+        def framework_surface_ids() -> darray[sview]:
+            return [SurfaceIds::WINDOW_CREATION, SurfaceIds::RENDERING, SurfaceIds::TEXT_IME, SurfaceIds::FOCUS, SurfaceIds::FILES, SurfaceIds::TIMERS, SurfaceIds::ACCESSIBILITY]
+
+
+        def framework_audit_ids() -> darray[sview]:
+            return [AuditIds::WINDOW_SURFACE, AuditIds::FRAMEBUFFER, AuditIds::COMMITTED_TEXT, AuditIds::FOCUS_OWNERSHIP, AuditIds::AUTHORIZED_FILES, AuditIds::BOUNDED_TIMERS, AuditIds::ACCESSIBILITY_TREE]
+
+
+        def framework_timer_requirements() -> darray[sview]:
+            return [TimerRequirements::DELAY_MAX, TimerRequirements::ACTIVE_MAX, TimerRequirements::INTERVAL_RANGE, TimerRequirements::COALESCE, TimerRequirements::SATURATE, TimerRequirements::THREAD, TimerRequirements::SET_TIMEOUT, TimerRequirements::SET_INTERVAL, TimerRequirements::CLEAR, TimerRequirements::TIMER_FIRED, TimerRequirements::RESOURCE_EXHAUSTED, TimerRequirements::INTERNAL_ERROR]
+
+
+        def framework_timer_exports() -> darray[sview]:
+            return [TimerExports::KIND_TIMEOUT, TimerExports::KIND_INTERVAL, TimerExports::MAX_ACTIVE, TimerExports::MAX_DELAY, TimerExports::ADMISSION_OK, TimerExports::ADMISSION_INVALID_DEADLINE, TimerExports::ADMISSION_CAPACITY, TimerExports::ADMISSION_INACTIVE_SESSION, TimerExports::DUE_NOT_YET, TimerExports::DUE_TIMEOUT, TimerExports::DUE_INTERVAL, TimerExports::DUE_INVALID, TimerExports::DUE_TIME_EXHAUSTED]
+
+
+        const module Limits:
+            JSON_BYTES: usize = 1048576
+            FILE_BYTES: usize = 1048576
+            TOKENS: usize = 65536
+            RECORDS: usize = 4096
+            FIELDS: usize = 32768
+            FIELD_BYTES: usize = 65536
+
+
+        const module Keys:
+            SCHEMA: sview = "schema"
+            POLICY: sview = "policy"
+            QT: sview = "qt"
+            WXWIDGETS: sview = "wxwidgets"
+            STATUS: sview = "status"
+            BACKEND: sview = "backend"
+            REQUIRED_SURFACES: sview = "required_surfaces"
+            ID: sview = "id"
+            MISSING_PREREQUISITE: sview = "missing_prerequisite"
+            GENERAL_INTERFACE_CANDIDATES: sview = "general_interface_candidates"
+            GENERAL_INTERFACE_AUDIT: sview = "general_interface_audit"
+            CONTRACT: sview = "contract"
+            NEXT_STEP: sview = "next_step"
+            IMPLEMENTATION: sview = "implementation"
+            QT_SPECIFIC_ADAPTATION: sview = "qt_specific_adaptation"
+            NATIVE_WIDGET_ASSUMPTIONS: sview = "native_widget_assumptions"
+            SOURCE_CHANGES_REQUIRED: sview = "source_changes_required"
+
+
+        const module Values:
+            SCHEMA: sview = "wasmbrowser.framework_fixture_matrix.v1"
+            SUPPORTED: sview = "supported"
+            PARTIAL: sview = "partial"
+            BLOCKED: sview = "blocked"
+            PRESENT: sview = "present"
+            GAP: sview = "gap"
+            SPECIFIED_GAP: sview = "specified-gap"
+            IMPLEMENTED_UNVERIFIED: sview = "implemented-unverified"
+            IMPLEMENTED_TESTED: sview = "implemented-tested"
+            BOUNDED_TIMERS: sview = "bounded-timers"
+
+
+        const module Paths:
+            TIMER_API: sview = "src/wb_runtime/input_profile_c_api.elisa"
+
+
+        const module SurfaceIds:
+            WINDOW_CREATION: sview = "window-creation"
+            RENDERING: sview = "rendering"
+            TEXT_IME: sview = "text-ime"
+            FOCUS: sview = "focus"
+            FILES: sview = "files"
+            TIMERS: sview = "timers"
+            ACCESSIBILITY: sview = "accessibility"
+
+
+        const module AuditIds:
+            WINDOW_SURFACE: sview = "window-surface-lifecycle"
+            FRAMEBUFFER: sview = "framebuffer-and-typed-rendering"
+            COMMITTED_TEXT: sview = "committed-text-and-composition"
+            FOCUS_OWNERSHIP: sview = "focus-ownership"
+            AUTHORIZED_FILES: sview = "authorized-file-selection"
+            BOUNDED_TIMERS: sview = "bounded-timers"
+            ACCESSIBILITY_TREE: sview = "semantic-accessibility-tree"
+
+
+        const module TimerRequirements:
+            DELAY_MAX: sview = "0..=86400000"
+            ACTIVE_MAX: sview = "256 active timers"
+            INTERVAL_RANGE: sview = "1..=86400000"
+            COALESCE: sview = "coalesces them into one callback"
+            SATURATE: sview = "saturating at u32::MAX"
+            THREAD: sview = "between guest calls on the instance's guest thread"
+            SET_TIMEOUT: sview = "set-timeout: func"
+            SET_INTERVAL: sview = "set-interval: func"
+            CLEAR: sview = "clear: func"
+            TIMER_FIRED: sview = "timer-fired: func"
+            RESOURCE_EXHAUSTED: sview = "resource-exhausted"
+            INTERNAL_ERROR: sview = "internal-error"
+
+
+        const module TimerExports:
+            KIND_TIMEOUT: sview = "wb_runtime_timer_kind_timeout"
+            KIND_INTERVAL: sview = "wb_runtime_timer_kind_interval"
+            MAX_ACTIVE: sview = "wb_runtime_timer_max_active"
+            MAX_DELAY: sview = "wb_runtime_timer_max_delay_ms"
+            ADMISSION_OK: sview = "wb_runtime_timer_admission_ok"
+            ADMISSION_INVALID_DEADLINE: sview = "wb_runtime_timer_admission_invalid_deadline"
+            ADMISSION_CAPACITY: sview = "wb_runtime_timer_admission_capacity"
+            ADMISSION_INACTIVE_SESSION: sview = "wb_runtime_timer_admission_inactive_session"
+            DUE_NOT_YET: sview = "wb_runtime_timer_due_not_yet"
+            DUE_TIMEOUT: sview = "wb_runtime_timer_due_timeout"
+            DUE_INTERVAL: sview = "wb_runtime_timer_due_interval"
+            DUE_INVALID: sview = "wb_runtime_timer_due_invalid"
+            DUE_TIME_EXHAUSTED: sview = "wb_runtime_timer_due_time_exhausted"
