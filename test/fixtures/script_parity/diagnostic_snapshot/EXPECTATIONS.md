@@ -11,6 +11,7 @@ implementations.
 | Fixture | Status | Stdout | Stderr |
 | --- | ---: | --- | --- |
 | `positive` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
+| `header_suffix_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `compact_fields` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `unicode_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | `tab_whitespace_runner.elisa` | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
@@ -36,6 +37,9 @@ implementations against these tuples:
 | one extra CLI operand | 2 | empty | `usage: diagnostic snapshot audit [runner-source]\n` |
 
 The positive fixture proves the `execution` exclusion remains intentional.
+`header_suffix_runner.elisa` pins the Bash check's anchored-prefix match of the
+struct header when it has trailing text, a case the Elisascript candidate now
+also recognizes.
 `compact_fields` uses declarations with no space before the colon and an
 optional space before the colon; it ensures field-name extraction follows the
 parser's token-based treatment of insignificant whitespace. The four
