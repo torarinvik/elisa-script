@@ -55,12 +55,13 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. A separate clean-environment observation records
-the reference's `PWD` and `OLDPWD` values after `cd`, with independent expected
-bytes; the candidate now explicitly updates both variables after changing cwd.
-This case is source-authored and unrun, and currently covers a non-symlink
-physical project path only. The seven actual exec-failure cases follow, so the
-lint wave has twenty observations total.
+eleven ordinary lint cases. Three observations cover directory variables:
+clean-environment physical and symlink-alias roots, plus an inherited valid
+logical `PWD` alias of `/` that must become `OLDPWD`. The candidate validates
+inherited logical `PWD`, derives new `PWD` lexically, and verifies its physical
+target. These cases are source-authored and unrun; `//`, path-race and complex
+`..` semantics remain open. The seven actual exec-failure cases follow, so the
+lint wave has twenty-two observations total.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact

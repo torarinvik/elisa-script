@@ -67,11 +67,16 @@ input; use the protocol's combined-stream bound.
 | Inherited environment marker | Marker preserved, RUFF_BIN unchanged |
 | Ruff stand-in replaces itself with a process terminated by SIGTERM | Reference is signaled (`Crash`, status 143, empty streams); candidate must match the terminal outcome, not merely complete with status 143 |
 
-An additional isolated observation starts each wrapper in `/` with a replacement
-environment that omits both `PWD` and `OLDPWD`. A fixed probe records the two
-NUL-terminated values after the wrapper changes to the fixture project root;
-the independent expected bytes are `<root>\0/\0`. This checks Bash's ordinary
-exported-directory-variable behavior separately from the existing argv probe.
+Three additional isolated observations cover exported directory variables. Two
+start in `/` with a replacement environment that omits `PWD` and `OLDPWD`,
+then record the NUL-delimited values after entering the project via its
+physical path and a symlink alias. A third starts in `/` with `PWD` set to a
+symlink alias of `/` and checks that `OLDPWD` retains that valid logical
+spelling. Each expected byte sequence is independently constructed from the
+invoked root and expected old directory. The candidate validates inherited
+logical `PWD` against the physical cwd, preserves it for `OLDPWD`, and computes
+new logical `PWD` lexically before verifying its physical target. Odd `//`,
+path-race and complex `..` cases remain open.
 
 ## Known gaps: do not claim full exec parity
 
@@ -92,10 +97,11 @@ Bash emits its own diagnostics and uses statuses 126/127 for execution
 failures. The current runner's child uses 127 for any failed exec and emits no
 equivalent Bash diagnostic. Directory/environment/host-runner failures have
 candidate-specific diagnostics and status 1. These are not accepted as exact
-reference parity. Bash's logical `cd`/PWD handling and symlink spelling also
-need dedicated cases; the clean-environment observation establishes only the
-non-symlink physical-path case. Launcher source-path normalization is not proof
-of equivalence to `dirname "$0"`.
+reference parity. The clean-environment observations cover physical and simple
+symlink-alias project roots; a separate inherited-`PWD` observation covers one
+valid logical cwd spelling. These do not establish every Bash logical-`cd` edge
+or symlink spelling. Launcher source-path normalization is not proof of
+equivalence to `dirname "$0"`.
 
 `test/script_parity/canonical_wrappers_launcher_test.elisascript` now authors
 eleven ordinary lint cases before the test-wrapper family: unset/empty RUFF_BIN,
@@ -120,14 +126,14 @@ directory-environment probe are identity-checked and copied; three Ruff probe al
 exactly eleven lint cases are selected. No
 canonical/campaign test wrapper or `.venv/bin/python` fixture is staged in this
 wave. These eleven are ordinary argv/status cases; the matrix additionally
-runs one signal-termination case, one `PWD`/`OLDPWD` case, and seven
-exec-failure cases, for twenty observations total in the lint wave.
+runs one signal-termination case, three `PWD`/`OLDPWD` cases, and seven
+exec-failure cases, for twenty-two observations total in the lint wave.
 Source/case count checks reject silently
 empty or reduced selections. The wider twenty-one ordinary-case selection
 remains available through an explicit
 `public_launcher_parity(EsCanonicalWrapperScope::Wave.WrapperFamily)` call;
-with the same signal, `PWD`/`OLDPWD`, and exec-failure checks, that wave has
-thirty observations. The default test does not advance to it automatically. Wave
+with the same signal, all three `PWD`/`OLDPWD` cases, and exec-failure checks,
+that wave has thirty-two observations. The default test does not advance to it automatically. Wave
 selection does not grant execution authorization or prove that a preceding
 wave passed.
 Pure scope fixtures are in `test/script_parity/canonical_wrapper_scope_test.elisa`
