@@ -369,12 +369,19 @@ SHA-256 and Unicode License v3 attribution. Elisa's general `Text.isprintable()`
 predicate remains deliberately ASCII-only; the scanner uses this narrow,
 version-pinned helper instead. These are static source contracts, not executed
 evidence. The differential sample now includes the U+0378..U+0379 unassigned
-gap between printable U+0377 and U+037A, but does not yet exercise every table
-boundary against Python. A candidate-only self-check probes every declared
-range's start, midpoint, end, and immediate neighbors; it checks interval and
-binary-lookup consistency against the generated table, not independent Unicode
-classification. Full UCD-derived boundary differential coverage and runtime
-parity remain required for acceptance. A
+gap between printable U+0377 and U+037A. The generated one-line malformed-name
+fixture now concatenates every range start, midpoint, end, and immediate
+neighbors that can be represented in a single strict-UTF-8 scanner line; one
+scanner/Python differential pair checks all of those diagnostic escapes at
+once. It excludes U+0085/U+2028/U+2029 because they split source lines, and
+surrogates because strict UTF-8 cannot encode them. The runtime-built
+malformed-type input separately exercises C0/NUL/DEL and Latin-1 escaping; the
+malformed-name case covers ASCII space/punctuation plus Unicode whitespace.
+These remain unexecuted source contracts. A candidate-only self-check also
+probes every declared range's start, midpoint, end, and immediate neighbors;
+it checks interval and binary-lookup consistency against the generated table,
+not independent Unicode classification. Runtime parity still needs explicit
+authorization under the validation hold. A
 candidate-only generated input also
 exercises rejection of 4,097 parameters before storing the excess parameter
 slice or creating `Parameter` records, without entering Python. The bounded

@@ -12,8 +12,9 @@ launcher_fixture="$repo_root/test/script_parity/wasm_export_scan_launcher_test.e
 reference="$repo_root/scripts/wasm_export_scan_reference.py"
 contract="$repo_root/test/fixtures/script_parity/wasm_export_scan/CONTRACT.md"
 unicode_data="$repo_root/scripts/wasm_export_scan_unicode16.elisascript"
+unicode_boundary_fixture="$repo_root/test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input"
 
-for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$contract" "$unicode_data"; do
+for required_file in "$candidate" "$fixture" "$launcher_fixture" "$reference" "$contract" "$unicode_data" "$unicode_boundary_fixture"; do
     if [ ! -f "$required_file" ]; then
         printf 'W09 bounds audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -153,8 +154,17 @@ rg -Fq 'lookup_nonprintable(first) or not lookup_nonprintable(middle) or not loo
 rg -Fq 'previous_end != 1114111' "$unicode_data"
 rg -Fq 'index == 0 and first != 0' "$unicode_data"
 rg -Fq 'assert EsWasmUnicode16::range_boundary_contract()' "$fixture"
+rg -Fq 'scanner_pair_matches("test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input")' "$fixture"
+rg -Fq 'source_bytes.push(0u8)' "$fixture"
+rg -Fq 'source_bytes.push(1u8)' "$fixture"
+rg -Fq 'source_bytes.push(15u8)' "$fixture"
+rg -Fq 'source_bytes.push(31u8)' "$fixture"
+rg -Fq 'source_bytes.push(127u8)' "$fixture"
+rg -Fq 'append_source_text(spacing_bytes, "export fn invalid(value !~")' "$fixture"
+rg -Fq 'export fn unicode_boundary(x' "$unicode_boundary_fixture"
+rg -Fq 'y: int) -> void = unicode_boundary' "$unicode_boundary_fixture"
 rg -Fq 'U+0378..U+0379 unassigned gap' "$fixture"
-rg -Fq 'Full UCD-derived boundary differential coverage and runtime parity remain required for acceptance.' "$contract"
+rg -Fq 'fixture now concatenates every range start, midpoint, end, and immediate' "$contract"
 if rg -Fq 'python_extra_nonprintable' "$candidate"; then
     printf 'W09 Unicode audit: remove hand-maintained printability exceptions\n' >&2
     exit 1
