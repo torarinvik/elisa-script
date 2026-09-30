@@ -17,7 +17,7 @@ matrix.
 | `undeclared_extension` | 1 | empty | `check_namespace_manifest: extension targets undeclared module: MissingModule\n` |
 | `leaked_impl` | 1 | empty | `check_namespace_manifest: private POSIX _impl call leaked outside runtime:\n{SOURCE_ROOT}/leak.elisa:1:elisascript_posix_open_impl()\n` |
 | `abi_outside_runtime` | 1 | empty | `check_namespace_manifest: POSIX ABI declaration is outside EsRuntime: {SOURCE_ROOT}/runtime/posix.elisa\n` |
-| `bytecode_renderer_missing` | 1 | empty | `check_namespace_manifest: bytecode diagnostic renderer omits IssueKind.Missing\n` |
+| `bytecode_renderer_missing` | 1 | empty | `check_namespace_manifest: bytecode diagnostic renderer omits IssueKind.Supplement\n` |
 | `lower_renderer_missing` | 1 | empty | `check_namespace_manifest: source diagnostic renderer omits LowerIssueKind.Missing\n` |
 | `diagnostic_reset_missing` | 1 | empty | `check_namespace_manifest: diagnostic reset omits stale\n` |
 | `missing_include` | 1 | empty | `check_namespace_manifest: missing include: {SOURCE_ROOT}/a.elisa -> missing_fragment.elisa\n` |
@@ -61,7 +61,10 @@ The positive renderer fixture also places its only `IssueKind.Missing` spelling
 in a second `bytecode_issue_detail`-prefix-to-`runtime_error_detail`-prefix
 range. This pins the shell reference's repeated `sed` range behavior and the
 candidate's corresponding resumable scan; it does not change manifest output.
-The fixture and candidate remain unexecuted.
+The `bytecode_renderer_missing` fixture repeats the `IssueKind` enum range,
+renders only the first-range `Missing` variant, and expects the later
+`Supplement` variant to be reported missing. These fixtures and the candidate
+remain unexecuted.
 
 The shell reference and candidate also resolve omitted or empty source-root and
 parser-token arguments relative to their own script directories. The launcher
