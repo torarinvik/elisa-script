@@ -2,8 +2,10 @@
 # Run only through the bounded validation wrapper after explicit
 # reauthorization; this source is intentionally not run during the hold.
 include "../../src/testing/differential.elisa"
+include "../../src/runtime/bounded_text_posix.elisa"
 
 using EsDifferential
+using EsBoundedText
 
 
 module EsMigrationReviewLauncherParity:
@@ -60,6 +62,12 @@ module EsMigrationReviewLauncherParity:
         def append_text_bytes(target: mutable darray[u8]&, text: sview) -> void can[Memory.Allocate, Abort.Panic]:
             for byte in text |target|:
                 target.push(byte)
+
+
+        def write_fixture_text(target: Path, contents: sview) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            bytes: mutable darray[u8] = []
+            append_text_bytes(bytes, contents)
+            return write_fixture_bytes(target, bytes)
 
 
         def file_has_expected_sha256(file_path: sview, expected_hex: sview, process_name: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, File.Read, Unsafe.PointerCast]:
@@ -172,6 +180,13 @@ module EsMigrationReviewLauncherParity:
             return comparison.equal and reference_run.exit_status == expected_status and candidate_run.exit_status == expected_status and reference_run.stdout == expected_stdout and candidate_run.stdout == expected_stdout and reference_run.stderr == expected_stderr and candidate_run.stderr == expected_stderr
 
 
+        def rewrite_manifest_parity(launcher: sview, target: Path, source: sview, old_text: sview, new_text: sview, expected_stderr: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Unsafe.PointerCast]:
+            rewritten: sview = source.replace(old_text, new_text)
+            return false if rewritten == source
+            return false if not write_fixture_text(target, rewritten)
+            return process_parity(launcher, f"{target}", 1, "", expected_stderr)
+
+
         def all_process_cases_match(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
             positive_output: sview = "migration review audit: 21 current candidates have reviewed ownership, disposition, and acceptance metadata\n"
             return false if not process_parity(launcher, Commands::MANIFEST, 0, positive_output, "")
@@ -180,10 +195,41 @@ module EsMigrationReviewLauncherParity:
             temporary: TemporaryDirectory = make_temporary_directory()
             return false if not temporary.created
             oversized_path: Path = temporary.path.joinpath("oversized.tsv")
+            case_path: Path = temporary.path.joinpath("case.tsv")
             missing_path: Path = temporary.path.joinpath("missing.tsv")
             missing_text: sview = f"{missing_path}"
             missing_output: sview = "migration review audit: missing " + missing_text + "\n"
             missing_parity_ok: bool = process_parity(launcher, missing_text, 1, "", missing_output)
+
+            manifest_contents: sview = try EsBoundedText::read_utf8(path(Commands::MANIFEST), 1048576) else err:
+                ""
+            manifest_read_ok: bool = manifest_contents != ""
+            missing_candidate_output: sview = "migration review audit: missing reviewed candidate check_differential_case.sh\n"
+            missing_candidate_parity_ok: bool = manifest_read_ok and rewrite_manifest_parity(
+                launcher, case_path, manifest_contents, "/scripts/check_differential_case.sh",
+                "/scripts/not-reviewed.sh", missing_candidate_output)
+
+            rows_invalid_output: sview = "migration review audit: rows are incomplete, duplicated, unreviewed, or use an unapproved disposition\n"
+            duplicate_path_parity_ok: bool = manifest_read_ok and rewrite_manifest_parity(
+                launcher, case_path, manifest_contents, "/scripts/check_differential_case.sh",
+                "/scripts/check_namespace_manifest.sh", rows_invalid_output)
+            invalid_disposition_parity_ok: bool = manifest_read_ok and rewrite_manifest_parity(
+                launcher, case_path, manifest_contents, "\tport\t", "\tdiscard\t", rows_invalid_output)
+
+            safety_invalid_output: sview = "migration review audit: safety wrappers are not explicitly retained\n"
+            unretained_wrapper_parity_ok: bool = manifest_read_ok and rewrite_manifest_parity(
+                launcher, case_path, manifest_contents,
+                "\telisascript-maintainers\treviewed\tdirect executable\tretain-external\t",
+                "\tother-owner\treviewed\tdirect executable\tretain-external\t", safety_invalid_output)
+
+            exact_limit_bytes: mutable darray[u8] = []
+            exact_limit_ready: mutable bool = manifest_read_ok and manifest_contents.endswith("\n")
+            if exact_limit_ready:
+                append_text_bytes(exact_limit_bytes, manifest_contents[0:len(manifest_contents) - 1])
+                exact_limit_ready <- append_exact_padding(exact_limit_bytes, 1048576)
+            exact_limit_written: bool = exact_limit_ready and write_fixture_bytes(case_path, exact_limit_bytes)
+            exact_limit_parity_ok: bool = exact_limit_written and process_parity(
+                launcher, f"{case_path}", 0, positive_output, "")
 
             oversized_bytes: mutable darray[u8] = []
             size_ok: bool = append_exact_padding(oversized_bytes, 1048577u64)
@@ -208,8 +254,9 @@ module EsMigrationReviewLauncherParity:
             late_header_write_ok: bool = write_fixture_bytes(oversized_path, late_header_bytes)
             late_header_parity_ok: bool = late_header_write_ok and process_parity(launcher, oversized_text, 1, "", malformed_output)
             _ = remove_fixture_path(oversized_path)
+            case_cleanup_ok: bool = not path_exists(case_path) and not is_symlink(case_path) or remove_fixture_path(case_path)
             cleanup_ok: bool = remove_fixture_directory(temporary.path)
-            return missing_parity_ok and parity_ok and malformed_parity_ok and spaced_header_parity_ok and late_header_parity_ok and cleanup_ok
+            return missing_parity_ok and missing_candidate_parity_ok and duplicate_path_parity_ok and invalid_disposition_parity_ok and unretained_wrapper_parity_ok and exact_limit_parity_ok and parity_ok and malformed_parity_ok and spaced_header_parity_ok and late_header_parity_ok and case_cleanup_ok and cleanup_ok
 
 
     public:
