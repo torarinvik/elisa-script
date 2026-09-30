@@ -11,14 +11,14 @@ presence/NUL, argument-limit, byte-order, and aggregate-budget fixtures in
 
 The probe launches no child, touches no project file, and has no training,
 network, SSH, shell, Ruff, or pytest dependency. It reads only argv, physical
-cwd, three named environment values, one exit-status selector, and stdin.
+cwd, five named environment values, one exit-status selector, and stdin.
 It never dumps the whole environment. Qualify a compiled probe once under the
 existing validation controls, then supply its absolute path and recorded binary
 SHA-256 to isolated wrapper fixtures. Do not introduce an on-demand compiler
 loop into each parity case. Record source/compiler/binary identities; a
 different compiler or tool version is a new qualification, not implicit parity.
 
-## Binary stdout protocol: ESPROBE1
+## Binary stdout protocol: ESPROBE2
 
 All integer lengths are unsigned 32-bit **big-endian** values. Payloads are raw
 bytes, not UTF-8 text, escaped strings, newline-delimited records, or C strings.
@@ -26,15 +26,17 @@ There is no alignment padding or final newline.
 
 | Order | Field |
 | --- | --- |
-| 1 | Eight ASCII bytes `ESPROBE1` |
+| 1 | Eight ASCII bytes `ESPROBE2` |
 | 2 | Argument count, excluding argv[0], as u32 |
 | 3 | For each argument: u32 length, then exactly those bytes |
 | 4 | Physical cwd: u32 length, then exactly those bytes |
 | 5 | PYTHON_BIN presence byte (0/1); if 1, u32 length + bytes |
 | 6 | RUFF_BIN presence byte (0/1); if 1, u32 length + bytes |
 | 7 | ELISASCRIPT_PARITY_PROBE_MARKER presence byte (0/1); if 1, u32 length + bytes |
-| 8 | Stdin: u32 length, then exactly those bytes |
-| 9 | Two terminal bytes: `00 ff` |
+| 8 | PWD presence byte (0/1); if 1, u32 length + bytes |
+| 9 | OLDPWD presence byte (0/1); if 1, u32 length + bytes |
+| 10 | Stdin: u32 length, then exactly those bytes |
+| 11 | Two terminal bytes: `00 ff` |
 
 A present empty value has a `1` presence byte and a zero length. An absent
 value has only a `0` presence byte. Empty arguments still have length fields.
@@ -57,12 +59,12 @@ for reference/candidate and independently assert statuses such as 0/1/2/23.
 
 ## Bounds and failure policy
 
-At most 256 arguments are admitted. Argument, cwd, and the three recorded
+At most 256 arguments are admitted. Argument, cwd, and the five recorded
 environment payloads share a 65,536-byte aggregate text budget, excluding their
 C terminators and protocol framing. Cwd has a 4,096-byte buffer (thus at most
 4,095 payload bytes). Stdin is at most 65,536 bytes, with a one-byte overflow
-probe. Maximum normal stdout is 132,133 bytes; admit at least that much combined
-stdout/stderr in the outer runner (132,147 total), rather than a 64 KiB capture.
+probe. Maximum normal stdout is 132,143 bytes; admit at least that much combined
+stdout/stderr in the outer runner (132,157 total), rather than a 64 KiB capture.
 The implementation uses fixed, modest stack buffers; those are not an OS RSS
 cap and do not bound libc/toolchain allocations.
 

@@ -11,7 +11,7 @@ enum {
     MAX_TEXT_BYTES = 65536,
     MAX_STDIN_BYTES = 65536,
     CWD_CAPACITY = 4096,
-    ENVIRONMENT_FIELDS = 3,
+    ENVIRONMENT_FIELDS = 5,
     FAILURE_STATUS = 125
 };
 
@@ -68,13 +68,13 @@ static int selected_status(int *status) {
 }
 
 int main(int argc, char **argv) {
-    static const unsigned char magic[] = {'E', 'S', 'P', 'R', 'O', 'B', 'E', '1'};
+    static const unsigned char magic[] = {'E', 'S', 'P', 'R', 'O', 'B', 'E', '2'};
     static const unsigned char tail[] = {0, 255};
     static const unsigned char stderr_bytes[] = {
         'p', 'r', 'o', 'b', 'e', '-', 's', 't', 'd', 'e', 'r', 'r', 0, 255
     };
     static const char *const environment_names[ENVIRONMENT_FIELDS] = {
-        "PYTHON_BIN", "RUFF_BIN", "ELISASCRIPT_PARITY_PROBE_MARKER"
+        "PYTHON_BIN", "RUFF_BIN", "ELISASCRIPT_PARITY_PROBE_MARKER", "PWD", "OLDPWD"
     };
     struct field arguments[MAX_ARGUMENTS];
     struct field environment[ENVIRONMENT_FIELDS];
