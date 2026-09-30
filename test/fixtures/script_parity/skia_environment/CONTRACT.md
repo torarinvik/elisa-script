@@ -50,6 +50,14 @@ remain separate; the dormant native matrix below does not test the interpreted
 companion. Its separate public-launcher tool is described below; actual
 qualification is still required.
 
+A mirrored deployment candidate now exists at
+`ports/elisa-skia/infra/bots/recipe_modules/vars/resources/get_env_var.elisascript`
+with its typed helper beside it and the original BSD license at
+`ports/elisa-skia/LICENSE`. It uses the interpreted environment APIs and does
+not replace or modify the original Python file or its caller. This mirror has
+not been added to the launcher matrix or compiled; its POSIX key assumptions do
+not cover the observed Windows caller path, so no caller migration is eligible.
+
 ## Intended ordinary behavior
 
 Use the first script argument as the environment key; ignore extra arguments.
