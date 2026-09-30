@@ -1,0 +1,129 @@
+# Typed port of the selection and ordering rules used by Elisa Engine's
+# shader_permutation_selection.py. The JSON document owns names borrowed by
+# Selection; keep the selection alive while resolving or rendering them.
+
+module EsShaderPermutationSelection:
+    using EsData
+    using EsJson
+    using EsJsonLex
+    using EsJsonParse
+
+    public:
+        const module Limits:
+            INPUT_BYTES: usize = 1048576
+            PERMUTATIONS: usize = 8192
+
+
+        struct Selection:
+            select_all: bool = true
+            document: JsonDocument = JsonDocument{}
+            names: darray[sview] = []
+
+
+        struct Resolution:
+            # Indices follow Python's sorted(selection) order for explicit
+            # selections, or original input order when selection is absent.
+            indices: darray[usize] = []
+            missing: darray[sview] = []
+
+
+        error SelectionError:
+            SelectionTooLarge
+            JsonArrayRequired
+            NonemptyBoundedArrayRequired
+            NamesMustBeStrings
+            InvalidOrDuplicateName
+
+
+        def all_shader_permutations() -> Selection:
+            return Selection{}
+
+
+        def parse_selection_json(source: sview) -> Selection error[SelectionError] can[Memory.Allocate, Abort.Panic]:
+            raise SelectionError.SelectionTooLarge if len(source) > Limits::INPUT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES}
+            lexed: JsonLexedSource = try lex_json(source, limits) else err:
+                raise SelectionError.JsonArrayRequired
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise SelectionError.JsonArrayRequired
+            raise SelectionError.JsonArrayRequired if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise SelectionError.JsonArrayRequired if root_index >= document.nodes.count
+            root: JsonNode = document.nodes[root_index]
+            raise SelectionError.NonemptyBoundedArrayRequired if root.kind != JsonNodeKind.Array or root.child_count == 0 or root.child_count > Limits::PERMUTATIONS
+            raise SelectionError.JsonArrayRequired if root.child_start > document.children.count
+            raise SelectionError.JsonArrayRequired if root.child_count > document.children.count - root.child_start
+            names: mutable darray[sview] = []
+            names.reserve(root.child_count)
+            for ordinal in 0..<root.child_count |document, root, names|:
+                edge: JsonArrayChild = document.children[root.child_start + ordinal]
+                raise SelectionError.JsonArrayRequired if edge.value_index >= document.nodes.count
+                node: JsonNode = document.nodes[edge.value_index]
+                raise SelectionError.NamesMustBeStrings if node.kind != JsonNodeKind.Text
+                name: sview = try shader_selection_text(document, node) else err:
+                    raise SelectionError.JsonArrayRequired
+                raise SelectionError.InvalidOrDuplicateName if not shader_selection_path_valid(name)
+                names.push(name)
+            ordered_names: darray[sview] = sorted(names)
+            for index in 1..<ordered_names.count |ordered_names|:
+                raise SelectionError.InvalidOrDuplicateName if ordered_names[index] == ordered_names[index - 1]
+            return Selection{select_all: false, document: document, names: ordered_names}
+
+
+        def resolve_shader_permutations(selection: Selection&, available_names: darray[sview]) -> Resolution can[Memory.Allocate, Abort.Panic]:
+            resolution: mutable Resolution = Resolution{}
+            if selection.select_all:
+                resolution.indices.reserve(available_names.count)
+                for index in 0..<available_names.count |resolution|:
+                    resolution.indices.push(index)
+                return resolution
+            resolution.indices.reserve(selection.names.count)
+            resolution.missing.reserve(selection.names.count)
+            for requested in selection.names |selection, available_names, resolution|:
+                found: mutable usize = available_names.count
+                cursor: mutable usize = available_names.count
+                while cursor > 0 and found == available_names.count:
+                    cursor <- cursor - 1
+                    found <- cursor if available_names[cursor] == requested
+                if found == available_names.count:
+                    resolution.missing.push(requested)
+                else:
+                    resolution.indices.push(found)
+            return resolution
+
+
+    private:
+        def shader_selection_text(document: JsonDocument&, node: JsonNode) -> sview error[JsonContractError]:
+            raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count
+            raise JsonContractError.InvalidScalarPayload if node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            end: usize = node.scalar_start + node.scalar_bytes
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), end.i64())
+
+
+        def shader_selection_path_valid(name: sview) -> bool:
+            return false if name == ""
+            return false if sview_at(name, 0) == 47u8
+            component_start: mutable usize = 0
+            filename_start: mutable usize = 0
+            cursor: mutable usize = 0
+            while cursor < len(name):
+                byte: u8 = sview_at(name, cursor)
+                return false if byte == 0u8 or byte == 92u8
+                if byte == 47u8:
+                    return false if cursor == component_start
+                    component: sview = name[component_start:cursor]
+                    return false if component == "." or component == ".."
+                    component_start <- cursor + 1
+                    filename_start <- component_start
+                cursor <- cursor + 1
+            return false if component_start == len(name)
+            final_component: sview = name[filename_start:len(name)]
+            return false if final_component == "." or final_component == ".."
+            dot: mutable usize = len(name)
+            cursor <- filename_start
+            while cursor < len(name):
+                dot <- cursor if sview_at(name, cursor) == 46u8
+                cursor <- cursor + 1
+            return false if dot == len(name) or dot == filename_start
+            return name[dot:len(name)] == ".cso"
