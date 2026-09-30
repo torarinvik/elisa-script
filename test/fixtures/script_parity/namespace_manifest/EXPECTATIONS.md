@@ -39,7 +39,10 @@ dedicated regression fixtures before acceptance. The process-level harness at
 `test/script_parity/namespace_manifest_launcher_test.elisascript` compares
 each tuple against both programs and pins the public launcher's hash before
 and after the matrix. It is source-only and remains unexecuted while compiler
-validation is suspended.
+validation is suspended. Each shell-reference result must satisfy its literal
+or success-prefix oracle before the candidate is launched; a mismatched
+reference receipt now fails closed rather than being paired with candidate
+output.
 
 The positive source root contains `ignored.elisa`, which redeclares
 `EsRuntime`, and a local `.gitignore` that excludes it. The exact positive
