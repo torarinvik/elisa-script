@@ -61,17 +61,15 @@ clean-environment physical and symlink-alias roots, an inherited valid logical
 the fixture root's parent with `PWD` omitted, relative invocation through the
 project's symlink alias with inherited logical `PWD`, and relative invocation
 through nonempty `CDPATH` from the fixture root's parent. Bash's reference emits
-the selected absolute directory before the probe output in that case; the
-candidate currently does not model `CDPATH`. The blocker is not only missing
-lookup/output logic: `Script::source_path()` exposes a normalized absolute path,
-so the script cannot tell whether its original `$0` spelling was relative (the
-condition that makes Bash consult `CDPATH`). Keep `source_path()` stable and add
-a distinct launch-spelling accessor to the invocation context before claiming
-this behavior; carry it through both execution engines. The candidate validates
-inherited logical `PWD`, derives new `PWD` lexically, and verifies its physical
-target. An absolute-source-path control supplies the same nonempty `CDPATH` and
-expects no extra line, because Bash only consults `CDPATH` for a relative `cd`
-operand.
+the selected absolute directory before the probe output in that case. The
+runtime now keeps normalized `Script::source_path()` separate from the original
+`Script::invocation_path()` spelling, with interpreter and bytecode support; the
+candidate derives its root from that spelling, checks colon-separated
+`CDPATH` entries for relative roots, and emits the selected directory line.
+An absolute-source-path control supplies the same nonempty `CDPATH` and expects
+no extra line, because Bash only consults `CDPATH` for a relative `cd` operand.
+These implementations and observations are source-authored and unrun; empty,
+relative, multi-entry, no-match and symlinked `CDPATH` cases remain open.
 These cases are source-authored and unrun; `//`, path-race and complex `..`
 semantics remain open. The seven actual exec-failure cases follow, so the lint
 wave has twenty-six observations total.

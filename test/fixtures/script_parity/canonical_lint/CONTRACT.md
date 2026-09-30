@@ -82,10 +82,14 @@ with nonempty `CDPATH` set to the caller directory; Bash resolves the relative
 `cd` operand there and emits the selected absolute directory before the probe's
 bytes. A seventh supplies nonempty `CDPATH` with an absolute source path and
 expects no `cd` output, since Bash does not search `CDPATH` for an absolute
-operand. The current candidate does not model the relative-path behavior. It
-validates inherited logical `PWD` against the physical cwd, preserves it for
-`OLDPWD`, and computes new logical `PWD` lexically before verifying its
-physical target. Odd `//`, path-race and complex `..` cases remain open.
+operand. The candidate now preserves the raw source operand separately from
+normalized `Script::source_path()` through `Script::invocation_path()`, and
+uses it for relative-root `CDPATH` lookup/output. This source implementation
+has not compiled or run; empty, relative, multi-entry, no-match and symlinked
+`CDPATH` cases remain open. It also validates inherited logical `PWD` against
+the physical cwd, preserves it for `OLDPWD`, and computes new logical `PWD`
+lexically before verifying its physical target. Odd `//`, path-race and
+complex `..` cases remain open.
 
 ## Known gaps: do not claim full exec parity
 
