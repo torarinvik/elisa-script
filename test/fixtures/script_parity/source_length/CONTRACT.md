@@ -19,7 +19,8 @@ parity matrix remain uncompiled and unqualified. Component-wise ordering
 fixtures are in `test/script_parity/source_length_order_test.elisascript`.
 
 The candidate lives in elisa-script and selects its neighboring
-`wasmbrowser-proof` project using its own resolved source directory. It is not
+`wasmbrowser-proof` project by resolving its full source-file path before
+deriving the project root, matching `Path(__file__).resolve()`. It is not
 installed in that project, and neither the original Python script nor its
 `scripts/test.sh` caller has changed. The authored public-launcher fixture
 copies these siblings under one temporary workspace:
@@ -96,7 +97,10 @@ mixed-terminator/Unicode/control-byte source, seven oversized hidden/Unicode/
 prefix-colliding paths in exact diagnostic order, case-sensitive suffix
 filtering, a file symlink, and a descendant directory-symlink cycle. Each run
 asserts independently expected status/stdout/stderr as well as agreement.
-Extra wrapper arguments are supplied to both programs and must be ignored.
+Extra wrapper arguments are supplied to both programs and must be ignored. A
+candidate launch through a final symlink in a different relative-include
+directory checks that root selection follows the resolved candidate file, not
+the symlink's parent directory.
 
 The single-file phase now consumes 13 independently authored cases from
 `test/script_parity/source_length_cases.elisa`, which imports neither the
@@ -108,7 +112,7 @@ candidate counter nor a host adapter. It covers an empty file, BOM-only content,
 fixture data, not produced by the candidate. Missing/empty roots and multi-file
 ordering/symlink cases remain separate. Two additional single-file cases put a
 CRLF pair and a two-byte UTF-8 scalar across the scanner's 16 KiB read boundary.
-There are 22 ordinary case invocations in total, each with reference-first
+There are 23 ordinary case invocations in total, each with reference-first
 admission and exact empty stdout. The final case descends 65 directories,
 beyond the prior depth limit.
 
