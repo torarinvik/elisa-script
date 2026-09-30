@@ -1,0 +1,165 @@
+# Bounded Elisascript port of check_builtin_effect_metadata.sh.
+# Fixed and ordered same-line checks stream source without spawning rg.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsBuiltinEffectMetadataAudit:
+    private:
+        const module Inputs:
+            REGISTRY: sview = "vendor/elisa-compiler/src/semantic/builtin_registry.elisa"
+            SEMANTIC_TYPES: sview = "vendor/elisa-compiler/src/semantic/semantic_types.elisa"
+            SYMBOLS: sview = "vendor/elisa-compiler/src/semantic/symbols.elisa"
+            LOWERER: sview = "src/ir/lower_ast.elisa"
+            VERIFIER: sview = "src/ir/ir_verify.elisa"
+            SEMANTICS: sview = "docs/semantics.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            SECONDARY_EMPTY: sview = "effects_secondary: sview = \"\""
+            EFFECT_ACCESSOR: sview = "def builtin_effect_at(spec: BuiltinSpec, index: u32)"
+            EFFECT_RETURN: sview = "return spec.effects if index == 0 else spec.effects_secondary if index == 1"
+            COPY_ROW_START: sview = "name: \""
+            COPY_ROW_END: sview = "effects: \"File.Read\", effects_secondary: \"File.Write\""
+            SEEDED_SECONDARY: sview = "effects_secondary: sview = sview(\"\", 0, 0)"
+            SYMBOL_SECONDARY: sview = "effects_secondary: builtin_spec.effects_secondary"
+            PRIMARY_EFFECT: sview = "primary_effect: sview = EsBuiltin::builtin_effect_at(spec, 0)"
+            SECONDARY_EFFECT: sview = "secondary_effect: sview = EsBuiltin::builtin_effect_at(spec, 1)"
+            EFFECT_PUSH: sview = "state.required_effects.push(secondary_effect)"
+            PATH_READ: sview = "path copy requires File.Read in the function effect row"
+            PATH_WRITE: sview = "path copy or move requires File.Write in the function effect row"
+            TREE_READ: sview = "tree copy requires File.Read in the function effect row"
+            TREE_WRITE: sview = "tree copy requires File.Write in the function effect row"
+            DOC_EFFECTS: sview = "can[File.Read, File.Write]"
+            DOC_SECONDARY: sview = "secondary effect"
+            LEDGER: sview = "independent read/write"
+
+
+        const module Messages:
+            REGISTRY: sview = "builtin effect metadata audit: registry effect-slot accessor is incomplete"
+            COPY_ROW_PREFIX: sview = "builtin effect metadata audit: copy row lacks independent read/write slots for "
+            SEMANTIC: sview = "builtin effect metadata audit: seeded semantic symbols do not preserve secondary effects"
+            LOWERER: sview = "builtin effect metadata audit: lowerer does not consume indexed effect slots"
+            VERIFIER: sview = "builtin effect metadata audit: verifier does not require both copy permissions"
+            DOCS: sview = "builtin effect metadata audit: copy effect contract is not documented"
+            READ_FAILED: sview = "builtin effect metadata audit: unable to read source: "
+            SUCCESS: sview = "builtin effect metadata audit: registry, semantic seeds, lowerer, verifier, and docs preserve independent copy read/write effects"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def has_line(path: Path, needle: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_line(path, needle):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def has_ordered_line(path: Path, first: sview, second: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_line(path, first, second):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+        def require_all(path: Path, patterns: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                status: i64 = has_line(path, pattern)
+                return status if status != 0i64
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::REGISTRY),
+                root.joinpath(Inputs::SEMANTIC_TYPES),
+                root.joinpath(Inputs::SYMBOLS),
+                root.joinpath(Inputs::LOWERER),
+                root.joinpath(Inputs::VERIFIER),
+                root.joinpath(Inputs::SEMANTICS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                return ExitStatus::FAILURE if not is_file(input_path)
+
+            registry_patterns: darray[sview] = [Patterns::SECONDARY_EMPTY, Patterns::EFFECT_ACCESSOR, Patterns::EFFECT_RETURN]
+            status: i64 = require_all(inputs[0], registry_patterns)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::REGISTRY)
+                return ExitStatus::FAILURE
+
+            copy_names: darray[sview] = ["copy_path", "cp", "copyfile", "copy_tree", "copytree"]
+            for copy_name in copy_names:
+                status <- has_ordered_line(inputs[0], Patterns::COPY_ROW_START + f"{copy_name}\"", Patterns::COPY_ROW_END)
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                if status != 0i64:
+                    diagnostic(Messages::COPY_ROW_PREFIX + f"{copy_name}")
+                    return ExitStatus::FAILURE
+
+            status <- has_line(inputs[1], Patterns::SEEDED_SECONDARY)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::SEMANTIC)
+                return ExitStatus::FAILURE
+            status <- has_line(inputs[2], Patterns::SYMBOL_SECONDARY)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::SEMANTIC)
+                return ExitStatus::FAILURE
+
+            lowerer_patterns: darray[sview] = [Patterns::PRIMARY_EFFECT, Patterns::SECONDARY_EFFECT, Patterns::EFFECT_PUSH]
+            status <- require_all(inputs[3], lowerer_patterns)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::LOWERER)
+                return ExitStatus::FAILURE
+
+            verifier_patterns: darray[sview] = [Patterns::PATH_READ, Patterns::PATH_WRITE, Patterns::TREE_READ, Patterns::TREE_WRITE]
+            status <- require_all(inputs[4], verifier_patterns)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::VERIFIER)
+                return ExitStatus::FAILURE
+
+            docs_patterns: darray[sview] = [Patterns::DOC_EFFECTS, Patterns::DOC_SECONDARY]
+            status <- require_all(inputs[5], docs_patterns)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::DOCS)
+                return ExitStatus::FAILURE
+            status <- has_line(inputs[6], Patterns::LEDGER)
+            if status != 0i64:
+                return ExitStatus::IO_FAILURE if status == ExitStatus::IO_FAILURE
+                diagnostic(Messages::DOCS)
+                return ExitStatus::FAILURE
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsBuiltinEffectMetadataAudit::run_default()
