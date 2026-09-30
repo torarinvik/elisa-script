@@ -268,11 +268,13 @@ counts above the 1,024-entry bound fail explicitly. The stat adapter follows
 symlinks, maps every stat failure to absence, and treats directories as present
 but non-executable, matching the inspected non-AFS Bash 3.2 `file_status` path.
 `observe_search_plan` now validates the owned plan. Direct-name mode observes
-the exact command spelling once without applying PATH candidate preference;
-PATH mode validates the plan, joins and observes components in order, retaining
-exact spellings, and stops after the first executable candidate just as Bash
-does. An unsupported tilde component is rejected only when reached, before its
-stat query, so an earlier executable can end the search without needing that
+the exact slash-containing command spelling once without applying PATH
+candidate preference. A slashless command with an empty PATH is retained as an
+unsearched literal name, matching Bash's early return without stat. PATH mode
+validates the plan, joins and observes components in order, retaining exact
+spellings, and stops after the first executable candidate just as Bash does.
+An unsupported tilde component is rejected only when reached, before its stat
+query, so an earlier executable can end the search without needing that
 expansion. If all reached components are supported and none is executable, it
 applies the selector after exhausting PATH. The adapter has not been compiled
 or exercised; the caller must prevent concurrent credential changes during
