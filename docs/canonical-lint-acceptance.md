@@ -55,7 +55,7 @@ reference is admitted before the candidate. This case is authored and unrun;
 source inspection predicts that today's fork/wait candidate returns a completed
 status instead of replacing its process. It exposes the D11 gap without
 pretending that status arithmetic proves signal parity. It runs after the
-eleven ordinary lint cases. Twenty observations cover directory variables:
+eleven ordinary lint cases. Twenty-one observations cover directory variables:
 clean-environment physical and symlink-alias roots, an inherited valid logical
 `PWD` alias of `/` that must become `OLDPWD`, relative script invocation from
 the fixture root's parent with `PWD` omitted, relative invocation through the
@@ -86,17 +86,19 @@ path-race and complex `..` semantics remain open. One isolated case expands a
 relative wrapper root, preserving the repeated suffix separator. Two more cases
 expand `~+` and `~-` from explicit PWD and OLDPWD values. Three additional
 cases exercise the current directory-stack slot through `~0`, `~+0`, and `~-0`.
-Named-user and nonzero indexed directory-stack tilde entries remain open in the
-wrapper. The seven actual exec-failure cases follow, so the lint wave has
-thirty-nine observations total.
+One more omits HOME and guards against treating that state as an empty prefix
+that selects the caller's directory. Account-home fallback when HOME is unset,
+named-user, and nonzero indexed directory-stack tilde entries remain open in the
+wrapper. The seven actual exec-failure cases follow, so the lint wave has forty
+observations total.
 
 Source review of Bash 3.2's `absolute_pathname` showed that only absolute `cd`
 operands bypass `CDPATH`; relative operands beginning with `./` or `../` still
 search it. The companion checks the raw spelling before normalization, and
 the two native cases now expect CDPATH's selected-directory output before the
 probe bytes when a nonempty entry matches. These cases are authored, not
-observed. Named-user and nonzero indexed directory-stack forms in `CDPATH`
-remain open in the candidate.
+observed. Account-home fallback when HOME is unset, named-user, and nonzero
+indexed directory-stack forms in `CDPATH` remain open in the candidate.
 
 Checksum-child, direct-probe, ordinary-wrapper and exec-failure admission now
 share a private completed-status predicate requiring `Completed`, the exact
