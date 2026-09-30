@@ -148,8 +148,13 @@ rg -Fq 'RANGE_COUNT: usize = 737' "$unicode_data"
 rg -Fq 'NONPRINTABLE_STARTS: u32[737]' "$unicode_data"
 rg -Fq 'NONPRINTABLE_ENDS: u32[737]' "$unicode_data"
 rg -Fq 'middle <- lower + ((upper - lower) / 2)' "$unicode_data"
+rg -Fq 'def range_boundary_contract() -> bool' "$unicode_data"
+rg -Fq 'lookup_nonprintable(first) or not lookup_nonprintable(middle) or not lookup_nonprintable(last)' "$unicode_data"
+rg -Fq 'previous_end != 1114111' "$unicode_data"
+rg -Fq 'index == 0 and first != 0' "$unicode_data"
+rg -Fq 'assert EsWasmUnicode16::range_boundary_contract()' "$fixture"
 rg -Fq 'U+0378..U+0379 unassigned gap' "$fixture"
-rg -Fq 'Full generated boundary coverage and runtime parity remain required for acceptance.' "$contract"
+rg -Fq 'Full UCD-derived boundary differential coverage and runtime parity remain required for acceptance.' "$contract"
 if rg -Fq 'python_extra_nonprintable' "$candidate"; then
     printf 'W09 Unicode audit: remove hand-maintained printability exceptions\n' >&2
     exit 1

@@ -370,8 +370,11 @@ predicate remains deliberately ASCII-only; the scanner uses this narrow,
 version-pinned helper instead. These are static source contracts, not executed
 evidence. The differential sample now includes the U+0378..U+0379 unassigned
 gap between printable U+0377 and U+037A, but does not yet exercise every table
-boundary and representative interior value. Full generated boundary coverage
-and runtime parity remain required for acceptance. A
+boundary against Python. A candidate-only self-check probes every declared
+range's start, midpoint, end, and immediate neighbors; it checks interval and
+binary-lookup consistency against the generated table, not independent Unicode
+classification. Full UCD-derived boundary differential coverage and runtime
+parity remain required for acceptance. A
 candidate-only generated input also
 exercises rejection of 4,097 parameters before storing the excess parameter
 slice or creating `Parameter` records, without entering Python. The bounded
