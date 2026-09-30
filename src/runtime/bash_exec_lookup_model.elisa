@@ -46,6 +46,10 @@ module EsBashExecLookup:
         struct PathTildeContext:
             home_present: bool = false
             home_directory: darray[u8] = []
+            pwd_present: bool = false
+            pwd_directory: darray[u8] = []
+            oldpwd_present: bool = false
+            oldpwd_directory: darray[u8] = []
 
 
         struct PathDirectory:
@@ -151,31 +155,45 @@ module EsBashExecLookup:
             return string_view_slice(path_value, directory.start.i64(), (directory.start + directory.length).i64())
 
 
-        # Match Bash's `~` and `~/suffix` prefix concatenation when the shell's
-        # HOME value is available. Do not normalize bytes: repeated separators
-        # are significant to the subsequent sh_makepath-compatible join.
-        # Named-user, ~+/~-, and passwd fallback forms require more shell state.
+        # Match Bash's HOME, PWD and OLDPWD prefixes when supplied as explicit
+        # snapshots. Do not normalize bytes: repeated separators are significant
+        # to the subsequent sh_makepath-compatible join. Named-user, directory-
+        # stack, and passwd fallback forms require more shell state.
         def resolve_path_directory(directory: sview, tilde: PathTildeContext&) -> darray[u8] error[LookupError] can[Memory.Allocate, Abort.Panic]:
             directory_length: usize = sview_len(directory)
             raise LookupError.PathLimitExceeded if directory_length > Limits::PATH_BYTES
             raise LookupError.SearchInputContainsNul if sview_contains_byte(directory, 0u8)
             is_tilde: mutable bool = false
             is_tilde <- sview_at(directory, 0) == 126u8 if directory_length > 0
+            prefix: mutable sview = directory
+            suffix_start: mutable usize = 0
             if is_tilde:
-                raise LookupError.TildeExpansionUnsupported if directory_length > 1 and sview_at(directory, 1) != 47u8
-                raise LookupError.TildeExpansionUnsupported if not tilde.home_present
-                raise LookupError.PathLimitExceeded if tilde.home_directory.count > Limits::PATH_BYTES
-                raise LookupError.SearchInputContainsNul if sview_contains_byte(bytes_view(tilde.home_directory), 0u8)
+                suffix_start <- 1
+                while suffix_start < directory_length and sview_at(directory, suffix_start) != 47u8 |directory, suffix_start|:
+                    suffix_start <- suffix_start + 1
+                username_length: usize = suffix_start - 1
+                if username_length == 0:
+                    raise LookupError.TildeExpansionUnsupported if not tilde.home_present
+                    prefix <- bytes_view(tilde.home_directory)
+                else if username_length == 1 and sview_at(directory, 1) == 43u8:
+                    raise LookupError.TildeExpansionUnsupported if not tilde.pwd_present
+                    prefix <- bytes_view(tilde.pwd_directory)
+                else if username_length == 1 and sview_at(directory, 1) == 45u8:
+                    raise LookupError.TildeExpansionUnsupported if not tilde.oldpwd_present
+                    prefix <- bytes_view(tilde.oldpwd_directory)
+                else:
+                    raise LookupError.TildeExpansionUnsupported
 
-            home_length: usize = tilde.home_directory.count if is_tilde else 0
-            suffix_length: usize = directory_length - 1 if is_tilde else directory_length
-            raise LookupError.PathLimitExceeded if suffix_length > Limits::PATH_BYTES - home_length
+            prefix_length: usize = sview_len(prefix)
+            raise LookupError.PathLimitExceeded if prefix_length > Limits::PATH_BYTES
+            raise LookupError.SearchInputContainsNul if sview_contains_byte(prefix, 0u8)
+            suffix_length: usize = directory_length - suffix_start
+            raise LookupError.PathLimitExceeded if suffix_length > Limits::PATH_BYTES - prefix_length
 
             resolved: mutable darray[u8] = []
-            resolved.reserve(home_length + suffix_length)
-            for index in 0..<home_length |tilde, resolved|:
-                resolved.push(tilde.home_directory[index])
-            suffix_start: usize = 1 if is_tilde else 0
+            resolved.reserve(prefix_length + suffix_length)
+            for index in 0..<prefix_length |prefix, resolved|:
+                resolved.push(sview_at(prefix, index))
             for index in suffix_start..<directory_length |directory, resolved|:
                 resolved.push(sview_at(directory, index))
             return resolved

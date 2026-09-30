@@ -249,19 +249,24 @@ Its bounded PATH planner preserves direct-name bypass, empty/interior component
 behavior, and source-observed omission of a trailing empty component. Named
 directories are retained as owned PATH byte spans and mark leading-tilde
 components. The pure model resolves current-user `~`/`~/...` using an explicit
-HOME snapshot; `join_search_candidate` then matches Bash's
+HOME snapshot and `~+`/`~-` using explicit PWD/OLDPWD snapshots;
+`join_search_candidate` then matches Bash's
 `sh_makepath` joining after tilde expansion: an empty directory means `.`, a
 separator is added only when needed, and existing slash spelling is preserved
 without normalization ([Apple Bash 3.2 `makepath.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/sh/makepath.c#L490-L613)).
 Inputs over 64 KiB PATH or 4,096 components fail explicitly, so those bounds
 are runtime policy, not a claim about unrestricted Bash behavior. The pure
-model now byte-concatenates `~` and `~/...` from an explicit HOME snapshot;
-named users and `~+`/`~-` shell hooks remain explicit gaps. Bash 3.2 uses HOME
-for bare `~`/`~/...` and falls back to the account database only when HOME is
-unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)); this adapter does not yet implement
+model byte-concatenates `~` and `~/...` from an explicit HOME snapshot, and
+`~+`/`~-` from explicit PWD/OLDPWD snapshots, preserving suffix separator
+bytes. Bash 3.2 maps these special prefixes to the corresponding shell
+variables ([Apple Bash `general.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/general.c));
+named users, `~+N`/`~-N` directory-stack forms, and HOME's account-database
+fallback remain explicit gaps. Bash 3.2 uses HOME for bare `~`/`~/...` and falls
+back to the account database only when HOME is unset ([Apple Bash `tilde.c`](https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/lib/tilde/tilde.c)); this adapter does not yet implement
 that fallback. Pure fixtures cover selection, permission classification,
 invalid directory-as-executable observations, PATH planning, tilde byte
-preservation, forged-plan rejection, and joining; they are uncompiled and
+preservation (including PWD/OLDPWD prefix expansion), forged-plan rejection,
+and joining; they are uncompiled and
 unrun. A renderer and local Bash source/build qualification remain open.
 
 An opt-in Darwin adapter, `src/runtime/bash_exec_lookup_posix.elisa`, now
@@ -279,12 +284,13 @@ unsearched literal name, matching Bash's early return without stat. PATH mode
 validates the plan, joins and observes components in order, retaining exact
 spellings, and stops after the first executable candidate just as Bash does.
 Current-user `~` and `~/...` components are expanded from a caller-supplied HOME
-snapshot; unsupported tilde forms are rejected only when reached, before their
-stat query, so an earlier executable can end the search without needing that
+snapshot, while `~+` and `~-` use caller-supplied PWD and OLDPWD snapshots;
+unsupported tilde forms are rejected only when reached, before their stat
+query, so an earlier executable can end the search without needing that
 expansion. If all reached components are supported and none is executable, it
 applies the selector after exhausting PATH. The adapter has not been compiled
-or exercised; the caller must keep credential and HOME snapshots stable during
-capture.
+or exercised; the caller must keep credential and shell-directory snapshots
+stable during capture.
 
 `test/runtime/bash_exec_lookup_posix_test.elisa` now authors a narrow adapter
 check with no `bash` candidate in its private first PATH directory and `/bin`
