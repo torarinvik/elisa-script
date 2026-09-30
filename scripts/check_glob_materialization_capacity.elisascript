@@ -1,0 +1,123 @@
+# Bounded Elisascript port of check_glob_materialization_capacity.sh.
+# Scoped and file-wide checks stream source bytes without awk or rg subprocesses.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsGlobMaterializationCapacityAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            INTERPRETER_FIXTURE: sview = "test/ir/elisascript_interpreter_test.elisa"
+            BYTECODE_FIXTURE: sview = "test/ir/elisascript_bytecode_test.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+
+
+        const module Patterns:
+            FUNCTION: sview = "def evaluate_expand_glob("
+            UNIQUE_COUNT: sview = "unique_matches: mutable usize = 0"
+            UNIQUE_PREFLIGHT: sview = "runtime_storage_span_u32_valid(storage, unique_matches)"
+            STORAGE_START: sview = "start: u32 = storage.count.u32()"
+            VARIANT_LIMIT: sview = "variant_bytes > INTERPRET_MAX_GLOB_VARIANT_BYTES"
+            PATTERN_LIMIT: sview = "sview_len(pattern) > INTERPRET_MAX_GLOB_VARIANT_BYTES - variant_bytes"
+            WALKER_MATCH_LIMIT: sview = "walker.match_bytes > INTERPRET_MAX_GLOB_MATCH_BYTES"
+            MATCH_LENGTH_LIMIT: sview = "length > INTERPRET_MAX_GLOB_MATCH_BYTES - walker.match_bytes"
+            EXPAND_GLOB: sview = "expand_glob"
+            DOCS: sview = "Glob expansion similarly counts sorted unique matches"
+            LEDGER: sview = "preflights its deduplicated match count"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "glob materialization capacity audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "glob materialization capacity audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "glob materialization capacity audit: missing "
+            MISSING_MARKERS: sview = "glob materialization capacity audit: missing unique-count markers"
+            WRONG_ORDER: sview = "glob materialization capacity audit: publication precedes unique-count preflight"
+            READ_FAILED: sview = "glob materialization capacity audit: unable to read source: "
+            SUCCESS: sview = "glob materialization capacity audit: deduplicated matches are preflighted before publication"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        struct SearchCheck:
+            input: Path
+            pattern: sview
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def has_line(path: Path, needle: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            catch EsSourceFunctionScope::contains_file_line(path, needle):
+                ok found:
+                    return ExitStatus::FAILURE if not found
+                    return 0i64
+                error _:
+                    diagnostic(Messages::READ_FAILED + f"{path}")
+                    return ExitStatus::IO_FAILURE
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::INTERPRETER),
+                root.joinpath(Inputs::INTERPRETER_FIXTURE),
+                root.joinpath(Inputs::BYTECODE_FIXTURE),
+                root.joinpath(Inputs::DOCS),
+                root.joinpath(Inputs::LEDGER)
+            ]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            function_body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(inputs[0], Patterns::FUNCTION) else err:
+                diagnostic(Messages::READ_FAILED + f"{inputs[0]}")
+                return ExitStatus::IO_FAILURE
+            count_line: usize = EsSourceFunctionScope::first_line_number(function_body.text, Patterns::UNIQUE_COUNT)
+            preflight_line: usize = EsSourceFunctionScope::first_line_number(function_body.text, Patterns::UNIQUE_PREFLIGHT)
+            allocate_line: usize = EsSourceFunctionScope::first_line_number(function_body.text, Patterns::STORAGE_START)
+            if count_line == 0 or preflight_line == 0 or allocate_line == 0:
+                diagnostic(Messages::MISSING_MARKERS)
+                return ExitStatus::FAILURE
+            if count_line >= preflight_line or preflight_line >= allocate_line:
+                diagnostic(Messages::WRONG_ORDER)
+                return ExitStatus::FAILURE
+
+            checks: darray[SearchCheck] = [
+                SearchCheck{input: inputs[0], pattern: Patterns::VARIANT_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::PATTERN_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::WALKER_MATCH_LIMIT},
+                SearchCheck{input: inputs[0], pattern: Patterns::MATCH_LENGTH_LIMIT},
+                SearchCheck{input: inputs[1], pattern: Patterns::EXPAND_GLOB},
+                SearchCheck{input: inputs[2], pattern: Patterns::EXPAND_GLOB},
+                SearchCheck{input: inputs[3], pattern: Patterns::DOCS},
+                SearchCheck{input: inputs[4], pattern: Patterns::LEDGER}
+            ]
+            for check in checks:
+                status: i64 = has_line(check.input, check.pattern)
+                return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsGlobMaterializationCapacityAudit::run_default()
