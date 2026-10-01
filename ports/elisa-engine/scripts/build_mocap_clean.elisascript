@@ -1,0 +1,133 @@
+#!/usr/bin/env elisascript
+# Elisascript companion for elisa-engine/scripts/build_mocap_clean.sh.
+# Keep dependency admission after the first three native compile commands.
+include "./build_mocap_clean_plan.elisa"
+
+using EsEngineMocapCleanBuildPlan
+
+
+module EsEngineMocapCleanBuild:
+    private:
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def execute(command: Command) -> i64 can[Process.Run, Memory.Allocate, Console.Write]:
+            status: i64 = try run_process(executable(command.program), command.arguments) else err:
+                diagnostic("unable to start build command: " + command.program)
+                return 127i64
+            return status
+
+
+        def ufbx_rebuild_required(plan: Plan) -> bool can[File.Read, Memory.Allocate, Abort.Panic]:
+            return true if not is_file(path(plan.ufbx_object))
+            output_mtime: mutable i64 = 0
+            source_mtime: mutable i64 = 0
+            output_mtime_read: mutable bool = false
+            source_mtime_read: mutable bool = false
+            catch file_mtime(path(plan.ufbx_object)):
+                ok value:
+                    output_mtime <- value
+                    output_mtime_read <- true
+                error failure:
+                    _ = failure
+            catch file_mtime(path(plan.ufbx_source)):
+                ok value:
+                    source_mtime <- value
+                    source_mtime_read <- true
+                error failure:
+                    _ = failure
+            return true if not output_mtime_read or not source_mtime_read
+            return EsEngineMocapCleanBuildPlan::ufbx_needs_rebuild(true, output_mtime, source_mtime)
+
+
+    public:
+        def run() -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+            engine_root: Path = try path_real(Script::source_path().parent().parent().parent().parent().parent().joinpath("elisa-engine")) else err:
+                diagnostic("unable to resolve elisa-engine project root")
+                return 1i64
+            if not is_directory(engine_root):
+                diagnostic("elisa-engine project root is not a directory")
+                return 1i64
+
+            configured_compiler: sview = get_environment_or("ELISA_COMPILER_BIN", "")
+            configured_runtime: sview = get_environment_or("ELISA_RUNTIME_OBJECT", "")
+            runtime_object: mutable sview = configured_runtime
+            if runtime_object == "":
+                home: sview = try getenv("HOME", "\0") else "\0"
+                if home == "\0":
+                    diagnostic("HOME is required when ELISA_RUNTIME_OBJECT is unset")
+                    return 1i64
+                runtime_object <- home + "/.elisac/stage1/build/runtime/elisacore_runtime.o"
+
+            plan: Plan = try EsEngineMocapCleanBuildPlan::plan(f"{engine_root}", configured_compiler, runtime_object) else err:
+                diagnostic("invalid mocap native build request")
+                return 1i64
+
+            tail_commands: mutable darray[Command] = []
+            execution: mutable ExecutionState = initial_execution()
+            machine over execution while execution.phase != ExecutionPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, ExecutionPhase.Prepare:
+                    created: bool = try create_directories(path(plan.build_directory)) else err: false
+                    execution <- try execution_after_prepare(execution, created) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    if not created:
+                        diagnostic("unable to create build directory")
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Bootstrap:
+                    command: Command = plan.bootstrap_commands[execution.next_command]
+                    status: i64 = execute(command)
+                    execution <- try execution_after_bootstrap_command(execution, status) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.CheckDependency:
+                    dependency_available: bool = is_file(path(plan.ufbx_source))
+                    if not dependency_available:
+                        diagnostic(Defaults::MISSING_UFBX_MESSAGE)
+                    execution <- try execution_after_dependency_check(execution, dependency_available) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.CheckFreshness:
+                    rebuild_ufbx: bool = ufbx_rebuild_required(plan)
+                    if rebuild_ufbx:
+                        tail_commands.push(plan.ufbx_command)
+                    for command in plan.tail_commands |tail_commands|:
+                        tail_commands.push(command)
+                    execution <- try execution_after_freshness_check(execution, rebuild_ufbx, plan.tail_commands.count) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Tail:
+                    command: Command = tail_commands[execution.next_command]
+                    status: i64 = execute(command)
+                    execution <- try execution_after_tail_command(execution, status) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Report:
+                    execution <- try execution_after_report(execution) else err:
+                        diagnostic("invalid mocap build execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    if execution.exit_status == 0:
+                        _ = write_stdout("built " + plan.executable_path + "\n")
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Done:
+                    break
+            return execution.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+    _ = arguments
+    return EsEngineMocapCleanBuild::run()

@@ -1,0 +1,106 @@
+include "../../ports/elisa-engine/scripts/build_mocap_clean_plan.elisa"
+
+using EsEngineMocapCleanBuildPlan
+
+
+@test
+def plans_exact_bootstrap_dependency_compile_and_link_argv() -> void can[Memory.Allocate, Abort.Panic]:
+    planned: mutable Plan = Plan{
+        build_directory: "", executable_path: "", ufbx_directory: "", ufbx_source: "", ufbx_object: "",
+        bootstrap_commands: [],
+        ufbx_command: Command{kind: CommandKind.CompileUfbx, program: "", arguments: []},
+        tail_commands: []
+    }
+    catch plan("/work/tree with spaces", "/opt/compiler path/elisac-stage1", "/runtime tree/runtime.o"):
+        ok value:
+            planned <- value
+        error failure:
+            _ = failure
+            assert false
+
+    assert planned.build_directory == "/work/tree with spaces/build"
+    assert planned.executable_path == "/work/tree with spaces/build/mocap-clean"
+    assert planned.ufbx_source == "/work/tree with spaces/dependencies/ufbx/ufbx.c"
+    assert planned.bootstrap_commands.count == 3
+    assert planned.bootstrap_commands[0].kind == CommandKind.CompileMetalBridge
+    assert planned.bootstrap_commands[0].program == "clang"
+    assert planned.bootstrap_commands[0].arguments[7] == "/work/tree with spaces/build/viewport_metal.o"
+    assert planned.bootstrap_commands[0].arguments[8] == "/work/tree with spaces/native/viewport_metal.m"
+    assert planned.bootstrap_commands[1].kind == CommandKind.CompileCppFallbacks
+    assert planned.bootstrap_commands[2].kind == CommandKind.CompileMocapFolder
+
+    assert planned.ufbx_command.kind == CommandKind.CompileUfbx
+    assert planned.ufbx_command.arguments[3] == "-I"
+    assert planned.ufbx_command.arguments[4] == "/work/tree with spaces/dependencies/ufbx"
+    assert planned.ufbx_command.arguments[6] == "/work/tree with spaces/build/ufbx.o"
+    assert planned.ufbx_command.arguments[7] == "/work/tree with spaces/dependencies/ufbx/ufbx.c"
+
+    assert planned.tail_commands.count == 3
+    assert planned.tail_commands[0].kind == CommandKind.CompileFbxToGlb
+    assert planned.tail_commands[1].kind == CommandKind.CompileElisaMocap
+    assert planned.tail_commands[1].program == "/opt/compiler path/elisac-stage1"
+    assert planned.tail_commands[2].kind == CommandKind.LinkMocap
+    assert planned.tail_commands[2].arguments[6] == "/work/tree with spaces/build/ufbx.o"
+    assert planned.tail_commands[2].arguments[8] == "/runtime tree/runtime.o"
+
+
+@test
+def preserves_bootstrap_and_tail_fail_fast_statuses_and_missing_dependency_status() -> void can[Memory.Allocate, Abort.Panic]:
+    prepare_failure: mutable ExecutionState = initial_execution()
+    prepare_failure <- try execution_after_prepare(prepare_failure, false) else prepare_failure
+    assert prepare_failure.phase == ExecutionPhase.Done
+    assert prepare_failure.exit_status == 1
+
+    bootstrap_failure: mutable ExecutionState = initial_execution()
+    bootstrap_failure <- try execution_after_prepare(bootstrap_failure, true) else bootstrap_failure
+    bootstrap_failure <- try execution_after_bootstrap_command(bootstrap_failure, 23) else bootstrap_failure
+    assert bootstrap_failure.phase == ExecutionPhase.Done
+    assert bootstrap_failure.exit_status == 23
+
+    bootstrap_success: mutable ExecutionState = initial_execution()
+    bootstrap_success <- try execution_after_prepare(bootstrap_success, true) else bootstrap_success
+    bootstrap_success <- try execution_after_bootstrap_command(bootstrap_success, 0) else bootstrap_success
+    bootstrap_success <- try execution_after_bootstrap_command(bootstrap_success, 0) else bootstrap_success
+    bootstrap_success <- try execution_after_bootstrap_command(bootstrap_success, 0) else bootstrap_success
+    assert bootstrap_success.phase == ExecutionPhase.CheckDependency
+
+    missing_dependency: ExecutionState = try execution_after_dependency_check(bootstrap_success, false) else bootstrap_success
+    assert missing_dependency.phase == ExecutionPhase.Done
+    assert missing_dependency.exit_status == 2
+
+    dependency_present: ExecutionState = try execution_after_dependency_check(bootstrap_success, true) else bootstrap_success
+    assert dependency_present.phase == ExecutionPhase.CheckFreshness
+
+    tail_failure: mutable ExecutionState = try execution_after_freshness_check(dependency_present, true, 3) else dependency_present
+    assert tail_failure.phase == ExecutionPhase.Tail
+    assert tail_failure.command_count == 4
+    tail_failure <- try execution_after_tail_command(tail_failure, 0) else tail_failure
+    tail_failure <- try execution_after_tail_command(tail_failure, 0) else tail_failure
+    tail_failure <- try execution_after_tail_command(tail_failure, 31) else tail_failure
+    assert tail_failure.phase == ExecutionPhase.Done
+    assert tail_failure.exit_status == 31
+
+
+@test
+def rebuilds_missing_stale_or_second_tied_ufbx_objects_and_reports_only_after_success() -> void can[Memory.Allocate, Abort.Panic]:
+    assert ufbx_needs_rebuild(false, 100, 90)
+    assert ufbx_needs_rebuild(true, 89, 90)
+    assert ufbx_needs_rebuild(true, 90, 90)
+    assert not ufbx_needs_rebuild(true, 91, 90)
+
+    state: mutable ExecutionState = initial_execution()
+    state <- try execution_after_prepare(state, true) else state
+    state <- try execution_after_bootstrap_command(state, 0) else state
+    state <- try execution_after_bootstrap_command(state, 0) else state
+    state <- try execution_after_bootstrap_command(state, 0) else state
+    state <- try execution_after_dependency_check(state, true) else state
+    state <- try execution_after_freshness_check(state, false, 3) else state
+    assert state.phase == ExecutionPhase.Tail
+    assert state.command_count == 3
+    state <- try execution_after_tail_command(state, 0) else state
+    state <- try execution_after_tail_command(state, 0) else state
+    state <- try execution_after_tail_command(state, 0) else state
+    assert state.phase == ExecutionPhase.Report
+    state <- try execution_after_report(state) else state
+    assert state.phase == ExecutionPhase.Done
+    assert state.exit_status == 0

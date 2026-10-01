@@ -1,0 +1,165 @@
+# Typed argv and fail-fast transitions for ../elisa-engine/scripts/build_mocap_clean.sh.
+module EsEngineMocapCleanBuildPlan:
+    public:
+        const module Defaults:
+            COMPILER: sview = "elisac-stage1"
+            NAME: sview = "mocap_clean"
+            MISSING_UFBX_MESSAGE: sview = "missing ufbx; run python3 scripts/fetch_dependencies.py"
+
+
+        const enum CommandKind of u8:
+            CompileMetalBridge
+            CompileCppFallbacks
+            CompileMocapFolder
+            CompileUfbx
+            CompileFbxToGlb
+            CompileElisaMocap
+            LinkMocap
+
+
+        const enum ExecutionPhase of u8:
+            Prepare
+            Bootstrap
+            CheckDependency
+            CheckFreshness
+            Tail
+            Report
+            Done
+
+
+        struct Command:
+            kind: CommandKind
+            program: sview
+            arguments: darray[sview]
+
+
+        struct Plan:
+            build_directory: sview
+            executable_path: sview
+            ufbx_directory: sview
+            ufbx_source: sview
+            ufbx_object: sview
+            bootstrap_commands: darray[Command]
+            ufbx_command: Command
+            tail_commands: darray[Command]
+
+
+        struct ExecutionState:
+            phase: ExecutionPhase = ExecutionPhase.Prepare
+            next_command: usize = 0
+            command_count: usize = 0
+            exit_status: i64 = 0
+
+
+        error PlanError:
+            MissingRuntimeObject
+            InvalidExecutionState
+
+
+        def plan(root: sview, compiler: sview, runtime_object: sview) -> Plan error[PlanError] can[Memory.Allocate, Abort.Panic]:
+            raise PlanError.MissingRuntimeObject if runtime_object == ""
+            selected_compiler: sview = Defaults::COMPILER if compiler == "" else compiler
+            build_directory: sview = project_path(root, "build")
+            ufbx_directory: sview = project_path(root, "dependencies/ufbx")
+            ufbx_source: sview = project_path(ufbx_directory, "ufbx.c")
+            ufbx_object: sview = project_path(build_directory, "ufbx.o")
+            metal_object: sview = project_path(build_directory, "viewport_metal.o")
+            fallback_object: sview = project_path(build_directory, "elisa_native_fallbacks.o")
+            folder_object: sview = project_path(build_directory, "mocap_folder.o")
+            fbx_object: sview = project_path(build_directory, "fbx_to_glb.o")
+            elisa_object: sview = project_path(build_directory, Defaults::NAME + ".o")
+            executable_path: sview = project_path(build_directory, "mocap-clean")
+            return Plan{
+                build_directory: build_directory,
+                executable_path: executable_path,
+                ufbx_directory: ufbx_directory,
+                ufbx_source: ufbx_source,
+                ufbx_object: ufbx_object,
+                bootstrap_commands: [
+                    Command{kind: CommandKind.CompileMetalBridge, program: "clang", arguments: [
+                        "-c", "-fobjc-arc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", metal_object,
+                        project_path(root, "native/viewport_metal.m")
+                    ]},
+                    Command{kind: CommandKind.CompileCppFallbacks, program: "clang++", arguments: [
+                        "-c", "-std=c++17", "-O2", "-o", fallback_object,
+                        project_path(root, "native/elisa_native_fallbacks.cpp")
+                    ]},
+                    Command{kind: CommandKind.CompileMocapFolder, program: "clang", arguments: [
+                        "-c", "-O2", "-Wall", "-Wextra", "-Werror", "-o", folder_object,
+                        project_path(root, "native/mocap_folder.c")
+                    ]}
+                ],
+                ufbx_command: Command{kind: CommandKind.CompileUfbx, program: "clang", arguments: [
+                    "-c", "-std=c99", "-O2", "-I", ufbx_directory,
+                    "-o", ufbx_object, ufbx_source
+                ]},
+                tail_commands: [
+                    Command{kind: CommandKind.CompileFbxToGlb, program: "clang", arguments: [
+                        "-c", "-std=c99", "-O2", "-Wall", "-Wextra", "-Werror", "-I", ufbx_directory,
+                        "-o", fbx_object, project_path(root, "native/fbx_to_glb.c")
+                    ]},
+                    Command{kind: CommandKind.CompileElisaMocap, program: selected_compiler, arguments: [
+                        "-emit", "obj", "-o", elisa_object,
+                        project_path(root, "tools/mocap_clean.elisa")
+                    ]},
+                    Command{kind: CommandKind.LinkMocap, program: "clang", arguments: [
+                        "-o", executable_path, elisa_object, metal_object, folder_object, fbx_object,
+                        ufbx_object, fallback_object, runtime_object,
+                        "-framework", "Metal", "-framework", "IOSurface", "-framework", "Foundation"
+                    ]}
+                ]
+            }
+
+
+        def initial_execution() -> ExecutionState:
+            return ExecutionState{phase: ExecutionPhase.Prepare, command_count: 3}
+
+
+        def execution_after_prepare(state: ExecutionState, succeeded: bool) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.Prepare
+            return ExecutionState{phase: ExecutionPhase.Done, command_count: state.command_count, exit_status: 1} if not succeeded
+            return ExecutionState{phase: ExecutionPhase.Bootstrap, command_count: state.command_count}
+
+
+        def execution_after_bootstrap_command(state: ExecutionState, status: i64) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.Bootstrap or state.next_command >= state.command_count
+            return ExecutionState{phase: ExecutionPhase.Done, next_command: state.next_command, command_count: state.command_count, exit_status: status} if status != 0
+            completed: usize = state.next_command + 1
+            next_phase: ExecutionPhase = ExecutionPhase.CheckDependency if completed == state.command_count else ExecutionPhase.Bootstrap
+            return ExecutionState{phase: next_phase, next_command: completed, command_count: state.command_count}
+
+
+        def execution_after_dependency_check(state: ExecutionState, available: bool) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.CheckDependency
+            return ExecutionState{phase: ExecutionPhase.Done, command_count: state.command_count, exit_status: 2} if not available
+            return ExecutionState{phase: ExecutionPhase.CheckFreshness, command_count: state.command_count}
+
+
+        def execution_after_freshness_check(state: ExecutionState, rebuild_ufbx: bool, tail_count: usize) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.CheckFreshness
+            command_count: usize = tail_count + (1 if rebuild_ufbx else 0)
+            return ExecutionState{phase: ExecutionPhase.Report, command_count: command_count} if command_count == 0
+            return ExecutionState{phase: ExecutionPhase.Tail, command_count: command_count}
+
+
+        def execution_after_tail_command(state: ExecutionState, status: i64) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.Tail or state.next_command >= state.command_count
+            return ExecutionState{phase: ExecutionPhase.Done, next_command: state.next_command, command_count: state.command_count, exit_status: status} if status != 0
+            completed: usize = state.next_command + 1
+            next_phase: ExecutionPhase = ExecutionPhase.Report if completed == state.command_count else ExecutionPhase.Tail
+            return ExecutionState{phase: next_phase, next_command: completed, command_count: state.command_count}
+
+
+        def execution_after_report(state: ExecutionState) -> ExecutionState error[PlanError]:
+            raise PlanError.InvalidExecutionState if state.phase != ExecutionPhase.Report
+            return ExecutionState{phase: ExecutionPhase.Done, next_command: state.next_command, command_count: state.command_count}
+
+
+        def ufbx_needs_rebuild(output_exists: bool, output_mtime_seconds: i64, source_mtime_seconds: i64) -> bool:
+            return not output_exists or output_mtime_seconds <= source_mtime_seconds
+
+
+    private:
+        def project_path(root: sview, relative: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "/" + relative if root == "/"
+            return root + "/" + relative
