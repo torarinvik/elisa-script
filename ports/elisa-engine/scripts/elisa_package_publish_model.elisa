@@ -1,0 +1,231 @@
+# Typed publication state for write_package in elisa_package.py.
+# The host adapter owns paths and syscalls; this model pins their ordering,
+# failure cleanup, and the published-file mode boundary.
+
+module EsElisaPackagePublish:
+    public:
+        const module Policy:
+            PUBLISHED_FILE_MODE: u32 = 420
+
+
+        const enum PackagePublishState of u8:
+            Planned
+            BytesBuilt
+            DestinationResolved
+            ParentReady
+            StageCreated
+            Written
+            Flushed
+            Synced
+            Closed
+            ClosingAfterFailure
+            ModeSet
+            Replaced
+            CleanupPending
+            CleanupUnlinkPending
+            Complete
+            Failed
+            FailedCleanup
+
+
+        const enum PackagePublishOperation of u8:
+            None
+            BuildBytes
+            ResolveDestination
+            CreateParents
+            CreateStage
+            WriteBytes
+            FlushBytes
+            SyncStage
+            CloseStage
+            SetPublishedMode
+            ReplaceDestination
+
+
+        const enum PackagePublishEvent of u8:
+            BytesBuilt
+            DestinationResolved
+            ParentReady
+            StageCreated
+            Written
+            Flushed
+            Synced
+            Closed
+            ClosedAfterFailure
+            CloseFailedAfterFailure
+            ModeSet
+            Replaced
+            OperationFailed
+            CleanupObservedAbsent
+            CleanupObservedPresent
+            CleanupUnlinked
+            CleanupFailed
+
+
+        struct PackagePublishSession:
+            state: PackagePublishState = PackagePublishState.Planned
+            failed_operation: PackagePublishOperation = PackagePublishOperation.None
+            stage_name_known: bool = false
+            published: bool = false
+            cleanup_observed: bool = false
+            cleanup_unlinked: bool = false
+
+
+        error PackagePublishError:
+            InvalidState
+            InvalidEvent
+            InvalidFailureReceipt
+            InvalidTransition
+
+
+        def advance_package_publish(session: mutable PackagePublishSession&, event: PackagePublishEvent, failed_operation: PackagePublishOperation = PackagePublishOperation.None, published_mode: u32 = 0u32) -> PackagePublishState error[PackagePublishError]:
+            try validate_package_publish_session(session)
+            raise PackagePublishError.InvalidFailureReceipt if event != PackagePublishEvent.OperationFailed and failed_operation != PackagePublishOperation.None
+            raise PackagePublishError.InvalidFailureReceipt if event != PackagePublishEvent.ModeSet and published_mode != 0u32
+            raise PackagePublishError.InvalidEvent if not package_publish_event_valid(event)
+            match event:
+                PackagePublishEvent.BytesBuilt:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.Planned
+                    session.state <- PackagePublishState.BytesBuilt
+                PackagePublishEvent.DestinationResolved:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.BytesBuilt
+                    session.state <- PackagePublishState.DestinationResolved
+                PackagePublishEvent.ParentReady:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.DestinationResolved
+                    session.state <- PackagePublishState.ParentReady
+                PackagePublishEvent.StageCreated:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.ParentReady
+                    session.stage_name_known <- true
+                    session.state <- PackagePublishState.StageCreated
+                PackagePublishEvent.Written:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.StageCreated
+                    session.state <- PackagePublishState.Written
+                PackagePublishEvent.Flushed:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.Written
+                    session.state <- PackagePublishState.Flushed
+                PackagePublishEvent.Synced:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.Flushed
+                    session.state <- PackagePublishState.Synced
+                PackagePublishEvent.Closed:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.Synced
+                    session.state <- PackagePublishState.Closed
+                PackagePublishEvent.ClosedAfterFailure:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.ClosingAfterFailure
+                    session.state <- PackagePublishState.CleanupPending
+                PackagePublishEvent.CloseFailedAfterFailure:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.ClosingAfterFailure
+                    session.failed_operation <- PackagePublishOperation.CloseStage
+                    session.state <- PackagePublishState.CleanupPending
+                PackagePublishEvent.ModeSet:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.Closed
+                    raise PackagePublishError.InvalidFailureReceipt if published_mode != Policy::PUBLISHED_FILE_MODE
+                    session.state <- PackagePublishState.ModeSet
+                PackagePublishEvent.Replaced:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.ModeSet
+                    session.published <- true
+                    session.state <- PackagePublishState.Replaced
+                PackagePublishEvent.OperationFailed:
+                    expected: PackagePublishOperation = package_publish_expected_operation(session.state)
+                    raise PackagePublishError.InvalidFailureReceipt if expected == PackagePublishOperation.None or failed_operation != expected
+                    session.failed_operation <- failed_operation
+                    if not session.stage_name_known:
+                        session.state <- PackagePublishState.Failed
+                    elif failed_operation == PackagePublishOperation.WriteBytes or failed_operation == PackagePublishOperation.FlushBytes or failed_operation == PackagePublishOperation.SyncStage:
+                        session.state <- PackagePublishState.ClosingAfterFailure
+                    else:
+                        session.state <- PackagePublishState.CleanupPending
+                PackagePublishEvent.CleanupObservedAbsent:
+                    raise PackagePublishError.InvalidTransition if (session.state != PackagePublishState.Replaced and session.state != PackagePublishState.CleanupPending) or session.cleanup_observed
+                    session.cleanup_observed <- true
+                    session.state <- PackagePublishState.Failed if session.failed_operation != PackagePublishOperation.None else PackagePublishState.Complete
+                PackagePublishEvent.CleanupObservedPresent:
+                    raise PackagePublishError.InvalidTransition if (session.state != PackagePublishState.Replaced and session.state != PackagePublishState.CleanupPending) or session.cleanup_observed
+                    session.cleanup_observed <- true
+                    session.state <- PackagePublishState.CleanupUnlinkPending
+                PackagePublishEvent.CleanupUnlinked:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.CleanupUnlinkPending or not session.cleanup_observed or session.cleanup_unlinked
+                    session.cleanup_unlinked <- true
+                    session.state <- PackagePublishState.Failed if session.failed_operation != PackagePublishOperation.None else PackagePublishState.Complete
+                PackagePublishEvent.CleanupFailed:
+                    raise PackagePublishError.InvalidTransition if session.state != PackagePublishState.CleanupUnlinkPending or not session.cleanup_observed
+                    session.state <- PackagePublishState.FailedCleanup
+            try validate_package_publish_session(session)
+            return session.state
+
+
+    private:
+        const module OperationPolicy:
+            BUILD: PackagePublishOperation = PackagePublishOperation.BuildBytes
+            RESOLVE: PackagePublishOperation = PackagePublishOperation.ResolveDestination
+            PARENTS: PackagePublishOperation = PackagePublishOperation.CreateParents
+            STAGE: PackagePublishOperation = PackagePublishOperation.CreateStage
+            WRITE: PackagePublishOperation = PackagePublishOperation.WriteBytes
+            FLUSH: PackagePublishOperation = PackagePublishOperation.FlushBytes
+            SYNC: PackagePublishOperation = PackagePublishOperation.SyncStage
+            CLOSE: PackagePublishOperation = PackagePublishOperation.CloseStage
+            MODE: PackagePublishOperation = PackagePublishOperation.SetPublishedMode
+            REPLACE: PackagePublishOperation = PackagePublishOperation.ReplaceDestination
+
+
+        def package_publish_state_valid(state: PackagePublishState) -> bool:
+            return state in {PackagePublishState.Planned, PackagePublishState.BytesBuilt, PackagePublishState.DestinationResolved, PackagePublishState.ParentReady, PackagePublishState.StageCreated, PackagePublishState.Written, PackagePublishState.Flushed, PackagePublishState.Synced, PackagePublishState.Closed, PackagePublishState.ClosingAfterFailure, PackagePublishState.ModeSet, PackagePublishState.Replaced, PackagePublishState.CleanupPending, PackagePublishState.CleanupUnlinkPending, PackagePublishState.Complete, PackagePublishState.Failed, PackagePublishState.FailedCleanup}
+
+
+        def package_publish_operation_valid(operation: PackagePublishOperation) -> bool:
+            return operation in {PackagePublishOperation.None, OperationPolicy::BUILD, OperationPolicy::RESOLVE, OperationPolicy::PARENTS, OperationPolicy::STAGE, OperationPolicy::WRITE, OperationPolicy::FLUSH, OperationPolicy::SYNC, OperationPolicy::CLOSE, OperationPolicy::MODE, OperationPolicy::REPLACE}
+
+
+        def package_publish_event_valid(event: PackagePublishEvent) -> bool:
+            return event in {PackagePublishEvent.BytesBuilt, PackagePublishEvent.DestinationResolved, PackagePublishEvent.ParentReady, PackagePublishEvent.StageCreated, PackagePublishEvent.Written, PackagePublishEvent.Flushed, PackagePublishEvent.Synced, PackagePublishEvent.Closed, PackagePublishEvent.ClosedAfterFailure, PackagePublishEvent.CloseFailedAfterFailure, PackagePublishEvent.ModeSet, PackagePublishEvent.Replaced, PackagePublishEvent.OperationFailed, PackagePublishEvent.CleanupObservedAbsent, PackagePublishEvent.CleanupObservedPresent, PackagePublishEvent.CleanupUnlinked, PackagePublishEvent.CleanupFailed}
+
+
+        def package_publish_expected_operation(state: PackagePublishState) -> PackagePublishOperation:
+            match state:
+                PackagePublishState.Planned:
+                    return OperationPolicy::BUILD
+                PackagePublishState.BytesBuilt:
+                    return OperationPolicy::RESOLVE
+                PackagePublishState.DestinationResolved:
+                    return OperationPolicy::PARENTS
+                PackagePublishState.ParentReady:
+                    return OperationPolicy::STAGE
+                PackagePublishState.StageCreated:
+                    return OperationPolicy::WRITE
+                PackagePublishState.Written:
+                    return OperationPolicy::FLUSH
+                PackagePublishState.Flushed:
+                    return OperationPolicy::SYNC
+                PackagePublishState.Synced:
+                    return OperationPolicy::CLOSE
+                PackagePublishState.Closed:
+                    return OperationPolicy::MODE
+                PackagePublishState.ModeSet:
+                    return OperationPolicy::REPLACE
+                _:
+                    return PackagePublishOperation.None
+
+
+        def validate_package_publish_session(session: PackagePublishSession&) -> void error[PackagePublishError]:
+            raise PackagePublishError.InvalidState if not package_publish_state_valid(session.state) or not package_publish_operation_valid(session.failed_operation)
+            raise PackagePublishError.InvalidState if session.published and not session.stage_name_known
+            raise PackagePublishError.InvalidState if session.cleanup_unlinked and not session.cleanup_observed
+            if session.state == PackagePublishState.Planned:
+                raise PackagePublishError.InvalidState if session.failed_operation != PackagePublishOperation.None or session.stage_name_known or session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.BytesBuilt or session.state == PackagePublishState.DestinationResolved or session.state == PackagePublishState.ParentReady:
+                raise PackagePublishError.InvalidState if session.failed_operation != PackagePublishOperation.None or session.stage_name_known or session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.StageCreated or session.state == PackagePublishState.Written or session.state == PackagePublishState.Flushed or session.state == PackagePublishState.Synced or session.state == PackagePublishState.Closed or session.state == PackagePublishState.ModeSet:
+                raise PackagePublishError.InvalidState if session.failed_operation != PackagePublishOperation.None or not session.stage_name_known or session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.ClosingAfterFailure:
+                raise PackagePublishError.InvalidState if (session.failed_operation != PackagePublishOperation.WriteBytes and session.failed_operation != PackagePublishOperation.FlushBytes and session.failed_operation != PackagePublishOperation.SyncStage) or not session.stage_name_known or session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.Replaced:
+                raise PackagePublishError.InvalidState if session.failed_operation != PackagePublishOperation.None or not session.stage_name_known or not session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.CleanupPending:
+                raise PackagePublishError.InvalidState if session.failed_operation == PackagePublishOperation.None or not session.stage_name_known or session.published or session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.CleanupUnlinkPending:
+                raise PackagePublishError.InvalidState if not session.stage_name_known or not session.cleanup_observed or session.cleanup_unlinked
+            elif session.state == PackagePublishState.Complete:
+                raise PackagePublishError.InvalidState if session.failed_operation != PackagePublishOperation.None or not session.stage_name_known or not session.published or not session.cleanup_observed
+            elif session.state == PackagePublishState.Failed:
+                raise PackagePublishError.InvalidState if session.failed_operation == PackagePublishOperation.None or (session.stage_name_known and (not session.cleanup_observed or session.published)) or (not session.stage_name_known and (session.cleanup_observed or session.published))
+            elif session.state == PackagePublishState.FailedCleanup:
+                raise PackagePublishError.InvalidState if not session.stage_name_known or not session.cleanup_observed or session.cleanup_unlinked

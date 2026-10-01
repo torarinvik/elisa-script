@@ -1,0 +1,118 @@
+include "../../ports/elisa-engine/scripts/elisa_package_publish_model.elisa"
+
+using EsElisaPackagePublish
+
+
+def package_publish_success(session: mutable PackagePublishSession&) -> void can[Abort.Panic]:
+    assert try advance_package_publish(session, PackagePublishEvent.BytesBuilt) == PackagePublishState.BytesBuilt
+    assert try advance_package_publish(session, PackagePublishEvent.DestinationResolved) == PackagePublishState.DestinationResolved
+    assert try advance_package_publish(session, PackagePublishEvent.ParentReady) == PackagePublishState.ParentReady
+    assert try advance_package_publish(session, PackagePublishEvent.StageCreated) == PackagePublishState.StageCreated
+    assert try advance_package_publish(session, PackagePublishEvent.Written) == PackagePublishState.Written
+    assert try advance_package_publish(session, PackagePublishEvent.Flushed) == PackagePublishState.Flushed
+    assert try advance_package_publish(session, PackagePublishEvent.Synced) == PackagePublishState.Synced
+    assert try advance_package_publish(session, PackagePublishEvent.Closed) == PackagePublishState.Closed
+    assert try advance_package_publish(session, PackagePublishEvent.ModeSet, published_mode: Policy::PUBLISHED_FILE_MODE) == PackagePublishState.ModeSet
+    assert try advance_package_publish(session, PackagePublishEvent.Replaced) == PackagePublishState.Replaced
+
+
+@test
+def package_writer_preserves_flush_sync_close_mode_replace_order() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    package_publish_success(session)
+    assert session.published and session.stage_name_known
+    assert try advance_package_publish(session, PackagePublishEvent.CleanupObservedAbsent) == PackagePublishState.Complete
+
+
+@test
+def package_writer_cleans_a_present_sibling_after_replace_or_failure() -> void can[Abort.Panic]:
+    published: mutable PackagePublishSession = PackagePublishSession{}
+    package_publish_success(published)
+    _ = try advance_package_publish(published, PackagePublishEvent.CleanupObservedPresent)
+    assert try advance_package_publish(published, PackagePublishEvent.CleanupUnlinked) == PackagePublishState.Complete
+    assert published.cleanup_unlinked
+
+    failed: mutable PackagePublishSession = PackagePublishSession{}
+    _ = try advance_package_publish(failed, PackagePublishEvent.BytesBuilt)
+    _ = try advance_package_publish(failed, PackagePublishEvent.DestinationResolved)
+    _ = try advance_package_publish(failed, PackagePublishEvent.ParentReady)
+    _ = try advance_package_publish(failed, PackagePublishEvent.StageCreated)
+    assert try advance_package_publish(failed, PackagePublishEvent.OperationFailed, PackagePublishOperation.WriteBytes) == PackagePublishState.ClosingAfterFailure
+    assert try advance_package_publish(failed, PackagePublishEvent.ClosedAfterFailure) == PackagePublishState.CleanupPending
+    assert try advance_package_publish(failed, PackagePublishEvent.CleanupObservedAbsent) == PackagePublishState.Failed
+    assert failed.failed_operation == PackagePublishOperation.WriteBytes
+
+
+@test
+def package_writer_tracks_cleanup_failure_as_the_raised_outcome() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    _ = try advance_package_publish(session, PackagePublishEvent.BytesBuilt)
+    _ = try advance_package_publish(session, PackagePublishEvent.DestinationResolved)
+    _ = try advance_package_publish(session, PackagePublishEvent.ParentReady)
+    _ = try advance_package_publish(session, PackagePublishEvent.StageCreated)
+    _ = try advance_package_publish(session, PackagePublishEvent.OperationFailed, PackagePublishOperation.SetPublishedMode)
+    _ = try advance_package_publish(session, PackagePublishEvent.CleanupObservedPresent)
+    assert try advance_package_publish(session, PackagePublishEvent.CleanupFailed) == PackagePublishState.FailedCleanup
+
+
+def package_publish_rejects(session: mutable PackagePublishSession&, event: PackagePublishEvent, failed_operation: PackagePublishOperation = PackagePublishOperation.None) -> bool can[Abort.Panic]:
+    rejected: mutable bool = false
+    catch advance_package_publish(session, event, failed_operation):
+        ok state:
+            _ = state
+        error failure:
+            rejected <- failure == PackagePublishError.InvalidTransition or failure == PackagePublishError.InvalidFailureReceipt
+    return rejected
+
+
+@test
+def package_writer_rejects_out_of_order_receipts_and_wrong_failure_steps() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    assert package_publish_rejects(session, PackagePublishEvent.Replaced)
+    assert package_publish_rejects(session, PackagePublishEvent.OperationFailed, PackagePublishOperation.SyncStage)
+    assert try advance_package_publish(session, PackagePublishEvent.BytesBuilt) == PackagePublishState.BytesBuilt
+    assert package_publish_rejects(session, PackagePublishEvent.OperationFailed, PackagePublishOperation.CreateParents)
+    assert session.state == PackagePublishState.BytesBuilt
+
+
+@test
+def package_writer_build_failure_has_no_staging_cleanup() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    assert try advance_package_publish(session, PackagePublishEvent.OperationFailed, PackagePublishOperation.BuildBytes) == PackagePublishState.Failed
+    assert not session.stage_name_known and not session.cleanup_observed and not session.published
+
+    stage_creation: mutable PackagePublishSession = PackagePublishSession{}
+    _ = try advance_package_publish(stage_creation, PackagePublishEvent.BytesBuilt)
+    _ = try advance_package_publish(stage_creation, PackagePublishEvent.DestinationResolved)
+    _ = try advance_package_publish(stage_creation, PackagePublishEvent.ParentReady)
+    assert try advance_package_publish(stage_creation, PackagePublishEvent.OperationFailed, PackagePublishOperation.CreateStage) == PackagePublishState.Failed
+    assert not stage_creation.stage_name_known and not stage_creation.cleanup_observed
+
+
+@test
+def package_writer_close_failure_overrides_body_failure_before_cleanup() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    _ = try advance_package_publish(session, PackagePublishEvent.BytesBuilt)
+    _ = try advance_package_publish(session, PackagePublishEvent.DestinationResolved)
+    _ = try advance_package_publish(session, PackagePublishEvent.ParentReady)
+    _ = try advance_package_publish(session, PackagePublishEvent.StageCreated)
+    _ = try advance_package_publish(session, PackagePublishEvent.OperationFailed, PackagePublishOperation.FlushBytes)
+    assert try advance_package_publish(session, PackagePublishEvent.CloseFailedAfterFailure) == PackagePublishState.CleanupPending
+    assert session.failed_operation == PackagePublishOperation.CloseStage
+    _ = try advance_package_publish(session, PackagePublishEvent.CleanupObservedPresent)
+    assert try advance_package_publish(session, PackagePublishEvent.CleanupUnlinked) == PackagePublishState.Failed
+
+
+@test
+def package_writer_requires_the_reference_publication_mode() -> void can[Abort.Panic]:
+    session: mutable PackagePublishSession = PackagePublishSession{}
+    _ = try advance_package_publish(session, PackagePublishEvent.BytesBuilt)
+    _ = try advance_package_publish(session, PackagePublishEvent.DestinationResolved)
+    _ = try advance_package_publish(session, PackagePublishEvent.ParentReady)
+    _ = try advance_package_publish(session, PackagePublishEvent.StageCreated)
+    _ = try advance_package_publish(session, PackagePublishEvent.Written)
+    _ = try advance_package_publish(session, PackagePublishEvent.Flushed)
+    _ = try advance_package_publish(session, PackagePublishEvent.Synced)
+    _ = try advance_package_publish(session, PackagePublishEvent.Closed)
+    assert package_publish_rejects(session, PackagePublishEvent.ModeSet)
+    assert try advance_package_publish(session, PackagePublishEvent.ModeSet, published_mode: Policy::PUBLISHED_FILE_MODE) == PackagePublishState.ModeSet
