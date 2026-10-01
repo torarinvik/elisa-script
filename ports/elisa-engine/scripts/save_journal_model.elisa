@@ -1,0 +1,201 @@
+# Canonical JSON and SHA-256 model for elisa-engine/scripts/save_journal.py.
+# Durable file operations belong to a separate POSIX adapter.
+include "../../../src/runtime/encoding.elisa"
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+include "../../../src/ir/ir_model.elisa"
+include "../../../src/ir/serialize.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+using EsIr
+
+
+module EsEngineSaveJournal:
+    public:
+        const module Limits:
+            MAX_DOCUMENT_BYTES: usize = DATA_MAX_INPUT_BYTES
+
+
+        error SaveJournalError:
+            DocumentTooLarge
+            InvalidJson
+            DocumentMustBeObject
+            InvalidDocument
+            OutputTooLarge
+            DigestUnavailable
+
+
+        def parse_json_object(source: sview) -> JsonDocument error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.DocumentTooLarge if len(source) > Limits::MAX_DOCUMENT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::MAX_DOCUMENT_BYTES}
+            policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, limits, policy) else err:
+                raise SaveJournalError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else err:
+                raise SaveJournalError.InvalidJson
+            raise SaveJournalError.DocumentMustBeObject if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise SaveJournalError.DocumentMustBeObject if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            return document
+
+
+        # Python json.dumps(sort_keys=True, separators=(",", ":"),
+        # ensure_ascii=False) writes compact UTF-8 plus one final newline.
+        # JsonDocument.member_key_order supplies bytewise UTF-8 key order and
+        # KeepLast parsing reproduces json.loads duplicate-key lookup.
+        def canonical_payload(document: JsonDocument&) -> darray[u8] error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            valid: mutable bool = false
+            catch validate_json_document(document):
+                ok result:
+                    valid <- result
+                error failure:
+                    _ = failure
+                    raise SaveJournalError.InvalidDocument
+            raise SaveJournalError.InvalidDocument if not valid or document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise SaveJournalError.DocumentMustBeObject if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            output: mutable darray[u8] = []
+            frames: mutable darray[EncodeFrame] = []
+            try emit_node(document, root_index, output, frames)
+            while frames.count != 0:
+                frame_index: usize = frames.count - 1
+                frame: mutable EncodeFrame = frames[frame_index]
+                node: JsonNode = document.nodes[frame.node_index]
+                if frame.kind == EncodeFrameKind.Array:
+                    if frame.next_item == node.child_count:
+                        try append_byte(output, 93u8)
+                        _ = frames.pop()
+                    else:
+                        try append_byte(output, 44u8) if frame.next_item != 0
+                        edge: JsonArrayChild = document.children[node.child_start + frame.next_item]
+                        frame.next_item <- frame.next_item + 1
+                        frames[frame_index] <- frame
+                        try emit_node(document, edge.value_index, output, frames)
+                else:
+                    if frame.next_item == node.member_count:
+                        try append_byte(output, 125u8)
+                        _ = frames.pop()
+                    else:
+                        try append_byte(output, 44u8) if frame.next_item != 0
+                        ordered_index: usize = node.member_key_order_start + frame.next_item
+                        raise SaveJournalError.InvalidDocument if ordered_index >= document.member_key_order.count
+                        member_index: usize = document.member_key_order[ordered_index]
+                        raise SaveJournalError.InvalidDocument if member_index >= document.members.count
+                        member: JsonMember = document.members[member_index]
+                        try append_json_string(output, document.key_bytes, member.key_start, member.key_bytes)
+                        try append_byte(output, 58u8)
+                        frame.next_item <- frame.next_item + 1
+                        frames[frame_index] <- frame
+                        try emit_node(document, member.value_index, output, frames)
+
+            try append_byte(output, 10u8)
+            return output
+
+
+        def sha256_hex(bytes: darray[u8]&) -> darray[u8] error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            digest: darray[u8] = EsIr::canonical_bytes_sha256(bytes)
+            raise SaveJournalError.DigestUnavailable if digest.count != 32
+            encoded: mutable darray[u8] = []
+            for byte in digest |encoded|:
+                encoded.push(sview_at(Encode::HEX, ((byte >> 4) & 15u8).usize()))
+                encoded.push(sview_at(Encode::HEX, (byte & 15u8).usize()))
+            return encoded
+
+
+    private:
+        const enum EncodeFrameKind of u8:
+            Array
+            Object
+
+
+        struct EncodeFrame:
+            node_index: usize
+            kind: EncodeFrameKind
+            next_item: usize = 0
+
+
+        const module Encode:
+            MAX_OUTPUT_BYTES: usize = DATA_MAX_INPUT_BYTES
+            HEX: sview = "0123456789abcdef"
+
+
+        def append_byte(output: mutable darray[u8]&, byte: u8) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.OutputTooLarge if output.count >= Encode::MAX_OUTPUT_BYTES
+            output.push(byte)
+
+
+        def append_view(output: mutable darray[u8]&, value: sview) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.OutputTooLarge if output.count > Encode::MAX_OUTPUT_BYTES or len(value) > Encode::MAX_OUTPUT_BYTES - output.count
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def append_source_bytes(output: mutable darray[u8]&, source: darray[u8]&, start: usize, count: usize) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.InvalidDocument if start > source.count or count > source.count - start
+            raise SaveJournalError.OutputTooLarge if output.count > Encode::MAX_OUTPUT_BYTES or count > Encode::MAX_OUTPUT_BYTES - output.count
+            for offset in 0..<count |output, source, start|:
+                output.push(source[start + offset])
+
+
+        def append_json_string(output: mutable darray[u8]&, source: darray[u8]&, start: usize, count: usize) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.InvalidDocument if start > source.count or count > source.count - start
+            try append_byte(output, 34u8)
+            for offset in 0..<count |output, source, start|:
+                byte: u8 = source[start + offset]
+                if byte == 34u8 or byte == 92u8:
+                    try append_byte(output, 92u8)
+                    try append_byte(output, byte)
+                elif byte == 8u8:
+                    try append_view(output, "\\b")
+                elif byte == 9u8:
+                    try append_view(output, "\\t")
+                elif byte == 10u8:
+                    try append_view(output, "\\n")
+                elif byte == 12u8:
+                    try append_view(output, "\\f")
+                elif byte == 13u8:
+                    try append_view(output, "\\r")
+                elif byte < 32u8:
+                    try append_view(output, "\\u00")
+                    try append_byte(output, sview_at(Encode::HEX, ((byte >> 4) & 15u8).usize()))
+                    try append_byte(output, sview_at(Encode::HEX, (byte & 15u8).usize()))
+                else:
+                    try append_byte(output, byte)
+            try append_byte(output, 34u8)
+
+
+        def emit_node(document: JsonDocument&, node_index: usize, output: mutable darray[u8]&, frames: mutable darray[EncodeFrame]&) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.InvalidDocument if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                try append_view(output, "null")
+            elif node.kind == JsonNodeKind.Bool:
+                try append_view(output, "true") if node.bool_value
+                try append_view(output, "false") if not node.bool_value
+            elif node.kind == JsonNodeKind.Number:
+                if node.scalar_bytes == 2 and document.scalar_data[node.scalar_start] == 45u8 and document.scalar_data[node.scalar_start + 1] == 48u8:
+                    try append_view(output, "0")
+                else:
+                    try append_source_bytes(output, document.scalar_data, node.scalar_start, node.scalar_bytes)
+            elif node.kind == JsonNodeKind.Text:
+                try append_json_string(output, document.scalar_data, node.scalar_start, node.scalar_bytes)
+            elif node.kind == JsonNodeKind.Array:
+                try append_byte(output, 91u8)
+                if node.child_count == 0:
+                    try append_byte(output, 93u8)
+                else:
+                    frames.push(EncodeFrame{node_index: node_index, kind: EncodeFrameKind.Array})
+            elif node.kind == JsonNodeKind.Object:
+                try append_byte(output, 123u8)
+                if node.member_count == 0:
+                    try append_byte(output, 125u8)
+                else:
+                    frames.push(EncodeFrame{node_index: node_index, kind: EncodeFrameKind.Object})
+            else:
+                raise SaveJournalError.InvalidDocument
