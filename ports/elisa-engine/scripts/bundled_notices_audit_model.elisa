@@ -1,0 +1,210 @@
+# Bounded typed core for scripts/check_bundled_notices.py.
+#
+# The host adapter supplies the catalog fields and recursively discovered
+# files. This module preserves the audit decisions and report facts without
+# performing filesystem traversal or JSON parsing itself.
+include "../../../src/ir/ir_model.elisa"
+include "../../../src/ir/serialize.elisa"
+
+using EsIr
+
+
+module EsEngineBundledNoticesAudit:
+    public:
+        struct NoticeSource:
+            name: sview
+            sha256: sview
+
+
+        struct LibraryMapping:
+            library_name: sview
+            notices: darray[sview] = []
+            has_remaining: bool = false
+            remaining: sview = ""
+
+
+        struct Catalog:
+            complete: bool = false
+            sources: darray[NoticeSource] = []
+            bundled_libraries: darray[LibraryMapping] = []
+            remaining: darray[sview] = []
+
+
+        struct AuditFile:
+            # Paths are relative to the application root and use `/` separators.
+            path: sview
+
+
+        struct NoticeFile:
+            # Notice file contents are exact bytes; text decoding is not involved.
+            path: sview
+            contents: darray[u8] = []
+
+
+        struct LibraryReport:
+            library: sview
+            notices: darray[sview] = []
+            problems: darray[sview] = []
+
+
+        struct Report:
+            schema: u32 = 1u32
+            catalog_complete: bool = false
+            dylib_notice_files_verified: bool = false
+            libraries: darray[LibraryReport] = []
+            remaining: darray[sview] = []
+
+
+        error BundledNoticesAuditError:
+            InputLimitExceeded
+            DigestUnavailable
+            InvalidFilesystemInput
+
+
+        def digest_hex(bytes: darray[u8]&) -> darray[u8] error[BundledNoticesAuditError] can[Memory.Allocate, Abort.Panic]:
+            digest: darray[u8] = EsIr::canonical_bytes_sha256(bytes)
+            raise BundledNoticesAuditError.DigestUnavailable if digest.count != 32
+            alphabet: sview = "0123456789abcdef"
+            encoded: mutable darray[u8] = []
+            for byte in digest |encoded|:
+                encoded.push(sview_at(alphabet, ((byte >> 4) & 15u8).usize()))
+                encoded.push(sview_at(alphabet, (byte & 15u8).usize()))
+            return encoded
+
+
+        def audit(libraries: darray[AuditFile], notice_files: darray[NoticeFile], catalog: Catalog) -> Report error[BundledNoticesAuditError] can[Memory.Allocate, Abort.Panic]:
+            raise BundledNoticesAuditError.InputLimitExceeded if libraries.count > Limits::FILES or notice_files.count > Limits::FILES or catalog.sources.count > Limits::CATALOG_ENTRIES or catalog.bundled_libraries.count > Limits::CATALOG_ENTRIES or catalog.remaining.count > Limits::CATALOG_ENTRIES
+            total_text_bytes: mutable usize = 0
+            for library in libraries |total_text_bytes|:
+                try bundled_notice_count_text(total_text_bytes, library.path)
+            for notice in notice_files |total_text_bytes|:
+                try bundled_notice_count_text(total_text_bytes, notice.path)
+            total_notice_bytes: mutable usize = 0
+            for notice in notice_files |total_notice_bytes|:
+                raise BundledNoticesAuditError.InputLimitExceeded if notice.contents.count > Limits::NOTICE_BYTES - total_notice_bytes
+                total_notice_bytes <- total_notice_bytes + notice.contents.count
+            total_notice_names: mutable usize = 0
+            for source in catalog.sources |total_text_bytes|:
+                try bundled_notice_count_text(total_text_bytes, source.name)
+                try bundled_notice_count_text(total_text_bytes, source.sha256)
+            for mapping in catalog.bundled_libraries |total_text_bytes, total_notice_names|:
+                try bundled_notice_count_text(total_text_bytes, mapping.library_name)
+                raise BundledNoticesAuditError.InputLimitExceeded if mapping.notices.count > Limits::CATALOG_ENTRIES - total_notice_names
+                total_notice_names <- total_notice_names + mapping.notices.count
+                for name in mapping.notices |total_text_bytes|:
+                    try bundled_notice_count_text(total_text_bytes, name)
+                try bundled_notice_count_text(total_text_bytes, mapping.remaining) if mapping.has_remaining
+            for remaining in catalog.remaining |total_text_bytes|:
+                try bundled_notice_count_text(total_text_bytes, remaining)
+
+            paths: mutable darray[sview] = []
+            for library in libraries |paths|:
+                paths.push(library.path)
+            ordered_paths: darray[sview] = sorted(paths)
+            for index in 0..<ordered_paths.count:
+                raise BundledNoticesAuditError.InvalidFilesystemInput if sview_len(ordered_paths[index]) == 0
+                raise BundledNoticesAuditError.InvalidFilesystemInput if index != 0 and ordered_paths[index - 1] == ordered_paths[index]
+
+            results: mutable darray[LibraryReport] = []
+            comparisons: mutable usize = 0
+            report_notice_items: mutable usize = 0
+            generated_bytes: mutable usize = 0
+            for library_path in ordered_paths |libraries, notice_files, catalog, results, comparisons, report_notice_items, generated_bytes|:
+                library_index: usize = try bundled_notice_library_index(libraries, library_path, comparisons)
+                raise BundledNoticesAuditError.InvalidFilesystemInput if library_index >= libraries.count
+                library: AuditFile = libraries[library_index]
+                library_name: sview = bundled_notice_basename(library.path)
+                mapping_index: usize = try bundled_notice_mapping_index(catalog.bundled_libraries, library_name, comparisons)
+                mapping: LibraryMapping = catalog.bundled_libraries[mapping_index] if mapping_index < catalog.bundled_libraries.count else LibraryMapping{library_name: ""}
+                library_result: mutable LibraryReport = LibraryReport{library: library_name}
+                if mapping.notices.count == 0:
+                    problem: sview = mapping.remaining if mapping_index < catalog.bundled_libraries.count and mapping.has_remaining else Messages::NO_MAPPING
+                    library_result.problems.push(problem)
+                for notice_name in mapping.notices |catalog, notice_files, library_result, report_notice_items, generated_bytes|:
+                    raise BundledNoticesAuditError.InputLimitExceeded if report_notice_items >= Limits::REPORT_NOTICE_ITEMS
+                    report_notice_items <- report_notice_items + 1
+                    library_result.notices.push(notice_name)
+                    try bundled_notice_consume_generated(generated_bytes, sview_len(notice_name) + 4)
+                    expected_file_name: sview = notice_name + ".txt"
+                    matching_count: mutable usize = 0
+                    matching_index: mutable usize = 0
+                    for notice_index in 0..<notice_files.count |notice_name, notice_files, matching_count, matching_index, expected_file_name, comparisons|:
+                        try bundled_notice_consume_comparison(comparisons, 1)
+                        if bundled_notice_basename(notice_files[notice_index].path) == expected_file_name:
+                            matching_count <- matching_count + 1
+                            matching_index <- notice_index
+                    source_index: usize = try bundled_notice_source_index(catalog.sources, notice_name, comparisons)
+                    if source_index >= catalog.sources.count or matching_count != 1:
+                        try bundled_notice_consume_generated(generated_bytes, sview_len(notice_name) + 33)
+                        library_result.problems.push("notice " + notice_name + " is missing or ambiguous")
+                        continue
+                    observed_digest: darray[u8] = try digest_hex(notice_files[matching_index].contents)
+                    if bytes_view(observed_digest) != catalog.sources[source_index].sha256:
+                        try bundled_notice_consume_generated(generated_bytes, sview_len(notice_name) + 34)
+                        library_result.problems.push("notice " + notice_name + " differs from the catalog")
+                results.push(library_result)
+
+            verified: mutable bool = results.count != 0
+            for result in results |verified|:
+                verified <- false if result.problems.count != 0
+            return Report{catalog_complete: catalog.complete, dylib_notice_files_verified: verified, libraries: results, remaining: catalog.remaining}
+
+
+    private:
+        const module Limits:
+            FILES: usize = 65536
+            CATALOG_ENTRIES: usize = 65536
+            NOTICE_BYTES: usize = 67108864
+            TEXT_BYTES: usize = 16777216
+            COMPARISONS: usize = 16777216
+            GENERATED_BYTES: usize = 67108864
+            REPORT_NOTICE_ITEMS: usize = 262144
+
+
+        const module Messages:
+            NO_MAPPING: sview = "library has no notice mapping"
+
+
+        def bundled_notice_count_text(total: mutable usize&, value: sview) -> void error[BundledNoticesAuditError] can[Abort.Panic]:
+            raise BundledNoticesAuditError.InputLimitExceeded if sview_len(value) > Limits::TEXT_BYTES - total
+            total <- total + sview_len(value)
+
+
+        def bundled_notice_consume_comparison(total: mutable usize&, amount: usize) -> void error[BundledNoticesAuditError] can[Abort.Panic]:
+            raise BundledNoticesAuditError.InputLimitExceeded if amount > Limits::COMPARISONS - total
+            total <- total + amount
+
+
+        def bundled_notice_consume_generated(total: mutable usize&, amount: usize) -> void error[BundledNoticesAuditError] can[Abort.Panic]:
+            raise BundledNoticesAuditError.InputLimitExceeded if amount > Limits::GENERATED_BYTES - total
+            total <- total + amount
+
+
+        def bundled_notice_basename(path: sview) -> sview:
+            start: mutable usize = 0
+            for index in 0..<sview_len(path) |path, start|:
+                start <- index + 1 if sview_at(path, index) == 47u8
+            return path[start:sview_len(path)]
+
+
+        def bundled_notice_library_index(libraries: darray[AuditFile], path: sview, comparisons: mutable usize&) -> usize error[BundledNoticesAuditError] can[Abort.Panic]:
+            for index in 0..<libraries.count |libraries, path, comparisons|:
+                try bundled_notice_consume_comparison(comparisons, 1)
+                return index if libraries[index].path == path
+            return libraries.count
+
+
+        def bundled_notice_source_index(sources: darray[NoticeSource], name: sview, comparisons: mutable usize&) -> usize error[BundledNoticesAuditError] can[Abort.Panic]:
+            found: mutable usize = sources.count
+            for index in 0..<sources.count |sources, name, found, comparisons|:
+                try bundled_notice_consume_comparison(comparisons, 1)
+                found <- index if sources[index].name == name
+            return found
+
+
+        def bundled_notice_mapping_index(mappings: darray[LibraryMapping], name: sview, comparisons: mutable usize&) -> usize error[BundledNoticesAuditError] can[Abort.Panic]:
+            found: mutable usize = mappings.count
+            for index in 0..<mappings.count |mappings, name, found, comparisons|:
+                try bundled_notice_consume_comparison(comparisons, 1)
+                found <- index if mappings[index].library_name == name
+            return found

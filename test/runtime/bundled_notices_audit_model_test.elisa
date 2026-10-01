@@ -1,0 +1,123 @@
+include "../../ports/elisa-engine/scripts/bundled_notices_audit_model.elisa"
+
+using EsEngineBundledNoticesAudit
+
+
+def bundled_notices_test_digest(bytes: darray[u8]&) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+    digest: mutable darray[u8] = []
+    catch digest_hex(bytes):
+        ok value:
+            digest <- value
+        error failure:
+            _ = failure
+            assert false
+    return digest
+
+
+def bundled_notices_test_audit(libraries: darray[AuditFile], notice_files: darray[NoticeFile], catalog: Catalog) -> Report can[Memory.Allocate, Abort.Panic]:
+    report: mutable Report = Report{}
+    catch audit(libraries, notice_files, catalog):
+        ok value:
+            report <- value
+        error failure:
+            _ = failure
+            assert false
+    return report
+
+
+def bundled_notices_test_rejects_invalid_filesystem_input(libraries: darray[AuditFile], notice_files: darray[NoticeFile], catalog: Catalog) -> bool can[Memory.Allocate, Abort.Panic]:
+    rejected: mutable bool = false
+    catch audit(libraries, notice_files, catalog):
+        ok report:
+            _ = report
+        error failure:
+            rejected <- failure == BundledNoticesAuditError.InvalidFilesystemInput
+    return rejected
+
+
+@test
+def bundled_notice_audit_matches_python_fixtures_and_report_shape() -> void can[Memory.Allocate, Abort.Panic]:
+    abc: mutable darray[u8] = [97u8, 98u8, 99u8]
+    assert bytes_view(bundled_notices_test_digest(abc)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+    notice_contents: mutable darray[u8] = [110u8, 111u8, 116u8, 105u8, 99u8, 101u8]
+    notice_digest: darray[u8] = bundled_notices_test_digest(notice_contents)
+    assert notice_digest.count == 64
+    sources: darray[NoticeSource] = [
+        NoticeSource{name: "Example", sha256: "not-the-final-source"},
+        NoticeSource{name: "Example", sha256: bytes_view(notice_digest)}
+    ]
+    mappings: darray[LibraryMapping] = [
+        LibraryMapping{library_name: "libexample.dylib"},
+        LibraryMapping{library_name: "libexample.dylib", notices: ["Example"]}
+    ]
+    catalog: Catalog = Catalog{complete: false, sources: sources, bundled_libraries: mappings, remaining: ["catalog completeness is intentionally unknown"]}
+    library: darray[AuditFile] = [AuditFile{path: "Contents/Frameworks/libexample.dylib"}]
+
+    missing: Report = bundled_notices_test_audit(library, [], catalog)
+    assert not missing.dylib_notice_files_verified
+    assert not missing.catalog_complete
+    assert missing.libraries.count == 1
+    assert missing.libraries[0].library == "libexample.dylib"
+    assert missing.libraries[0].notices.count == 1
+    assert missing.libraries[0].notices[0] == "Example"
+    assert missing.libraries[0].problems.count == 1
+    assert missing.libraries[0].problems[0] == "notice Example is missing or ambiguous"
+    assert missing.remaining.count == 1
+
+    present: darray[NoticeFile] = [NoticeFile{path: "Contents/Resources/Notices/nested/Example.txt", contents: notice_contents}]
+    verified: Report = bundled_notices_test_audit(library, present, catalog)
+    assert verified.dylib_notice_files_verified
+    assert not verified.catalog_complete
+    assert verified.libraries[0].problems.count == 0
+
+    tampered: darray[NoticeFile] = [NoticeFile{path: "Contents/Resources/Notices/Example.txt", contents: [109u8, 111u8, 100u8, 105u8, 102u8, 105u8, 101u8, 100u8]}]
+    rejected: Report = bundled_notices_test_audit(library, tampered, catalog)
+    assert not rejected.dylib_notice_files_verified
+    assert rejected.libraries[0].problems.count == 1
+    assert rejected.libraries[0].problems[0] == "notice Example differs from the catalog"
+
+    libraries: darray[AuditFile] = [
+        AuditFile{path: "z/libunknown.dylib"},
+        AuditFile{path: "Contents/Frameworks/libexample.dylib"}
+    ]
+    multiple: Report = bundled_notices_test_audit(libraries, present, catalog)
+    assert not multiple.dylib_notice_files_verified
+    assert multiple.libraries.count == 2
+    assert multiple.libraries[0].library == "libexample.dylib"
+    assert multiple.libraries[1].library == "libunknown.dylib"
+    assert multiple.libraries[1].problems.count == 1
+    assert multiple.libraries[1].problems[0] == "library has no notice mapping"
+
+
+@test
+def bundled_notice_audit_flags_ambiguous_files_and_uses_mapping_remaining_text() -> void can[Memory.Allocate, Abort.Panic]:
+    library: darray[AuditFile] = [AuditFile{path: "Frameworks/libdynamic.dylib"}]
+    mapping: darray[LibraryMapping] = [LibraryMapping{library_name: "libdynamic.dylib", has_remaining: true, remaining: "notice is supplied by the host"}]
+    catalog: Catalog = Catalog{bundled_libraries: mapping}
+    unmapped_notice: Report = bundled_notices_test_audit(library, [], catalog)
+    assert not unmapped_notice.dylib_notice_files_verified
+    assert unmapped_notice.libraries[0].problems.count == 1
+    assert unmapped_notice.libraries[0].problems[0] == "notice is supplied by the host"
+
+    ambiguous_catalog: Catalog = Catalog{
+        sources: [NoticeSource{name: "Example", sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}],
+        bundled_libraries: [LibraryMapping{library_name: "libdynamic.dylib", notices: ["Example"]}]
+    }
+    files: darray[NoticeFile] = [
+        NoticeFile{path: "Notices/one/Example.txt", contents: [97u8, 98u8, 99u8]},
+        NoticeFile{path: "Notices/two/Example.txt", contents: [97u8, 98u8, 99u8]}
+    ]
+    ambiguous: Report = bundled_notices_test_audit(library, files, ambiguous_catalog)
+    assert not ambiguous.dylib_notice_files_verified
+    assert ambiguous.libraries[0].problems.count == 1
+    assert ambiguous.libraries[0].problems[0] == "notice Example is missing or ambiguous"
+
+    no_libraries: Report = bundled_notices_test_audit([], files, ambiguous_catalog)
+    assert not no_libraries.dylib_notice_files_verified
+
+    duplicate_libraries: darray[AuditFile] = [
+        AuditFile{path: "Frameworks/libdynamic.dylib"},
+        AuditFile{path: "Frameworks/libdynamic.dylib"}
+    ]
+    assert bundled_notices_test_rejects_invalid_filesystem_input(duplicate_libraries, [], catalog)
