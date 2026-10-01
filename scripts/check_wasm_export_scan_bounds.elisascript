@@ -1,0 +1,544 @@
+# Bounded Elisascript port of check_wasm_export_scan_bounds.sh.
+# This audit inspects source and fixture contracts only; it does not compile or
+# execute the scanner or its parity fixtures.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+include "../src/runtime/bounded_text_posix.elisa"
+
+using EsBoundedText
+
+
+module EsWasmExportScanBoundsAudit:
+    private:
+        struct AuditInputs:
+            candidate: Path
+            fixture: Path
+            launcher_fixture: Path
+            reference: Path
+            contract: Path
+            unicode_data: Path
+            unicode_boundary_fixture: Path
+
+
+        const module Limits:
+            UNICODE_BOUNDARY_BYTES: usize = 32768
+
+
+        const module Paths:
+            CANDIDATE: sview = "scripts/wasm_export_scan.elisascript"
+            FIXTURE: sview = "test/script_parity/wasm_export_scan_test.elisascript"
+            LAUNCHER_FIXTURE: sview = "test/script_parity/wasm_export_scan_launcher_test.elisascript"
+            REFERENCE: sview = "scripts/wasm_export_scan_reference.py"
+            CONTRACT: sview = "test/fixtures/script_parity/wasm_export_scan/CONTRACT.md"
+            UNICODE_DATA: sview = "scripts/wasm_export_scan_unicode16.elisascript"
+            UNICODE_BOUNDARY_FIXTURE: sview = "test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "W09 bounds audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "W09 bounds audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "W09 bounds audit: missing "
+            READ_FAILED: sview = "W09 bounds audit: unable to read source: "
+            CONTRACT_MISSING: sview = "W09 bounds audit: missing contract: "
+            BOUNDARY_FIXTURE: sview = "W09 Unicode audit: boundary parity fixture must stay one line, <=32 KiB, and run as one pair"
+            EOF_ORDER: sview = "W09 bounds audit: EOF snapshot checks must precede descriptor close and source acceptance"
+            SOURCE_READ_MODE: sview = "W09 bounds audit: source reads must not use a path-based stdio stream"
+            WHOLE_FILE_READ: sview = "W09 bounds audit: include sources must not use unbounded whole-file reads"
+            EXPECTED_JSON_READ: sview = "W09 bounds audit: expected JSON snapshots must not use an unbounded text read"
+            REFERENCE_READ: sview = "W09 bounds audit: reference preflight must read through a checked descriptor"
+            REFERENCE_SNAPSHOT: sview = "W09 bounds audit: the pinned oracle must hash and execute the same source snapshot"
+            MAIN_RESCAN: sview = "W09 bounds audit: main presence must not rescan the export-name vector"
+            LINE_CAP: sview = "W09 bounds audit: both source-line append sites must enforce the metadata cap"
+            SPLIT_CAP: sview = "W09 bounds audit: separator and final parameter slices must be rejected before append"
+            SPLIT_CALLS: sview = "W09 bounds audit: explicit and implicit exports must use the per-export split limit"
+            PARAMETER_CAPS: sview = "W09 bounds audit: explicit and implicit exports must enforce the parameter cap before slice materialization"
+            HEADER_CAPS: sview = "W09 bounds audit: both explicit-export and implicit-main paths must charge and propagate the guard"
+            RUNTIME_ORDER: sview = "W09 bounds audit: both runtime guards must fail with status 2 before CLI mode handling"
+            UNICODE_EXCEPTIONS: sview = "W09 Unicode audit: remove hand-maintained printability exceptions"
+            SUCCESS: sview = "W09 source audit: bounded scanner work and component ABI paths have source-level coverage; runtime parity remains unverified"
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def require_patterns(input: Path, patterns: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if not found:
+                    diagnostic(Messages::CONTRACT_MISSING + f"{pattern}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def reject_patterns(input: Path, patterns: darray[sview], message: sview, append_pattern: bool = false) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if found:
+                    if append_pattern:
+                        diagnostic(message + pattern)
+                    else:
+                        diagnostic(message)
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def require_matching_line_count(input: Path, needle: sview, expected: usize, message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            count: usize = try EsSourceFunctionScope::matching_file_line_count(input, needle) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if count != expected:
+                diagnostic(message)
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def require_line_precedes(input: Path, first: sview, second: sview, message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            ordered: bool = try EsSourceFunctionScope::appears_before_in_file(input, first, second) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if not ordered:
+                diagnostic(message)
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def audit_boundary_fixture(inputs: AuditInputs) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, File.Read]:
+            byte_count: usize = try file_size(inputs.unicode_boundary_fixture) else err:
+                diagnostic(Messages::READ_FAILED + f"{inputs.unicode_boundary_fixture}")
+                return ExitStatus::IO_FAILURE
+            if byte_count > Limits::UNICODE_BOUNDARY_BYTES:
+                diagnostic(Messages::BOUNDARY_FIXTURE)
+                return ExitStatus::FAILURE
+
+            contents: sview = try EsBoundedText::read_utf8(inputs.unicode_boundary_fixture, Limits::UNICODE_BOUNDARY_BYTES) else err:
+                diagnostic(Messages::READ_FAILED + f"{inputs.unicode_boundary_fixture}")
+                return ExitStatus::IO_FAILURE
+            newline_count: mutable usize = 0
+            for index in 0..<len(contents):
+                newline_count <- newline_count + 1 if contents[index:index + 1] == "\n"
+            if newline_count != 1:
+                diagnostic(Messages::BOUNDARY_FIXTURE)
+                return ExitStatus::FAILURE
+
+            pair_count: i64 = require_matching_line_count(inputs.fixture,
+                "scanner_pair_matches(\"test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input\")",
+                1, Messages::BOUNDARY_FIXTURE)
+            return pair_count if pair_count != 0i64
+            return 0i64
+
+
+        def audit_eof_snapshot_order(input: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            ordered: i64 = require_line_precedes(input, "if amount == 0:", "fstat_bounded_source_descriptor(descriptor, completed_stat)", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            ordered <- require_line_precedes(input, "fstat_bounded_source_descriptor(descriptor, completed_stat)", "source_file_snapshot_matches(opened_stat, completed_stat)", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            ordered <- require_line_precedes(input, "source_file_snapshot_matches(opened_stat, completed_stat)", "stat_bounded_source_path(path_pointer, named_completed_stat)", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            ordered <- require_line_precedes(input, "stat_bounded_source_path(path_pointer, named_completed_stat)", "source_file_snapshot_matches(opened_stat, named_completed_stat)", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            ordered <- require_line_precedes(input, "source_file_snapshot_matches(opened_stat, named_completed_stat)", "if elisascript_posix_close(descriptor) != 0:", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            ordered <- require_line_precedes(input, "if elisascript_posix_close(descriptor) != 0:", "return BoundedSourceRead{source: bytes_view(source)}", Messages::EOF_ORDER)
+            return ordered if ordered != 0i64
+            return 0i64
+
+
+        def audit_candidate_source_bounds(input: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(input, [
+                "SOURCE_BYTES: usize = 8388608", "SOURCE_LINES: usize = 131072",
+                "if len(source) > Limits::SOURCE_BYTES:",
+                "append_text(output, frame.source[line_start:line_end], Limits::SOURCE_BYTES)",
+                "def source_lines(source: sview) -> (lines: darray[sview], failure: sview)",
+                "parsed_lines.failure != \"\"", "WASM source line count exceeds Elisascript scan limit",
+                "PARAMETERS_PER_EXPORT: usize = 4096", "TOTAL_PARAMETERS: usize = 16384",
+                "FLATTEN_PAYLOAD_OPTION: sview = \"--flatten-payload\"",
+                "BUILD_COMPONENT_PAYLOAD_OPTION: sview = \"--build-component-payload\"",
+                "COMPONENT_OPTION: sview = \"--component\"",
+                "def split_top_level(text: sview, delimiter: u8, maximum_parts: usize) -> TopLevelSplit",
+                "if parts.count >= maximum_parts:", "parameter_split.exceeded_limit",
+                "split_top_level(header.parameters, 44u8, Limits::PARAMETERS_PER_EXPORT)",
+                "WASM export parameter count exceeds Elisascript scan limit",
+                "explicit.row.parameters.count > Limits::TOTAL_PARAMETERS - total_parameters",
+                "implicit.row.parameters.count > Limits::TOTAL_PARAMETERS - total_parameters",
+                "WASM total export parameter count exceeds Elisascript scan limit",
+                "INCLUDE_DEPTH: usize = 128", "frames.count >= Limits::INCLUDE_DEPTH",
+                "WASM include depth exceeds Elisascript scan limit",
+                "INCLUDE_DIRECTIVES: usize = 16384", "include_directives >= Limits::INCLUDE_DIRECTIVES",
+                "WASM include directive count exceeds Elisascript scan limit",
+                "INCLUDE_FILES: usize = 4096", "loaded_files >= Limits::INCLUDE_FILES",
+                "WASM include file count exceeds Elisascript scan limit",
+                "include \"../src/runtime/file_posix.elisa\"",
+                "include \"../src/runtime/directory_posix.elisa\"",
+                "include \"../src/runtime/stdio_posix.elisa\"",
+                "SOURCE_READ_CHUNK_BYTES: usize = 16384", "CALLER_PAYLOAD_BYTES: usize = 67108863",
+                "elif byte < 32u8:", "return false if not append_text(output, \"\\u00\", limit)",
+                "SOURCE_READ_EINTR_RETRIES: usize = 4",
+                "def read_bounded_source(input_path: Path, maximum_bytes: usize) -> BoundedSourceRead",
+                "DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC",
+                "def open_bounded_source_descriptor(path: cstr, flags: int) -> int",
+                "errno[0] == DarwinErrno::EINTR and retries < Limits::SOURCE_READ_EINTR_RETRIES",
+                "errno[0] == DarwinErrno::EINTR and interrupted_reads < Limits::SOURCE_READ_EINTR_RETRIES"
+            ])
+            return status if status != 0i64
+
+            status <- require_patterns(input, [
+                "def stat_bounded_source_path(path: cstr, result: mutable ElisascriptStat&) -> bool",
+                "def fstat_bounded_source_descriptor(descriptor: int, result: mutable ElisascriptStat&) -> bool",
+                "def source_file_snapshot_matches(left: ElisascriptStat, right: ElisascriptStat) -> bool",
+                "left.size != right.size",
+                "left.modify_time.seconds != right.modify_time.seconds or left.modify_time.nanoseconds != right.modify_time.nanoseconds",
+                "left.change_time.seconds != right.change_time.seconds or left.change_time.nanoseconds != right.change_time.nanoseconds",
+                "elisascript_posix_stat(path, result)", "elisascript_posix_fstat(descriptor, result)",
+                "stat_bounded_source_path(path_pointer, named_before_open)",
+                "stat_bounded_source_path(path_pointer, named_after_open)",
+                "fstat_bounded_source_descriptor(descriptor, opened_stat)",
+                "fstat_bounded_source_descriptor(descriptor, completed_stat)",
+                "stat_bounded_source_path(path_pointer, named_completed_stat)",
+                "source_file_snapshot_matches(opened_stat, completed_stat)",
+                "source_file_snapshot_matches(opened_stat, named_completed_stat)",
+                "probe_capacity: usize = remaining + 1",
+                "capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count",
+                "source.reserve(initial_source_capacity)",
+                "elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)",
+                "if read_count > remaining:", "elisascript_posix_fstat(descriptor, opened_stat)",
+                "source_file_identity_matches(named_before_open, opened_stat)",
+                "source_file_identity_matches(opened_stat, named_after_open)",
+                "elisascript_posix_close(descriptor)"
+            ])
+            return status if status != 0i64
+
+            status <- reject_patterns(input, ["FileStream"], Messages::SOURCE_READ_MODE)
+            return status if status != 0i64
+            return reject_patterns(input, ["read_text(current_path)"], Messages::WHOLE_FILE_READ)
+
+
+        def audit_candidate_graph_and_paths(input: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(input, [
+                "remaining_graph_bytes: usize = Limits::INCLUDE_GRAPH_BYTES - loaded_bytes",
+                "if remaining_graph_bytes < read_limit:", "loaded_bytes <- loaded_bytes + len(raw_source)",
+                "PATH_SYMLINK_HOPS: usize = 128", "symlink_hops > Limits::PATH_SYMLINK_HOPS",
+                "WASM symlink resolution exceeds Elisascript scan limit",
+                "def resolve_non_strict(input_path: Path, path_component_work: mutable usize&) -> PathResolution",
+                "symbolic_link: bool = is_symlink(candidate)", "if not exists and symbolic_link:",
+                "target_path: Path = try readlink(candidate) else err:",
+                "target_components: darray[sview] = path_components(target_text)",
+                "path_component_work <- path_component_work + expansion_work",
+                "resolved_component: Path = try path_real(candidate) else err:",
+                "include \"wasm_export_scan_unicode16.elisascript\"",
+                "EsWasmUnicode16::is_nonprintable(codepoint)"
+            ])
+            return status if status != 0i64
+            status <- require_patterns(input, [
+                "HEADER_SCAN_WORK: usize = 1048576", "HEADER_SUFFIX_SCAN_FACTOR: usize = 8",
+                "HEADER_SUFFIX_FIXED_WORK: usize = 16",
+                "def header_scan_charge(work: mutable usize&, amount: usize) -> bool",
+                "def header_suffix_scan_charge(work: mutable usize&, remaining_bytes: usize) -> bool",
+                "def export_header(line: sview, header_work: mutable usize&) -> ExportHeader",
+                "def main_header(line: sview, header_work: mutable usize&) -> MainHeader",
+                "def parse_export_line(line: sview, line_number: usize, pending_link_name: sview, has_pending_link_name: bool, seen_names: darray[sview], header_work: mutable usize&, name_work: mutable usize&, component: bool)",
+                "def parse_implicit_main(line: sview, line_number: usize, main_seen: bool, header_work: mutable usize&, component: bool)",
+                "if component:", "return AbiBinding{binding: \"scalar\", wasm_type: \"i32\", failure: \"\"}",
+                "U+070F SYRIAC ABBREVIATION MARK",
+                "header_work: mutable usize = 0",
+                "Shared across the flattened source, including all include files.",
+                "amount > Limits::HEADER_SCAN_WORK - work",
+                "remaining_bytes > available / Limits::HEADER_SUFFIX_SCAN_FACTOR",
+                "WASM header scan work exceeds Elisascript scan limit",
+                "EXPORT_NAME_COMPARE_WORK: usize = 1048576",
+                "def export_name_scan_charge(work: mutable usize&, compared_bytes: usize) -> bool",
+                "compared_bytes > Limits::EXPORT_NAME_COMPARE_WORK - work",
+                "WASM export-name comparison work exceeds Elisascript scan limit",
+                "name_work: mutable usize = 0", "main_seen: mutable bool = false",
+                "main_seen <- true if explicit.row.name == \"main\"",
+                "parse_implicit_main(line, line_number, main_seen, header_work, component)",
+                "export_name_scan_charge(name_work, compared_bytes)",
+                "parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work, name_work, component)",
+                "Every scanned identifier is nonempty"
+            ])
+            return status if status != 0i64
+
+            status <- require_matching_line_count(input, "if lines.count >= Limits::SOURCE_LINES:", 2, Messages::LINE_CAP)
+            return status if status != 0i64
+            status <- require_matching_line_count(input, "if parts.count >= maximum_parts:", 2, Messages::SPLIT_CAP)
+            return status if status != 0i64
+            status <- require_matching_line_count(input, "split_top_level(header.parameters, 44u8, Limits::PARAMETERS_PER_EXPORT)", 2, Messages::SPLIT_CALLS)
+            return status if status != 0i64
+            status <- require_matching_line_count(input, "if parameter_split.exceeded_limit:", 2, Messages::PARAMETER_CAPS)
+            return status if status != 0i64
+
+            suffix_charge_count: usize = try EsSourceFunctionScope::matching_file_line_count(input, "if not header_suffix_scan_charge(header_work, suffix_bytes):") else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            failure_propagation_count: usize = try EsSourceFunctionScope::matching_file_line_count(input, "if header.failure != \"\":") else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if suffix_charge_count != 2 or failure_propagation_count != 2:
+                diagnostic(Messages::HEADER_CAPS)
+                return ExitStatus::FAILURE
+
+            status <- reject_patterns(input, ["seen_names.contains(\"main\")"], Messages::MAIN_RESCAN)
+            return status if status != 0i64
+            return reject_patterns(input, ["python_extra_nonprintable"], Messages::UNICODE_EXCEPTIONS)
+
+
+        def audit_candidate_payload(input: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            return require_patterns(input, [
+                "def encode_flatten_payload(source: sview) -> JsonEncodeResult",
+                "def flatten_payload_path_response(input_path: Path) -> SourceResponse",
+                "def differential_flatten_payload_response(input_path: Path) -> sview"
+            ])
+
+
+        def audit_fixture_bounded_reads(inputs: AuditInputs) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(inputs.fixture, [
+                "def oversized_source_file_is_rejected_by_bounded_reader()",
+                "for _ in 0..<8388609 |source_bytes|", "wasm_export_scan_bounds_oversized_source_file_reads",
+                "def aggregate_include_graph_bytes_are_bounded()",
+                "for _ in 0..<8388608 |child_bytes|", "WASM include graph exceeds Elisascript scan limit",
+                "wasm_export_scan_bounds_aggregate_include_graph_reads",
+                "def structured_output_overflow_is_bounded()", "expected_source_bytes < 8388608usize",
+                "return source_written == expected_source_bytes and expected_source_bytes < 8388608usize and candidate_frame == expected_frame and removed_source and removed_root_directory",
+                "append_source_text(source_bytes, \"export fn overflow(value: \")",
+                "for _ in 0..<6291456 |source_bytes|",
+                "EsWasmExportScan::differential_build_payload_response(source_file, true)",
+                "structured output exceeds Elisascript scan limit", "wasm_export_scan_bounds_structured_payload_output",
+                "def symlink_include_cases_match()",
+                "symlink_parent_written: usize = write_fixture_text(source_file, \"include \\\"alias/../child.input\\\"\\n\")",
+                "def dangling_symlink_include_cases_match()",
+                "def python_expected_json_failure(source_path: sview, expected_json_path: sview, expected_stderr: sview)",
+                "def python_expected_json_bounds_match()",
+                "for _ in 0..<1048577 |oversized_bytes|", "for _ in 0..<129 |deep_bytes|",
+                "create_fixture_symlink(deep_path, symlink_path)",
+                "symlink_matches: bool = python_expected_json_failure",
+                "expected JSON exceeds 1048576 byte limit",
+                "expected JSON nesting exceeds 128 levels", "unable to read regular file",
+                "def wasm_export_scan_matches_component_scalar_enum_mode()",
+                "def header_scan_work_cases_reject_pathologically_expensive_suffixes()",
+                "def header_scan_work_aggregates_across_source_headers()",
+                "def wasm_export_scan_aggregates_header_scan_work_across_source()",
+                "def export_name_comparison_work_is_bounded()",
+                "def wasm_export_scan_bounds_unique_export_name_comparison_work()",
+                "def main_seen_order_cases_match_python()",
+                "def wasm_export_scan_preserves_main_seen_ordering()",
+                "repeated_implicit_matches <- scanner_pair_matches",
+                "def source_line_descriptor_count_is_bounded()",
+                "def wasm_export_scan_bounds_line_descriptor_count()",
+                "def parameter_count_is_bounded()", "def wasm_export_scan_bounds_parameter_count()",
+                "def total_parameter_count_is_bounded()", "def wasm_export_scan_bounds_total_parameter_count()",
+                "WASM total export parameter count exceeds Elisascript scan limit"
+            ])
+            return status if status != 0i64
+
+            status <- require_patterns(inputs.fixture, [
+                "for index in 0..<4097 |source_bytes, index|",
+                "WASM export parameter count exceeds Elisascript scan limit",
+                "def include_depth_is_bounded()", "def wasm_export_scan_bounds_include_depth()",
+                "for index in 0..<129 |temporary_root, attempted_files, all_written, index|",
+                "WASM include depth exceeds Elisascript scan limit",
+                "def include_directive_count_is_bounded()", "append_repeated_source_text(include_source",
+                "16385)", "WASM include directive count exceeds Elisascript scan limit",
+                "def wasm_export_scan_bounds_include_directive_count()",
+                "def include_file_count_is_bounded()",
+                "for index in 0..<4096 |temporary_root, include_source, all_written, attempted_files, index|",
+                "WASM include file count exceeds Elisascript scan limit",
+                "def wasm_export_scan_bounds_include_file_count()",
+                "def dangling_symlink_cycle_is_bounded()",
+                "def wasm_export_scan_bounds_dangling_symlink_cycles()",
+                "def dangling_symlink_expansion_work_is_bounded()",
+                "def wasm_export_scan_bounds_dangling_symlink_expansion_work()",
+                "assert EsWasmExportScanParity::dangling_symlink_expansion_work_is_bounded()",
+                "for index in 0..<60 |temporary_root, all_links_created, link_paths, index|",
+                "append_repeated_source_text(target_bytes, \"./\", 400)",
+                "WASM path component work exceeds Elisascript scan limit",
+                "wasm export scan: WASM path component work exceeds Elisascript scan limit",
+                "links/parent-tail-link/../child.input", "links/nested-link/child.input",
+                "relative_link: Path = links_directory.joinpath(\"relative-link\")",
+                "create_fixture_symlink(path(\"../missing/../actual\"), relative_link)",
+                "create_fixture_symlink(path(\"../missing/../actual/subdir\"), parent_tail_link)",
+                "absolute_target: sview = f\"{temporary_root}/missing/../actual\"",
+                "wasm export scan: WASM symlink resolution exceeds Elisascript scan limit"
+            ])
+            return status if status != 0i64
+
+            status <- require_patterns(inputs.fixture, [
+                "def append_source_text(output: mutable darray[u8]&, value: sview)",
+                "def append_repeated_source_text(output: mutable darray[u8]&, value: sview, repetitions: usize)",
+                "for _ in 0..<512 |export_header_bytes|", "for _ in 0..<512 |implicit_main_bytes|",
+                "append_repeated_source_text(source_bytes, \"x\", 600000)",
+                "return export_frame == expected_frame and implicit_main_frame == expected_frame",
+                "assert EsWasmExportScanParity::header_scan_work_aggregates_across_source_headers()",
+                "for index in 0..<1024 |source_bytes, index|",
+                "assert EsWasmExportScanParity::export_name_comparison_work_is_bounded()",
+                "assert EsWasmExportScanParity::main_seen_order_cases_match_python()",
+                "for _ in 0..<131072 |source_bytes|", "source_bytes.push(10u8)",
+                "expected_limit_frame", "expected_over_limit_frame",
+                "assert EsWasmExportScanParity::source_line_descriptor_count_is_bounded()",
+                "append_utf8_scalar(source_bytes, 917504u64)",
+                "append_utf8_scalar(source_bytes, 917506u64)",
+                "append_utf8_scalar(source_bytes, 917535u64)",
+                "def unsupported_nonprintable_unicode_type_repr_matches_python()",
+                "U+070F SYRIAC ABBREVIATION MARK"
+            ])
+            return status if status != 0i64
+
+            return require_patterns(inputs.launcher_fixture, [
+                "def launcher_payload_pair_matches(launcher: sview, source_path: sview, component: bool = false)",
+                "wasm_export_scan/component_enum.input",
+                "FLATTEN_PAYLOAD_OPTION: sview = \"--flatten-payload\"",
+                "launcher_flatten_payload_pair_matches"
+            ])
+
+
+        def audit_unicode_source(inputs: AuditInputs) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(inputs.unicode_data, [
+                "UCD_VERSION: sview = \"16.0.0\"", "RANGE_COUNT: usize = 737",
+                "NONPRINTABLE_STARTS: u32[737]", "NONPRINTABLE_ENDS: u32[737]",
+                "middle <- lower + ((upper - lower) / 2)",
+                "def range_boundary_contract() -> bool",
+                "lookup_nonprintable(first) or not lookup_nonprintable(middle) or not lookup_nonprintable(last)",
+                "previous_end != 1114111", "index == 0 and first != 0"
+            ])
+            return status if status != 0i64
+
+            status <- require_patterns(inputs.fixture, [
+                "assert EsWasmUnicode16::range_boundary_contract()",
+                "scanner_pair_matches(\"test/fixtures/script_parity/wasm_export_scan/unicode16_boundary_repr.input\")",
+                "source_bytes.push(0u8)", "source_bytes.push(1u8)", "source_bytes.push(15u8)",
+                "source_bytes.push(31u8)", "source_bytes.push(127u8)",
+                "append_source_text(spacing_bytes, \"export fn invalid(value !~\")",
+                "U+0378..U+0379 unassigned gap"
+            ])
+            return status if status != 0i64
+
+            status <- require_patterns(inputs.unicode_boundary_fixture, [
+                "export fn unicode_boundary(x", "y: int) -> void = unicode_boundary"
+            ])
+            return status if status != 0i64
+            return require_patterns(inputs.contract, [
+                "resolves every existing component before processing a following `..`",
+                "dangling symlink, it reads the link target and prepends that",
+                "fixture now concatenates every range start, midpoint, end, and immediate",
+                "1,048,576", "aggregate weighted work ceiling", "multiple",
+                "case chains 60 relative links whose targets each contain 400 `./` components",
+                "U+E0000, U+E0002, and U+E001F",
+                "fails closed unless it runs Python 3.14.7 with"
+            ])
+
+
+        def audit_reference(input: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(input, [
+                "scanner.parse_exports(source, component=component_mode)",
+                "MAX_EXPECTED_JSON_BYTES = 1 * 1024 * 1024",
+                "MAX_EXPECTED_JSON_DEPTH = 128", "MAX_REFERENCE_SOURCE_BYTES = 1 * 1024 * 1024",
+                "reference_source = _read_bounded_regular_file(",
+                "\"hash-object\", \"--stdin\"", "input=reference_source",
+                "exec(compile(reference_source, str(reference_path), \"exec\"), module.__dict__)",
+                "def read_bounded_expected_json(path: Path) -> Any:",
+                "os.O_RDONLY | getattr(os, \"O_NOFOLLOW\", 0) | getattr(os, \"O_NONBLOCK\", 0)",
+                "stat.S_ISREG(os.fstat(descriptor).st_mode)", "chunk = os.read(descriptor, remaining)",
+                "def _read_bounded_regular_file(",
+                "flags = os.O_RDONLY | getattr(os, \"O_NONBLOCK\", 0) | getattr(os, \"O_NOFOLLOW\", 0)",
+                "opened_stat = os.fstat(descriptor)",
+                "named_after_open = os.stat(path, follow_symlinks=False)",
+                "chunk = os.read(descriptor, min(65536, remaining))",
+                "graph_remaining = MAX_INCLUDE_GRAPH_BYTES - loaded_bytes",
+                "read_limit = min(MAX_SOURCE_BYTES, graph_remaining)",
+                "source_bytes = _read_bounded_regular_file(",
+                "def check_expected_json_depth(payload: bytearray) -> None:",
+                "check_expected_json_depth(payload)", "if depth > MAX_EXPECTED_JSON_DEPTH:",
+                "expected = read_bounded_expected_json(Path(expected_json_argument))",
+                "invalid checked-in expected JSON: unable to read regular file",
+                "FLATTEN_PAYLOAD_OPTION = \"--flatten-payload\"",
+                "if not build_payload and not flatten_payload and len(arguments) == 2:",
+                "PINNED_PYTHON_VERSION = (3, 14, 7)",
+                "PINNED_UNICODE_DATA_VERSION = \"16.0.0\"",
+                "tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION",
+                "unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION",
+                "reference requires Python 3.14.7 with Unicode 16.0.0"
+            ])
+            return status if status != 0i64
+
+            status <- reject_patterns(input, ["Path(expected_json_argument).read_text"], Messages::EXPECTED_JSON_READ)
+            return status if status != 0i64
+            status <- reject_patterns(input, ["resolved_path.open(\"rb\")"], Messages::REFERENCE_READ)
+            return status if status != 0i64
+            status <- reject_patterns(input, ["\"hash-object\", str(reference_path)", "spec.loader.exec_module(module)"], Messages::REFERENCE_SNAPSHOT)
+            return status if status != 0i64
+
+            status <- require_line_precedes(input, "def main(arguments:", "tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION", Messages::RUNTIME_ORDER)
+            return status if status != 0i64
+            status <- require_line_precedes(input, "tuple(sys.version_info[:3]) != PINNED_PYTHON_VERSION", "return fail(\"reference requires Python 3.14.7 with Unicode 16.0.0\", 2)", Messages::RUNTIME_ORDER)
+            return status if status != 0i64
+            status <- require_line_precedes(input, "return fail(\"reference requires Python 3.14.7 with Unicode 16.0.0\", 2)", "unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION", Messages::RUNTIME_ORDER)
+            return status if status != 0i64
+            status <- require_line_precedes(input, "unicodedata.unidata_version != PINNED_UNICODE_DATA_VERSION", "return fail(\"reference requires Python 3.14.7 with Unicode 16.0.0\", 2)", Messages::RUNTIME_ORDER)
+            return status if status != 0i64
+            status <- require_line_precedes(input, "return fail(\"reference requires Python 3.14.7 with Unicode 16.0.0\", 2)", "build_component_payload = bool(arguments)", Messages::RUNTIME_ORDER)
+            return status if status != 0i64
+            return 0i64
+
+
+        def audit_inputs(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, File.Read]:
+            inputs: AuditInputs = {
+                candidate: repository_root.joinpath(Paths::CANDIDATE),
+                fixture: repository_root.joinpath(Paths::FIXTURE),
+                launcher_fixture: repository_root.joinpath(Paths::LAUNCHER_FIXTURE),
+                reference: repository_root.joinpath(Paths::REFERENCE),
+                contract: repository_root.joinpath(Paths::CONTRACT),
+                unicode_data: repository_root.joinpath(Paths::UNICODE_DATA),
+                unicode_boundary_fixture: repository_root.joinpath(Paths::UNICODE_BOUNDARY_FIXTURE)
+            }
+            required_files: darray[Path] = [
+                inputs.candidate, inputs.fixture, inputs.launcher_fixture, inputs.reference,
+                inputs.contract, inputs.unicode_data, inputs.unicode_boundary_fixture
+            ]
+            for required_file in required_files:
+                if not is_file(required_file):
+                    diagnostic(Messages::MISSING_INPUT + f"{required_file}")
+                    return ExitStatus::FAILURE
+
+            status: mutable i64 = audit_boundary_fixture(inputs)
+            return status if status != 0i64
+            status <- audit_candidate_source_bounds(inputs.candidate)
+            return status if status != 0i64
+            status <- audit_eof_snapshot_order(inputs.candidate)
+            return status if status != 0i64
+            status <- audit_candidate_graph_and_paths(inputs.candidate)
+            return status if status != 0i64
+            status <- audit_candidate_payload(inputs.candidate)
+            return status if status != 0i64
+            status <- audit_fixture_bounded_reads(inputs)
+            return status if status != 0i64
+            status <- audit_unicode_source(inputs)
+            return status if status != 0i64
+            status <- audit_reference(inputs.reference)
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::IO_FAILURE
+            if not is_directory(root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            return audit_inputs(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsWasmExportScanBoundsAudit::run_default()
