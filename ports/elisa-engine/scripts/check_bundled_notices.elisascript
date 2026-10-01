@@ -1,0 +1,102 @@
+#!/usr/bin/env elisascript
+# Bounded Elisa port of elisa-engine/scripts/check_bundled_notices.py.
+include "./bundled_notices_audit_posix.elisa"
+include "./bundled_notices_cli_model.elisa"
+include "./bundled_notices_report_json_model.elisa"
+
+using EsEngineBundledNoticesAuditPosix
+using EsEngineBundledNoticesAudit
+using EsEngineBundledNoticesCli
+using EsEngineBundledNoticesReportJson
+
+
+module EsEngineBundledNoticesCommand:
+    private:
+        const module Usage:
+            HELP: sview = "usage: check_bundled_notices.py [-h] --app APP [--catalog CATALOG] [--output OUTPUT]\n\nAudit packaged dylibs against the notice catalog without claiming legal completeness.\n\noptions:\n  -h, --help           show this help message and exit\n  --app APP\n  --catalog CATALOG\n  --output OUTPUT\n"
+            PREFIX: sview = "check_bundled_notices.py: error: "
+
+
+        def diagnostic(message: sview) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
+            _ = write_stderr(Usage::PREFIX + message + "\n")
+
+
+        def cli_failure_message(parsed: ParseResult) -> sview can[Memory.Allocate, Abort.Panic]:
+            if parsed.failure == CliFailure.MissingOptionValue:
+                return "argument " + parsed.detail + ": expected one argument"
+            elif parsed.failure == CliFailure.MissingApp:
+                return "the following arguments are required: --app"
+            elif parsed.failure == CliFailure.UnknownOption or parsed.failure == CliFailure.UnexpectedArgument:
+                return "unrecognized arguments: " + parsed.detail
+            return "argument list exceeds the supported safety limit"
+
+
+        def default_catalog_path() -> Path error[BundledNoticesPosixError] can[Directory.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            source_path: Path = try path_real(Script::source_path()) else failure:
+                _ = failure
+                raise BundledNoticesPosixError.CatalogReadFailed
+            engine_root: Path = try path_real(source_path.parent().parent().parent().parent().parent().joinpath("elisa-engine")) else failure:
+                _ = failure
+                raise BundledNoticesPosixError.CatalogReadFailed
+            return engine_root.joinpath("native/notice-sources.json")
+
+
+        def selected_catalog_path(options: Options) -> Path error[BundledNoticesPosixError] can[Directory.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            return path(options.catalog) if options.has_catalog
+            return try default_catalog_path()
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            parsed: ParseResult = parse_options(arguments)
+            if parsed.failure == CliFailure.HelpRequested:
+                _ = write_stdout(Usage::HELP)
+                return 0i64
+            if parsed.failure != CliFailure.None:
+                _ = write_stderr("usage: check_bundled_notices.py [-h] --app APP [--catalog CATALOG] [--output OUTPUT]\n")
+                diagnostic(cli_failure_message(parsed))
+                return 2i64
+
+            catalog_path: Path = try selected_catalog_path(parsed.options) else failure:
+                _ = failure
+                diagnostic("unable to locate the default notice catalog")
+                return 1i64
+            app_path: Path = path(parsed.options.app)
+            audited: AuditedBundle = try audit_bundle(app_path, catalog_path) else failure:
+                if failure == BundledNoticesPosixError.CatalogReadFailed:
+                    diagnostic("unable to read the notice catalog")
+                elif failure == BundledNoticesPosixError.InvalidCatalog:
+                    diagnostic("the notice catalog is invalid")
+                elif failure == BundledNoticesPosixError.LibraryEnumerationFailed:
+                    diagnostic("unable to enumerate bundled dynamic libraries")
+                elif failure == BundledNoticesPosixError.NoticeEnumerationFailed:
+                    diagnostic("unable to enumerate notice files")
+                elif failure == BundledNoticesPosixError.NoticeReadFailed:
+                    diagnostic("unable to read a matched notice file")
+                elif failure == BundledNoticesPosixError.InputLimitExceeded:
+                    diagnostic("the audit exceeded its configured input limits")
+                else:
+                    diagnostic("the audit could not produce a valid report")
+                return 1i64
+
+            encoded: darray[u8] = try encode_report(audited.report) else failure:
+                _ = failure
+                diagnostic("the JSON report exceeds the configured output limit")
+                return 1i64
+            if parsed.options.has_output:
+                output_path: Path = path(parsed.options.output)
+                written: usize = try write_text(output_path, bytes_view(encoded)) else failure:
+                    _ = failure
+                    diagnostic("unable to write JSON report: " + parsed.options.output)
+                    return 1i64
+                if written != encoded.count:
+                    diagnostic("short write while writing JSON report")
+                    return 1i64
+            else:
+                _ = write_stdout(bytes_view(encoded))
+            report: Report = audited.report
+            return 0i64 if report.catalog_complete and report.dylib_notice_files_verified else 1i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineBundledNoticesCommand::run(arguments)
