@@ -1,0 +1,132 @@
+# Bounded filesystem adapter for scripts/check_bundled_notices.py.
+# JSON projection and audit decisions remain in their pure typed modules.
+include "./bundled_notices_json_model.elisa"
+include "../../../src/runtime/bounded_bytes_posix.elisa"
+
+using EsData
+using EsBoundedBytes
+using EsEngineBundledNoticesAudit
+using EsEngineBundledNoticesJson
+
+
+module EsEngineBundledNoticesAuditPosix:
+    public:
+        error BundledNoticesPosixError:
+            CatalogReadFailed
+            InvalidCatalog
+            LibraryEnumerationFailed
+            NoticeEnumerationFailed
+            NoticeReadFailed
+            InputLimitExceeded
+            AuditFailed
+
+
+        # The report contains views into the decoded catalog's scalar storage.
+        # Keep its owner attached to the report across the adapter boundary.
+        struct AuditedBundle:
+            report: Report
+            catalog_owner: DecodedCatalog
+
+
+        # Resolve only notices referenced by dylibs actually present in the
+        # bundle. Each requested name is expanded with Path.rglob, preserving
+        # the source Python script's wildcard and nested-path matching rules.
+        def audit_bundle(app: Path, catalog_path: Path) -> AuditedBundle error[BundledNoticesPosixError] can[Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            catalog_bytes: darray[u8] = try EsBoundedBytes::read_bounded_bytes(catalog_path, DATA_MAX_INPUT_BYTES) else failure:
+                _ = failure
+                raise BundledNoticesPosixError.CatalogReadFailed
+            decoded_catalog: DecodedCatalog = try catalog_from_json(bytes_view(catalog_bytes)) else failure:
+                _ = failure
+                raise BundledNoticesPosixError.InvalidCatalog
+            catalog: Catalog = decoded_catalog.catalog
+
+            frameworks: Path = app.joinpath("Contents/Frameworks")
+            library_paths: darray[sview] = try frameworks.rglob("*.dylib") else failure:
+                _ = failure
+                raise BundledNoticesPosixError.LibraryEnumerationFailed
+            raise BundledNoticesPosixError.InputLimitExceeded if library_paths.count > FilesystemLimits::FILES
+            libraries: mutable darray[AuditFile] = []
+            for library_path in library_paths |libraries|:
+                libraries.push(AuditFile{path: library_path})
+
+            notice_names: mutable darray[sview] = []
+            comparisons: mutable usize = 0
+            for library_path in library_paths |catalog, notice_names, comparisons|:
+                library_name: sview = path(library_path).name()
+                mapping_index: usize = try bundled_notices_mapping_index(catalog.bundled_libraries, library_name, comparisons)
+                continue if mapping_index >= catalog.bundled_libraries.count
+                mapping: LibraryMapping = catalog.bundled_libraries[mapping_index]
+                for notice_name in mapping.notices |notice_names, comparisons|:
+                    existing: usize = try bundled_notices_name_index(notice_names, notice_name, comparisons)
+                    continue if existing < notice_names.count
+                    raise BundledNoticesPosixError.InputLimitExceeded if notice_names.count >= FilesystemLimits::NOTICE_PATTERNS
+                    notice_names.push(notice_name)
+
+            notice_root: Path = app.joinpath("Contents/Resources/Notices")
+            notice_files: mutable darray[NoticeFile] = []
+            total_notice_bytes: mutable usize = 0
+            total_pattern_matches: mutable usize = 0
+            for notice_name in notice_names |notice_root, notice_files, total_notice_bytes, total_pattern_matches, comparisons|:
+                pattern: sview = notice_name + ".txt"
+                matches: darray[sview] = try notice_root.rglob(pattern) else failure:
+                    _ = failure
+                    raise BundledNoticesPosixError.NoticeEnumerationFailed
+                raise BundledNoticesPosixError.InputLimitExceeded if matches.count > FilesystemLimits::PATTERN_MATCHES - total_pattern_matches
+                total_pattern_matches <- total_pattern_matches + matches.count
+                for matched_path in matches |notice_name, notice_files, total_notice_bytes, comparisons|:
+                    file_index: usize = try bundled_notices_file_index(notice_files, matched_path, comparisons)
+                    if file_index < notice_files.count:
+                        file: mutable NoticeFile = notice_files[file_index]
+                        already_recorded: mutable bool = false
+                        for recorded_name in file.matched_notice_names |notice_name, already_recorded|:
+                            already_recorded <- true if recorded_name == notice_name
+                        if not already_recorded:
+                            file.matched_notice_names.push(notice_name)
+                            notice_files[file_index] <- file
+                        continue
+
+                    raise BundledNoticesPosixError.InputLimitExceeded if notice_files.count >= FilesystemLimits::FILES
+                    remaining_bytes: usize = FilesystemLimits::NOTICE_BYTES - total_notice_bytes
+                    contents: darray[u8] = try EsBoundedBytes::read_bounded_bytes(path(matched_path), remaining_bytes) else failure:
+                        if failure == EsBoundedBytes::ReadError.LimitExceeded:
+                            raise BundledNoticesPosixError.InputLimitExceeded
+                        raise BundledNoticesPosixError.NoticeReadFailed
+                    total_notice_bytes <- total_notice_bytes + contents.count
+                    file: mutable NoticeFile = NoticeFile{path: matched_path, contents: contents, has_match_list: true}
+                    file.matched_notice_names.push(notice_name)
+                    notice_files.push(file)
+
+            catch audit(libraries, notice_files, catalog):
+                ok report:
+                    return AuditedBundle{report: report, catalog_owner: decoded_catalog}
+                error failure:
+                    _ = failure
+                    raise BundledNoticesPosixError.AuditFailed
+
+
+    private:
+        def bundled_notices_mapping_index(mappings: darray[LibraryMapping], name: sview, comparisons: mutable usize&) -> usize error[BundledNoticesPosixError] can[Abort.Panic]:
+            found: mutable usize = mappings.count
+            for index in 0..<mappings.count |mappings, name, found, comparisons|:
+                try bundled_notices_consume_comparison(comparisons)
+                found <- index if mappings[index].library_name == name
+            return found
+
+
+        def bundled_notices_name_index(names: darray[sview], name: sview, comparisons: mutable usize&) -> usize error[BundledNoticesPosixError] can[Abort.Panic]:
+            for index in 0..<names.count |names, name, comparisons|:
+                try bundled_notices_consume_comparison(comparisons)
+                return index if names[index] == name
+            return names.count
+
+
+        def bundled_notices_file_index(files: darray[NoticeFile], path_value: sview, comparisons: mutable usize&) -> usize error[BundledNoticesPosixError] can[Abort.Panic]:
+            for index in 0..<files.count |files, path_value, comparisons|:
+                try bundled_notices_consume_comparison(comparisons)
+                return index if files[index].path == path_value
+            return files.count
+
+
+        def bundled_notices_consume_comparison(total: mutable usize&) -> void error[BundledNoticesPosixError] can[Abort.Panic]:
+            raise BundledNoticesPosixError.InputLimitExceeded if total >= FilesystemLimits::COMPARISONS
+            total <- total + 1
