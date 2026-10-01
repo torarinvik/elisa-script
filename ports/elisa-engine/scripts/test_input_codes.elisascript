@@ -1,0 +1,136 @@
+#!/usr/bin/env elisascript
+# Elisascript companion for elisa-engine/scripts/test_input_codes.py.
+# The optional compiler and native regression run only when invoked explicitly.
+include "./input_codes_model.elisa"
+include "./input_codes_plan.elisa"
+include "./temp_directory.elisa"
+include "../../../src/runtime/bounded_text_posix.elisa"
+
+using EsEngineInputCodes
+using EsEngineInputCodesPlan
+
+
+module EsEngineInputCodesTest:
+    private:
+        const module Paths:
+            ELISA_CODES: sview = "src/runtime/application_input.elisa"
+            NATIVE_CODES: sview = "native/application_input_codes.h"
+            SDL_KEYCODE_HEADER: sview = "SDL3/SDL_keycode.h"
+
+
+        const module Limits:
+            SOURCE_BYTES: usize = 1048576
+
+
+        const module Diagnostics:
+            ELISA_READ: sview = "Input code tables: unable to read bounded UTF-8 Elisa input table"
+            NATIVE_READ: sview = "Input code tables: unable to read bounded UTF-8 native input table"
+            TEMPORARY_DIRECTORY: sview = "unable to create temporary input-code test directory"
+            COMPILE_FAILURE: sview = "Input code mapping test did not compile."
+            NATIVE_FAILURE: sview = "Input code mapping test failed with status "
+            NATIVE_PASS: sview = "Input code tables and SDL mapping tests passed."
+            SDL_SKIP: sview = "SDL3 headers not found; input code tables checked, native mapping test skipped."
+
+
+        struct CommandResult:
+            status: i64
+            started: bool
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def find_sdl_include() -> sview can[Directory.Read, File.Read, Memory.Allocate, Abort.Panic]:
+            candidates: darray[sview] = ["/opt/homebrew/include", "/usr/local/include", "/usr/include"]
+            for candidate in candidates:
+                if is_file(path(candidate).joinpath(Paths::SDL_KEYCODE_HEADER)):
+                    return candidate
+            return ""
+
+
+        def execute(program: sview, arguments: darray[sview]) -> CommandResult can[Process.Run, Memory.Allocate, Console.Write]:
+            status: i64 = try run_process(executable(program), arguments) else err:
+                diagnostic("unable to start command: " + program)
+                return CommandResult{status: 127, started: false}
+            CommandResult{status: status, started: true}
+
+
+    public:
+        def run() -> i64 can[Directory.Read, Environment.Read, File.Read, File.Write, Blocking.IO, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            engine_root: Path = try path_real(Script::source_path().parent().parent().parent().parent().parent().joinpath("elisa-engine")) else err:
+                diagnostic("unable to resolve elisa-engine project root")
+                return 1i64
+            elisa_source: sview = try EsBoundedText::read_utf8(engine_root.joinpath(Paths::ELISA_CODES), Limits::SOURCE_BYTES) else err:
+                diagnostic(Diagnostics::ELISA_READ)
+                return 1i64
+            native_source: sview = try EsBoundedText::read_utf8(engine_root.joinpath(Paths::NATIVE_CODES), Limits::SOURCE_BYTES) else err:
+                diagnostic(Diagnostics::NATIVE_READ)
+                return 1i64
+
+            problems: mutable darray[sview] = table_problems(elisa_source, native_source)
+            self_problems: darray[sview] = self_test_problems(elisa_source, native_source)
+            for problem in self_problems |problems|:
+                problems.push(problem)
+            if problems.count != 0:
+                for problem in problems:
+                    print("Input code tables: " + problem)
+                return 1i64
+
+            sdl_include: sview = find_sdl_include()
+            if sdl_include == "":
+                print(Diagnostics::SDL_SKIP)
+                return 0i64
+
+            compiler: sview = try getenv("CXX", Defaults::COMPILER) else Defaults::COMPILER
+            temporary: Path = try EsEngineTempDirectory::create(Defaults::TEMP_PREFIX) else err:
+                diagnostic(Diagnostics::TEMPORARY_DIRECTORY)
+                return 1i64
+            plan: Plan = EsEngineInputCodesPlan::plan(f"{engine_root}", f"{temporary}", compiler, sdl_include)
+            execution: mutable ExecutionState = initial_execution()
+            machine over execution while execution.phase != ExecutionPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, ExecutionPhase.Compile:
+                    child: CommandResult = execute(plan.compile_command.program, plan.compile_command.arguments)
+                    if child.started and child.status != 0:
+                        print(Diagnostics::COMPILE_FAILURE)
+                    execution <- try execution_after_compile(execution, child.status) else err:
+                        diagnostic("invalid input-code test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Run:
+                    child: CommandResult = execute(plan.executable_path, [])
+                    if child.started and child.status != 0:
+                        print(Diagnostics::NATIVE_FAILURE + f"{child.status}" + ".")
+                    execution <- try execution_after_run(execution, child.status) else err:
+                        diagnostic("invalid input-code test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Cleanup:
+                    cleaned: bool = try remove_tree(temporary) else false
+                    if not cleaned:
+                        diagnostic("unable to clean up temporary input-code test directory")
+                    execution <- try execution_after_cleanup(execution, cleaned) else err:
+                        diagnostic("invalid input-code test execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.ReportSuccess:
+                    print(Diagnostics::NATIVE_PASS)
+                    execution <- try execution_after_success_report(execution) else err:
+                        diagnostic("invalid input-code test execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Done:
+                    break
+            return execution.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Environment.Read, File.Read, File.Write, Blocking.IO, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    _ = arguments
+    return EsEngineInputCodesTest::run()
