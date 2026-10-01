@@ -1728,6 +1728,18 @@ The child-environment and combined directory/environment result forms consume
 their corresponding single-opcode registry rows as well; only status facades
 and pipelines remain composed lowerer helpers.
 
+`replace_process(executable: Executable, arguments: darray[sview]) -> void
+error[ProcessError] can[Process.Replace]` uses POSIX `execvp` in the current
+interpreter process. On success the requested program takes over the same PID;
+the Elisascript interpreter does not fork, wait, or return. The replacement
+inherits the current working directory, environment, and standard streams. If
+`execvp` returns, Elisascript samples `errno` immediately and raises
+`ProcessError.ExecFailure(errno, requested_executable)` through the ordinary
+typed error channel. This is the process-identity-preserving counterpart to
+shell `exec`, not a variant of `run_process`. Bytecode currently routes this
+operation through the verified IR interpreter fallback; direct bytecode and
+native lowering remain future backend work.
+
 Assertions are typed runtime checks rather than a result wrapper:
 `assert(condition) -> void error[AssertionError]`. The condition must be exactly
 `bool`; integers, text, and other values are rejected during lowering instead of
