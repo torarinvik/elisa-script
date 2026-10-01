@@ -1,0 +1,167 @@
+# Pure successful-path plan for package_macos_app.py's transitive dylib bundler.
+# It consumes filesystem/otool observations and emits typed ordered operations;
+# a Darwin adapter owns their execution and failures.
+
+module EsMacosDynamicLibraryPlan:
+    public:
+        const module Limits:
+            BUNDLED_LIBRARIES: usize = 64
+
+
+        const enum ActionKind of u8:
+            MakeWritable
+            CreateFrameworksDirectory
+            CopyFileAndMetadata
+            SetInstallIdentity
+            ChangeInstallIdentity
+            AddRuntimePath
+            AdHocSign
+
+
+        struct NativeImageObservation:
+            path: sview
+            is_regular_file: bool = false
+            install_names: darray[sview] = []
+            rpaths: darray[sview] = []
+
+
+        struct Action:
+            kind: ActionKind
+            target_path: darray[u8]
+            source_path: darray[u8]
+            old_value: darray[u8]
+            new_value: darray[u8]
+
+
+        struct Plan:
+            actions: darray[Action] = []
+            library_names: darray[darray[u8]] = []
+
+
+        error PlanningError:
+            MainImageObservationMissing
+            MainImageNotRegularFile
+            TooManyLibraries
+            LinkedLibraryMissing
+
+
+    private:
+        struct PendingImage:
+            observation_index: usize
+            target_path: darray[u8]
+
+
+        const module DynamicLibrary:
+            SYSTEM_USR_PREFIX: sview = "/usr/lib/"
+            SYSTEM_FRAMEWORK_PREFIX: sview = "/System/"
+            RPATH_PREFIX: sview = "@rpath/"
+            IMAGE_RPATH: sview = "@loader_path"
+            MAIN_RPATH: sview = "@loader_path/../Frameworks"
+
+
+        def copy_text(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            owned: mutable darray[u8] = []
+            for byte in value |owned|:
+                owned.push(byte)
+            return owned
+
+
+        def append_action(actions: mutable darray[Action]&, kind: ActionKind, target: sview, source: sview = "", old_value: sview = "", new_value: sview = "") -> void can[Memory.Allocate, Abort.Panic]:
+            actions.push(Action{kind: kind, target_path: copy_text(target), source_path: copy_text(source), old_value: copy_text(old_value), new_value: copy_text(new_value)})
+
+
+        def library_basename(path_text: sview) -> sview:
+            end: mutable usize = sview_len(path_text)
+            while end > 0 and sview_at(path_text, end - 1) == 47u8 |path_text, end|:
+                end <- end - 1
+            start: mutable usize = end
+            while start > 0 and sview_at(path_text, start - 1) != 47u8 |path_text, start|:
+                start <- start - 1
+            return path_text[start:end]
+
+
+        def linked_library_is_system(install_name: sview) -> bool:
+            return install_name.startswith(DynamicLibrary::SYSTEM_USR_PREFIX) or install_name.startswith(DynamicLibrary::SYSTEM_FRAMEWORK_PREFIX) or install_name.startswith("@")
+
+
+        def find_image_observation(images: darray[NativeImageObservation], image_path: sview) -> usize:
+            for index in 0..<images.count |images|:
+                return index if images[index].path == image_path
+            return images.count
+
+
+        def find_staged_name(names: darray[sview], candidate: sview) -> usize:
+            for index in 0..<names.count |names|:
+                return index if names[index] == candidate
+            return names.count
+
+
+        def runtime_path_for(frameworks_path: sview, library_name: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return library_name if frameworks_path == ""
+            last: usize = sview_len(frameworks_path) - 1
+            return frameworks_path + library_name if sview_at(frameworks_path, last) == 47u8
+            return frameworks_path + "/" + library_name
+
+
+        def image_has_rpath(image: NativeImageObservation, rpath: sview) -> bool:
+            for existing in image.rpaths:
+                return true if existing == rpath
+            return false
+
+
+    public:
+        # `images[main_index]` describes the copied executable at main_path;
+        # each other observation describes one resolved source install name.
+        # The planner follows Python's LIFO worklist and basename-keyed staging.
+        def plan_bundle(main_path: sview, frameworks_path: sview, images: darray[NativeImageObservation]) -> Plan error[PlanningError] can[Memory.Allocate, Abort.Panic]:
+            main_index: usize = find_image_observation(images, main_path)
+            raise PlanningError.MainImageObservationMissing if main_index == images.count
+            raise PlanningError.MainImageNotRegularFile if not images[main_index].is_regular_file
+
+            plan: mutable Plan = Plan{}
+            staged_names: mutable darray[sview] = []
+            staged_paths: mutable darray[darray[u8]] = []
+            staged_image_indexes: mutable darray[usize] = []
+            sign_paths: mutable darray[darray[u8]] = [copy_text(main_path)]
+            sign_image_indexes: mutable darray[usize] = [main_index]
+            pending: mutable darray[PendingImage] = [PendingImage{observation_index: main_index, target_path: copy_text(main_path)}]
+
+            append_action(plan.actions, ActionKind.MakeWritable, main_path)
+            while pending.count > 0 |images, plan, staged_names, staged_paths, staged_image_indexes, sign_paths, sign_image_indexes, pending|:
+                current: PendingImage = pending.pop()
+                observation: NativeImageObservation = images[current.observation_index]
+                for install_name in observation.install_names |images, plan, staged_names, staged_paths, staged_image_indexes, sign_paths, sign_image_indexes, pending, current|:
+                    continue if linked_library_is_system(install_name)
+                    name: sview = library_basename(install_name)
+                    staged_index: usize = find_staged_name(staged_names, name)
+                    replacement: sview = DynamicLibrary::RPATH_PREFIX + name
+                    if staged_index == staged_names.count:
+                        raise PlanningError.TooManyLibraries if staged_names.count >= Limits::BUNDLED_LIBRARIES
+                        source_index: usize = find_image_observation(images, install_name)
+                        raise PlanningError.LinkedLibraryMissing if source_index == images.count or not images[source_index].is_regular_file
+
+                        destination: sview = runtime_path_for(frameworks_path, name)
+                        append_action(plan.actions, ActionKind.CreateFrameworksDirectory, frameworks_path)
+                        append_action(plan.actions, ActionKind.CopyFileAndMetadata, destination, install_name)
+                        append_action(plan.actions, ActionKind.MakeWritable, destination)
+                        append_action(plan.actions, ActionKind.SetInstallIdentity, destination, new_value: replacement)
+                        staged_names.push(name)
+                        staged_paths.push(copy_text(destination))
+                        staged_image_indexes.push(source_index)
+                        sign_paths.push(copy_text(destination))
+                        sign_image_indexes.push(source_index)
+                        pending.push(PendingImage{observation_index: source_index, target_path: copy_text(destination)})
+                    append_action(plan.actions, ActionKind.ChangeInstallIdentity, bytes_view(current.target_path), old_value: install_name, new_value: replacement)
+
+            for sign_index in 0..<sign_paths.count |images, plan, staged_names, staged_paths, staged_image_indexes, sign_paths, sign_image_indexes|:
+                image: NativeImageObservation = images[sign_image_indexes[sign_index]]
+                required_rpath: sview = DynamicLibrary::MAIN_RPATH if sign_index == 0 else DynamicLibrary::IMAGE_RPATH
+                target: sview = bytes_view(sign_paths[sign_index])
+                if staged_names.count > 0 and not image_has_rpath(image, required_rpath):
+                    append_action(plan.actions, ActionKind.AddRuntimePath, target, new_value: required_rpath)
+                append_action(plan.actions, ActionKind.AdHocSign, target)
+
+            sorted_names: darray[sview] = sorted(staged_names)
+            for name in sorted_names:
+                plan.library_names.push(copy_text(name))
+            return plan
