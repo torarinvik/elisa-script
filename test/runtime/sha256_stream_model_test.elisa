@@ -1,0 +1,103 @@
+include "../../src/runtime/sha256_stream_model.elisa"
+include "../../src/ir/ir_model.elisa"
+include "../../src/ir/serialize.elisa"
+
+using EsSha256Stream
+using EsIr
+
+
+def sha256_test_update_text_or_fail(context: mutable Context&, text: sview) -> void:
+    catch update_view(context, text):
+        ok:
+            return
+        error failure:
+            _ = failure
+            assert false
+
+
+def sha256_test_update_buffer_or_fail(context: mutable Context&, bytes: darray[u8]&, count: usize) -> void:
+    catch update_buffer(context, bytes, count):
+        ok:
+            return
+        error failure:
+            _ = failure
+            assert false
+
+
+@test
+def matches_standard_empty_and_abc_sha256_vectors() -> void can[Memory.Allocate, Abort.Panic]:
+    empty: mutable Context = init()
+    empty_digest: darray[u8] = try finish_hex(empty) else []
+    assert bytes_view(empty_digest) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    abc: mutable Context = init()
+    sha256_test_update_text_or_fail(abc, "abc")
+    abc_digest: darray[u8] = try finish_hex(abc) else []
+    assert bytes_view(abc_digest) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+
+@test
+def chunk_boundaries_do_not_change_the_digest() -> void can[Memory.Allocate, Abort.Panic]:
+    whole: mutable Context = init()
+    sha256_test_update_text_or_fail(whole, "abc")
+    whole_digest: darray[u8] = try finish_hex(whole) else []
+
+    chunked: mutable Context = init()
+    sha256_test_update_text_or_fail(chunked, "a")
+    sha256_test_update_text_or_fail(chunked, "")
+    sha256_test_update_text_or_fail(chunked, "bc")
+    chunked_digest: darray[u8] = try finish_hex(chunked) else []
+    assert whole_digest == chunked_digest
+
+
+@test
+def reusable_buffer_updates_match_the_existing_one_shot_sha256_across_blocks() -> void can[Memory.Allocate, Abort.Panic]:
+    payload: mutable darray[u8] = []
+    for index in 0..<193 |payload|:
+        payload.push((index % 256).u8())
+
+    streamed: mutable Context = init()
+    offset: mutable usize = 0
+    while offset < payload.count |payload, streamed, offset|:
+        chunk: mutable darray[u8] = []
+        remaining: usize = payload.count - offset
+        amount: usize = 17 if remaining > 17 else remaining
+        for index in offset..<(offset + amount) |payload, chunk|:
+            chunk.push(payload[index])
+        sha256_test_update_buffer_or_fail(streamed, chunk, chunk.count)
+        offset <- offset + amount
+
+    digest: darray[u8] = try finish(streamed) else []
+    expected: darray[u8] = canonical_bytes_sha256(payload)
+    assert digest == expected
+
+
+@test
+def finalization_is_single_use_and_stream_state_is_validated() -> void can[Memory.Allocate, Abort.Panic]:
+    context: mutable Context = init()
+    _ = try finish(context) else []
+    rejected: mutable bool = false
+    catch update_view(context, "later"):
+        ok:
+            rejected <- false
+        error failure:
+            rejected <- failure == Sha256StreamError.AlreadyFinalized
+    assert rejected
+
+    invalid_chunk: mutable Context = init()
+    short_buffer: darray[u8] = [97u8]
+    rejected <- false
+    catch update_buffer(invalid_chunk, short_buffer, 2):
+        ok unexpected:
+            _ = unexpected
+        error failure:
+            rejected <- failure == Sha256StreamError.ChunkOutOfRange
+    assert rejected
+
+    rejected <- false
+    catch finish(context):
+        ok unexpected:
+            _ = unexpected
+        error failure:
+            rejected <- failure == Sha256StreamError.AlreadyFinalized
+    assert rejected

@@ -1,0 +1,227 @@
+# Incremental SHA-256 for bounded-memory script and file workflows.
+module EsSha256Stream:
+    public:
+        error Sha256StreamError:
+            InvalidState
+            ChunkOutOfRange
+            AlreadyFinalized
+            InputTooLong
+
+
+        struct Context:
+            state: u64[8] = zeroed
+            block: u8[64] = zeroed
+            block_bytes: usize = 0
+            total_bytes: u64 = 0
+            finalized: bool = false
+
+
+        def init() -> Context:
+            context: mutable Context = Context{}
+            context.state[0] <- 0x6a09e667u64
+            context.state[1] <- 0xbb67ae85u64
+            context.state[2] <- 0x3c6ef372u64
+            context.state[3] <- 0xa54ff53au64
+            context.state[4] <- 0x510e527fu64
+            context.state[5] <- 0x9b05688cu64
+            context.state[6] <- 0x1f83d9abu64
+            context.state[7] <- 0x5be0cd19u64
+            return context
+
+
+        def update(context: mutable Context&, bytes: darray[u8]&) -> void error[Sha256StreamError]:
+            _ = try validate_context(context)
+            raise Sha256StreamError.AlreadyFinalized if context.finalized
+            raise Sha256StreamError.InputTooLong if bytes.count.u64() > Limits::MAX_BYTES - context.total_bytes
+            for byte in bytes |context|:
+                sha256_stream_absorb(context, byte)
+            context.total_bytes <- context.total_bytes + bytes.count.u64()
+
+
+        def update_view(context: mutable Context&, bytes: sview) -> void error[Sha256StreamError]:
+            _ = try validate_context(context)
+            raise Sha256StreamError.AlreadyFinalized if context.finalized
+            raise Sha256StreamError.InputTooLong if len(bytes).u64() > Limits::MAX_BYTES - context.total_bytes
+            for index in 0..<len(bytes) |context, bytes|:
+                sha256_stream_absorb(context, sview_at(bytes, index))
+            context.total_bytes <- context.total_bytes + len(bytes).u64()
+
+
+        # The caller may reuse a bounded byte array after each update. This is
+        # the file-hashing boundary; it never retains the supplied chunk.
+        def update_buffer(context: mutable Context&, buffer: darray[u8]&, count: usize) -> void error[Sha256StreamError]:
+            _ = try validate_context(context)
+            raise Sha256StreamError.AlreadyFinalized if context.finalized
+            raise Sha256StreamError.ChunkOutOfRange if count > buffer.count
+            raise Sha256StreamError.InputTooLong if count.u64() > Limits::MAX_BYTES - context.total_bytes
+            for index in 0..<count |context, buffer|:
+                sha256_stream_absorb(context, buffer[index])
+            context.total_bytes <- context.total_bytes + count.u64()
+
+
+        def finish(context: mutable Context&) -> darray[u8] error[Sha256StreamError] can[Memory.Allocate, Abort.Panic]:
+            _ = try validate_context(context)
+            raise Sha256StreamError.AlreadyFinalized if context.finalized
+            context.block[context.block_bytes] <- 128u8
+            context.block_bytes <- context.block_bytes + 1
+            if context.block_bytes > 56:
+                for index in context.block_bytes..<64 |context|:
+                    context.block[index] <- 0u8
+                sha256_stream_compress(context.state, context.block)
+                context.block_bytes <- 0
+            for index in context.block_bytes..<56 |context|:
+                context.block[index] <- 0u8
+            bit_length: u64 = context.total_bytes * 8u64
+            for index in 0..<8 |context, bit_length|:
+                context.block[56 + index] <- (bit_length >> (56 - index * 8)).u8()
+            sha256_stream_compress(context.state, context.block)
+            context.block_bytes <- 0
+            context.finalized <- true
+
+            digest: mutable darray[u8] = []
+            for index in 0..<8 |context, digest|:
+                word: u64 = context.state[index]
+                for shift in 0..<4 |digest, word|:
+                    digest.push(((word >> (24 - shift * 8)) & 255u64).u8())
+            return digest
+
+
+        def finish_hex(context: mutable Context&) -> darray[u8] error[Sha256StreamError] can[Memory.Allocate, Abort.Panic]:
+            digest: darray[u8] = try finish(context)
+            return sha256_stream_hex(digest)
+
+
+    private:
+        const module Limits:
+            BLOCK_BYTES: usize = 64
+            MAX_BYTES: u64 = 2305843009213693951u64
+            MASK_32: u64 = 4294967295u64
+
+
+        const module RoundConstants:
+            VALUES: u64[64] = [
+                0x428a2f98u64, 0x71374491u64, 0xb5c0fbcfu64, 0xe9b5dba5u64,
+                0x3956c25bu64, 0x59f111f1u64, 0x923f82a4u64, 0xab1c5ed5u64,
+                0xd807aa98u64, 0x12835b01u64, 0x243185beu64, 0x550c7dc3u64,
+                0x72be5d74u64, 0x80deb1feu64, 0x9bdc06a7u64, 0xc19bf174u64,
+                0xe49b69c1u64, 0xefbe4786u64, 0x0fc19dc6u64, 0x240ca1ccu64,
+                0x2de92c6fu64, 0x4a7484aau64, 0x5cb0a9dcu64, 0x76f988dau64,
+                0x983e5152u64, 0xa831c66du64, 0xb00327c8u64, 0xbf597fc7u64,
+                0xc6e00bf3u64, 0xd5a79147u64, 0x06ca6351u64, 0x14292967u64,
+                0x27b70a85u64, 0x2e1b2138u64, 0x4d2c6dfcu64, 0x53380d13u64,
+                0x650a7354u64, 0x766a0abb1u64, 0x81c2c92eu64, 0x92722c85u64,
+                0xa2bfe8a1u64, 0xa81a664bu64, 0xc24b8b70u64, 0xc76c51a3u64,
+                0xd192e819u64, 0xd6990624u64, 0xf40e3585u64, 0x106aa070u64,
+                0x19a4c116u64, 0x1e376c08u64, 0x2748774cu64, 0x34b0bcb5u64,
+                0x391c0cb3u64, 0x4ed8aa4au64, 0x5b9cca4fu64, 0x682e6ff3u64,
+                0x748f82eeu64, 0x78a5636fu64, 0x84c87814u64, 0x8cc70208u64,
+                0x90befffau64, 0xa4506cebu64, 0xbef9a3f7u64, 0xc67178f2u64
+            ]
+
+
+        def validate_context(context: Context) -> bool error[Sha256StreamError]:
+            raise Sha256StreamError.InvalidState if context.block_bytes >= Limits::BLOCK_BYTES
+            raise Sha256StreamError.InvalidState if context.total_bytes > Limits::MAX_BYTES
+            raise Sha256StreamError.InvalidState if not context.finalized and context.block_bytes.u64() != context.total_bytes % 64u64
+            for word in context.state:
+                raise Sha256StreamError.InvalidState if word > Limits::MASK_32
+            return true
+
+
+        def sha256_stream_mask(value: u64) -> u64:
+            return value & Limits::MASK_32
+
+
+        def sha256_stream_add2(left: u64, right: u64) -> u64:
+            return sha256_stream_mask(left + right)
+
+
+        def sha256_stream_add4(first: u64, second: u64, third: u64, fourth: u64) -> u64:
+            return sha256_stream_add2(sha256_stream_add2(first, second), sha256_stream_add2(third, fourth))
+
+
+        def sha256_stream_add5(first: u64, second: u64, third: u64, fourth: u64, fifth: u64) -> u64:
+            return sha256_stream_add2(sha256_stream_add4(first, second, third, fourth), fifth)
+
+
+        def sha256_stream_rotr(value: u64, shift: u64) -> u64:
+            return sha256_stream_mask((value >> shift) | (value << (32u64 - shift)))
+
+
+        def sha256_stream_choose(x: u64, y: u64, z: u64) -> u64:
+            return sha256_stream_mask((x & y) ^ ((~x) & z))
+
+
+        def sha256_stream_majority(x: u64, y: u64, z: u64) -> u64:
+            return sha256_stream_mask((x & y) ^ (x & z) ^ (y & z))
+
+
+        def sha256_stream_big0(value: u64) -> u64:
+            return sha256_stream_mask(sha256_stream_rotr(value, 2) ^ sha256_stream_rotr(value, 13) ^ sha256_stream_rotr(value, 22))
+
+
+        def sha256_stream_big1(value: u64) -> u64:
+            return sha256_stream_mask(sha256_stream_rotr(value, 6) ^ sha256_stream_rotr(value, 11) ^ sha256_stream_rotr(value, 25))
+
+
+        def sha256_stream_small0(value: u64) -> u64:
+            return sha256_stream_mask(sha256_stream_rotr(value, 7) ^ sha256_stream_rotr(value, 18) ^ (value >> 3))
+
+
+        def sha256_stream_small1(value: u64) -> u64:
+            return sha256_stream_mask(sha256_stream_rotr(value, 17) ^ sha256_stream_rotr(value, 19) ^ (value >> 10))
+
+
+        def sha256_stream_absorb(context: mutable Context&, byte: u8) -> void:
+            context.block[context.block_bytes] <- byte
+            context.block_bytes <- context.block_bytes + 1
+            if context.block_bytes == Limits::BLOCK_BYTES:
+                sha256_stream_compress(context.state, context.block)
+                context.block_bytes <- 0
+
+
+        def sha256_stream_compress(state: mutable u64[8]&, block: u8[64]&) -> void:
+            schedule: mutable u64[64] = zeroed
+            for index in 0..<16 |schedule, block|:
+                offset: usize = index * 4
+                schedule[index] <- (block[offset].u64() << 24) | (block[offset + 1].u64() << 16) | (block[offset + 2].u64() << 8) | block[offset + 3].u64()
+            for index in 16..<64 |schedule|:
+                schedule[index] <- sha256_stream_add4(schedule[index - 16], sha256_stream_small0(schedule[index - 15]), schedule[index - 7], sha256_stream_small1(schedule[index - 2]))
+
+            a: mutable u64 = state[0]
+            b: mutable u64 = state[1]
+            c: mutable u64 = state[2]
+            d: mutable u64 = state[3]
+            e: mutable u64 = state[4]
+            f: mutable u64 = state[5]
+            g: mutable u64 = state[6]
+            h: mutable u64 = state[7]
+            for index in 0..<64 |schedule, a, b, c, d, e, f, g, h|:
+                temp1: u64 = sha256_stream_add5(h, sha256_stream_big1(e), sha256_stream_choose(e, f, g), RoundConstants::VALUES[index], schedule[index])
+                temp2: u64 = sha256_stream_add2(sha256_stream_big0(a), sha256_stream_majority(a, b, c))
+                h <- g
+                g <- f
+                f <- e
+                e <- sha256_stream_add2(d, temp1)
+                d <- c
+                c <- b
+                b <- a
+                a <- sha256_stream_add2(temp1, temp2)
+            state[0] <- sha256_stream_add2(state[0], a)
+            state[1] <- sha256_stream_add2(state[1], b)
+            state[2] <- sha256_stream_add2(state[2], c)
+            state[3] <- sha256_stream_add2(state[3], d)
+            state[4] <- sha256_stream_add2(state[4], e)
+            state[5] <- sha256_stream_add2(state[5], f)
+            state[6] <- sha256_stream_add2(state[6], g)
+            state[7] <- sha256_stream_add2(state[7], h)
+
+
+        def sha256_stream_hex(bytes: darray[u8]&) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            digits: sview = "0123456789abcdef"
+            result: mutable darray[u8] = []
+            result.reserve(64)
+            for byte in bytes |result, digits|:
+                result.push(sview_at(digits, (byte >> 4).usize()))
+                result.push(sview_at(digits, (byte & 15u8).usize()))
+            return result
