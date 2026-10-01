@@ -1,0 +1,168 @@
+# Typed counterpart of cooked_meshopt_test_stream.decode_vertex_stream.
+#
+# The caller supplies the already-built pinned meshoptimizer codec executable.
+# This keeps its on-demand C++ build/cache step separate while preserving the
+# binary packet protocol and both raw/compressed stream paths here.
+include "../../../src/runtime/base64_model.elisa"
+include "../../../src/runtime/process_model.elisa"
+
+using EsBase64
+using EsProcess
+
+
+module EsEngineCookedMeshoptTestStream:
+    public:
+        struct CookedField:
+            name: sview
+            value: sview
+
+
+        error MeshoptTestStreamError:
+            InvalidDimensions
+            StreamMissingOrDuplicated
+            InvalidBase64
+            RawByteCountMismatch
+            EmptyEncodedStream
+            PacketLimitExceeded
+            InvalidDecodedPacket
+            DecodedPacketShapeMismatch
+            CodecRejected(exit_status: i64, stderr: sview)
+
+
+        def decode_raw_vertex_stream(encoded: sview, vertex_count: i64, vertex_stride: i64) -> darray[u8] error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            expected_bytes: usize = try meshopt_expected_vertex_bytes(vertex_count, vertex_stride)
+            decoded: darray[u8] = try meshopt_base64_decode(encoded, Limits::MAX_RAW_BYTES)
+            raise MeshoptTestStreamError.RawByteCountMismatch if decoded.count != expected_bytes
+            return decoded
+
+
+        def make_vertex_decode_packet(encoded: darray[u8], vertex_count: u32, vertex_stride: u32) -> darray[u8] error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise MeshoptTestStreamError.InvalidDimensions if vertex_count == 0 or vertex_stride == 0
+            raise MeshoptTestStreamError.EmptyEncodedStream if encoded.count == 0
+            expected_bytes: usize = meshopt_expected_vertex_bytes(vertex_count.i64(), vertex_stride.i64())
+            raise MeshoptTestStreamError.PacketLimitExceeded if expected_bytes > Limits::MAX_CODEC_PACKET_BYTES - Limits::HEADER_BYTES - Limits::STREAM_BYTES
+            raise MeshoptTestStreamError.PacketLimitExceeded if encoded.count > Limits::MAX_CODEC_PACKET_BYTES - Limits::HEADER_BYTES - Limits::STREAM_BYTES
+
+            packet: mutable darray[u8] = []
+            try meshopt_append_view(packet, Protocol::MAGIC)
+            try meshopt_append_u32(packet, 1u32)
+            try meshopt_append_u32(packet, 0u32)
+            try meshopt_append_u32(packet, Protocol::VERTEX_STREAM)
+            try meshopt_append_u32(packet, vertex_count)
+            try meshopt_append_u32(packet, vertex_stride)
+            try meshopt_append_u32(packet, encoded.count.u32())
+            try meshopt_append_u32(packet, vertex_count)
+            for byte in encoded |packet|:
+                packet.push(byte)
+            return packet
+
+
+        def parse_vertex_decode_response(response: sview, vertex_count: u32, vertex_stride: u32) -> darray[u8] error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise MeshoptTestStreamError.InvalidDecodedPacket if sview_len(response) < Limits::HEADER_BYTES + Limits::STREAM_BYTES
+            raise MeshoptTestStreamError.PacketLimitExceeded if sview_len(response) > Limits::MAX_CODEC_PACKET_BYTES
+            raise MeshoptTestStreamError.InvalidDecodedPacket if response[0:Limits::MAGIC_BYTES] != Protocol::MAGIC
+            raise MeshoptTestStreamError.InvalidDecodedPacket if meshopt_read_u32(response, 8) != 1u32 or meshopt_read_u32(response, 12) != 0u32
+            raise MeshoptTestStreamError.DecodedPacketShapeMismatch if meshopt_read_u32(response, 16) != Protocol::VERTEX_STREAM
+            raise MeshoptTestStreamError.DecodedPacketShapeMismatch if meshopt_read_u32(response, 20) != vertex_count or meshopt_read_u32(response, 24) != vertex_stride
+            decoded_bytes: usize = meshopt_expected_vertex_bytes(vertex_count.i64(), vertex_stride.i64())
+            raise MeshoptTestStreamError.PacketLimitExceeded if decoded_bytes > Limits::MAX_CODEC_PACKET_BYTES - Limits::HEADER_BYTES - Limits::STREAM_BYTES
+            raise MeshoptTestStreamError.DecodedPacketShapeMismatch if meshopt_read_u32(response, 28).usize() != decoded_bytes or meshopt_read_u32(response, 32) != vertex_count
+            payload_start: usize = Limits::HEADER_BYTES + Limits::STREAM_BYTES
+            raise MeshoptTestStreamError.InvalidDecodedPacket if decoded_bytes != sview_len(response) - payload_start
+
+            decoded: mutable darray[u8] = []
+            for byte in response[payload_start:payload_start + decoded_bytes] |decoded|:
+                decoded.push(byte)
+            return decoded
+
+
+        def decode_vertex_stream(fields: darray[CookedField], name: sview, vertex_count: i64, vertex_stride: i64, codec: Executable) -> darray[u8] error[MeshoptTestStreamError, ProcessError] can[Memory.Allocate, Abort.Panic, Process.Run]:
+            raw: FieldLookup = meshopt_field(fields, name + "_b64")
+            encoded: FieldLookup = meshopt_field(fields, name + "_meshopt_b64")
+            raise MeshoptTestStreamError.StreamMissingOrDuplicated if raw.found == encoded.found or raw.matches > 1 or encoded.matches > 1
+            if raw.found:
+                return try decode_raw_vertex_stream(raw.value, vertex_count, vertex_stride)
+
+            expected_bytes: usize = try meshopt_expected_vertex_bytes(vertex_count, vertex_stride)
+            encoded_bytes: darray[u8] = try meshopt_base64_decode(encoded.value, Limits::MAX_CODEC_PACKET_BYTES - Limits::HEADER_BYTES - Limits::STREAM_BYTES)
+            packet: darray[u8] = try make_vertex_decode_packet(encoded_bytes, vertex_count.u32(), vertex_stride.u32())
+            capture: ProcessCapture = try subprocess.capture_result(codec, ["--decode"], bytes_view(packet), Limits::CODEC_TIMEOUT_MICROS.i64(), Limits::MAX_CODEC_PACKET_BYTES.i64())
+            raise MeshoptTestStreamError.CodecRejected(capture.process_exit_status, capture.process_stderr) if capture.process_exit_status != 0
+            decoded: darray[u8] = try parse_vertex_decode_response(capture.process_stdout, vertex_count.u32(), vertex_stride.u32())
+            raise MeshoptTestStreamError.RawByteCountMismatch if decoded.count != expected_bytes
+            return decoded
+
+
+    private:
+        struct FieldLookup:
+            found: bool = false
+            value: sview = ""
+            matches: usize = 0
+
+
+        const module Limits:
+            MAX_RAW_BYTES: usize = 268435456
+            # The language process-capture bridge is currently capped at 64 MiB,
+            # below the Python/native helper's 128 MiB codec packet limit.
+            MAX_CODEC_PACKET_BYTES: usize = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES
+            HEADER_BYTES: usize = 16
+            STREAM_BYTES: usize = 20
+            MAGIC_BYTES: usize = 8
+            CODEC_TIMEOUT_MICROS: u64 = 120000000u64
+            U32_MAX: i64 = 4294967295i64
+
+
+        const module Protocol:
+            MAGIC: sview = "ELISASC1"
+            VERTEX_STREAM: u32 = 1u32
+
+
+        def meshopt_field(fields: darray[CookedField], name: sview) -> FieldLookup:
+            found: mutable bool = false
+            value: mutable sview = ""
+            matches: mutable usize = 0
+            for field in fields |name, found, value, matches|:
+                if field.name == name:
+                    found <- true
+                    value <- field.value
+                    matches <- matches + 1
+            return FieldLookup{found: found, value: value, matches: matches}
+
+
+        def meshopt_expected_vertex_bytes(vertex_count: i64, vertex_stride: i64) -> usize error[MeshoptTestStreamError]:
+            raise MeshoptTestStreamError.InvalidDimensions if vertex_count <= 0 or vertex_stride <= 0 or vertex_count > Limits::U32_MAX or vertex_stride > Limits::U32_MAX
+            count: usize = vertex_count.usize()
+            stride: usize = vertex_stride.usize()
+            raise MeshoptTestStreamError.InvalidDimensions if count > Limits::MAX_RAW_BYTES / stride
+            return count * stride
+
+
+        def meshopt_base64_decode(encoded: sview, output_limit: usize) -> darray[u8] error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            catch decode_base64(encoded, output_limit):
+                ok decoded:
+                    return decoded
+                error failure:
+                    _ = failure
+                    raise MeshoptTestStreamError.InvalidBase64
+
+
+        def meshopt_append_byte(output: mutable darray[u8]&, byte: u8) -> void error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise MeshoptTestStreamError.PacketLimitExceeded if output.count >= Limits::MAX_CODEC_PACKET_BYTES
+            output.push(byte)
+
+
+        def meshopt_append_view(output: mutable darray[u8]&, value: sview) -> void error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise MeshoptTestStreamError.PacketLimitExceeded if sview_len(value) > Limits::MAX_CODEC_PACKET_BYTES - output.count
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def meshopt_append_u32(output: mutable darray[u8]&, value: u32) -> void error[MeshoptTestStreamError] can[Memory.Allocate, Abort.Panic]:
+            try meshopt_append_byte(output, (value & 255u32).u8())
+            try meshopt_append_byte(output, ((value >> 8) & 255u32).u8())
+            try meshopt_append_byte(output, ((value >> 16) & 255u32).u8())
+            try meshopt_append_byte(output, ((value >> 24) & 255u32).u8())
+
+
+        def meshopt_read_u32(source: sview, offset: usize) -> u32:
+            return sview_at(source, offset).u32() | (sview_at(source, offset + 1).u32() << 8) | (sview_at(source, offset + 2).u32() << 16) | (sview_at(source, offset + 3).u32() << 24)
