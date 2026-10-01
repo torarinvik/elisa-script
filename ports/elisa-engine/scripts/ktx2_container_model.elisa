@@ -1,5 +1,5 @@
-# Typed bounded KTX2 structural validation from elisa-engine/scripts/ktx2_container.py.
-# This validates the Basis profiles the engine accepts; it does not decode pixels.
+# Typed bounded KTX2 validation and key-value rewriting from
+# elisa-engine/scripts/ktx2_container.py. This does not decode pixels.
 include "../../../src/runtime/python_text_model.elisa"
 
 using EsPythonText
@@ -14,6 +14,12 @@ module EsEngineKtx2Container:
         struct Probe:
             valid: bool = false
             dimensions: Dimensions = Dimensions{width: 0u32, height: 0u32}
+
+
+        error UpdateError:
+            InputRejected
+            SectionOverlapsPayload
+            GeneratedContainerRejected
 
 
         def dimensions(data: darray[u8]&) -> Probe can[Memory.Allocate, Abort.Panic]:
@@ -112,6 +118,112 @@ module EsEngineKtx2Container:
             return Probe{valid: true, dimensions: Dimensions{width: width, height: height}}
 
 
+        # Preserve arbitrary value bytes; only keys are strict UTF-8.
+        def with_key_value(data: darray[u8]&, key: sview, value: darray[u8]&) -> darray[u8] error[UpdateError] can[Memory.Allocate, Abort.Panic]:
+            raise UpdateError.InputRejected if sview_len(key) == 0 or sview_len(key) > Limits::MAX_KEY_BYTES or value.count > Limits::MAX_VALUE_BYTES
+            for byte in key:
+                raise UpdateError.InputRejected if byte == 0u8
+            catch EsPythonText::decode_utf8(key):
+                ok decoded:
+                    _ = decoded
+                error failure:
+                    _ = failure
+                    raise UpdateError.InputRejected
+
+            original: Probe = dimensions(data)
+            raise UpdateError.InputRejected if not original.valid
+
+            dfd_offset: usize = ktx_read_u32_le(data, 48).usize()
+            dfd_length: usize = ktx_read_u32_le(data, 52).usize()
+            kvd_offset: usize = ktx_read_u32_le(data, 56).usize()
+            kvd_length: usize = ktx_read_u32_le(data, 60).usize()
+            sgd_offset: u64 = ktx_read_u64_le(data, 64)
+            sgd_length: u64 = ktx_read_u64_le(data, 72)
+            level_count: usize = ktx_read_u32_le(data, 40).usize()
+            scheme: u32 = ktx_read_u32_le(data, 44)
+            dfd_end: usize = dfd_offset + dfd_length
+            key_values_start: usize = kvd_offset if kvd_length > 0 else dfd_end
+            old_key_values_end: usize = kvd_offset + kvd_length if kvd_length > 0 else dfd_end
+
+            first_payload: usize = data.count
+            for level in 0..<level_count |data, first_payload|:
+                level_offset: usize = ktx_read_u64_le(data, Limits::HEADER_BYTES + level * Limits::LEVEL_INDEX_BYTES).usize()
+                first_payload <- level_offset if level_offset < first_payload
+            if sgd_length > 0u64 and sgd_offset.usize() < first_payload:
+                first_payload <- sgd_offset.usize()
+            raise UpdateError.SectionOverlapsPayload if first_payload < old_key_values_end
+
+            alignment: usize = 1
+            if sgd_length > 0u64 and sgd_offset.usize() == first_payload:
+                alignment <- 8
+            else if scheme == 0u32:
+                alignment <- 16
+
+            source_view: sview = bytes_view(data)
+            replacement_value: sview = bytes_view(value)
+            new_key_values: mutable darray[u8] = []
+            position: mutable usize = kvd_offset
+            old_key_values_finish: usize = kvd_offset + kvd_length
+            replacement_emitted: mutable bool = false
+            while position < old_key_values_finish |data, source_view, key, replacement_value, new_key_values, position, replacement_emitted|:
+                entry_length: usize = ktx_read_u32_le(data, position).usize()
+                entry_start: usize = position + 4
+                entry_end: usize = entry_start + entry_length
+                terminator: mutable usize = entry_length
+                for index in 0..<entry_length |data, entry_start, terminator|:
+                    if data[entry_start + index] == 0u8:
+                        terminator <- index
+                        break
+                existing_key: sview = source_view[entry_start:entry_start + terminator]
+                existing_value: sview = source_view[entry_start + terminator + 1:entry_end]
+                if ktx_text_before(existing_key, key):
+                    ktx2_append_key_value(new_key_values, existing_key, existing_value)
+                else if ktx_text_before(key, existing_key):
+                    if not replacement_emitted:
+                        ktx2_append_key_value(new_key_values, key, replacement_value)
+                        replacement_emitted <- true
+                    ktx2_append_key_value(new_key_values, existing_key, existing_value)
+                else:
+                    ktx2_append_key_value(new_key_values, key, replacement_value)
+                    replacement_emitted <- true
+                position <- entry_start + entry_length
+                padding: usize = (4 - position % 4) % 4
+                position <- position + padding
+            if not replacement_emitted:
+                ktx2_append_key_value(new_key_values, key, replacement_value)
+            raise UpdateError.InputRejected if new_key_values.count.u64() > 0xffffffffu64
+
+            new_key_values_end: usize = key_values_start + new_key_values.count
+            new_first_payload: usize = ((new_key_values_end + alignment - 1) / alignment) * alignment
+            grows: bool = new_first_payload >= first_payload
+            payload_shift: usize = new_first_payload - first_payload if grows else first_payload - new_first_payload
+            updated: mutable darray[u8] = []
+            for index in 0..<key_values_start |data, updated|:
+                updated.push(data[index])
+            for byte in new_key_values |updated|:
+                updated.push(byte)
+            for _ in new_key_values_end..<new_first_payload |updated|:
+                updated.push(0u8)
+            for index in first_payload..<data.count |data, updated|:
+                updated.push(data[index])
+
+            ktx2_write_u32_le(updated, 56, key_values_start.u32())
+            ktx2_write_u32_le(updated, 60, new_key_values.count.u32())
+            if sgd_length > 0u64 and sgd_offset.usize() >= first_payload:
+                shifted_sgd_offset: u64 = sgd_offset + payload_shift.u64() if grows else sgd_offset - payload_shift.u64()
+                ktx2_write_u64_le(updated, 64, shifted_sgd_offset)
+            for level in 0..<level_count |data, updated, grows, payload_shift|:
+                index_offset: usize = Limits::HEADER_BYTES + level * Limits::LEVEL_INDEX_BYTES
+                level_offset: u64 = ktx_read_u64_le(data, index_offset)
+                if level_offset.usize() >= first_payload:
+                    shifted_level_offset: u64 = level_offset + payload_shift.u64() if grows else level_offset - payload_shift.u64()
+                    ktx2_write_u64_le(updated, index_offset, shifted_level_offset)
+
+            validated: Probe = dimensions(updated)
+            raise UpdateError.GeneratedContainerRejected if not validated.valid or validated.dimensions.width != original.dimensions.width or validated.dimensions.height != original.dimensions.height
+            return updated
+
+
     private:
         struct Level:
             offset: usize
@@ -123,6 +235,8 @@ module EsEngineKtx2Container:
             LEVEL_INDEX_BYTES: usize = 24
             MAX_DIMENSION: u32 = 4096u32
             MAX_LEVELS: u32 = 16u32
+            MAX_KEY_BYTES: usize = 255
+            MAX_VALUE_BYTES: usize = 4096
 
 
         const module Format:
@@ -151,6 +265,38 @@ module EsEngineKtx2Container:
 
         def ktx_read_u64_le(data: darray[u8]&, offset: usize) -> u64:
             return data[offset].u64() | (data[offset + 1].u64() << 8) | (data[offset + 2].u64() << 16) | (data[offset + 3].u64() << 24) | (data[offset + 4].u64() << 32) | (data[offset + 5].u64() << 40) | (data[offset + 6].u64() << 48) | (data[offset + 7].u64() << 56)
+
+
+        def ktx2_append_key_value(output: mutable darray[u8]&, key: sview, value: sview) can[Memory.Allocate, Abort.Panic]:
+            entry_length: usize = sview_len(key) + 1 + sview_len(value)
+            ktx2_append_u32_le(output, entry_length.u32())
+            for byte in key |output|:
+                output.push(byte)
+            output.push(0u8)
+            for byte in value |output|:
+                output.push(byte)
+            padding: usize = (4 - output.count % 4) % 4
+            for _ in 0..<padding |output|:
+                output.push(0u8)
+
+
+        def ktx2_append_u32_le(output: mutable darray[u8]&, value: u32) can[Memory.Allocate, Abort.Panic]:
+            output.push((value & 255u32).u8())
+            output.push(((value >> 8) & 255u32).u8())
+            output.push(((value >> 16) & 255u32).u8())
+            output.push((value >> 24).u8())
+
+
+        def ktx2_write_u32_le(data: mutable darray[u8]&, offset: usize, value: u32) -> void:
+            data[offset] <- (value & 255u32).u8()
+            data[offset + 1] <- ((value >> 8) & 255u32).u8()
+            data[offset + 2] <- ((value >> 16) & 255u32).u8()
+            data[offset + 3] <- (value >> 24).u8()
+
+
+        def ktx2_write_u64_le(data: mutable darray[u8]&, offset: usize, value: u64) -> void:
+            for byte_index in 0..<8usize |data, offset, value|:
+                data[offset + byte_index] <- (value >> (byte_index * 8).u64()).u8()
 
 
         def ktx_range_is_zero(data: darray[u8]&, start: usize, count: usize) -> bool:
