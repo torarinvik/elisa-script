@@ -1,5 +1,6 @@
-# Typed numeric core for elisa-engine/scripts/gltf_tangent_frames.py.
-# The cooked-geometry adapter owns little-endian byte decoding and encoding.
+# Typed port of elisa-engine/scripts/gltf_tangent_frames.py. The caller
+# supplies the composed row-major affine matrix; this module owns the exact
+# little-endian tangent/normal stream boundary and bounded numeric transform.
 include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
 
 
@@ -21,6 +22,8 @@ module EsEngineGltfTangentFrames:
         error TangentFrameError:
             InputLimitExceeded
             InvalidMatrix
+            InvalidTangentByteCount
+            InvalidNormalByteCount
             NormalCountTooSmall
             InvalidHandedness
             InvalidNormal
@@ -72,9 +75,54 @@ module EsEngineGltfTangentFrames:
             return output
 
 
+        # Byte-compatible boundary for the Python helper's <4f tangent and
+        # <3f normal streams. Matrix elements are row-major f64 values.
+        def transform_authored_tangent_bytes(data: darray[u8], normal_bytes: darray[u8], matrix: darray[f64]) -> darray[u8] error[TangentFrameError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise TangentFrameError.InputLimitExceeded if data.count > Limits::MAX_TANGENT_BYTES or normal_bytes.count > Limits::MAX_NORMAL_BYTES
+            raise TangentFrameError.InvalidNormalByteCount if normal_bytes.count % Limits::NORMAL_BYTES_PER_VERTEX != 0
+
+            normals: mutable darray[Normal] = []
+            normal_count: usize = normal_bytes.count / Limits::NORMAL_BYTES_PER_VERTEX
+            for vertex in 0..<normal_count |normal_bytes, normals|:
+                offset: usize = vertex * Limits::NORMAL_BYTES_PER_VERTEX
+                normals.push(Normal{
+                    x: gltf_tangent_read_f32(normal_bytes, offset),
+                    y: gltf_tangent_read_f32(normal_bytes, offset + 4),
+                    z: gltf_tangent_read_f32(normal_bytes, offset + 8)
+                })
+
+            raise TangentFrameError.InvalidMatrix if matrix.count < Limits::MATRIX_ELEMENTS
+            _ = gltf_tangent_determinant(matrix)
+            raise TangentFrameError.InvalidTangentByteCount if data.count % Limits::TANGENT_BYTES_PER_VERTEX != 0
+
+            tangents: mutable darray[TangentFrame] = []
+            tangent_count: usize = data.count / Limits::TANGENT_BYTES_PER_VERTEX
+            for vertex in 0..<tangent_count |data, tangents|:
+                offset: usize = vertex * Limits::TANGENT_BYTES_PER_VERTEX
+                tangents.push(TangentFrame{
+                    x: gltf_tangent_read_f32(data, offset),
+                    y: gltf_tangent_read_f32(data, offset + 4),
+                    z: gltf_tangent_read_f32(data, offset + 8),
+                    handedness: gltf_tangent_read_f32(data, offset + 12)
+                })
+
+            transformed: darray[TangentFrame] = try transform_authored_tangents(tangents, normals, matrix)
+            output: mutable darray[u8] = []
+            for frame in transformed |output|:
+                try gltf_tangent_append_f32(output, frame.x)
+                try gltf_tangent_append_f32(output, frame.y)
+                try gltf_tangent_append_f32(output, frame.z)
+                try gltf_tangent_append_f32(output, frame.handedness)
+            return output
+
+
     private:
         const module Limits:
             MAX_VERTICES: usize = 4194304
+            MAX_TANGENT_BYTES: usize = 67108864
+            MAX_NORMAL_BYTES: usize = 50331648
+            TANGENT_BYTES_PER_VERTEX: usize = 16
+            NORMAL_BYTES_PER_VERTEX: usize = 12
             MATRIX_ELEMENTS: usize = 12
             MINIMUM_LENGTH: f64 = 0.00000000000000000001
             HANDEDNESS_TOLERANCE: f64 = 0.0001
@@ -90,3 +138,23 @@ module EsEngineGltfTangentFrames:
             c1: f64 = matrix[6] * matrix[8] - matrix[4] * matrix[10]
             c2: f64 = matrix[4] * matrix[9] - matrix[5] * matrix[8]
             return matrix[0] * c0 + matrix[1] * c1 + matrix[2] * c2
+
+
+        def gltf_tangent_read_u32(bytes: darray[u8]&, offset: usize) -> u32:
+            return bytes[offset].u32() | (bytes[offset + 1].u32() << 8) | (bytes[offset + 2].u32() << 16) | (bytes[offset + 3].u32() << 24)
+
+
+        def gltf_tangent_read_f32(bytes: darray[u8]&, offset: usize) -> f32 can[Unsafe.PointerCast]:
+            bits: u32 = gltf_tangent_read_u32(bytes, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
+
+
+        def gltf_tangent_append_f32(output: mutable darray[u8]&, value: f32) -> void can[Memory.Allocate, Unsafe.PointerCast]:
+            bits: mutable u32 = 0u32
+            _ = memcpy((&bits).cast[mutable void&], (&value).cast[void&], 4)
+            output.push((bits & 255u32).u8())
+            output.push(((bits >> 8) & 255u32).u8())
+            output.push(((bits >> 16) & 255u32).u8())
+            output.push((bits >> 24).u8())
