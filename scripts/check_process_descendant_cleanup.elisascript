@@ -1,0 +1,151 @@
+# Bounded Elisascript port of check_process_descendant_cleanup.sh.
+# Source scans use the shared line/function reader; no compiler or child process.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsProcessDescendantCleanupAudit:
+    private:
+        const module Inputs:
+            INTERPRETER: sview = "src/ir/interpret.elisa"
+            DIFFERENTIAL: sview = "src/testing/differential.elisa"
+            RUNTIME: sview = "src/runtime/runtime.elisa"
+            POSIX_RUNTIME: sview = "src/runtime/directory_posix.elisa"
+            DOCS: sview = "docs/ir.md"
+            LEDGER: sview = "docs/capabilities/ledger.md"
+            TESTS: sview = "test/differential/elisascript_differential_test.elisa"
+
+
+        const module Patterns:
+            INTERPRETER_FUNCTION: sview = "        def process_wait_terminate("
+            INTERPRETER_LEADER_REAPED: sview = "leader_reaped: mutable bool = false"
+            INTERPRETER_LEADER_REAPED_SET: sview = "leader_reaped <- true"
+            INTERPRETER_GROUP_KILL: sview = "process_wait_signal(-waiter.pid, ProcessWait::SIGNAL_KILL) if waiter.group_ready"
+            DIFFERENTIAL_FUNCTION: sview = "        def differential_terminate_process("
+            DIFFERENTIAL_LEADER_REAPED: sview = "leader_reaped: mutable bool = false"
+            DIFFERENTIAL_LEADER_REAPED_SET: sview = "leader_reaped <- true"
+            DIFFERENTIAL_GROUP_KILL: sview = "differential_signal_process(-pid, DIFFERENTIAL_SIGNAL_KILL) if group_ready"
+            LEADER_REAPED_RETURN: sview = "return if leader_reaped"
+            EACCES_VALUE: sview = "EACCES: i32 = 13"
+            ERRNO_ABI: sview = "elisascript_darwin_errno_impl() -> mutable i32&"
+            UNFIXED_ERRNO_TYPE: Regex = regex"errno: mutable int& = .*elisascript_posix_errno\(\)"
+            INTERPRETER_EACCES: sview = "return true if errno[0] == EsRuntime::DarwinErrno::EACCES"
+            DIFFERENTIAL_EACCES: sview = "return true if errno[0] == DarwinErrno::EACCES"
+            GROUP_QUIESCENT: sview = "differential_process_group_quiescent"
+            GROUP_HAS_MEMBERS: sview = "differential_process_group_has_members"
+            PROCESS_REAPED_DOCS: Regex = regex"leader.*intermediate|leader.*only an intermediate|surviving group member"
+            REJECTS_LIVE_GROUP_MEMBER: sview = "differential_process_rejects_leader_exit_with_live_group_member"
+            BOUNDED_TIMEOUT: sview = "differential_process_execution_reports_bounded_timeout"
+            DESCENDANT_OWNERSHIP: sview = "differential_process_timeout_owns_descendant_process_group"
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "process descendant audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "process descendant audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "process descendant audit: missing "
+            READ_FAILED: sview = "process descendant audit: unable to read source: "
+            SUCCESS: sview = "process descendant audit: leader reaping still forces private-group cleanup before termination returns"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1i64
+            IO_FAILURE: i64 = 2i64
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def literal_check(input_path: Path, needle: sview, expected: bool = true) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            found: bool = try EsSourceFunctionScope::contains_file_line(input_path, needle) else err:
+                diagnostic(Messages::READ_FAILED + f"{input_path}")
+                return ExitStatus::IO_FAILURE
+            return 0i64 if found == expected else ExitStatus::FAILURE
+
+
+        def regex_check(input_path: Path, pattern: Regex, expected: bool = true) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            found: bool = try EsSourceFunctionScope::contains_file_regex_line(input_path, pattern) else err:
+                diagnostic(Messages::READ_FAILED + f"{input_path}")
+                return ExitStatus::IO_FAILURE
+            return 0i64 if found == expected else ExitStatus::FAILURE
+
+
+        def group_cleanup_is_valid(input_path: Path, declaration: sview, leader_reaped: sview, leader_reaped_set: sview, group_kill: sview) -> bool error[EsSourceFunctionScope::Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(input_path, declaration)
+            return false if not body.found or body.text == ""
+            return false if not EsSourceFunctionScope::contains(body.text, leader_reaped)
+            return false if not EsSourceFunctionScope::contains(body.text, leader_reaped_set)
+            return false if not EsSourceFunctionScope::contains(body.text, group_kill)
+            return false if not EsSourceFunctionScope::contains(body.text, Patterns::LEADER_REAPED_RETURN)
+            group_kill_line: usize = EsSourceFunctionScope::first_line_number(body.text, group_kill)
+            return_line: usize = EsSourceFunctionScope::first_line_number(body.text, Patterns::LEADER_REAPED_RETURN)
+            return group_kill_line > 0 and return_line > group_kill_line
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            interpreter: Path = root.joinpath(Inputs::INTERPRETER)
+            differential: Path = root.joinpath(Inputs::DIFFERENTIAL)
+            runtime: Path = root.joinpath(Inputs::RUNTIME)
+            posix_runtime: Path = root.joinpath(Inputs::POSIX_RUNTIME)
+            docs: Path = root.joinpath(Inputs::DOCS)
+            ledger: Path = root.joinpath(Inputs::LEDGER)
+            tests: Path = root.joinpath(Inputs::TESTS)
+            inputs: darray[Path] = [interpreter, differential, runtime, posix_runtime, docs, ledger, tests]
+            for input_path in inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::FAILURE
+
+            interpreter_cleanup: bool = try group_cleanup_is_valid(interpreter, Patterns::INTERPRETER_FUNCTION, Patterns::INTERPRETER_LEADER_REAPED, Patterns::INTERPRETER_LEADER_REAPED_SET, Patterns::INTERPRETER_GROUP_KILL) else err:
+                diagnostic(Messages::READ_FAILED + f"{interpreter}")
+                return ExitStatus::IO_FAILURE
+            return ExitStatus::FAILURE if not interpreter_cleanup
+            differential_cleanup: bool = try group_cleanup_is_valid(differential, Patterns::DIFFERENTIAL_FUNCTION, Patterns::DIFFERENTIAL_LEADER_REAPED, Patterns::DIFFERENTIAL_LEADER_REAPED_SET, Patterns::DIFFERENTIAL_GROUP_KILL) else err:
+                diagnostic(Messages::READ_FAILED + f"{differential}")
+                return ExitStatus::IO_FAILURE
+            return ExitStatus::FAILURE if not differential_cleanup
+
+            status: mutable i64 = literal_check(runtime, Patterns::EACCES_VALUE)
+            return status if status != 0i64
+            status <- literal_check(posix_runtime, Patterns::ERRNO_ABI)
+            return status if status != 0i64
+            status <- regex_check(interpreter, Patterns::UNFIXED_ERRNO_TYPE, false)
+            return status if status != 0i64
+            status <- regex_check(differential, Patterns::UNFIXED_ERRNO_TYPE, false)
+            return status if status != 0i64
+            status <- literal_check(interpreter, Patterns::INTERPRETER_EACCES)
+            return status if status != 0i64
+            status <- literal_check(differential, Patterns::DIFFERENTIAL_EACCES)
+            return status if status != 0i64
+            status <- literal_check(differential, Patterns::GROUP_QUIESCENT)
+            return status if status != 0i64
+            status <- literal_check(differential, Patterns::GROUP_HAS_MEMBERS)
+            return status if status != 0i64
+            status <- regex_check(docs, Patterns::PROCESS_REAPED_DOCS)
+            return status if status != 0i64
+            status <- literal_check(tests, Patterns::REJECTS_LIVE_GROUP_MEMBER)
+            return status if status != 0i64
+            status <- literal_check(tests, Patterns::BOUNDED_TIMEOUT)
+            return status if status != 0i64
+            status <- literal_check(tests, Patterns::DESCENDANT_OWNERSHIP)
+            return status if status != 0i64
+
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            repository_root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(repository_root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsProcessDescendantCleanupAudit::run_default()
