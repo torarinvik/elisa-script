@@ -2,8 +2,10 @@
 # FileStream bounds this operation to the runtime's explicit 64 MiB budget;
 # the larger Python/model bound remains a known compatibility difference.
 include "save_journal_model.elisa"
+include "../../../src/runtime/bounded_bytes_posix.elisa"
 include "../../../src/runtime/stream_posix.elisa"
 
+using EsBoundedBytes
 using EsEngineSaveJournal
 using EsRuntime
 
@@ -21,6 +23,9 @@ module EsEngineSaveJournalPosix:
             CloseFailed
             CleanupFailed
             CommitOutcomeUnknown
+            RecoveryCleanupFailed
+            RecoveryCleanupOutcomeUnknown
+            LoadReadFailed
 
 
         # Follow Python's durable commit order. Do not clean temporary or
@@ -77,6 +82,68 @@ module EsEngineSaveJournalPosix:
                 SaveCommit, SavePhase.Done:
                     break
             return digest
+
+
+        # Read only the siblings derived from `target`; journal-provided names
+        # are compared by the pure model and are never used as filesystem paths.
+        # Invalid or unreadable recovery artifacts are removed and reported as
+        # no recovery, matching the Python helper's fallback to the old target.
+        def recover_document(target: Path) -> bool error[SaveJournalError, SaveJournalPosixError, FileStreamError] can[File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            target_name: sview = target.name()
+            raise SaveJournalPosixError.InvalidPath if target_name == "" or sview_contains_byte(target_name, 0u8)
+            temporary: Path = target.with_name(f"{target_name}.tmp")
+            journal: Path = target.with_name(f"{target_name}.journal")
+            return false if not journal.exists()
+
+            parent_bytes: darray[u8] = try save_journal_path_bytes(target.parent())
+            parent_pointer: cstr = (&parent_bytes[0]).cast[cstr] can Unsafe.PointerCast
+            journal_bytes: darray[u8] = try EsBoundedBytes::read_bounded_bytes(journal, EsEngineSaveJournal::Limits::MAX_DOCUMENT_BYTES) else failure:
+                _ = failure
+                _ = try discard_recovery_artifacts(temporary, journal, parent_pointer)
+                return false
+            metadata: JournalMetadata = try EsEngineSaveJournal::parse_journal_metadata(bytes_view(journal_bytes)) else failure:
+                _ = failure
+                _ = try discard_recovery_artifacts(temporary, journal, parent_pointer)
+                return false
+            candidate: darray[u8] = try EsBoundedBytes::read_bounded_bytes(temporary, EsEngineSaveJournal::Limits::MAX_DOCUMENT_BYTES) else failure:
+                _ = failure
+                _ = try discard_recovery_artifacts(temporary, journal, parent_pointer)
+                return false
+            decision: RecoveryDecision = try EsEngineSaveJournal::recovery_decision(true, metadata, target_name, temporary.name(), candidate)
+            return false if decision == RecoveryDecision.NoJournal
+
+            phase: mutable RecoveryPhase = RecoveryPhase.Discard if decision == RecoveryDecision.DiscardTemporary else RecoveryPhase.Publish
+            recovered: mutable bool = false
+            machine over phase while phase != RecoveryPhase.Done:
+                state Recovery
+                start Recovery
+
+                Recovery, RecoveryPhase.Discard:
+                    _ = try discard_recovery_artifacts(temporary, journal, parent_pointer)
+                    phase <- RecoveryPhase.Done
+                    -> Recovery
+
+                Recovery, RecoveryPhase.Publish:
+                    _ = try publish_synced_file(temporary, target)
+                    _ = try remove_committed_journal(journal)
+                    _ = try sync_committed_parent(parent_pointer)
+                    recovered <- true
+                    phase <- RecoveryPhase.Done
+                    -> Recovery
+
+                Recovery, RecoveryPhase.Done:
+                    break
+            return recovered
+
+
+        # Recovery happens before decoding the target, so a valid committed
+        # temporary becomes visible to the caller as one document.
+        def load_document(target: Path) -> JsonDocument error[SaveJournalError, SaveJournalPosixError, FileStreamError] can[File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            _ = try recover_document(target)
+            payload: darray[u8] = try EsBoundedBytes::read_bounded_bytes(target, EsEngineSaveJournal::Limits::MAX_DOCUMENT_BYTES) else failure:
+                _ = failure
+                raise SaveJournalPosixError.LoadReadFailed
+            return try EsEngineSaveJournal::parse_json_object(bytes_view(payload))
 
 
         def write_synced_file(target: Path, payload: darray[u8]) -> usize error[SaveJournalPosixError] can[Directory.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
@@ -174,6 +241,44 @@ module EsEngineSaveJournalPosix:
             return true
 
 
+        def discard_recovery_artifacts(temporary: Path, journal: Path, parent_pointer: cstr) -> bool error[SaveJournalPosixError] can[File.Read, File.Write, Blocking.IO, Memory.Release, Abort.Panic]:
+            _ = try remove_recovery_artifact(temporary)
+            _ = try remove_recovery_artifact(journal)
+            catch file_stream_sync_directory(parent_pointer):
+                ok synced:
+                    return synced
+                error failure:
+                    _ = failure
+                    raise SaveJournalPosixError.RecoveryCleanupOutcomeUnknown
+
+
+        def remove_recovery_artifact(value: Path) -> bool error[SaveJournalPosixError] can[File.Read, File.Write, Abort.Panic]:
+            if value.exists():
+                removed: bool = try value.unlink() else failure:
+                    _ = failure
+                    raise SaveJournalPosixError.RecoveryCleanupFailed
+                raise SaveJournalPosixError.RecoveryCleanupFailed if not removed
+            return true
+
+
+        def remove_committed_journal(journal: Path) -> bool error[SaveJournalPosixError] can[File.Write, File.Read, Abort.Panic]:
+            catch remove_journal_if_present(journal):
+                ok removed:
+                    return removed
+                error failure:
+                    _ = failure
+                    raise SaveJournalPosixError.CommitOutcomeUnknown
+
+
+        def sync_committed_parent(parent_pointer: cstr) -> bool error[SaveJournalPosixError] can[Blocking.IO, Memory.Release]:
+            catch file_stream_sync_directory(parent_pointer):
+                ok synced:
+                    return synced
+                error failure:
+                    _ = failure
+                    raise SaveJournalPosixError.CommitOutcomeUnknown
+
+
         def save_journal_path_bytes(value: Path) -> darray[u8] error[SaveJournalPosixError] can[Memory.Allocate, Abort.Panic, Console.Format]:
             path_text: sview = f"{value}"
             raise SaveJournalPosixError.InvalidPath if path_text == "" or len(path_text) >= Limits::MAX_PATH_BYTES or sview_contains_byte(path_text, 0u8)
@@ -197,6 +302,12 @@ module EsEngineSaveJournalPosix:
             PublishTemporary
             RemoveJournal
             SyncJournalRemoval
+            Done
+
+
+        const enum RecoveryPhase of u8:
+            Discard
+            Publish
             Done
 
 
