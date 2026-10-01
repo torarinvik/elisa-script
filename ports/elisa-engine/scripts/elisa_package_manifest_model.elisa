@@ -1,0 +1,96 @@
+# Typed dependency-manifest encoder from elisa-engine/scripts/elisa_package.py.
+# This mirrors the source's current acceptance of ASCII line separators inside
+# logical paths; callers must not treat that behavior as a safe policy.
+include "elisa_package_cli_model.elisa"
+
+using EsElisaPackageCli
+
+
+module EsElisaPackageManifest:
+    public:
+        error ManifestError:
+            DependencyCountOrUniquenessRejected
+            UnsafeDependencyPath
+            NonAsciiDependency
+            ManifestTooLarge
+            ManifestLineTooLarge
+
+
+        def manifest_bytes(dependencies: darray[sview]) -> darray[u8] error[ManifestError] can[Memory.Allocate, Abort.Panic]:
+            raise ManifestError.DependencyCountOrUniquenessRejected if dependencies.count > Limits::MAX_DEPENDENCIES
+            for index in 0..<dependencies.count |dependencies|:
+                for earlier in 0..<index |dependencies|:
+                    raise ManifestError.DependencyCountOrUniquenessRejected if dependencies[earlier] == dependencies[index]
+            for dependency in dependencies:
+                raise ManifestError.UnsafeDependencyPath if not EsElisaPackageCli::safe_logical_path(dependency)
+
+            ordered: mutable darray[sview] = []
+            for dependency in dependencies |ordered|:
+                ordered.push(dependency)
+            for index in 0..<ordered.count |ordered|:
+                for candidate in index + 1..<ordered.count |ordered|:
+                    if package_manifest_text_before(ordered[candidate], ordered[index]):
+                        earlier: sview = ordered[index]
+                        ordered[index] <- ordered[candidate]
+                        ordered[candidate] <- earlier
+
+            for dependency in ordered:
+                for byte in dependency:
+                    raise ManifestError.NonAsciiDependency if byte > 127u8
+            total_bytes: mutable usize = sview_len(Syntax::HEADER)
+            for dependency in ordered |total_bytes|:
+                remaining: usize = Limits::MAX_MANIFEST_BYTES - total_bytes
+                prefix_and_newline: usize = sview_len(Syntax::DEPENDENCY_PREFIX) + 1
+                raise ManifestError.ManifestTooLarge if remaining < prefix_and_newline
+                raise ManifestError.ManifestTooLarge if sview_len(dependency) > remaining - prefix_and_newline
+                total_bytes <- total_bytes + prefix_and_newline + sview_len(dependency)
+
+            output: mutable darray[u8] = []
+            for byte in Syntax::HEADER |output|:
+                output.push(byte)
+            for dependency in ordered |output|:
+                for byte in Syntax::DEPENDENCY_PREFIX |output|:
+                    output.push(byte)
+                for byte in dependency |output|:
+                    output.push(byte)
+                output.push(10u8)
+
+            _ = try package_manifest_lines_valid(output)
+            return output
+
+
+    private:
+        const module Syntax:
+            HEADER: sview = "ELISA-PACKAGE-MANIFEST-1\n"
+            DEPENDENCY_PREFIX: sview = "dependency="
+
+
+        const module Limits:
+            MAX_MANIFEST_BYTES: usize = 16384
+            MAX_LINE_BYTES: usize = 255
+            MAX_DEPENDENCIES: usize = 16
+
+
+        def package_manifest_text_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return sview_at(left, index) < sview_at(right, index) if sview_at(left, index) != sview_at(right, index)
+            return left_length < right_length
+
+
+        def package_manifest_lines_valid(bytes: darray[u8]) -> bool error[ManifestError]:
+            line_length: mutable usize = 0
+            for byte in bytes |line_length|:
+                if package_manifest_line_separator(byte):
+                    raise ManifestError.ManifestLineTooLarge if line_length > Limits::MAX_LINE_BYTES
+                    line_length <- 0
+                else:
+                    line_length <- line_length + 1
+            raise ManifestError.ManifestLineTooLarge if line_length > Limits::MAX_LINE_BYTES
+            return true
+
+
+        def package_manifest_line_separator(byte: u8) -> bool:
+            return byte == 10u8 or byte == 13u8 or byte == 11u8 or byte == 12u8 or byte == 28u8 or byte == 29u8 or byte == 30u8
