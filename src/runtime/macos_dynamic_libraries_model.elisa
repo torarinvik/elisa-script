@@ -1,0 +1,101 @@
+# Pure parsers for the otool output consumed by package_macos_app.py.
+# Filesystem staging and install_name_tool/codesign effects belong to an adapter.
+
+include "python_text_model.elisa"
+
+using EsPythonText
+
+
+module EsMacosDynamicLibraries:
+    public:
+        error MacosDynamicLibraryMetadataError:
+            MissingRpathValue
+
+
+    private:
+        const module Syntax:
+            LOAD_COMPATIBILITY: sview = " (compatibility"
+            LOAD_RPATH_COMMAND: sview = "cmd LC_RPATH"
+            ASCII_SPACE: u8 = 32
+            ASCII_SLASH: u8 = 47
+
+
+        def find_literal(source: sview, needle: sview, start: usize) -> usize:
+            source_length: usize = sview_len(source)
+            needle_length: usize = sview_len(needle)
+            return source_length if start > source_length
+            cursor: mutable usize = start
+            while cursor <= source_length and needle_length <= source_length - cursor |source, needle, cursor|:
+                matched: mutable bool = true
+                for offset in 0..<needle_length |source, needle, cursor, matched|:
+                    matched <- false if sview_at(source, cursor + offset) != sview_at(needle, offset)
+                return cursor if matched
+                cursor <- cursor + 1
+            return source_length
+
+
+        def path_basename(value: sview) -> sview:
+            end: mutable usize = sview_len(value)
+            while end > 0 and sview_at(value, end - 1) == Syntax::ASCII_SLASH |value, end|:
+                end <- end - 1
+            start: mutable usize = end
+            while start > 0 and sview_at(value, start - 1) != Syntax::ASCII_SLASH |value, start|:
+                start <- start - 1
+            return value[start:end]
+
+
+        def append_unique(values: mutable darray[sview]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for existing in values:
+                return if existing == value
+            values.push(value)
+
+
+        def rpath_value(line: sview) -> sview error[MacosDynamicLibraryMetadataError] can[Memory.Allocate, Abort.Panic]:
+            trimmed: sview = line.strip()
+            length: usize = sview_len(trimmed)
+            first_space: usize = length
+            cursor: mutable usize = 0
+            while cursor < length and first_space == length |trimmed, cursor, first_space|:
+                first_space <- cursor if sview_at(trimmed, cursor) == Syntax::ASCII_SPACE
+                cursor <- cursor + 1
+            raise MacosDynamicLibraryMetadataError.MissingRpathValue if first_space == length
+
+            value_start: usize = first_space + 1
+            second_space: usize = length
+            cursor <- value_start
+            while cursor < length and second_space == length |trimmed, cursor, second_space|:
+                second_space <- cursor if sview_at(trimmed, cursor) == Syntax::ASCII_SPACE
+                cursor <- cursor + 1
+            return trimmed[value_start:second_space]
+
+
+    public:
+        # `otool -L` starts with the inspected image's own install identity;
+        # package_macos_app.py drops that first line and any matching basename.
+        def parse_linked_libraries(load_commands: sview, binary_name: sview) -> darray[sview] error[PythonTextError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = try EsPythonText::split_lines(load_commands)
+            names: mutable darray[sview] = []
+            if lines.count > 1:
+                for index in 1..<lines.count |lines, names, binary_name|:
+                    trimmed: sview = lines[index].strip()
+                    continue if trimmed == ""
+                    marker: usize = find_literal(trimmed, Syntax::LOAD_COMPATIBILITY, 0)
+                    entry: sview = trimmed if marker == sview_len(trimmed) else trimmed[0:marker]
+                    continue if entry == ""
+                    continue if path_basename(entry) == binary_name
+                    names.push(entry)
+            return names
+
+
+        # The Python helper returns a set. This ordered unique array carries
+        # the same membership semantics for the packager's rpath checks.
+        def parse_existing_rpaths(load_commands: sview) -> darray[sview] error[MacosDynamicLibraryMetadataError, PythonTextError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = try EsPythonText::split_lines(load_commands)
+            paths: mutable darray[sview] = []
+            index: mutable usize = 0
+            while index < lines.count |lines, paths, index|:
+                if lines[index].strip() == Syntax::LOAD_RPATH_COMMAND and index + 2 < lines.count:
+                    value: sview = try rpath_value(lines[index + 2])
+                    append_unique(paths, value)
+                index <- index + 1
+            return paths
