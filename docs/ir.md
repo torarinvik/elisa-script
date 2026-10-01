@@ -4728,6 +4728,10 @@ stored beyond the lowered-module region. The driver renders that exact issue
 kind while keeping the aggregate phase stable. Source lowering failures retain
 the first `LowerIssueKind` and source line behind `source_lower_issue_known`,
 with the same no-borrowed-message rule.
+Process replacement is denied by default in these ordinary runner APIs. The
+launcher uses the explicitly named `execute_elisascript_program_file_standalone_diagnostic`
+entrypoint, which grants replacement authority for that standalone process;
+test, differential, and embedded execution paths do not receive that grant.
 Parser and semantic source failures also retain their first typed kind and
 bounded source coordinates before the parser region is released: parser failures
 preserve `Ast::ParseErrorKind`, semantic failures preserve
