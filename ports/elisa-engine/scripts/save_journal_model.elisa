@@ -28,6 +28,22 @@ module EsEngineSaveJournal:
             InvalidDocument
             OutputTooLarge
             DigestUnavailable
+            InvalidJournalMetadata
+
+
+        # Text views borrow from `document`; keep this value alive while
+        # checking the recovery candidate or constructing diagnostics.
+        struct JournalMetadata:
+            document: JsonDocument
+            target: sview
+            temporary: sview
+            sha256: sview
+
+
+        const enum RecoveryDecision of u8:
+            NoJournal
+            PublishTemporary
+            DiscardTemporary
 
 
         def parse_json_object(source: sview) -> JsonDocument error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
@@ -108,6 +124,53 @@ module EsEngineSaveJournal:
             return encoded
 
 
+        # Match save_journal.py's sorted compact object shape. Leaf validation
+        # and durable publication belong to the POSIX adapter.
+        def canonical_journal_payload(target: sview, temporary: sview, digest: sview) -> darray[u8] error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.InvalidJournalMetadata if not lowercase_sha256_valid(digest)
+            output: mutable darray[u8] = []
+            try append_view(output, "{\"sha256\":")
+            try append_json_text(output, digest)
+            try append_view(output, ",\"target\":")
+            try append_json_text(output, target)
+            try append_view(output, ",\"temporary\":")
+            try append_json_text(output, temporary)
+            try append_view(output, "}\n")
+            return output
+
+
+        def parse_journal_metadata(source: sview) -> JournalMetadata error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            document: JsonDocument = try parse_json_object(source) else err:
+                raise SaveJournalError.InvalidJournalMetadata
+            root_index: usize = document.roots[0]
+            target_member: usize = try json_object_member_index(document, root_index, "target") else JSON_INDEX_NONE
+            temporary_member: usize = try json_object_member_index(document, root_index, "temporary") else JSON_INDEX_NONE
+            digest_member: usize = try json_object_member_index(document, root_index, "sha256") else JSON_INDEX_NONE
+            raise SaveJournalError.InvalidJournalMetadata if target_member == JSON_INDEX_NONE or temporary_member == JSON_INDEX_NONE or digest_member == JSON_INDEX_NONE
+            target_index: usize = document.members[target_member].value_index
+            temporary_index: usize = document.members[temporary_member].value_index
+            digest_index: usize = document.members[digest_member].value_index
+            raise SaveJournalError.InvalidJournalMetadata if target_index >= document.nodes.count or temporary_index >= document.nodes.count or digest_index >= document.nodes.count
+            raise SaveJournalError.InvalidJournalMetadata if document.nodes[target_index].kind != JsonNodeKind.Text or document.nodes[temporary_index].kind != JsonNodeKind.Text or document.nodes[digest_index].kind != JsonNodeKind.Text
+            target: sview = journal_text(document, document.nodes[target_index])
+            temporary: sview = journal_text(document, document.nodes[temporary_index])
+            digest: sview = journal_text(document, document.nodes[digest_index])
+            raise SaveJournalError.InvalidJournalMetadata if not lowercase_sha256_valid(digest)
+            return JournalMetadata{document: document, target: target, temporary: temporary, sha256: digest}
+
+
+        # This is the pure recovery gate: only a named, checksummed temporary
+        # containing one valid JSON object may be published. The adapter maps
+        # false to the original script's remove-temp/remove-journal path.
+        def recovery_decision(has_journal: bool, metadata: JournalMetadata&, target: sview, temporary: sview, candidate: darray[u8]&) -> RecoveryDecision error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            return RecoveryDecision.NoJournal if not has_journal
+            return RecoveryDecision.DiscardTemporary if metadata.target != target or metadata.temporary != temporary
+            digest: darray[u8] = sha256_hex(candidate)
+            return RecoveryDecision.DiscardTemporary if bytes_view(digest) != metadata.sha256
+            _ = try parse_json_object(bytes_view(candidate)) else return RecoveryDecision.DiscardTemporary
+            return RecoveryDecision.PublishTemporary
+
+
     private:
         const enum EncodeFrameKind of u8:
             Array
@@ -161,6 +224,26 @@ module EsEngineSaveJournal:
                 else:
                     try append_byte(output, byte)
             try append_byte(output, 34u8)
+
+
+        def append_json_text(output: mutable darray[u8]&, value: sview) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+            raise SaveJournalError.OutputTooLarge if output.count > Encode::MAX_OUTPUT_BYTES or len(value) > Encode::MAX_OUTPUT_BYTES - output.count
+            bytes: mutable darray[u8] = []
+            for byte in value |bytes|:
+                bytes.push(byte)
+            try append_json_string(output, bytes, 0, bytes.count)
+
+
+        def lowercase_sha256_valid(value: sview) -> bool:
+            return false if len(value) != 64
+            for byte in value:
+                return false if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 97u8 and byte <= 102u8))
+            return true
+
+
+        def journal_text(document: JsonDocument&, node: JsonNode) -> sview:
+            scalar_bytes: sview = bytes_view(document.scalar_data)
+            return string_view_slice(scalar_bytes, node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
 
 
         def number_text(document: JsonDocument&, node: JsonNode) -> sview error[SaveJournalError]:
