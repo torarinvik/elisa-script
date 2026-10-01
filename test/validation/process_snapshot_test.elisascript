@@ -1,0 +1,123 @@
+# Pure conformance cases for the typed snapshot parser. These tests consume
+# fixed text only and never inspect, launch, or signal a host process.
+include "../../scripts/validation_process_snapshot.elisascript"
+
+using EsValidationProcessSnapshot
+
+
+@test
+def validation_process_tree_preserves_breadth_first_order_and_identity() -> void:
+    can Memory.Allocate, Memory.Release, Abort.Panic:
+        source: sview = "100 1 100 Mon Sep 25 10:00:00 2026\n101 100 101 Mon Sep 25 10:01:00 2026\n102 100 102 Mon Sep 25 10:02:00 2026\n103 101 103 Mon Sep 25 10:03:00 2026\n__ELISASCRIPT_PS_STATUS__ 0"
+        pids: darray[sview] = try process_tree_pids_from_snapshot(source, "100", 5) else err:
+            assert false
+            return
+        assert pids.count == 4
+        assert pids[0] == "100"
+        assert pids[1] == "101"
+        assert pids[2] == "102"
+        assert pids[3] == "103"
+
+        identities: darray[ProcessTreeIdentity] = try process_tree_identities_from_snapshot(source, "100", 5) else err:
+            assert false
+            return
+        assert identities.count == 4
+        assert identities[0].pid == "100"
+        assert identities[0].process_group == "100"
+        assert identities[0].start_token == "Mon-Sep-25-10:00:00-2026"
+        assert identities[1].pid == "101"
+        assert identities[1].process_group == "101"
+        assert identities[1].start_token == "Mon-Sep-25-10:01:00-2026"
+        assert identities[2].pid == "102"
+        assert identities[3].pid == "103"
+
+
+@test
+def validation_identity_and_state_probes_fail_closed() -> void:
+    can Memory.Allocate, Memory.Release, Abort.Panic:
+        source: sview = "100 1 100 Mon Sep 25 10:00:00 2026\n101 100 101 Mon Sep 25 10:01:00 2026\n__ELISASCRIPT_PS_STATUS__ 0"
+        assert process_identity_matches_from_snapshot(source, "101", "101", "Mon-Sep-25-10:01:00-2026", "1", 8) == IdentityProbe.Match
+        assert process_identity_matches_from_snapshot(source, "101", "100", "Mon-Sep-25-10:01:00-2026", "1", 8) == IdentityProbe.NoMatch
+        assert process_identity_matches_from_snapshot(source, "100", "100", "Mon-Sep-25-10:00:00-2026", "100", 8) == IdentityProbe.NoMatch
+        duplicate_pid_source: sview = "100 1 100 Mon Sep 25 10:00:00 2026\n101 100 101 Mon Sep 25 10:01:00 2026\n100 1 100 Mon Sep 25 10:00:00 2026\n__ELISASCRIPT_PS_STATUS__ 0"
+        assert process_identity_matches_from_snapshot(duplicate_pid_source, "101", "101", "Mon-Sep-25-10:01:00-2026", "1", 8) == IdentityProbe.Inconclusive
+        assert process_identity_matches_from_snapshot("100 1 100 Mon Sep 25 10:00:00 2026", "100", "100", "Mon-Sep-25-10:00:00-2026", "1", 8) == IdentityProbe.Inconclusive
+
+        assert process_state_from_snapshot("10 S\n11 Z+\n__ELISASCRIPT_PS_STATUS__ 0", "10", 4) == ValidationProcessState.Live
+        assert process_state_from_snapshot("10 S\n11 Z+\n__ELISASCRIPT_PS_STATUS__ 0", "11", 4) == ValidationProcessState.Zombie
+        assert process_state_from_snapshot("10 S\n11 Z+\n__ELISASCRIPT_PS_STATUS__ 0", "12", 4) == ValidationProcessState.Absent
+        assert process_state_from_snapshot("10 S\n10 Z\n__ELISASCRIPT_PS_STATUS__ 0", "10", 4) == ValidationProcessState.Unknown
+        assert process_state_from_snapshot("10 S\n__ELISASCRIPT_PS_STATUS__ 1", "10", 4) == ValidationProcessState.Unknown
+
+
+@test
+def validation_group_probes_distinguish_live_quiescent_and_uncertain() -> void:
+    can Memory.Allocate, Memory.Release, Abort.Panic:
+        live: GroupLivenessProbe = process_group_liveness_from_snapshot("10 S\n__ELISASCRIPT_PS_STATUS__ 0", "10", 2)
+        assert live.snapshot_valid and live.found_live_member and live.requires_retention
+        zombie_only: GroupLivenessProbe = process_group_liveness_from_snapshot("10 Z\n__ELISASCRIPT_PS_STATUS__ 0", "10", 2)
+        assert zombie_only.snapshot_valid and not zombie_only.found_live_member and not zombie_only.requires_retention
+        uncertain: GroupLivenessProbe = process_group_liveness_from_snapshot("10 S", "10", 2)
+        assert not uncertain.snapshot_valid and not uncertain.found_live_member and uncertain.requires_retention
+        uncertain_after_live: GroupLivenessProbe = process_group_liveness_from_snapshot("10 S\nmalformed\n__ELISASCRIPT_PS_STATUS__ 0", "10", 4)
+        assert not uncertain_after_live.snapshot_valid and uncertain_after_live.found_live_member and uncertain_after_live.requires_retention
+
+        assert process_group_quiescence_from_snapshot("10 Z\n__ELISASCRIPT_PS_STATUS__ 0", "10", 2) == GroupQuiescenceProbe.Quiescent
+        assert process_group_quiescence_from_snapshot("10 S\n__ELISASCRIPT_PS_STATUS__ 0", "10", 2) == GroupQuiescenceProbe.LiveMember
+        assert process_group_quiescence_from_snapshot("10 S\n__ELISASCRIPT_PS_STATUS__ 1", "10", 2) == GroupQuiescenceProbe.Inconclusive
+        assert process_group_quiescence_from_snapshot("10 Z\n__ELISASCRIPT_PS_STATUS__ 0", "invalid", 2) == GroupQuiescenceProbe.Inconclusive
+
+
+@test
+def validation_rss_uses_the_group_descendant_union_and_rejects_escape() -> void:
+    can Memory.Allocate, Memory.Release, Abort.Panic:
+        source: sview = "10 1 10 30\n11 10 10 40\n12 11 10 50\n13 1 10 20\n14 1 14 900\n__ELISASCRIPT_PS_STATUS__ 0"
+        rss: ProcessGroupRss = try process_group_rss_from_snapshot(source, "10", "10", 8) else err:
+            assert false
+            return
+        assert rss.in_scope
+        assert rss.kibibytes == 140
+
+        escaped: bool = false
+        catch process_group_rss_from_snapshot("10 1 10 30\n11 10 11 40\n__ELISASCRIPT_PS_STATUS__ 0", "10", "10", 4):
+            ok _:
+                assert false
+            error failure:
+                escaped <- failure == SnapshotError.EscapedProcessGroup
+        assert escaped
+
+
+@test
+def validation_snapshot_limits_and_owned_group_rules_are_typed() -> void:
+    can Memory.Allocate, Memory.Release, Abort.Panic:
+        eligible: OwnedProcessGroup = owned_process_group_id("301", "301", "100")
+        assert eligible.eligible and eligible.group_id == "301"
+        assert not owned_process_group_id("301", "302", "100").eligible
+        assert not owned_process_group_id("301", "301", "301").eligible
+        assert process_start_token_matches("Mon-Sep-25-10:00:00-2026", "Mon-Sep-25-10:00:00-2026")
+        assert not process_start_token_matches("Mon-Sep-25-10:00:00-2026", "")
+        assert not process_start_token_matches("Mon-Sep-25-10:00:00-2026", "Mon-Sep-25-10:00:01-2026")
+
+        missing_status: bool = false
+        catch parse_process_snapshot("10 1", 2):
+            ok _:
+                assert false
+            error failure:
+                missing_status <- failure == SnapshotError.MissingStatus
+        assert missing_status
+
+        row_overflow: bool = false
+        catch process_tree_pids_from_snapshot("10 1\n11 10\n12 10\n__ELISASCRIPT_PS_STATUS__ 0", "10", 2):
+            ok _:
+                assert false
+            error failure:
+                row_overflow <- failure == SnapshotError.RowLimitExceeded
+        assert row_overflow
+
+        sentinel_order: bool = false
+        catch parse_process_snapshot("10 1\n__ELISASCRIPT_PS_STATUS__ 0\n11 10", 4):
+            ok _:
+                assert false
+            error failure:
+                sentinel_order <- failure == SnapshotError.RowsAfterStatus
+        assert sentinel_order

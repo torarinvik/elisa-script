@@ -1,0 +1,523 @@
+# Typed, pure parser replacement for validation_process_snapshot.sh.
+# This module consumes caller-provided `ps` snapshot text only. It neither
+# samples processes nor sends signals; callers decide what to do with results.
+
+module EsValidationProcessSnapshot:
+    public:
+        const module Limits:
+            ROWS: usize = 16384
+            SNAPSHOT_BYTES: usize = 4194304
+            ROW_BYTES: usize = 4096
+            PROCESS_ID: u64 = 2147483647u64
+            RSS_KIB_PER_PROCESS: u64 = 1000000000u64
+
+
+        error SnapshotError:
+            InvalidRowLimit
+            SnapshotTooLarge
+            RowTooLarge
+            RowLimitExceeded
+            MissingStatus
+            MalformedStatus
+            RowsAfterStatus
+            CommandFailed
+            MalformedRow
+            NumericOutOfRange
+            DuplicateProcessId
+            EscapedProcessGroup
+
+
+        struct ProcessSnapshotRow:
+            raw: sview
+
+
+        struct ProcessSnapshot:
+            rows: darray[ProcessSnapshotRow]
+            command_status: u64
+
+
+        struct OwnedProcessGroup:
+            eligible: bool
+            group_id: sview
+
+
+        const enum IdentityProbe of u8:
+            Match
+            NoMatch
+            Inconclusive
+
+
+        struct GroupLivenessProbe:
+            snapshot_valid: bool
+            found_live_member: bool
+            requires_retention: bool
+
+
+        const enum GroupQuiescenceProbe of u8:
+            Quiescent
+            LiveMember
+            Inconclusive
+
+
+        const enum ValidationProcessState of u8:
+            Unknown
+            Absent
+            Zombie
+            Live
+
+
+        struct ProcessTreeIdentity:
+            pid: sview
+            process_group: sview
+            start_token: sview
+
+
+        struct ProcessGroupRss:
+            in_scope: bool
+            kibibytes: u64
+
+
+    private:
+        const module Syntax:
+            STATUS_MARKER: sview = "__ELISASCRIPT_PS_STATUS__"
+            NO_INDEX: usize = 16384
+
+
+        struct DecimalValue:
+            valid: bool
+            value: u64
+
+
+        struct TreeEdge:
+            parent_pid: sview
+            child_pid: sview
+            next: usize
+
+
+        const enum TreeSchema of u8:
+            PidParent
+            PidParentRss
+            Identity
+
+
+        const enum ParsePhase of u8:
+            Read
+            Done
+
+
+        const enum TreePhase of u8:
+            Visit
+            Done
+
+
+        def ascii_digit(byte: u8) -> bool:
+            return byte >= 48u8 and byte <= 57u8
+
+
+        def decimal_value(text: sview, maximum: u64) -> DecimalValue:
+            if text == "":
+                return DecimalValue{valid: false, value: 0}
+            value: mutable u64 = 0
+            for index in 0..<len(text):
+                byte: u8 = sview_at(text, index)
+                if not ascii_digit(byte):
+                    return DecimalValue{valid: false, value: 0}
+                digit: u64 = (byte - 48u8).u64()
+                if value > (maximum - digit) / 10u64:
+                    return DecimalValue{valid: false, value: 0}
+                value <- value * 10u64 + digit
+            return DecimalValue{valid: true, value: value}
+
+
+        def process_id_valid(text: sview, allow_zero: bool = true) -> bool:
+            if len(text) > 10:
+                return false
+            parsed: DecimalValue = decimal_value(text, Limits::PROCESS_ID)
+            return parsed.valid and (allow_zero or text != "0")
+
+
+        def decimal_status(text: sview) -> DecimalValue:
+            if len(text) > 10:
+                return DecimalValue{valid: false, value: 0}
+            return decimal_value(text, Limits::PROCESS_ID)
+
+
+        def split_fields(line: sview) -> darray[sview] error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            fields: mutable darray[sview] = []
+            cursor: mutable usize = 0
+            while cursor < len(line):
+                while cursor < len(line) and (sview_at(line, cursor) == 32u8 or sview_at(line, cursor) == 9u8):
+                    cursor <- cursor + 1
+                if cursor < len(line):
+                    start: usize = cursor
+                    while cursor < len(line) and sview_at(line, cursor) != 32u8 and sview_at(line, cursor) != 9u8:
+                        cursor <- cursor + 1
+                    fields.push(line[start:cursor])
+                    raise SnapshotError.MalformedRow if fields.count > 16
+            return fields
+
+
+        def parse_rows(input: sview, row_limit: usize) -> ProcessSnapshot error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            raise SnapshotError.InvalidRowLimit if row_limit == 0 or row_limit > Limits::ROWS
+            raise SnapshotError.SnapshotTooLarge if len(input) > Limits::SNAPSHOT_BYTES
+            rows: mutable darray[ProcessSnapshotRow] = []
+            cursor: mutable usize = 0
+            status_seen: mutable bool = false
+            status_code: mutable u64 = 0
+            phase: mutable ParsePhase = ParsePhase.Read
+            machine over phase while phase != ParsePhase.Done:
+                state ReadLine
+                start ReadLine
+
+                ReadLine, ParsePhase.Read if cursor >= len(input):
+                    phase <- ParsePhase.Done
+                    -> ReadLine
+
+                ReadLine, ParsePhase.Read:
+                    line_end: mutable usize = cursor
+                    while line_end < len(input) and sview_at(input, line_end) != 10u8:
+                        line_end <- line_end + 1
+                    line: sview = input[cursor:line_end]
+                    raise SnapshotError.RowTooLarge if len(line) > Limits::ROW_BYTES
+                    fields: darray[sview] = try split_fields(line) else err:
+                        raise err
+                    marker: bool = fields.count > 0 and fields[0] == Syntax::STATUS_MARKER
+                    if status_seen:
+                        raise SnapshotError.RowsAfterStatus
+                    if marker:
+                        raise SnapshotError.MalformedStatus if fields.count != 2
+                        parsed_status: DecimalValue = decimal_status(fields[1])
+                        raise SnapshotError.MalformedStatus if not parsed_status.valid
+                        status_code <- parsed_status.value
+                        status_seen <- true
+                    else:
+                        raise SnapshotError.RowLimitExceeded if rows.count >= row_limit
+                        rows.push(ProcessSnapshotRow{raw: line})
+                    if line_end == len(input):
+                        phase <- ParsePhase.Done
+                    else:
+                        cursor <- line_end + 1
+                    -> ReadLine
+
+                ReadLine, ParsePhase.Done:
+                    break
+
+            raise SnapshotError.MissingStatus if not status_seen
+            return ProcessSnapshot{rows: rows, command_status: status_code}
+
+
+        def row_fields(row: ProcessSnapshotRow) -> darray[sview] error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            return split_fields(row.raw)
+
+
+        def start_field_valid(fields: darray[sview]) -> bool:
+            return fields.count == 8 and len(fields[3]) == 3 and len(fields[4]) == 3 and valid_alpha3(fields[3]) and valid_alpha3(fields[4]) and valid_day(fields[5]) and valid_clock(fields[6]) and valid_year(fields[7])
+
+
+        def valid_alpha3(text: sview) -> bool:
+            if len(text) != 3:
+                return false
+            for index in 0..<3:
+                byte: u8 = sview_at(text, index)
+                if not ((byte >= 65u8 and byte <= 90u8) or (byte >= 97u8 and byte <= 122u8)):
+                    return false
+            return true
+
+
+        def valid_day(text: sview) -> bool:
+            if len(text) == 0 or len(text) > 2:
+                return false
+            for index in 0..<len(text):
+                return false if not ascii_digit(sview_at(text, index))
+            return true
+
+
+        def valid_clock(text: sview) -> bool:
+            if len(text) != 8:
+                return false
+            for index in 0..<8:
+                byte: u8 = sview_at(text, index)
+                if index == 2 or index == 5:
+                    return false if byte != 58u8
+                else:
+                    return false if not ascii_digit(byte)
+            return true
+
+
+        def valid_year(text: sview) -> bool:
+            if len(text) != 4:
+                return false
+            for index in 0..<4:
+                return false if not ascii_digit(sview_at(text, index))
+            return true
+
+
+        def start_token(fields: darray[sview]) -> sview can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            return fields[3] + "-" + fields[4] + "-" + fields[5] + "-" + fields[6] + "-" + fields[7]
+
+
+        def identity_row_valid(fields: darray[sview]) -> bool:
+            return start_field_valid(fields) and process_id_valid(fields[0]) and process_id_valid(fields[1]) and process_id_valid(fields[2])
+
+
+        def decimal_row_valid(fields: darray[sview], expected_fields: usize) -> bool:
+            return fields.count == expected_fields and fields.count >= 2 and process_id_valid(fields[0]) and process_id_valid(fields[1])
+
+
+        def validate_successful_snapshot(snapshot: ProcessSnapshot) -> bool:
+            return snapshot.command_status == 0
+
+
+        def tree_order(snapshot: ProcessSnapshot, root: sview, schema: TreeSchema) -> darray[usize] error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            row_indices: mutable dict[sview, usize] = {}
+            edge_heads: mutable dict[sview, usize] = {}
+            edge_tails: mutable dict[sview, usize] = {}
+            edges: mutable darray[TreeEdge] = []
+
+            if not validate_successful_snapshot(snapshot):
+                raise SnapshotError.CommandFailed
+
+            for row_index in 0..<snapshot.rows.count |snapshot, row_indices, edge_heads, edge_tails, edges|:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                valid: bool = false
+                if schema == TreeSchema.PidParent:
+                    valid <- decimal_row_valid(fields, 2)
+                elif schema == TreeSchema.PidParentRss:
+                    valid <- fields.count == 4 and process_id_valid(fields[0]) and process_id_valid(fields[1]) and process_id_valid(fields[2]) and len(fields[3]) <= 10 and decimal_value(fields[3], Limits::RSS_KIB_PER_PROCESS).valid
+                else:
+                    valid <- identity_row_valid(fields)
+                raise SnapshotError.MalformedRow if not valid
+
+                existing: usize = row_indices.get(fields[0], Syntax::NO_INDEX)
+                if schema == TreeSchema.Identity and existing != Syntax::NO_INDEX:
+                    raise SnapshotError.DuplicateProcessId
+                if existing == Syntax::NO_INDEX:
+                    row_indices[fields[0]] <- row_index
+
+                parent: sview = fields[1]
+                edge_index: usize = edges.count
+                edges.push(TreeEdge{parent_pid: parent, child_pid: fields[0], next: Syntax::NO_INDEX})
+                previous_tail: usize = edge_tails.get(parent, Syntax::NO_INDEX)
+                if previous_tail == Syntax::NO_INDEX:
+                    edge_heads[parent] <- edge_index
+                else:
+                    edges[previous_tail].next <- edge_index
+                edge_tails[parent] <- edge_index
+
+            root_index: usize = row_indices.get(root, Syntax::NO_INDEX)
+            order: mutable darray[usize] = []
+            if root_index == Syntax::NO_INDEX:
+                return order
+
+            queue: mutable darray[usize] = [root_index]
+            visited: mutable dict[sview, bool] = {}
+            root_fields: darray[sview] = try row_fields(snapshot.rows[root_index]) else err:
+                raise err
+            visited[root_fields[0]] <- true
+            cursor: mutable usize = 0
+            phase: mutable TreePhase = TreePhase.Visit
+            machine over phase while phase != TreePhase.Done:
+                state Visit
+                start Visit
+
+                Visit, TreePhase.Visit if cursor >= queue.count:
+                    phase <- TreePhase.Done
+                    -> Visit
+
+                Visit, TreePhase.Visit:
+                    row_index: usize = queue[cursor]
+                    cursor <- cursor + 1
+                    order.push(row_index)
+                    fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                        raise err
+                    edge: usize = edge_heads.get(fields[0], Syntax::NO_INDEX)
+                    while edge != Syntax::NO_INDEX:
+                        child_pid: sview = edges[edge].child_pid
+                        child_index: usize = row_indices.get(child_pid, Syntax::NO_INDEX)
+                        if child_index != Syntax::NO_INDEX and not visited.get(child_pid, false):
+                            visited[child_pid] <- true
+                            queue.push(child_index)
+                        edge <- edges[edge].next
+                    -> Visit
+
+                Visit, TreePhase.Done:
+                    break
+            return order
+
+
+    public:
+        def parse_process_snapshot(input: sview, row_limit: usize) -> ProcessSnapshot error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            return parse_rows(input, row_limit)
+
+
+        def owned_process_group_id(root_pid: sview, candidate_group: sview, wrapper_group: sview) -> OwnedProcessGroup:
+            if not process_id_valid(root_pid, false) or not process_id_valid(candidate_group, false) or not process_id_valid(wrapper_group):
+                return OwnedProcessGroup{eligible: false, group_id: ""}
+            eligible: bool = candidate_group == root_pid and candidate_group != wrapper_group
+            return OwnedProcessGroup{eligible: eligible, group_id: candidate_group if eligible else ""}
+
+
+        def process_start_token_matches(expected: sview, observed: sview) -> bool:
+            return expected != "" and expected == observed
+
+
+        def process_identity_matches_from_snapshot(input: sview, target_pid: sview, target_group: sview, target_start: sview, wrapper_group: sview, row_limit: usize) -> IdentityProbe can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            if not process_id_valid(target_pid, false) or not process_id_valid(target_group, false) or not process_id_valid(wrapper_group, false) or target_start == "":
+                return IdentityProbe.Inconclusive
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                return IdentityProbe.Inconclusive
+            if not validate_successful_snapshot(snapshot):
+                return IdentityProbe.Inconclusive
+
+            seen_pids: mutable dict[sview, bool] = {}
+            target_seen: mutable bool = false
+            target_matches: mutable bool = false
+            for row in snapshot.rows:
+                fields: darray[sview] = try row_fields(row) else err:
+                    return IdentityProbe.Inconclusive
+                if not identity_row_valid(fields):
+                    return IdentityProbe.Inconclusive
+                if seen_pids.get(fields[0], false):
+                    return IdentityProbe.Inconclusive
+                seen_pids[fields[0]] <- true
+                if fields[0] == target_pid:
+                    return IdentityProbe.Inconclusive if target_seen
+                    target_seen <- true
+                    observed_start: sview = start_token(fields)
+                    target_matches <- fields[2] == target_group and fields[2] != wrapper_group and observed_start == target_start
+            if target_seen and target_matches:
+                return IdentityProbe.Match
+            return IdentityProbe.NoMatch
+
+
+        def process_group_liveness_from_snapshot(input: sview, group: sview, row_limit: usize) -> GroupLivenessProbe can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                return GroupLivenessProbe{snapshot_valid: false, found_live_member: false, requires_retention: true}
+            has_live: mutable bool = false
+            for row in snapshot.rows:
+                fields: darray[sview] = try row_fields(row) else err:
+                    return GroupLivenessProbe{snapshot_valid: false, found_live_member: has_live, requires_retention: true}
+                if fields.count != 2 or not process_id_valid(fields[0]) or fields[1] == "":
+                    return GroupLivenessProbe{snapshot_valid: false, found_live_member: has_live, requires_retention: true}
+                if fields[0] == group and not fields[1].startswith("Z"):
+                    has_live <- true
+            if not validate_successful_snapshot(snapshot):
+                return GroupLivenessProbe{snapshot_valid: false, found_live_member: has_live, requires_retention: true}
+            return GroupLivenessProbe{snapshot_valid: true, found_live_member: has_live, requires_retention: has_live}
+
+
+        def process_group_quiescence_from_snapshot(input: sview, group: sview, row_limit: usize) -> GroupQuiescenceProbe can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            group_number: DecimalValue = decimal_value(group, Limits::PROCESS_ID)
+            if not group_number.valid or group == "0" or len(group) > 10:
+                return GroupQuiescenceProbe.Inconclusive
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                return GroupQuiescenceProbe.Inconclusive
+            has_live: mutable bool = false
+            for row in snapshot.rows:
+                fields: darray[sview] = try row_fields(row) else err:
+                    return GroupQuiescenceProbe.Inconclusive
+                if fields.count != 2 or not process_id_valid(fields[0]) or fields[1] == "":
+                    return GroupQuiescenceProbe.Inconclusive
+                if fields[0] == group and not fields[1].startswith("Z"):
+                    has_live <- true
+            if not validate_successful_snapshot(snapshot):
+                return GroupQuiescenceProbe.Inconclusive
+            return GroupQuiescenceProbe.LiveMember if has_live
+            return GroupQuiescenceProbe.Quiescent
+
+
+        def process_state_from_snapshot(input: sview, target_pid: sview, row_limit: usize) -> ValidationProcessState can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            if not process_id_valid(target_pid, false):
+                return ValidationProcessState.Unknown
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                return ValidationProcessState.Unknown
+            target_seen: mutable bool = false
+            target_zombie: mutable bool = false
+            for row in snapshot.rows:
+                fields: darray[sview] = try row_fields(row) else err:
+                    return ValidationProcessState.Unknown
+                if fields.count != 2 or not process_id_valid(fields[0]) or fields[1] == "":
+                    return ValidationProcessState.Unknown
+                if fields[0] == target_pid:
+                    return ValidationProcessState.Unknown if target_seen
+                    target_seen <- true
+                    target_zombie <- fields[1].startswith("Z")
+            if not validate_successful_snapshot(snapshot):
+                return ValidationProcessState.Unknown
+            if not target_seen:
+                return ValidationProcessState.Absent
+            return ValidationProcessState.Zombie if target_zombie
+            return ValidationProcessState.Live
+
+
+        def process_tree_pids_from_snapshot(input: sview, root_pid: sview, row_limit: usize) -> darray[sview] error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                raise err
+            order: darray[usize] = try tree_order(snapshot, root_pid, TreeSchema.PidParent) else err:
+                raise err
+            pids: mutable darray[sview] = []
+            for row_index in order:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                pids.push(fields[0])
+            return pids
+
+
+        def process_tree_identities_from_snapshot(input: sview, root_pid: sview, row_limit: usize) -> darray[ProcessTreeIdentity] error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                raise err
+            order: darray[usize] = try tree_order(snapshot, root_pid, TreeSchema.Identity) else err:
+                raise err
+            identities: mutable darray[ProcessTreeIdentity] = []
+            for row_index in order:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                identities.push(ProcessTreeIdentity{
+                    pid: fields[0], process_group: fields[2], start_token: start_token(fields)
+                })
+            return identities
+
+
+        def process_group_rss_from_snapshot(input: sview, group: sview, root_pid: sview, row_limit: usize) -> ProcessGroupRss error[SnapshotError] can[Memory.Allocate, Memory.Release, Abort.Panic]:
+            group_number: DecimalValue = decimal_value(group, Limits::PROCESS_ID)
+            root_number: DecimalValue = decimal_value(root_pid, Limits::PROCESS_ID)
+            raise SnapshotError.NumericOutOfRange if not group_number.valid or not root_number.valid or len(group) > 10 or len(root_pid) > 10
+            snapshot: ProcessSnapshot = try parse_rows(input, row_limit) else err:
+                raise err
+            raise SnapshotError.CommandFailed if not validate_successful_snapshot(snapshot)
+
+            row_indices: mutable dict[sview, usize] = {}
+            for row_index in 0..<snapshot.rows.count |snapshot, row_indices|:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                if fields.count != 4 or not process_id_valid(fields[0]) or not process_id_valid(fields[1]) or not process_id_valid(fields[2]) or len(fields[3]) > 10:
+                    raise SnapshotError.MalformedRow
+                rss_value: DecimalValue = decimal_value(fields[3], Limits::RSS_KIB_PER_PROCESS)
+                raise SnapshotError.NumericOutOfRange if not rss_value.valid
+                raise SnapshotError.DuplicateProcessId if row_indices.get(fields[0], Syntax::NO_INDEX) != Syntax::NO_INDEX
+                row_indices[fields[0]] <- row_index
+
+            tree_rows: darray[usize] = try tree_order(snapshot, root_pid, TreeSchema.PidParentRss) else err:
+                raise err
+            tree_pids: mutable dict[sview, bool] = {}
+            for row_index in tree_rows:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                tree_pids[fields[0]] <- true
+
+            scope_seen: mutable bool = false
+            total: mutable u64 = 0
+            for row_index in 0..<snapshot.rows.count |snapshot, scope_seen, total, tree_pids|:
+                fields: darray[sview] = try row_fields(snapshot.rows[row_index]) else err:
+                    raise err
+                in_tree: bool = tree_pids.get(fields[0], false)
+                scope_seen <- true if fields[0] == root_pid or fields[2] == group
+                raise SnapshotError.EscapedProcessGroup if in_tree and fields[2] != group
+                if fields[2] == group or in_tree:
+                    amount: DecimalValue = decimal_value(fields[3], Limits::RSS_KIB_PER_PROCESS)
+                    raise SnapshotError.NumericOutOfRange if not amount.valid
+                    total <- total + amount.value
+            if not scope_seen:
+                return ProcessGroupRss{in_scope: false, kibibytes: 0}
+            return ProcessGroupRss{in_scope: true, kibibytes: total}

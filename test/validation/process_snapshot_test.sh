@@ -237,9 +237,11 @@ __ELISASCRIPT_PS_STATUS__ 0
 11 10' tree 'rows after descendant sentinel'
 assert_parser_failure '10 1' tree 'missing descendant status sentinel'
 
+# Every descendant in this successful union sample remains in the isolated
+# validation PGID; an escaped descendant is rejected in the case below.
 rss_snapshot='10 1 10 30
 11 10 10 40
-12 11 12 50
+12 11 10 50
 13 1 10 20
 14 1 14 900
 __ELISASCRIPT_PS_STATUS__ 0'
