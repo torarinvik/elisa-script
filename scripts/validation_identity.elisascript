@@ -1,0 +1,398 @@
+# Typed Elisascript replacement for validation_identity.sh.
+# This helper inspects a pinned compiler's source/build identity; it never
+# launches that compiler. External Git/Go/hash/ mkdir tools are argv-based.
+
+include "./shell_invocation_path.elisascript"
+
+
+module EsValidationIdentity:
+    private:
+        const module Paths:
+            EXPECTED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+
+
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 10000000
+            REVISION_OUTPUT_BYTES: i64 = 4096
+            STATUS_OUTPUT_BYTES: i64 = 1048576
+            BUILD_METADATA_BYTES: i64 = 1048576
+            HASH_OUTPUT_BYTES: i64 = 4096
+
+
+        const module ExitStatus:
+            INVALID_CONFIGURATION: i64 = 2
+            PROVENANCE_UNAVAILABLE: i64 = 125
+
+
+        const module Messages:
+            ENVIRONMENT_UNAVAILABLE: sview = "validation_identity: unable to read validation configuration"
+            COMPILER_MISMATCH: sview = "validation_identity: refusing compiler other than the canonical local StructPy compiler: "
+            COMPILER_NOT_EXECUTABLE: sview = "validation_identity: compiler is not an executable regular file: "
+            COMPILER_SYMLINK: sview = "validation_identity: compiler symlinks are not accepted"
+            COMPILER_NOT_CANONICAL: sview = "validation_identity: compiler path does not resolve to its canonical physical file"
+            SOURCE_REVISION: sview = "validation_identity: unable to resolve compiler checkout revision"
+            SOURCE_STATUS: sview = "validation_identity: unable to inspect compiler checkout state; refusing validation"
+            DIRTY_SOURCE: sview = "validation_identity: compiler checkout is dirty; refusing to bind an executable to an ambiguous source tree"
+            BUILD_PROVENANCE: sview = "validation_identity: unable to read compiler build provenance; refusing validation"
+            NO_EMBEDDED_REVISION: sview = "validation_identity: compiler binary has no valid embedded VCS revision; refusing validation"
+            REVISION_MISMATCH: sview = "validation_identity: compiler binary revision does not match the pinned checkout; rebuild before validation"
+            MODIFIED_BINARY: sview = "validation_identity: compiler binary was built from a modified source tree; refusing validation"
+            BINARY_HASH: sview = "validation_identity: unable to hash compiler executable"
+            UNSUPPORTED_CONFIG: sview = "validation_identity: configuration contains unsupported characters"
+            CONFIGURATION_HASH: sview = "validation_identity: unable to hash validation configuration"
+            OUTPUT_DIRECTORY: sview = "validation_identity: unable to create keyed validation output directories"
+
+
+        const enum Phase of u8:
+            SelectCompiler
+            ValidateCompiler
+            ResolveRoots
+            ReadSourceRevision
+            RequireCleanSource
+            ReadBuildMetadata
+            ValidateBuildMetadata
+            HashCompiler
+            HashConfiguration
+            CreateOutputDirectories
+            ReportIdentity
+            Done
+
+
+        struct BuildField:
+            found: bool
+            value: sview
+
+
+        struct BuildMetadata:
+            revision: BuildField
+            modified: BuildField
+
+
+        struct ValidationIdentity:
+            compiler_root: Path
+            compiler: sview
+            compiler_revision: sview
+            binary_revision: sview
+            binary_modified: sview
+            compiler_sha256: sview
+            optimization: sview
+            target: sview
+            mode: sview
+            configuration_key: sview
+            output_dir: sview
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def is_hex(text: sview) -> bool:
+            if text == "":
+                return false
+            for index in 0..<len(text):
+                byte: u8 = sview_at(text, index)
+                if not ((byte >= 48u8 and byte <= 57u8) or (byte >= 65u8 and byte <= 70u8) or (byte >= 97u8 and byte <= 102u8)):
+                    return false
+            return true
+
+
+        def command_substitution_text(output: sview) -> sview:
+            # POSIX command substitution strips every trailing LF, but keeps
+            # embedded line breaks and carriage returns.
+            finish: mutable usize = len(output)
+            while finish > 0 and sview_at(output, finish - 1) == 10u8:
+                finish <- finish - 1
+            text: sview = output[0:finish]
+            return "" if text.index("\n") >= 0 or text.index("\r") >= 0
+            return text
+
+
+        def configuration_value_valid(value: sview) -> bool:
+            for index in 0..<len(value):
+                byte: u8 = sview_at(value, index)
+                allowed: bool = (byte >= 48u8 and byte <= 57u8) or (byte >= 65u8 and byte <= 90u8) or (byte >= 97u8 and byte <= 122u8) or byte == 95u8 or byte == 46u8 or byte == 58u8 or byte == 47u8 or byte == 45u8
+                if not allowed:
+                    return false
+            return true
+
+
+        def build_field_from_line(line: sview, key: sview) -> BuildField:
+            cursor: mutable usize = 0
+            while cursor < len(line) and (sview_at(line, cursor) == 32u8 or sview_at(line, cursor) == 9u8):
+                cursor <- cursor + 1
+            return BuildField{found: false, value: ""} if len(line) - cursor < 5 or line[cursor:cursor + 5] != "build"
+            cursor <- cursor + 5
+            return BuildField{found: false, value: ""} if cursor >= len(line) or (sview_at(line, cursor) != 32u8 and sview_at(line, cursor) != 9u8)
+            while cursor < len(line) and (sview_at(line, cursor) == 32u8 or sview_at(line, cursor) == 9u8):
+                cursor <- cursor + 1
+            return BuildField{found: false, value: ""} if len(line) - cursor < len(key) or line[cursor:cursor + len(key)] != key
+            cursor <- cursor + len(key)
+            return BuildField{found: true, value: line[cursor:len(line)]}
+
+
+        def parse_build_metadata(output: sview) -> BuildMetadata can[Memory.Allocate, Abort.Panic]:
+            revision: mutable BuildField = BuildField{found: false, value: ""}
+            modified: mutable BuildField = BuildField{found: false, value: ""}
+            line_start: mutable usize = 0
+            while line_start < len(output):
+                line_end: mutable usize = line_start
+                while line_end < len(output) and sview_at(output, line_end) != 10u8:
+                    line_end <- line_end + 1
+                line: sview = output[line_start:line_end]
+                revision_field: BuildField = build_field_from_line(line, "vcs.revision=")
+                modified_field: BuildField = build_field_from_line(line, "vcs.modified=")
+                if not revision.found and revision_field.found:
+                    revision <- revision_field
+                if not modified.found and modified_field.found:
+                    modified <- modified_field
+                line_start <- line_end + 1 if line_end < len(output)
+                line_start <- len(output) if line_end == len(output)
+            return BuildMetadata{revision: revision, modified: modified}
+
+
+        def shasum_digest(output: sview, expected_name: sview) -> sview:
+            line: sview = command_substitution_text(output)
+            if len(line) < 66 or line[64:66] != "  " or line[66:len(line)] != expected_name:
+                return ""
+            digest: sview = line[0:64]
+            return digest if is_hex(digest) else ""
+
+
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read, Process.Run]:
+            phase: mutable Phase = Phase.SelectCompiler
+            compiler_text: mutable sview = ""
+            compiler_path: mutable Path = path("")
+            compiler_root: mutable Path = path("")
+            compiler_revision: mutable sview = ""
+            binary_revision: mutable sview = ""
+            binary_modified: mutable sview = ""
+            compiler_sha256: mutable sview = ""
+            optimization: mutable sview = ""
+            target: mutable sview = ""
+            mode: mutable sview = ""
+            identity_input: mutable sview = ""
+            configuration_key: mutable sview = ""
+            output_root_text: mutable sview = ""
+            output_dir: mutable sview = ""
+            logs_dir: mutable sview = ""
+            artifacts_dir: mutable sview = ""
+            identity: mutable ValidationIdentity = ValidationIdentity{
+                compiler_root: path(""), compiler: "", compiler_revision: "",
+                binary_revision: "", binary_modified: "", compiler_sha256: "",
+                optimization: "", target: "", mode: "", configuration_key: "", output_dir: ""
+            }
+
+            machine over phase while phase != Phase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, Phase.SelectCompiler:
+                    selected: sview = try getenv("ELISA_LOCAL_COMPILER", "") else err:
+                        diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if selected == "":
+                        selected <- try getenv("ELISACORE_BIN", "") else err:
+                            diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                            return ExitStatus::PROVENANCE_UNAVAILABLE
+                    compiler_text <- Paths::EXPECTED_COMPILER if selected == ""
+                    compiler_text <- selected if selected != ""
+                    if compiler_text != Paths::EXPECTED_COMPILER:
+                        diagnostic(Messages::COMPILER_MISMATCH + Paths::EXPECTED_COMPILER)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    compiler_path <- path(compiler_text)
+                    phase <- Phase.ValidateCompiler
+                    -> Dispatch
+
+                Dispatch, Phase.ValidateCompiler:
+                    if not is_file(compiler_path) or not is_executable(compiler_path):
+                        diagnostic(Messages::COMPILER_NOT_EXECUTABLE + compiler_text)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    if is_symlink(compiler_path):
+                        diagnostic(Messages::COMPILER_SYMLINK)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    resolved_compiler: Path = try path_real(compiler_path) else err:
+                        diagnostic(Messages::COMPILER_NOT_CANONICAL)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    if f"{resolved_compiler}" != Paths::EXPECTED_COMPILER:
+                        diagnostic(Messages::COMPILER_NOT_CANONICAL)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    phase <- Phase.ResolveRoots
+                    -> Dispatch
+
+                Dispatch, Phase.ResolveRoots:
+                    if not is_directory(repository_root):
+                        diagnostic("validation_identity: unable to resolve repository root")
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    compiler_root <- try path_real(compiler_path.parent().parent().parent()) else err:
+                        diagnostic(Messages::SOURCE_REVISION)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    phase <- Phase.ReadSourceRevision
+                    -> Dispatch
+
+                Dispatch, Phase.ReadSourceRevision:
+                    revision_result: ProcessCapture = try capture_process_result(exe"git", ["-C", f"{compiler_root}", "rev-parse", "HEAD"], "", Limits::PROCESS_TIMEOUT_MICROS, Limits::REVISION_OUTPUT_BYTES) else err:
+                        diagnostic(Messages::SOURCE_REVISION)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    compiler_revision <- command_substitution_text(revision_result.stdout)
+                    if revision_result.status != 0 or not is_hex(compiler_revision):
+                        diagnostic(Messages::SOURCE_REVISION)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    phase <- Phase.RequireCleanSource
+                    -> Dispatch
+
+                Dispatch, Phase.RequireCleanSource:
+                    status_result: ProcessCapture = try capture_process_result(exe"git", ["-C", f"{compiler_root}", "status", "--porcelain", "--untracked-files=normal"], "", Limits::PROCESS_TIMEOUT_MICROS, Limits::STATUS_OUTPUT_BYTES) else err:
+                        diagnostic(Messages::SOURCE_STATUS)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if status_result.status != 0:
+                        diagnostic(Messages::SOURCE_STATUS)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if status_result.stdout != "":
+                        diagnostic(Messages::DIRTY_SOURCE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    phase <- Phase.ReadBuildMetadata
+                    -> Dispatch
+
+                Dispatch, Phase.ReadBuildMetadata:
+                    build_result: ProcessCapture = try capture_process_result(exe"go", ["version", "-m", compiler_text], "", Limits::PROCESS_TIMEOUT_MICROS, Limits::BUILD_METADATA_BYTES) else err:
+                        diagnostic(Messages::BUILD_PROVENANCE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if build_result.status != 0:
+                        diagnostic(Messages::BUILD_PROVENANCE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    metadata: BuildMetadata = parse_build_metadata(build_result.stdout)
+                    if not metadata.revision.found or not is_hex(metadata.revision.value):
+                        diagnostic(Messages::NO_EMBEDDED_REVISION)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    binary_revision <- metadata.revision.value
+                    if binary_revision != compiler_revision:
+                        diagnostic(Messages::REVISION_MISMATCH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if not metadata.modified.found:
+                        diagnostic(Messages::MODIFIED_BINARY)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    binary_modified <- metadata.modified.value
+                    if binary_modified != "false":
+                        diagnostic(Messages::MODIFIED_BINARY)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    phase <- Phase.HashCompiler
+                    -> Dispatch
+
+                Dispatch, Phase.HashCompiler:
+                    hash_result: ProcessCapture = try capture_process_result(exe"shasum", ["-a", "256", compiler_text], "", Limits::PROCESS_TIMEOUT_MICROS, Limits::HASH_OUTPUT_BYTES) else err:
+                        diagnostic(Messages::BINARY_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if hash_result.status != 0:
+                        diagnostic(Messages::BINARY_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    compiler_sha256 <- shasum_digest(hash_result.stdout, compiler_text)
+                    if compiler_sha256 == "":
+                        diagnostic(Messages::BINARY_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    phase <- Phase.HashConfiguration
+                    -> Dispatch
+
+                Dispatch, Phase.HashConfiguration:
+                    optimization <- try getenv("ELISASCRIPT_VALIDATION_OPT_LEVEL", "") else err:
+                        diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    target <- try getenv("ELISASCRIPT_VALIDATION_TARGET", "") else err:
+                        diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    mode <- try getenv("ELISASCRIPT_VALIDATION_MODE", "") else err:
+                        diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    optimization <- "O0" if optimization == ""
+                    target <- "native" if target == ""
+                    mode <- "lowered" if mode == ""
+                    if not configuration_value_valid(optimization) or not configuration_value_valid(target) or not configuration_value_valid(mode):
+                        diagnostic(Messages::UNSUPPORTED_CONFIG)
+                        return ExitStatus::INVALID_CONFIGURATION
+                    identity_input <- "compiler=" + compiler_revision + "\n"
+                    identity_input <- identity_input + "binary_revision=" + binary_revision + "\n"
+                    identity_input <- identity_input + "binary_modified=" + binary_modified + "\n"
+                    identity_input <- identity_input + "sha256=" + compiler_sha256 + "\n"
+                    identity_input <- identity_input + "opt=" + optimization + "\n"
+                    identity_input <- identity_input + "target=" + target + "\n"
+                    identity_input <- identity_input + "mode=" + mode
+                    phase <- Phase.CreateOutputDirectories
+                    -> Dispatch
+
+                Dispatch, Phase.CreateOutputDirectories:
+                    key_result: ProcessCapture = try capture_process_result(exe"shasum", ["-a", "256"], identity_input, Limits::PROCESS_TIMEOUT_MICROS, Limits::HASH_OUTPUT_BYTES) else err:
+                        diagnostic(Messages::CONFIGURATION_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if key_result.status != 0:
+                        diagnostic(Messages::CONFIGURATION_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    configuration_key <- shasum_digest(key_result.stdout, "-")
+                    if configuration_key == "":
+                        diagnostic(Messages::CONFIGURATION_HASH)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+
+                    output_root_text <- try getenv("ELISASCRIPT_VALIDATION_OUTPUT_ROOT", "") else err:
+                        diagnostic(Messages::ENVIRONMENT_UNAVAILABLE)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if output_root_text == "":
+                        default_output_root: Path = repository_root.joinpath(".validation")
+                        output_root_text <- f"{default_output_root}"
+                    output_dir <- output_root_text + "/" + configuration_key
+                    logs_dir <- output_dir + "/logs"
+                    artifacts_dir <- output_dir + "/artifacts"
+                    mkdir_result: ProcessCapture = try capture_process_result(exe"mkdir", ["-m", "700", "-p", logs_dir, artifacts_dir], "", Limits::PROCESS_TIMEOUT_MICROS, Limits::HASH_OUTPUT_BYTES) else err:
+                        diagnostic(Messages::OUTPUT_DIRECTORY)
+                        return ExitStatus::PROVENANCE_UNAVAILABLE
+                    if mkdir_result.status != 0:
+                        diagnostic(Messages::OUTPUT_DIRECTORY)
+                        return mkdir_result.status
+
+                    identity <- ValidationIdentity{
+                        compiler_root: compiler_root,
+                        compiler: compiler_text,
+                        compiler_revision: compiler_revision,
+                        binary_revision: binary_revision,
+                        binary_modified: binary_modified,
+                        compiler_sha256: compiler_sha256,
+                        optimization: optimization,
+                        target: target,
+                        mode: mode,
+                        configuration_key: configuration_key,
+                        output_dir: output_dir
+                    }
+                    phase <- Phase.ReportIdentity
+                    -> Dispatch
+
+                Dispatch, Phase.ReportIdentity:
+                    print("compiler_root=" + f"{identity.compiler_root}")
+                    print("compiler=" + identity.compiler)
+                    print("compiler_revision=" + identity.compiler_revision)
+                    print("compiler_binary_revision=" + identity.binary_revision)
+                    print("compiler_binary_modified=" + identity.binary_modified)
+                    print("compiler_sha256=" + identity.compiler_sha256)
+                    print("optimization=" + identity.optimization)
+                    print("target=" + identity.target)
+                    print("mode=" + identity.mode)
+                    print("configuration_key=" + identity.configuration_key)
+                    print("output_dir=" + identity.output_dir)
+                    print("log_dir=" + identity.output_dir + "/logs")
+                    print("artifact_dir=" + identity.output_dir + "/artifacts")
+                    phase <- Phase.Done
+                    -> Dispatch
+
+                Dispatch, Phase.Done:
+                    break
+
+            return 0i64
+
+
+    public:
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read, Process.Run]:
+            repository_root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic("validation_identity: unable to resolve repository root")
+                return ExitStatus::PROVENANCE_UNAVAILABLE
+            return run_root(repository_root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read, Process.Run]:
+    _ = arguments
+    return EsValidationIdentity::run_default()
