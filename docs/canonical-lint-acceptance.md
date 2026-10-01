@@ -126,32 +126,32 @@ identity. The companion returns a generic status 1 on a typed process error;
 that must not be confused with a legacy child returning after exec failed.
 No full shell equivalence or accepted migration is claimed.
 
-The candidate now constructs owned C strings and a NULL-terminated argv, then
-calls the existing POSIX `execvp` bridge at the wrapper's terminal operation.
-If the bridge is linked into the actual launcher, successful execution replaces
-that process rather than returning a child status, preserving PID, inherited
-streams, and signal termination. This is source-level wiring only: it bypasses
-the typed process API, its availability from a standalone script has not been
-qualified, and invoking it in an embedded parity runner would replace the
-runner itself. A public, terminal `Process.Replace` capability with an
-authorized standalone host entry remains the proper reusable API. Returned
-exec failures still use candidate-specific diagnostics, and exact shell lookup,
-ENOEXEC fallback, status, and diagnostic parity remain open.
+The current Elisascript command-line driver lowers scripts to bytecode and runs
+the bytecode engine. Ordinary calls resolve against the script's lowered module;
+the internal `EsRuntime` POSIX bridge is not a script-visible bytecode operation.
+An attempted direct `EsRuntime::elisascript_posix_execvp` call was therefore
+removed from the candidate before qualification. The candidate remains on the
+typed `run_process` operation, which can execute in the current engine but forks,
+waits and returns an integer status rather than replacing the interpreter.
 
-## Terminal replacement wiring (source-only)
+A script-facing, terminal `Process.Replace` capability must be added to the
+source/IR/bytecode/interpreter contract before this wrapper can satisfy PID and
+signal-termination parity. That operation must be guarded so embedded tests
+cannot replace their runner. Exact shell lookup, ENOEXEC fallback, failed-exec
+status/diagnostics and standalone qualification also remain open. No compiler,
+reference, launcher, lint, or parity process ran under the standing validation
+hold.
 
-The six-line canonical lint candidate now uses the POSIX replacement bridge
-instead of fork/wait. It passes the original selected command spelling as
-`argv[0]`, followed by the four fixed Ruff arguments, and retains every owned
-buffer until the non-returning success path. If `execvp` returns `-1`, errno is
-sampled immediately; ENOENT/ENOTDIR map to 127 and other failures map to 126.
-Unexpected bridge returns fail closed as 126 without reading stale errno.
+## Process replacement API prerequisite (source audit)
 
-This closes the source-level fork/wait signal-status mismatch, but is not
-observed process-identity parity or an accepted port. The exact Bash `exec`
-lookup and failure diagnostics, standalone bridge availability, native ABI,
-and bounded end-to-end qualification remain open. No compiler, reference,
-launcher, lint, or parity process ran under the standing validation hold.
+The canonical lint candidate stays on the typed process operation supported by
+the current interpreter. It preserves the four fixed arguments and inherited
+streams, but a probe terminated by SIGTERM is observed by the interpreter as a
+child status rather than as the wrapper process's own signal termination. The
+internal POSIX exec bridge cannot be called directly from ordinary Elisascript
+bytecode, so no candidate-side workaround is accepted. A terminal process
+replacement opcode and public typed surface are needed before continuing this
+port's parity gate. This source audit did not run a compiler or process.
 
 ## Returned exec failures (source-only correction)
 

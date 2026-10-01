@@ -3,58 +3,14 @@
 include "lint_canonical_invocation.elisa"
 
 module EsCanonicalLint:
-    using EsRuntime
-
     private:
-        const module Errno:
-            ENOENT: i32 = 2
-            ENOTDIR: i32 = 20
+        const module Defaults:
+            # Bash exec has no deadline. Zero disables the process-run timeout.
+            TIMEOUT_MICROS: i64 = 0
 
 
         def diagnostic(message: sview) -> void can[Console.Write]:
             _ = write_stderr("canonical lint: " + message + "\n")
-
-
-        def terminated_bytes(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
-            bytes: mutable darray[u8] = []
-            bytes.reserve(sview_len(value) + 1)
-            for byte in value |bytes|:
-                bytes.push(byte)
-            bytes.push(0u8)
-            return bytes
-
-
-        # The shell's final `exec` replaces its process: no child is waited
-        # for, and the selected program inherits this PID and all three streams.
-        # Keep C strings and the NULL-terminated argv table alive until execvp.
-        def replace_with_ruff(command: sview, arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
-            command_bytes: mutable darray[u8] = terminated_bytes(command)
-            owned_arguments: mutable darray[darray[u8]] = []
-            owned_arguments.reserve(arguments.count)
-            for argument in arguments |owned_arguments|:
-                owned_arguments.push(terminated_bytes(argument))
-
-            argv: mutable darray[u8&?] = []
-            argv.reserve(owned_arguments.count + 2)
-            argv.push(&command_bytes[0])
-            for index in 0..<owned_arguments.count |argv, owned_arguments|:
-                argv.push(&owned_arguments[index][0])
-            argv.push(null)
-
-            command_items: u8& = &command_bytes[0]
-            argv_items: void& = argv.items.cast[void&] can Unsafe.PointerCast
-            returned: int = EsRuntime::elisascript_posix_execvp(command_items.cast[cstr], argv_items)
-            if returned != -1:
-                diagnostic("process replacement returned an invalid status")
-                return 126i64
-
-            errno: mutable i32& = EsRuntime::elisascript_posix_errno()
-            failure_errno: i32 = errno[0]
-            if failure_errno == Errno::ENOENT or failure_errno == Errno::ENOTDIR:
-                diagnostic(f"Ruff executable not found: {command}")
-                return 127i64
-            diagnostic(f"Ruff executable could not start: {command} (errno {failure_errno})")
-            return 126i64
 
 
         struct SelectedProjectRoot:
@@ -146,7 +102,7 @@ module EsCanonicalLint:
 
 
     public:
-        def run_root(project_root: Path, print_cdpath_directory: bool) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+        def run_root(project_root: Path, print_cdpath_directory: bool) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Console.Write, Console.Format]:
             old_directory: Path = try current_directory() else err:
                 diagnostic("unable to inspect current directory")
                 return 1i64
@@ -201,11 +157,15 @@ module EsCanonicalLint:
             ruff: Executable = try executable(EsCanonicalLintInvocation::executable(configured)) else err:
                 diagnostic("invalid Ruff executable")
                 return 1i64
+            # Do not use run_process_in_directory: its capture lowering discards
+            # child stdout/stderr. This runner inherits all three streams.
             arguments: darray[sview] = [EsCanonicalLintInvocation::Arguments::CHECK, EsCanonicalLintInvocation::Arguments::SOURCE, EsCanonicalLintInvocation::Arguments::TESTS, EsCanonicalLintInvocation::Arguments::CANONICAL_EXPERIMENTS]
-            return replace_with_ruff(ruff.path, arguments)
+            return try run_process(ruff, arguments, Defaults::TIMEOUT_MICROS) else err:
+                diagnostic("unable to run Ruff")
+                return 1i64
 
 
-        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
             script_directory: sview = EsCanonicalLintInvocation::script_directory(Script::invocation_path())
             project_root: Path = path_join(path(script_directory), "..")
             selection: SelectedProjectRoot = select_project_root(project_root)
@@ -215,7 +175,7 @@ module EsCanonicalLint:
             return run_root(selection.path, selection.print_cdpath_directory)
 
 
-def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
     # The shell reference ignores extra wrapper arguments.
     _ = arguments
     return EsCanonicalLint::run_default()
