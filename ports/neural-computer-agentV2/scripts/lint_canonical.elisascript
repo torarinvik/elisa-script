@@ -1,16 +1,43 @@
 # Companion for neural-computer-agentV2/scripts/lint_canonical.sh.
 # Deploy beside the original wrapper; retain it until launcher parity passes.
 include "lint_canonical_invocation.elisa"
+include "process_errors.elisascript"
 
 module EsCanonicalLint:
     private:
-        const module Defaults:
-            # Bash exec has no deadline. Zero disables the process-run timeout.
-            TIMEOUT_MICROS: i64 = 0
+        const module ExecFailure:
+            ENOENT: i64 = 2
+            ENOTDIR: i64 = 20
 
 
         def diagnostic(message: sview) -> void can[Console.Write]:
             _ = write_stderr("canonical lint: " + message + "\n")
+
+
+        def reference_shell_path(invocation_path: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            suffix_length: usize = 12
+            invocation_length: usize = sview_len(invocation_path)
+            return invocation_path if invocation_length < suffix_length
+            suffix_start: usize = invocation_length - suffix_length
+            return invocation_path if string_view_suffix(invocation_path, suffix_start.i64()) != ".elisascript"
+            return string_view_prefix(invocation_path, suffix_start.i64()) + ".sh"
+
+
+        # Bash reports command lookup failures as 127 and other exec failures
+        # as 126. The diagnostic intentionally uses the reference wrapper's
+        # spelling so the differential fixture compares the same bytes.
+        def exec_failure_status(errno: i64, requested: sview) -> i64 can[Directory.Read, Memory.Allocate, Abort.Panic, Console.Write]:
+            status: i64 = 127 if errno == ExecFailure::ENOENT or errno == ExecFailure::ENOTDIR else 126
+            invocation: sview = reference_shell_path(Script::invocation_path())
+            prefix: sview = invocation + ": line 6: exec: " + requested + ": "
+            requested_directory: bool = try is_directory(path(requested)) else false
+            message: mutable sview = prefix + "cannot execute: Permission denied\n"
+            message <- prefix + "not found\n" if status == 127
+            message <- prefix + "cannot execute: Is a directory\n" if status == 126 and requested_directory
+            message <- prefix + "cannot execute: Permission denied\n" if status == 126 and not requested_directory
+            _ = try write_stderr(message) else err:
+                return status
+            return status
 
 
         struct SelectedProjectRoot:
@@ -102,7 +129,7 @@ module EsCanonicalLint:
 
 
     public:
-        def run_root(project_root: Path, print_cdpath_directory: bool) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Console.Write, Console.Format]:
+        def run_root(project_root: Path, print_cdpath_directory: bool) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Memory.Allocate, Console.Write, Console.Format]:
             old_directory: Path = try current_directory() else err:
                 diagnostic("unable to inspect current directory")
                 return 1i64
@@ -157,15 +184,18 @@ module EsCanonicalLint:
             ruff: Executable = try executable(EsCanonicalLintInvocation::executable(configured)) else err:
                 diagnostic("invalid Ruff executable")
                 return 1i64
-            # Do not use run_process_in_directory: its capture lowering discards
-            # child stdout/stderr. This runner inherits all three streams.
+            # The shell reference uses `exec`, so replace this interpreter in
+            # place rather than spawning a child and translating its status.
             arguments: darray[sview] = [EsCanonicalLintInvocation::Arguments::CHECK, EsCanonicalLintInvocation::Arguments::SOURCE, EsCanonicalLintInvocation::Arguments::TESTS, EsCanonicalLintInvocation::Arguments::CANONICAL_EXPERIMENTS]
-            return try run_process(ruff, arguments, Defaults::TIMEOUT_MICROS) else err:
-                diagnostic("unable to run Ruff")
-                return 1i64
+            catch replace_process(ruff, arguments):
+                ok _:
+                    return 0i64
+                ProcessError.ExecFailure(errno, requested):
+                    return exec_failure_status(errno, requested)
+            return 0i64
 
 
-        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
             script_directory: sview = EsCanonicalLintInvocation::script_directory(Script::invocation_path())
             project_root: Path = path_join(path(script_directory), "..")
             selection: SelectedProjectRoot = select_project_root(project_root)
@@ -175,7 +205,7 @@ module EsCanonicalLint:
             return run_root(selection.path, selection.print_cdpath_directory)
 
 
-def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
     # The shell reference ignores extra wrapper arguments.
     _ = arguments
     return EsCanonicalLint::run_default()
