@@ -1,0 +1,79 @@
+# Bounded, deterministic staging plan for the geometry loader parity cases.
+# Filesystem creation and cleanup are kept in the POSIX adapter.
+include "geometry_subset_package_cases_model.elisa"
+
+using EsGeometrySubsetPackageCases
+using EsEngineGeometrySubsetPackageBuilder
+
+
+module EsGeometrySubsetStageModel:
+    public:
+        struct Plan:
+            cases: darray[GeneratedCase]
+            manifest_bytes: darray[u8]
+            total_package_bytes: usize
+
+
+        error StagePlanError:
+            TooManyCases
+            InvalidPackageName
+            DuplicatePackageName
+            PackageTooLarge
+            TotalPackageBytesExceeded
+            ManifestTooLarge
+
+
+        def package_cases() -> darray[GeneratedCase] error[StripPackageError, StagePlanError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            generated: darray[GeneratedCase] = try EsGeometrySubsetPackageCases::sidecar_packages()
+            _ = try validate_package_cases(generated)
+            return generated
+
+
+        def validate_package_cases(cases: darray[GeneratedCase]) -> usize error[StagePlanError] can[Abort.Panic]:
+            raise StagePlanError.TooManyCases if cases.count > Limits::MAX_CASES
+            total: mutable usize = 0
+            for index in 0..<cases.count |cases, total|:
+                current: GeneratedCase = cases[index]
+                raise StagePlanError.InvalidPackageName if not stage_package_name_valid(current.file_name)
+                raise StagePlanError.PackageTooLarge if current.package_bytes.count > Limits::MAX_PACKAGE_BYTES
+                raise StagePlanError.TotalPackageBytesExceeded if current.package_bytes.count > Limits::MAX_TOTAL_PACKAGE_BYTES - total
+                total <- total + current.package_bytes.count
+                for prior_index in 0..<index |cases|:
+                    raise StagePlanError.DuplicatePackageName if cases[prior_index].file_name == current.file_name
+            return total
+
+
+        def manifest_bytes(directory: sview, cases: darray[GeneratedCase]) -> darray[u8] error[EsGeometrySubsetManifest::ManifestError, StagePlanError] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            _ = try validate_package_cases(cases)
+            output: darray[u8] = try EsGeometrySubsetPackageCases::sidecar_manifest_lines_for(directory, cases)
+            raise StagePlanError.ManifestTooLarge if output.count > Limits::MAX_MANIFEST_BYTES
+            return output
+
+
+        def plan(directory: sview) -> Plan error[StripPackageError, EsGeometrySubsetManifest::ManifestError, StagePlanError] can[Memory.Allocate, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            generated: darray[GeneratedCase] = try package_cases()
+            total: mutable usize = 0
+            for current in generated |total|:
+                total <- total + current.package_bytes.count
+            manifest: darray[u8] = try manifest_bytes(directory, generated)
+            return Plan{cases: generated, manifest_bytes: manifest, total_package_bytes: total}
+
+
+    private:
+        const module Limits:
+            MAX_CASES: usize = 256
+            MAX_PACKAGE_BYTES: usize = 16777216
+            MAX_TOTAL_PACKAGE_BYTES: usize = 67108864
+            MAX_MANIFEST_BYTES: usize = 8388608
+            PACKAGE_SUFFIX: sview = ".pkg"
+
+
+        def stage_package_name_valid(name: sview) -> bool:
+            length: usize = sview_len(name)
+            return false if length <= sview_len(Limits::PACKAGE_SUFFIX)
+            return false if name[length - sview_len(Limits::PACKAGE_SUFFIX):length] != Limits::PACKAGE_SUFFIX
+            for byte in name:
+                lowercase: bool = byte >= 97u8 and byte <= 122u8
+                digit: bool = byte >= 48u8 and byte <= 57u8
+                return false if not lowercase and not digit and byte != 45u8 and byte != 46u8
+            return true
