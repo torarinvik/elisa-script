@@ -3303,6 +3303,11 @@ identity so hard-link or symlink aliases cannot destroy the source bytes.
 requires `Process.Run` plus `ProcessError`. The interpreter executes it directly as
 a POSIX `fork`/`execvp`/`waitpid` state transition with a NUL-terminated argv. No
 command string or shell expansion exists between typed IR and the operating system.
+The pure `EsProcessExecSearch::classify_returned_exec` model now retains the
+returned native-failure category and only admits errno after an exact `-1`
+bridge result; the legacy child path still projects that classification to
+126/127. It is not a parent-side launch receipt and does not implement terminal
+process replacement.
 The interpreter's bounded wait state machine preserves timeout as the typed
 `InterpretFailure.Time` outcome: exhausting the poll budget terminates and
 reaps the private process group, then reports `Time` after giving
