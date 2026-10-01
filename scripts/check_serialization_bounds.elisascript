@@ -1,0 +1,407 @@
+# Bounded Elisascript port of check_serialization_bounds.sh.
+# It audits shared slice admission and artifact/cache serialization bounds.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsSerializationBoundsAudit:
+    private:
+        const module Inputs:
+            RUNTIME_MODEL: sview = "src/ir/runtime_model.elisa"
+            BYTECODE: sview = "src/bytecode/bytecode.elisa"
+            ARTIFACT_CACHE: sview = "src/ir/artifact_cache.elisa"
+            FILE_READ_AT: sview = "src/runtime/file_read_at_posix.elisa"
+            VERIFIER: sview = "src/ir/ir_verify.elisa"
+            TYPE_TABLE: sview = "src/ir/type_table.elisa"
+            IR_TESTS: sview = "test/ir/elisascript_ir_test.elisa"
+            INCREMENTAL_ADAPTER_TESTS: sview = "test/runtime/build_incremental_cache_adapter_test.elisa"
+            DIFFERENTIAL: sview = "src/testing/differential.elisa"
+            SERIALIZE: sview = "src/ir/serialize.elisa"
+            BYTECODE_TESTS: sview = "test/ir/elisascript_bytecode_test.elisa"
+            ARTIFACT: sview = "src/ir/artifact.elisa"
+            DIFFERENTIAL_TESTS: sview = "test/differential/elisascript_differential_test.elisa"
+
+
+        const module Patterns:
+            DIFFERENTIAL_READ_U64: sview = "def differential_manifest_read_u64"
+            BYTECODE_ARTIFACT_VALID: sview = "bytecode_artifact_bytes_valid"
+            CACHE_PUBLISH_FILE: sview = "def artifact_cache_publish_file("
+            CACHE_PUBLISH_PAYLOAD: sview = "def artifact_cache_publish_payload_at("
+            CACHE_PUBLISH_PAYLOAD_LOCKED: sview = "def artifact_cache_publish_payload_at_locked("
+            READ_REGULAR_FILE: sview = "def read_regular_file_at("
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "serialization bounds audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "serialization bounds audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "serialization bounds audit: missing "
+            READ_FAILED: sview = "serialization bounds audit: unable to read source: "
+            CONTRACT_MISSING: sview = "serialization bounds audit: source contract is missing: "
+            FORBIDDEN_SOURCE: sview = "serialization bounds audit: forbidden source form remains: "
+            ALTERNATIVE_MISSING: sview = "serialization bounds audit: neither supported contract form is present"
+            PUBLISH_ORDER: sview = "serialization bounds audit: path-based publication must clean staging before classifying ambiguous rename"
+            READ_ORDER: sview = "serialization bounds audit: no-op cache reads do not bind bytes to one stable named inode"
+            GENERIC_PUBLISH_ORDER: sview = "serialization bounds audit: artifact-cache publication omits the generic atomic publication sequence"
+            SUCCESS: sview = "serialization bounds audit: shared slice admission, TypeTable shape/order, bytecode reader, verifier, descriptor-relative cache writer, and fixtures present"
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def require_patterns(input: Path, patterns: darray[sview], message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if not found:
+                    diagnostic(message + f"{pattern}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def reject_patterns(input: Path, patterns: darray[sview], message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if found:
+                    diagnostic(message + f"{pattern}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def require_either_pattern(input: Path, first: sview, second: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            first_found: bool = try EsSourceFunctionScope::contains_file_line(input, first) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if first_found:
+                return 0i64
+            second_found: bool = try EsSourceFunctionScope::contains_file_line(input, second) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if not second_found:
+                diagnostic(Messages::ALTERNATIVE_MISSING)
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def function_line(text: sview, needle: sview) -> i64:
+            position: i64 = text.index(needle)
+            return -1 if position < 0
+            line: mutable i64 = 0
+            cursor: mutable usize = 0
+            while cursor < position.usize():
+                line <- line + 1 if sview_at(text, cursor) == 10u8
+                cursor <- cursor + 1
+            return line
+
+
+        def require_function_order(input: Path, declaration: sview, patterns: darray[sview], message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(input, declaration) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if not body.found:
+                diagnostic(message + f"{declaration}")
+                return ExitStatus::FAILURE
+            previous_line: mutable i64 = -1
+            for pattern in patterns:
+                line: i64 = function_line(body.text, pattern)
+                if line < 0 or line <= previous_line:
+                    diagnostic(message + f"{pattern}")
+                    return ExitStatus::FAILURE
+                previous_line <- line
+            return 0i64
+
+
+        def require_same_function_line(input: Path, declaration: sview, first: sview, second: sview, message: sview) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            body: EsSourceFunctionScope::FunctionBody = try EsSourceFunctionScope::read_function_body(input, declaration) else err:
+                diagnostic(Messages::READ_FAILED + f"{input}")
+                return ExitStatus::IO_FAILURE
+            if not body.found:
+                diagnostic(message + f"{declaration}")
+                return ExitStatus::FAILURE
+            first_line: i64 = function_line(body.text, first)
+            second_line: i64 = function_line(body.text, second)
+            if first_line < 0 or first_line != second_line:
+                diagnostic(message + f"{first} / {second}")
+                return ExitStatus::FAILURE
+            return 0i64
+
+
+        def execute_all(inputs: darray[Path]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(inputs[0], [
+                "def runtime_bounded_slice_end", "return false if length > bound - start"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[1], [
+                "runtime_bounded_slice_end(offset, length_host, bytes.count, end)",
+                "length.usize().u64() != length", Patterns::BYTECODE_ARTIFACT_VALID,
+                "def bytecode_artifact_envelope_status", "def bytecode_artifact_requires_migration",
+                "def bytecode_artifact_byte_range_has_nul", "def migrate_bytecode_artifact",
+                "def bytecode_artifact_payload_matches_module",
+                "return false if not bytecode_artifact_payload_matches_module(module, bytecode)",
+                "bytecode_block_layout_valid", "module_digest_0", "artifact.module_fingerprint == 0",
+                "bytes[4] != 2", "return false if offset > bytes.count",
+                "return false if bytes.count - offset < 8"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[8], [
+                "runtime_bounded_slice_end(offset, length_host, bytes.count, end)",
+                "length.usize().u64() != length", Patterns::DIFFERENTIAL_READ_U64,
+                "return false if offset > bytes.count", "return false if bytes.count - offset < 8"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- reject_patterns(inputs[8], [
+                "offset + 2 > bytes.count", "offset + 4 > bytes.count",
+                "length > (bytes.count - offset)"
+            ], Messages::FORBIDDEN_SOURCE)
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[2], [
+                "def classify_bytecode_artifact_cache", "def artifact_cache_lifecycle_transition",
+                "const enum ArtifactCacheRecoveryAction of u8", "def artifact_cache_recovery_action",
+                "def classify_module_artifact_cache", "def load_module_artifact_file",
+                "def load_bytecode_artifact_file", "def publish_module_artifact_file",
+                "def publish_bytecode_artifact_file", "def artifact_cache_write_staging",
+                "expected_count: usize = size.usize()", "bytes.count != expected_count",
+                "catch artifact_cache_write_staging", "def artifact_cache_write_descriptor_fully",
+                "machine over cursor.state",
+                "DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC",
+                "elisascript_posix_fsync(descriptor)", "elisascript_posix_close(descriptor)",
+                "ArtifactCacheIoError.PublishFailed", "PublishOutcomeUnknown(path: cstr)",
+                "rename_errno == ArtifactCacheErrno::EIO",
+                "PublishOutcomeUnknown(destination_path) if rename_errno == ArtifactCacheErrno::EIO",
+                "EIO: i32 = 5", "StagingIdentityChanged(path: cstr)", "using EsFileAtomicPosix",
+                "def artifact_cache_atomic_stage_cleanup(",
+                "cleanup_atomic_file_stage(a, session, parent_fd, stage_name, stage_handle.proof, lock.posix_lease, lock.lock_name)",
+                "cleanup_unsealed_atomic_file_stage(session, parent_fd, stage_handle, stage_name, lock.posix_lease, lock.lock_name)",
+                "def artifact_cache_publish_payload_at(a: mutable Arena&, lock: ArtifactCacheWriterLock&",
+                "artifact_cache_writer_lock_matches_at(lock, directory_fd, lock_name, owner_token)",
+                "expected_destination: initial_destination.destination",
+                "create_atomic_file_stage(session, directory_fd, staging_name, lock.posix_lease, lock_name)",
+                "append_atomic_file_stage(session, directory_fd, stage_handle, staging_name, bytes, lock.posix_lease, lock_name)",
+                "seal_atomic_file_stage(a, session, directory_fd, stage_handle, staging_name, lock.posix_lease, lock_name)",
+                "compare_atomic_file_stage(a, session, directory_fd, staging_name, destination_name, bytes, lock.posix_lease, lock_name)",
+                "commit_atomic_file_stage(a, session, directory_fd, staging_name, destination_name, lock.posix_lease, lock_name)",
+                "reconcile_atomic_file_publication(a, session, directory_fd, staging_name, destination_name, lock.posix_lease, lock_name)",
+                "AtomicFileState.PublishedUncertain", "AtomicFileState.Committed",
+                "ArtifactCacheIoError.DirectorySyncFailed", "ArtifactCacheIoError.PathTooLong",
+                "Limits::PATH_BYTES", "def artifact_cache_path_terminated", "def artifact_cache_path_equal",
+                "PathCollision(path: cstr)", "PathCollision(staging_path) if artifact_cache_path_equal(staging_path, destination_path)",
+                "PathCollision(lock_path) if artifact_cache_path_equal(lock_path, staging_path)",
+                "return false if bytes[0] == 0", "PathTooLong(staging_path) if not artifact_cache_path_terminated",
+                "PathTooLong(destination_path) if not artifact_cache_path_terminated",
+                "def artifact_cache_sync_directory", "catch artifact_cache_sync_directory",
+                "elisascript_posix_dirfd", "directory_path: cstr = \"\"", "ArtifactCacheIoError.LockFailed",
+                "struct ArtifactCacheWriterLock", "struct ArtifactCacheWriterLease", "ArtifactCacheWriterLockEvent",
+                "def artifact_cache_writer_lock_transition", "def artifact_cache_writer_lock_acquire",
+                "def artifact_cache_writer_lock_release", "def artifact_cache_writer_acquire",
+                "def artifact_cache_writer_publish", "def artifact_cache_writer_abort", "elisascript_posix_flock",
+                "elisascript_posix_open(path, flags, 384u32)",
+                "DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC",
+                "def artifact_cache_publish_locked", "def publish_module_artifact_file_locked",
+                "def publish_bytecode_artifact_file_locked",
+                "PAYLOAD_BYTES: usize = EsBuildIncrementalCache::Limits::CACHE_BYTES",
+                "def read_build_incremental_cache_file",
+                "artifact_cache_read_bounded_file(a, path, EsBuildIncrementalCache::Limits::CACHE_BYTES)",
+                "def read_build_incremental_cache_at", "def artifact_cache_read_file_at",
+                "read_regular_file_at(a, directory_fd, cache_name, Limits::PAYLOAD_BYTES)",
+                "_ = try decode_build_incremental_cache(bytes)",
+                "def publish_build_incremental_cache_at_locked",
+                "artifact_cache_publish_payload_at_locked(a, lock, directory_fd, lock_name, owner_token, staging_name, destination_name, bytes, EsBuildIncrementalCache::Limits::CACHE_BYTES)",
+                "unchanged: bool = false", "observe_atomic_file_at(a, directory_fd, destination_name, byte_limit)",
+                "if session.state == AtomicFileState.UnchangedPendingCleanup:",
+                "cleanup_atomic_file_stage(a, session, directory_fd, staging_name, stage_handle.proof, lock.posix_lease, lock_name)",
+                "return ArtifactCachePayloadPublication{state: ArtifactCacheLifecycle.Committed, bytes_count: bytes.count, unchanged: true}",
+                "raise ArtifactCacheIoError.PublishOutcomeUnknown(destination_name) if session.state != AtomicFileState.Committed",
+                "def artifact_cache_directory_descriptor_valid", "elisascript_posix_fstat(directory_fd, info)",
+                "info.mode & DarwinStatMode::MASK", "DirectoryDescriptorSyncFailed(descriptor: int)",
+                "def artifact_cache_writer_lock_acquire_at",
+                "acquire_file_lock_at(lock.posix_lease, directory_fd, lock_name, owner_token, FileLockMode.Exclusive)",
+                "file_lock_posix_lease_matches_at(lock.posix_lease, directory_fd, lock_name, owner_token, FileLockMode.Exclusive)",
+                Patterns::CACHE_PUBLISH_PAYLOAD_LOCKED, "catch artifact_cache_writer_lock_release",
+                "elisascript_posix_rename", "def artifact_cache_stage"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+
+            status <- reject_patterns(inputs[2], [
+                "try artifact_cache_write_staging", "file_stream_open(staging_path",
+                "_ = try artifact_cache_sync_directory"
+            ], Messages::FORBIDDEN_SOURCE)
+            return status if status != 0i64
+            status <- reject_patterns(inputs[2], ["file_stream_open(path, FileStreamMode.AppendBinary"], Messages::FORBIDDEN_SOURCE)
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[4], ["handler stack instruction must have no operands, no SSA result, and a void result type"], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_either_pattern(inputs[4], "saturat", "range")
+            return status if status != 0i64
+            status <- require_patterns(inputs[5], [
+                "def type_descriptor_child_arity_valid", "def bounded_type_child_index",
+                "bounded_type_child_index(row.child_start, row.child_count",
+                "type_descriptor_child_arity_valid(row.kind, row.child_count.usize())",
+                "table.rows.count > TypeTableLimits::U32_MAX or table.children.count > TypeTableLimits::U32_MAX",
+                "child_id.usize() >= index + 1"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[6], [
+                "scalar_children:", "array_with_two_children:", "map_with_one_child:",
+                "assert not type_table_valid(cyclic_module.type_table)",
+                "serialized_slice_bounds_use_subtraction_before_end_addition",
+                "verifier_rejects_handler_stack_results", "canonical_sha256_matches_known_vectors",
+                "canonical_module_rejects_oversized_borrowed_text_before_emission",
+                "artifact_cache_writer_lock_transition(ArtifactCacheWriterLockState.Held, ArtifactCacheWriterLockEvent.Acquire)",
+                "artifact_cache_writer_lock_transition(ArtifactCacheWriterLockState.Released, ArtifactCacheWriterLockEvent.Release)",
+                "artifact_cache_restart(committed_cache).state == ArtifactCacheLifecycle.Committed",
+                "artifact_cache_restart(staged_cache).state == ArtifactCacheLifecycle.Rejected",
+                "artifact_cache_restart(ArtifactCachePublication{state: ArtifactCacheLifecycle.Empty}).state == ArtifactCacheLifecycle.Empty",
+                "artifact_cache_restart(ArtifactCachePublication{state: ArtifactCacheLifecycle.Rejected}).state == ArtifactCacheLifecycle.Rejected",
+                "artifact_cache_writer_acquire(lease, 41)", "artifact_cache_writer_acquire(aborted, 0)",
+                "artifact_cache_writer_acquire(aborted, 8)", "artifact_cache_writer_publish(aborted, 8)",
+                "legacy_artifact_bytes", "unknown_artifact_version", "malformed_artifact_digest",
+                "malformed_metadata.fingerprint <- 0", "module_artifact_requires_migration",
+                "malformed_artifact_text", "malformed_artifact_trailing", "migrate_module_artifact",
+                "ArtifactCacheLifecycle.Staged", "ArtifactCacheLoad", "ArtifactCacheEvent.Commit",
+                "ArtifactCacheRecoveryAction.KeepPublished", "ArtifactCacheRecoveryAction.RemoveStaging",
+                "ArtifactCacheRecoveryAction.RebuildPublished", "ArtifactCacheRecoveryAction.Noop"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[10], [
+                "legacy_version", "bytecode_artifact_requires_migration", "malformed_revision", "migrate_bytecode_artifact",
+                "malformed_metadata.module_fingerprint <- 0"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[7], [
+                "incremental_cache_descriptor_io_rejects_invalid_directory_handles",
+                "read_build_incremental_cache_at(arena, -1, \"cache.bin\")",
+                "read_regular_file_at(arena, -1, \"cache.bin\", 1024)",
+                "publish_build_incremental_cache_at_locked(arena, lock, -1, \"cache.lock\", 7, \"cache.tmp\", \"cache.bin\", bytes)"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[9], [
+                "def canonical_bytes_sha256", "def canonical_module_digest", "def canonical_digest_word",
+                "def canonical_module_digest_word", "CanonicalLimits::SHA256_MAX_INPUT_BYTES",
+                "def canonical_module_budget_valid", "CanonicalLimits::MODULE_TEXT_BYTES"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[12], [
+                "digest_manifest", "malformed_manifest_length", "differential_artifact_manifest_requires_migration"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[8], [
+                "module_digest_0", "def make_differential_artifact_manifest_for_module",
+                "def differential_artifact_manifest_requires_migration", "manifest.format_version != 4"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_either_pattern(inputs[8], "bytes[4] != 4", "bytes[4] != 1 and bytes[4] != 2 and bytes[4] != 3 and bytes[4] != 4")
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[11], [
+                "digest_0", "format_version: u8 = 2", "def canonical_module_artifact_bytes",
+                "def module_artifact_bytes_valid", "artifact.fingerprint == 0",
+                "def module_artifact_envelope_status", "def module_artifact_requires_migration",
+                "def module_artifact_byte_range_has_nul", "def migrate_module_artifact",
+                "runtime_bounded_slice_end(offset, length.usize(), bytes.count, end)",
+                "def module_artifact_read_u64", "return false if offset > bytes.count",
+                "return false if bytes.count - offset < 8"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[1], ["return false if offset > bytes.count", "return false if bytes.count - offset < 8"], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[10], [
+                "altered_payload", "assert not bytecode_artifact_matches_module(artifact, module, altered_payload)"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[11], [
+                "def classify_module_artifact_cache", "def load_module_artifact_file",
+                "def load_bytecode_artifact_file", "def publish_module_artifact_file",
+                "def publish_bytecode_artifact_file", "catch artifact_cache_write_staging",
+                "catch artifact_cache_sync_directory", "elisascript_posix_dirfd"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+
+            status <- require_patterns(inputs[3], [
+                "def read_regular_file_at(", "MAX_BYTES: usize = 268435456", "MAX_READ_CALLS: usize = 1048576",
+                "machine over cursor.state", "elisascript_posix_openat(directory_fd, leaf_name, flags, 0u32)",
+                "elisascript_posix_read(descriptor, destination.cast[mutable void&], remaining)",
+                "arena_da_reserve(a, bytes, expected_count)",
+                "expected.modify_time.seconds == observed.modify_time.seconds",
+                "expected.modify_time.nanoseconds == observed.modify_time.nanoseconds",
+                "expected.change_time.seconds == observed.change_time.seconds",
+                "expected.change_time.nanoseconds == observed.change_time.nanoseconds"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+            status <- require_patterns(inputs[2], [
+                "def read_regular_file_at", "def artifact_cache_read_file_at",
+                "read_regular_file_at(a, directory_fd, cache_name, Limits::PAYLOAD_BYTES)"
+            ], Messages::CONTRACT_MISSING)
+            return status if status != 0i64
+
+            status <- require_function_order(inputs[2], Patterns::CACHE_PUBLISH_FILE, [
+                "PublishOutcomeUnknown(destination_path)", "_ = remove_file(staging_path)"
+            ], Messages::PUBLISH_ORDER)
+            return status if status != 0i64
+            status <- require_function_order(inputs[3], Patterns::READ_REGULAR_FILE, [
+                "named_before:", "file_read_at_open(directory_fd, leaf_name)",
+                "file_read_at_snapshot_matches(named_before, opened)", "machine over cursor.state",
+                "descriptor_unchanged: bool", "name_unchanged: bool",
+                "close_status: int", "not descriptor_unchanged or not name_unchanged"
+            ], Messages::READ_ORDER)
+            return status if status != 0i64
+            status <- require_same_function_line(inputs[3], Patterns::READ_REGULAR_FILE, "descriptor_unchanged: bool", "file_read_at_snapshot_matches(opened, after_fd)", Messages::READ_ORDER)
+            return status if status != 0i64
+            status <- require_same_function_line(inputs[3], Patterns::READ_REGULAR_FILE, "name_unchanged: bool", "file_read_at_snapshot_matches(opened, after_name)", Messages::READ_ORDER)
+            return status if status != 0i64
+            status <- require_function_order(inputs[2], Patterns::CACHE_PUBLISH_PAYLOAD, [
+                "observe_atomic_file_at(a, directory_fd, destination_name, byte_limit)",
+                "create_atomic_file_stage(", "compare_atomic_file_stage(", "commit_atomic_file_stage(",
+                "reconcile_atomic_file_publication("
+            ], Messages::GENERIC_PUBLISH_ORDER)
+            return status if status != 0i64
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            inputs: darray[Path] = [
+                root.joinpath(Inputs::RUNTIME_MODEL), root.joinpath(Inputs::BYTECODE),
+                root.joinpath(Inputs::ARTIFACT_CACHE), root.joinpath(Inputs::FILE_READ_AT),
+                root.joinpath(Inputs::VERIFIER), root.joinpath(Inputs::TYPE_TABLE),
+                root.joinpath(Inputs::IR_TESTS), root.joinpath(Inputs::INCREMENTAL_ADAPTER_TESTS),
+                root.joinpath(Inputs::DIFFERENTIAL), root.joinpath(Inputs::SERIALIZE),
+                root.joinpath(Inputs::BYTECODE_TESTS), root.joinpath(Inputs::ARTIFACT),
+                root.joinpath(Inputs::DIFFERENTIAL_TESTS)
+            ]
+            required_inputs: darray[Path] = [inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[6], inputs[7]]
+            for input_path in required_inputs:
+                if not is_file(input_path):
+                    diagnostic(Messages::MISSING_INPUT + f"{input_path}")
+                    return ExitStatus::IO_FAILURE
+            status: i64 = execute_all(inputs)
+            return status if status != 0i64
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsSerializationBoundsAudit::run_default()
