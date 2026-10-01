@@ -1,9 +1,10 @@
-# Durable binary-write primitive for the save_journal.py port.
-# The caller owns transaction ordering and recovery decisions.
+# Durable POSIX adapter for the save_journal.py port.
 # FileStream bounds this operation to the runtime's explicit 64 MiB budget;
 # the larger Python/model bound remains a known compatibility difference.
+include "save_journal_model.elisa"
 include "../../../src/runtime/stream_posix.elisa"
 
+using EsEngineSaveJournal
 using EsRuntime
 
 
@@ -19,6 +20,63 @@ module EsEngineSaveJournalPosix:
             SyncFailed
             CloseFailed
             CleanupFailed
+            CommitOutcomeUnknown
+
+
+        # Follow Python's durable commit order. Do not clean temporary or
+        # journal files on failure: once the journal is durable they are the
+        # recovery record, and a rename/fsync error can have an unknown outcome.
+        def save_document(target: Path, document: JsonDocument&) -> darray[u8] error[SaveJournalError, SaveJournalPosixError, FileStreamError] can[Directory.Write, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            target_name: sview = target.name()
+            raise SaveJournalPosixError.InvalidPath if target_name == "" or sview_contains_byte(target_name, 0u8)
+            temporary: Path = target.with_name(f"{target_name}.tmp")
+            journal: Path = target.with_name(f"{target_name}.journal")
+            parent_bytes: darray[u8] = try save_journal_path_bytes(target.parent())
+            parent_pointer: cstr = (&parent_bytes[0]).cast[cstr] can Unsafe.PointerCast
+
+            payload: darray[u8] = try EsEngineSaveJournal::canonical_payload(document)
+            digest: darray[u8] = try EsEngineSaveJournal::sha256_hex(payload)
+            temporary_name: sview = temporary.name()
+            journal_payload: darray[u8] = try EsEngineSaveJournal::canonical_journal_payload(target_name, temporary_name, bytes_view(digest))
+
+            phase: mutable SavePhase = SavePhase.WriteTemporary
+            machine over phase while phase != SavePhase.Done:
+                state SaveCommit
+                start SaveCommit
+
+                SaveCommit, SavePhase.WriteTemporary:
+                    _ = try write_synced_file(temporary, payload)
+                    phase <- SavePhase.WriteJournal
+                    -> SaveCommit
+
+                SaveCommit, SavePhase.WriteJournal:
+                    _ = try write_synced_file(journal, journal_payload)
+                    phase <- SavePhase.PublishTemporary
+                    -> SaveCommit
+
+                SaveCommit, SavePhase.PublishTemporary:
+                    _ = try publish_synced_file(temporary, target)
+                    phase <- SavePhase.RemoveJournal
+                    -> SaveCommit
+
+                SaveCommit, SavePhase.RemoveJournal:
+                    _ = try remove_journal_if_present(journal)
+                    phase <- SavePhase.SyncJournalRemoval
+                    -> SaveCommit
+
+                SaveCommit, SavePhase.SyncJournalRemoval:
+                    catch file_stream_sync_directory(parent_pointer):
+                        ok synced:
+                            _ = synced
+                        error failure:
+                            _ = failure
+                            raise SaveJournalPosixError.CommitOutcomeUnknown
+                    phase <- SavePhase.Done
+                    -> SaveCommit
+
+                SaveCommit, SavePhase.Done:
+                    break
+            return digest
 
 
         def write_synced_file(target: Path, payload: darray[u8]) -> usize error[SaveJournalPosixError] can[Directory.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
@@ -97,10 +155,48 @@ module EsEngineSaveJournalPosix:
             MAX_PATH_BYTES: usize = 4096
 
 
+        def publish_synced_file(staging: Path, destination: Path) -> bool error[SaveJournalPosixError, FileStreamError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            staging_bytes: darray[u8] = try save_journal_path_bytes(staging)
+            destination_bytes: darray[u8] = try save_journal_path_bytes(destination)
+            parent_bytes: darray[u8] = try save_journal_path_bytes(destination.parent())
+            staging_pointer: cstr = (&staging_bytes[0]).cast[cstr] can Unsafe.PointerCast
+            destination_pointer: cstr = (&destination_bytes[0]).cast[cstr] can Unsafe.PointerCast
+            parent_pointer: cstr = (&parent_bytes[0]).cast[cstr] can Unsafe.PointerCast
+            return try file_stream_publish_staged(staging_pointer, destination_pointer, parent_pointer)
+
+
+        def remove_journal_if_present(journal: Path) -> bool error[SaveJournalPosixError] can[File.Write, File.Read, Abort.Panic]:
+            if journal.exists():
+                removed: bool = try journal.unlink() else failure:
+                    _ = failure
+                    raise SaveJournalPosixError.CommitOutcomeUnknown
+                raise SaveJournalPosixError.CommitOutcomeUnknown if not removed
+            return true
+
+
+        def save_journal_path_bytes(value: Path) -> darray[u8] error[SaveJournalPosixError] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            path_text: sview = f"{value}"
+            raise SaveJournalPosixError.InvalidPath if path_text == "" or len(path_text) >= Limits::MAX_PATH_BYTES or sview_contains_byte(path_text, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            return path_bytes
+
+
         const enum WritePhase of u8:
             Write
             Sync
             Close
+            Done
+
+
+        const enum SavePhase of u8:
+            WriteTemporary
+            WriteJournal
+            PublishTemporary
+            RemoveJournal
+            SyncJournalRemoval
             Done
 
 
