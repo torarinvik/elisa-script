@@ -1,0 +1,96 @@
+# Low-memory POSIX file hashing for the dependency-manifest checker.
+include "../../../src/runtime/sha256_stream_model.elisa"
+include "../../../src/runtime/stream_posix.elisa"
+
+using EsSha256Stream
+using EsRuntime
+
+
+module EsEngineDependencyManifestDigestPosix:
+    public:
+        error DigestError:
+            InvalidPath
+            OpenFailed
+            ReadFailed
+            HashFailed
+            CloseFailed
+            InputLimitExceeded
+
+
+        def digest_file(input_path: Path) -> darray[u8] error[DigestError, FileStreamError, Sha256StreamError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_text: sview = f"{input_path}"
+            raise DigestError.InvalidPath if path_text == "" or len(path_text) >= Limits::PATH_BYTES or sview_contains_byte(path_text, 0u8)
+
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr] can Unsafe.PointerCast
+
+            stream: mutable FileStream = try file_stream_open(
+                path_pointer,
+                FileStreamMode.ReadBinary,
+                Limits::MAX_FILE_BYTES,
+                FileStreamEncoding.Bytes
+            ) else failure:
+                _ = failure
+                raise DigestError.OpenFailed
+
+            buffer: mutable darray[u8] = []
+            buffer.reserve(Limits::READ_CHUNK_BYTES)
+            for _ in 0..<Limits::READ_CHUNK_BYTES |buffer|:
+                buffer.push(0u8)
+            digest: mutable EsSha256Stream::Context = EsSha256Stream::init()
+            phase: mutable HashPhase = HashPhase.Read
+            output: mutable darray[u8] = []
+            machine over phase while phase != HashPhase.Done:
+                state HashFile
+                start HashFile
+
+                HashFile, HashPhase.Read:
+                    buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&] can Unsafe.PointerCast
+                    read: FileStreamRead = try file_stream_read_chunk(stream, buffer_pointer, buffer.count) else failure:
+                        _ = failure
+                        _ = file_stream_close(stream)
+                        raise DigestError.InputLimitExceeded if failure == FileStreamError.LimitExceeded(path_pointer)
+                        raise DigestError.ReadFailed
+                    try update_buffer(digest, buffer, read.count) else failure:
+                        _ = failure
+                        _ = file_stream_close(stream)
+                        raise DigestError.HashFailed
+                    if read.eof:
+                        output <- try finish_hex(digest) else failure:
+                            _ = failure
+                            _ = file_stream_close(stream)
+                            raise DigestError.HashFailed
+                        phase <- HashPhase.Close
+                    continue
+
+                HashFile, HashPhase.Close:
+                    closed: bool = try file_stream_close(stream) else failure:
+                        _ = failure
+                        raise DigestError.CloseFailed
+                    raise DigestError.CloseFailed if not closed
+                    phase <- HashPhase.Done
+                    -> HashFile
+
+                HashFile, HashPhase.Done:
+                    break
+
+            return output
+
+
+    private:
+        const module Limits:
+            PATH_BYTES: usize = 4096
+            READ_CHUNK_BYTES: usize = 65536
+            # FileStream deliberately bounds total bytes independently of the
+            # fixed-size buffer. Current dependency-manifest hash targets are
+            # source assets; callers receive an explicit error above this cap.
+            MAX_FILE_BYTES: usize = EsRuntime::FILE_STREAM_DEFAULT_MAX_BYTES
+
+
+        const enum HashPhase of u8:
+            Read
+            Close
+            Done
