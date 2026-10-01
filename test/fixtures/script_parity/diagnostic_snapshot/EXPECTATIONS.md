@@ -27,6 +27,7 @@ implementations against these tuples:
 | Generated case | Status | Stdout | Stderr |
 | --- | ---: | --- | --- |
 | zero-byte runner source | 1 | empty | `diagnostic snapshot audit: no diagnostic fields found\n` |
+| nonbreaking space between a field name and colon | 1 | empty | `diagnostic snapshot audit: no diagnostic fields found\n` |
 | absent runner path inside the owned temporary root | 1 | empty | `diagnostic snapshot audit: missing runner source\n` |
 | exactly 262,144 source bytes | 0 | `diagnostic snapshot audit: 2 fields covered (execution intentionally excluded)\n` | empty |
 | 262,145 source bytes | 1 | empty | `diagnostic snapshot audit: runner source exceeds audit limit\n` |
@@ -49,14 +50,16 @@ after field types while keeping the audited identifiers ASCII. The generated
 cases exercise raw CRLF/bare-CR bytes, the exact source-byte ceiling,
 field-count/name ceilings, empty and missing-input behavior, and the extra-
 operand usage boundary. `tab_whitespace_runner.elisa` pins TAB acceptance around
-the declaration colon. The missing path is already absolute but deliberately
-is not passed through `path_real`, since it must remain absent. None of these
-expectations have been executed; the standing compiler validation hold remains
-in force.
+the declaration colon. The generated nonbreaking-space case makes the C-locale
+ASCII whitespace boundary explicit: UTF-8 NBSP is not field-separating
+whitespace in the shell reference. The missing path is already absolute but
+deliberately is not passed through `path_real`, since it must remain absent.
+None of these expectations have been executed; the standing compiler
+validation hold remains in force.
 
 The shell reference pins its field-extraction AWK invocation to `LC_ALL=C`, so
-the `[[:space:]]` grammar is stable and agrees with the candidate's ASCII
-whitespace matcher regardless of the caller's locale. The launcher also gives
+the `[[:space:]]` grammar is stable and agrees with the candidate's explicit
+ASCII byte matcher regardless of the caller's locale. The launcher also gives
 both children the same explicit `LC_ALL=C` environment.
 
 The shell reference and Elisascript candidate both resolve an omitted or empty
