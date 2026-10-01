@@ -13,10 +13,13 @@ formatted output. The authored model fixture mirrors the original unit test
 and adds focused lexical-boundary cases. It has not been compiled or run.
 
 The source helper receives `otool` text, which is ASCII in the supported
-workflow. The model currently recognizes ASCII digits and whitespace and
-stores version components as `u64`; Python's regex/integer operations accept a
-wider Unicode and arbitrary-precision input domain. Those differences are not
-qualified as parity and should either be eliminated or explicitly bounded by
-the adapter contract before this helper is integrated into the packaging
-entrypoint. No compiler, test, Python reference, `otool`, packaging, or parity
-process was run for this change.
+workflow. The model recognizes ASCII digits and whitespace, but stores each
+version component as normalized decimal text and compares components by digit
+count and lexicographic order. This preserves Python's arbitrary-precision
+integer behavior without narrowing large tool output to a machine integer.
+Python's Unicode `\d`/whitespace matching remains a broader input domain than
+the model's ASCII scanner; the adapter contract should either guarantee the
+supported `otool` output domain or that difference should be addressed before
+the model is integrated into the packaging entrypoint. No compiler, test,
+Python reference, `otool`, packaging, or parity process was run for this
+change.
