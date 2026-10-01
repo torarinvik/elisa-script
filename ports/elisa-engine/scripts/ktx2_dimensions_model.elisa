@@ -1,0 +1,284 @@
+# Typed bounded KTX2 structural validation from elisa-engine/scripts/ktx2_container.py.
+# This validates the Basis profiles the engine accepts; it does not decode pixels.
+include "../../../src/runtime/python_text_model.elisa"
+
+using EsPythonText
+
+module EsEngineKtx2Container:
+    public:
+        struct Dimensions:
+            width: u32
+            height: u32
+
+
+        struct Probe:
+            valid: bool = false
+            dimensions: Dimensions = Dimensions{width: 0u32, height: 0u32}
+
+
+        def dimensions(data: darray[u8]&) -> Probe can[Memory.Allocate, Abort.Panic]:
+            return Probe{} if data.count < Limits::HEADER_BYTES
+            return Probe{} if not ktx_identifier_matches(data)
+
+            vk_format: u32 = ktx_read_u32_le(data, 12)
+            type_size: u32 = ktx_read_u32_le(data, 16)
+            width: u32 = ktx_read_u32_le(data, 20)
+            height: u32 = ktx_read_u32_le(data, 24)
+            depth: u32 = ktx_read_u32_le(data, 28)
+            layers: u32 = ktx_read_u32_le(data, 32)
+            faces: u32 = ktx_read_u32_le(data, 36)
+            level_count: u32 = ktx_read_u32_le(data, 40)
+            scheme: u32 = ktx_read_u32_le(data, 44)
+            largest_dimension: u32 = width if width > height else height
+            bit_length: mutable u32 = 0u32
+            remaining_dimension: mutable u32 = largest_dimension
+            while remaining_dimension > 0u32 |bit_length, remaining_dimension|:
+                bit_length <- bit_length + 1u32
+                remaining_dimension <- remaining_dimension >> 1
+
+            return Probe{} if type_size != 1u32
+            return Probe{} if width == 0u32 or width > Limits::MAX_DIMENSION or height == 0u32 or height > Limits::MAX_DIMENSION
+            return Probe{} if depth != 0u32 or layers != 0u32 or faces != 1u32
+            return Probe{} if level_count == 0u32 or level_count > Limits::MAX_LEVELS or level_count > bit_length
+            return Probe{} if scheme > 2u32
+
+            level_index_end: usize = Limits::HEADER_BYTES + level_count.usize() * Limits::LEVEL_INDEX_BYTES
+            return Probe{} if level_index_end > data.count
+            dfd_offset: usize = ktx_read_u32_le(data, 48).usize()
+            dfd_length: usize = ktx_read_u32_le(data, 52).usize()
+            kvd_offset: usize = ktx_read_u32_le(data, 56).usize()
+            kvd_length: usize = ktx_read_u32_le(data, 60).usize()
+            sgd_offset: u64 = ktx_read_u64_le(data, 64)
+            sgd_length: u64 = ktx_read_u64_le(data, 72)
+            return Probe{} if dfd_offset != level_index_end or dfd_offset % 4 != 0
+            return Probe{} if dfd_length > data.count - dfd_offset
+            return Probe{} if dfd_length < 4 or data.count - dfd_offset < 4
+            dfd_end: usize = dfd_offset + dfd_length
+            return Probe{} if ktx_read_u32_le(data, dfd_offset) != dfd_length.u32()
+            return Probe{} if not ktx_dfd_valid(data, dfd_offset, dfd_length, vk_format, scheme)
+
+            kvd_end: usize = dfd_end
+            if kvd_length == 0:
+                return Probe{} if kvd_offset != 0
+            else:
+                return Probe{} if kvd_offset != dfd_end or kvd_offset % 4 != 0
+                return Probe{} if kvd_length > data.count - kvd_offset
+                return Probe{} if not ktx_key_values_valid(data, kvd_offset, kvd_length)
+                kvd_end <- kvd_offset + kvd_length
+
+            metadata_end: usize = kvd_end
+            if scheme == 1u32:
+                expected_sgd_offset: usize = ((kvd_end + 7usize) / 8usize) * 8usize
+                return Probe{} if sgd_length == 0u64 or sgd_offset != expected_sgd_offset.u64()
+                return Probe{} if (sgd_offset & 7u64) != 0u64 or sgd_offset > data.count.u64()
+                return Probe{} if sgd_length > data.count.u64() - sgd_offset
+                return Probe{} if not ktx_range_is_zero(data, kvd_end, sgd_offset.usize() - kvd_end)
+                metadata_end <- sgd_offset.usize() + sgd_length.usize()
+            else:
+                return Probe{} if sgd_offset != 0u64 or sgd_length != 0u64
+
+            level_alignment: usize = 16 if scheme == 0u32 else 1
+            levels: mutable darray[Level] = []
+            for level in 0..<level_count.usize() |levels|:
+                entry_offset: usize = Limits::HEADER_BYTES + level * Limits::LEVEL_INDEX_BYTES
+                byte_offset: u64 = ktx_read_u64_le(data, entry_offset)
+                byte_length: u64 = ktx_read_u64_le(data, entry_offset + 8)
+                uncompressed_length: u64 = ktx_read_u64_le(data, entry_offset + 16)
+                return Probe{} if byte_offset < metadata_end.u64() or byte_offset > data.count.u64() or byte_length == 0u64
+                return Probe{} if byte_length > data.count.u64() - byte_offset or byte_offset % level_alignment.u64() != 0u64
+                mip_width: u32 = width >> level.u32()
+                mip_height: u32 = height >> level.u32()
+                mip_width <- 1u32 if mip_width == 0u32
+                mip_height <- 1u32 if mip_height == 0u32
+                expected_uastc_length: u64 = (((mip_width + 3u32) / 4u32).u64() * ((mip_height + 3u32) / 4u32).u64() * 16u64)
+                return Probe{} if (scheme == 0u32 or scheme == 2u32) and uncompressed_length == 0u64
+                return Probe{} if scheme == 0u32 and uncompressed_length != byte_length
+                return Probe{} if scheme == 1u32 and uncompressed_length != 0u64
+                return Probe{} if (scheme == 0u32 or scheme == 2u32) and uncompressed_length != expected_uastc_length
+                levels.push(Level{offset: byte_offset.usize(), length: byte_length.usize()})
+
+            first_level_offset: usize = ((metadata_end + level_alignment - 1) / level_alignment) * level_alignment
+            return Probe{} if levels[level_count.usize() - 1].offset != first_level_offset
+            return Probe{} if not ktx_range_is_zero(data, metadata_end, first_level_offset - metadata_end)
+            cursor: mutable usize = level_count.usize() - 1
+            while cursor > 0usize |levels, cursor|:
+                previous_index: usize = cursor - 1
+                previous_end: usize = levels[cursor].offset + levels[cursor].length
+                expected_offset: usize = ((previous_end + level_alignment - 1) / level_alignment) * level_alignment
+                return Probe{} if levels[previous_index].offset != expected_offset
+                return Probe{} if not ktx_range_is_zero(data, previous_end, expected_offset - previous_end)
+                cursor <- previous_index
+            return Probe{} if levels[0].offset + levels[0].length != data.count
+            return Probe{valid: true, dimensions: Dimensions{width: width, height: height}}
+
+
+    private:
+        struct Level:
+            offset: usize
+            length: usize
+
+
+        const module Limits:
+            HEADER_BYTES: usize = 80
+            LEVEL_INDEX_BYTES: usize = 24
+            MAX_DIMENSION: u32 = 4096u32
+            MAX_LEVELS: u32 = 16u32
+
+
+        const module Format:
+            DFD_ETC1S_MODEL: u8 = 163u8
+            DFD_UASTC_LDR_MODEL: u8 = 166u8
+            DFD_UASTC_HDR_MODEL: u8 = 167u8
+            UASTC_HDR_VK_FORMAT: u32 = 1000066000u32
+            DFD_BASE_BYTES: usize = 28
+            DFD_SAMPLE_BYTES: usize = 16
+            DFD_PRIMARIES_BT709: u8 = 1u8
+            DFD_TRANSFER_LINEAR: u8 = 1u8
+            DFD_TRANSFER_SRGB: u8 = 2u8
+
+
+        def ktx_identifier_matches(data: darray[u8]&) -> bool:
+            return data[0] == 171u8 and data[1] == 75u8 and data[2] == 84u8 and data[3] == 88u8 and data[4] == 32u8 and data[5] == 50u8 and data[6] == 48u8 and data[7] == 187u8 and data[8] == 13u8 and data[9] == 10u8 and data[10] == 26u8 and data[11] == 10u8
+
+
+        def ktx_read_u16_le(data: darray[u8]&, offset: usize) -> u16:
+            return data[offset].u16() | (data[offset + 1].u16() << 8)
+
+
+        def ktx_read_u32_le(data: darray[u8]&, offset: usize) -> u32:
+            return data[offset].u32() | (data[offset + 1].u32() << 8) | (data[offset + 2].u32() << 16) | (data[offset + 3].u32() << 24)
+
+
+        def ktx_read_u64_le(data: darray[u8]&, offset: usize) -> u64:
+            return data[offset].u64() | (data[offset + 1].u64() << 8) | (data[offset + 2].u64() << 16) | (data[offset + 3].u64() << 24) | (data[offset + 4].u64() << 32) | (data[offset + 5].u64() << 40) | (data[offset + 6].u64() << 48) | (data[offset + 7].u64() << 56)
+
+
+        def ktx_range_is_zero(data: darray[u8]&, start: usize, count: usize) -> bool:
+            for index in 0..<count |data, start|:
+                return false if data[start + index] != 0u8
+            return true
+
+
+        def ktx_dfd_valid(data: darray[u8]&, offset: usize, length: usize, vk_format: u32, scheme: u32) -> bool:
+            return false if length != 44 and length != 60
+            return false if length > data.count - offset
+            return false if not ktx_range_is_zero(data, offset + 4, 4)
+            return false if ktx_read_u16_le(data, offset + 8) != 2u16 or ktx_read_u16_le(data, offset + 10) != (length - 4).u16()
+            model: u8 = data[offset + 12]
+            primaries: u8 = data[offset + 13]
+            transfer: u8 = data[offset + 14]
+            flags: u8 = data[offset + 15]
+            return false if primaries != Format::DFD_PRIMARIES_BT709
+            return false if transfer != Format::DFD_TRANSFER_LINEAR and transfer != Format::DFD_TRANSFER_SRGB or flags != 0u8
+            return false if data[offset + 16] != 3u8 or data[offset + 17] != 3u8 or data[offset + 18] != 0u8 or data[offset + 19] != 0u8
+            sample_count: usize = (length - Format::DFD_BASE_BYTES) / Format::DFD_SAMPLE_BYTES
+            plane0: u8 = data[offset + 20]
+            plane1: u8 = data[offset + 21]
+            if vk_format == 0u32 and model == Format::DFD_UASTC_LDR_MODEL:
+                return false if length != 44 or scheme != 0u32 and scheme != 2u32
+                return false if not ktx_range_is_zero(data, offset + 21, 7)
+                return false if scheme == 0u32 and plane0 != 16u8
+                return false if scheme == 2u32 and plane0 != 0u8 and plane0 != 16u8
+                return ktx_dfd_sample_valid(data, offset, 0, 0u16, 127u8, false)
+            if vk_format == 0u32 and model == Format::DFD_ETC1S_MODEL:
+                return false if scheme != 1u32 or sample_count != 1 and sample_count != 2
+                return false if (length == 44) != (sample_count == 1)
+                return false if not ktx_range_is_zero(data, offset + 22, 6)
+                expected_plane0: u8 = 8u8
+                expected_plane1: u8 = 0u8 if sample_count == 1 else 8u8
+                planes_zero: bool = plane0 == 0u8 and plane1 == 0u8
+                return false if not planes_zero and (plane0 != expected_plane0 or plane1 != expected_plane1)
+                first_channel: u8 = ktx_read_dfd_sample(data, offset, 0).channel_type
+                return false if sample_count == 1 and first_channel != 0u8 and first_channel != 3u8
+                if sample_count == 2:
+                    second_channel: u8 = ktx_read_dfd_sample(data, offset, 1).channel_type
+                    channels_valid: bool = first_channel == 0u8 and second_channel == 15u8 or first_channel == 3u8 and second_channel == 4u8
+                    return false if not channels_valid
+                return ktx_etc1s_samples_valid(data, offset, sample_count)
+            return false if vk_format != Format::UASTC_HDR_VK_FORMAT or model != Format::DFD_UASTC_HDR_MODEL or scheme != 2u32
+            return false if transfer != Format::DFD_TRANSFER_LINEAR or length != 44 or sample_count != 1
+            return false if not ktx_range_is_zero(data, offset + 21, 7)
+            return false if plane0 != 0u8 and plane0 != 16u8
+            sample: DfdSample = ktx_read_dfd_sample(data, offset, 0)
+            return sample.bit_offset == 0u16 and sample.bit_length == 127u8 and sample.channel_type == 128u8 and sample.position_zero and sample.lower == 0u32 and sample.upper == 0x3f800000u32
+
+
+        struct DfdSample:
+            bit_offset: u16
+            bit_length: u8
+            channel_type: u8
+            position_zero: bool
+            lower: u32
+            upper: u32
+
+
+        def ktx_read_dfd_sample(data: darray[u8]&, offset: usize, index: usize) -> DfdSample:
+            sample_offset: usize = offset + Format::DFD_BASE_BYTES + index * Format::DFD_SAMPLE_BYTES
+            return DfdSample{
+                bit_offset: ktx_read_u16_le(data, sample_offset),
+                bit_length: data[sample_offset + 2],
+                channel_type: data[sample_offset + 3],
+                position_zero: ktx_range_is_zero(data, sample_offset + 4, 4),
+                lower: ktx_read_u32_le(data, sample_offset + 8),
+                upper: ktx_read_u32_le(data, sample_offset + 12)
+            }
+
+
+        def ktx_dfd_sample_valid(data: darray[u8]&, offset: usize, index: usize, bit_offset: u16, bit_length: u8, etc1s: bool) -> bool:
+            sample: DfdSample = ktx_read_dfd_sample(data, offset, index)
+            if etc1s:
+                channel: u8 = sample.channel_type & 15u8
+                return sample.bit_offset == (index * 64).u16() and sample.bit_length == 63u8 and sample.channel_type == channel and sample.position_zero and sample.lower == 0u32 and sample.upper == 0xffffffffu32
+            channel_valid: bool = sample.channel_type == 0u8 or sample.channel_type == 3u8 or sample.channel_type == 4u8 or sample.channel_type == 5u8 or sample.channel_type == 6u8
+            return sample.bit_offset == bit_offset and sample.bit_length == bit_length and channel_valid and sample.position_zero and sample.lower == 0u32 and sample.upper == 0xffffffffu32
+
+
+        def ktx_etc1s_samples_valid(data: darray[u8]&, offset: usize, sample_count: usize) -> bool:
+            for index in 0..<sample_count |data, offset|:
+                return false if not ktx_dfd_sample_valid(data, offset, index, (index * 64).u16(), 63u8, true)
+            return true
+
+
+        def ktx_key_values_valid(data: darray[u8]&, start: usize, length: usize) -> bool can[Abort.Panic]:
+            end: usize = start + length
+            position: mutable usize = start
+            previous_key: mutable sview = ""
+            has_previous: mutable bool = false
+            source_view: sview = bytes_view(data)
+            while position < end |data, position, previous_key, has_previous|:
+                return false if end - position < 4
+                entry_length: usize = ktx_read_u32_le(data, position).usize()
+                position <- position + 4
+                return false if entry_length < 2 or entry_length > end - position
+                entry_end: usize = position + entry_length
+                terminator: mutable usize = entry_length
+                for index in 0..<entry_length |data, position, terminator|:
+                    if data[position + index] == 0u8:
+                        terminator <- index
+                        break
+                return false if terminator == 0 or terminator == entry_length
+                key: sview = source_view[position:position + terminator]
+                catch EsPythonText::decode_utf8(key):
+                    ok decoded:
+                        _ = decoded
+                    error failure:
+                        _ = failure
+                        return false
+                return false if has_previous and not ktx_text_before(previous_key, key)
+                previous_key <- key
+                has_previous <- true
+                position <- entry_end
+                padding: usize = (4 - position % 4) % 4
+                return false if padding > end - position
+                return false if not ktx_range_is_zero(data, position, padding)
+                position <- position + padding
+            return position == end
+
+
+        def ktx_text_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return sview_at(left, index) < sview_at(right, index) if sview_at(left, index) != sview_at(right, index)
+            return left_length < right_length
