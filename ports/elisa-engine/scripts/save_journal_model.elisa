@@ -48,7 +48,7 @@ module EsEngineSaveJournal:
         # ensure_ascii=False) writes compact UTF-8 plus one final newline.
         # JsonDocument.member_key_order supplies bytewise UTF-8 key order and
         # KeepLast parsing reproduces json.loads duplicate-key lookup.
-        def canonical_payload(document: JsonDocument&) -> darray[u8] error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+        def canonical_payload(document: JsonDocument&) -> darray[u8] error[SaveJournalError] can[Memory.Allocate, Abort.Panic, Console.Format]:
             valid: mutable bool = false
             catch validate_json_document(document):
                 ok result:
@@ -136,13 +136,6 @@ module EsEngineSaveJournal:
                 output.push(byte)
 
 
-        def append_source_bytes(output: mutable darray[u8]&, source: darray[u8]&, start: usize, count: usize) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
-            raise SaveJournalError.InvalidDocument if start > source.count or count > source.count - start
-            raise SaveJournalError.OutputTooLarge if output.count > Encode::MAX_OUTPUT_BYTES or count > Encode::MAX_OUTPUT_BYTES - output.count
-            for offset in 0..<count |output, source, start|:
-                output.push(source[start + offset])
-
-
         def append_json_string(output: mutable darray[u8]&, source: darray[u8]&, start: usize, count: usize) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
             raise SaveJournalError.InvalidDocument if start > source.count or count > source.count - start
             try append_byte(output, 34u8)
@@ -170,7 +163,36 @@ module EsEngineSaveJournal:
             try append_byte(output, 34u8)
 
 
-        def emit_node(document: JsonDocument&, node_index: usize, output: mutable darray[u8]&, frames: mutable darray[EncodeFrame]&) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic]:
+        def number_text(document: JsonDocument&, node: JsonNode) -> sview error[SaveJournalError]:
+            raise SaveJournalError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def number_is_float(source: sview) -> bool:
+            for byte in source:
+                return true if byte == 46u8 or byte == 101u8 or byte == 69u8
+            return false
+
+
+        def append_python_number(output: mutable darray[u8]&, source: sview) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            if not number_is_float(source):
+                try append_view(output, "0") if source == "-0"
+                try append_view(output, source) if source != "-0"
+                return
+
+            parsed: f64 = parse_float(source)
+            formatted: sview = format_float(parsed)
+            if formatted == "inf":
+                try append_view(output, "Infinity")
+            elif formatted == "-inf":
+                try append_view(output, "-Infinity")
+            elif formatted == "nan":
+                try append_view(output, "NaN")
+            else:
+                try append_view(output, formatted)
+
+
+        def emit_node(document: JsonDocument&, node_index: usize, output: mutable darray[u8]&, frames: mutable darray[EncodeFrame]&) -> void error[SaveJournalError] can[Memory.Allocate, Abort.Panic, Console.Format]:
             raise SaveJournalError.InvalidDocument if node_index >= document.nodes.count
             node: JsonNode = document.nodes[node_index]
             if node.kind == JsonNodeKind.Null:
@@ -179,10 +201,7 @@ module EsEngineSaveJournal:
                 try append_view(output, "true") if node.bool_value
                 try append_view(output, "false") if not node.bool_value
             elif node.kind == JsonNodeKind.Number:
-                if node.scalar_bytes == 2 and document.scalar_data[node.scalar_start] == 45u8 and document.scalar_data[node.scalar_start + 1] == 48u8:
-                    try append_view(output, "0")
-                else:
-                    try append_source_bytes(output, document.scalar_data, node.scalar_start, node.scalar_bytes)
+                try append_python_number(output, number_text(document, node))
             elif node.kind == JsonNodeKind.Text:
                 try append_json_string(output, document.scalar_data, node.scalar_start, node.scalar_bytes)
             elif node.kind == JsonNodeKind.Array:
