@@ -1,0 +1,158 @@
+# Typed UV1 rejection mutations from elisa-engine/scripts/test_geometry_uv1.py.
+# Atlas cooking and invalid-stream encoding remain caller responsibilities.
+include "../runtime/python_text_model.elisa"
+
+using EsPythonText
+
+
+module EsGeometrySubsetUv1Cases:
+    public:
+        error Uv1CasesError:
+            NonAsciiPackage
+            PackageTooLarge
+
+
+        const enum Verdict of u8:
+            Reject
+
+
+        struct Case:
+            verdict: Verdict
+            file_name: sview
+            package_bytes: darray[u8]
+            expected_diagnostic: sview
+
+
+        def cases(atlas_package: sview, invalid_uv1_stream_base64: sview) -> darray[Case] error[Uv1CasesError] can[Memory.Allocate, Abort.Panic]:
+            raise Uv1CasesError.PackageTooLarge if len(atlas_package) > Limits::MAX_PACKAGE_BYTES
+            raise Uv1CasesError.PackageTooLarge if len(invalid_uv1_stream_base64) > Limits::MAX_PACKAGE_BYTES
+            for byte in atlas_package:
+                raise Uv1CasesError.NonAsciiPackage if byte > 127u8
+            for byte in invalid_uv1_stream_base64:
+                raise Uv1CasesError.NonAsciiPackage if byte > 127u8
+
+            missing_data: darray[u8] = try uv1_without_data(atlas_package)
+            bad_stride: darray[u8] = try uv1_mutate_field(atlas_package, Syntax::STRIDE_FIELD, Syntax::BAD_STRIDE)
+            bad_source: darray[u8] = try uv1_mutate_field(atlas_package, Syntax::SOURCE_FIELD, Syntax::BAD_SOURCE)
+            bad_revision: darray[u8] = try uv1_mutate_field(atlas_package, Syntax::REVISION_FIELD, Syntax::BAD_REVISION)
+            bad_atlas_range: darray[u8] = try uv1_invalid_atlas(atlas_package, invalid_uv1_stream_base64)
+            bad_encoding: darray[u8] = try uv1_mutate_field(atlas_package, Syntax::ENCODED_STREAM_FIELD, Syntax::CORRUPT_VALUE)
+            return [
+                Case{verdict: Verdict.Reject, file_name: "uv1-no-data.pkg", package_bytes: missing_data, expected_diagnostic: Syntax::MISSING_DATA_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "uv1-stride.pkg", package_bytes: bad_stride, expected_diagnostic: Syntax::INVALID_STREAM_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "uv1-source.pkg", package_bytes: bad_source, expected_diagnostic: Syntax::UNKNOWN_SOURCE_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "uv1-revision.pkg", package_bytes: bad_revision, expected_diagnostic: Syntax::INVALID_ATLAS_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "uv1-atlas-range.pkg", package_bytes: bad_atlas_range, expected_diagnostic: Syntax::ATLAS_RANGE_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "uv1-corrupt-encoded.pkg", package_bytes: bad_encoding, expected_diagnostic: Syntax::INVALID_STREAM_DIAGNOSTIC}
+            ]
+
+
+    private:
+        const module Limits:
+            MAX_PACKAGE_BYTES: usize = 16777216
+
+
+        const module Syntax:
+            RAW_STREAM_NAME: sview = "uv1s_b64"
+            ENCODED_STREAM_NAME: sview = "uv1s_meshopt_b64"
+            ENCODED_STREAM_FIELD: sview = "uv1s_meshopt_b64="
+            STRIDE_FIELD: sview = "uv1_stride="
+            SOURCE_FIELD: sview = "uv1_source="
+            REVISION_FIELD: sview = "uv1_generator_revision="
+            MESHOPT_CODEC_FIELD: sview = "meshopt_codec="
+            MESHOPT_CODEC_VALUE: sview = "meshopt_codec=meshoptimizer-v1.2"
+            BAD_STRIDE: sview = "16"
+            BAD_SOURCE: sview = "future"
+            BAD_REVISION: sview = "unknown"
+            CORRUPT_VALUE: sview = "AA=="
+            MISSING_DATA_DIAGNOSTIC: sview = "incomplete cooked geometry UV1 stream"
+            INVALID_STREAM_DIAGNOSTIC: sview = "invalid cooked geometry UV1 stream"
+            UNKNOWN_SOURCE_DIAGNOSTIC: sview = "unknown cooked geometry UV1 source"
+            INVALID_ATLAS_DIAGNOSTIC: sview = "invalid cooked geometry UV1 atlas metadata"
+            ATLAS_RANGE_DIAGNOSTIC: sview = "cooked geometry UV1 atlas coordinates are outside [0, 1]"
+
+
+        def uv1_starts_with(value: sview, prefix: sview) -> bool:
+            return false if len(value) < len(prefix)
+            return value[0:len(prefix)] == prefix
+
+
+        def uv1_append_line(output: mutable darray[u8]&, emitted_line: mutable bool&, line: sview, replace_line: bool, field_prefix: sview, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            if emitted_line:
+                output.push(10u8)
+            if replace_line:
+                for byte in field_prefix |output|:
+                    output.push(byte)
+                for byte in value |output|:
+                    output.push(byte)
+            else:
+                for byte in line |output|:
+                    output.push(byte)
+            emitted_line <- true
+
+
+        def uv1_mutate_field(source: sview, field_prefix: sview, value: sview) -> darray[u8] error[Uv1CasesError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = try EsPythonText::split_lines(source) else failure:
+                _ = failure
+                raise Uv1CasesError.NonAsciiPackage
+            output: mutable darray[u8] = []
+            found: mutable bool = false
+            emitted_line: mutable bool = false
+            for line in lines |output, found, emitted_line|:
+                matches_field: bool = not found and uv1_starts_with(line, field_prefix)
+                if matches_field:
+                    found <- true
+                    uv1_append_line(output, emitted_line, line, true, field_prefix, value)
+                else:
+                    uv1_append_line(output, emitted_line, line, false, field_prefix, value)
+            if not found:
+                uv1_append_line(output, emitted_line, "", true, field_prefix, value)
+            output.push(10u8)
+            raise Uv1CasesError.PackageTooLarge if output.count > Limits::MAX_PACKAGE_BYTES
+            return output
+
+
+        def uv1_without_data(source: sview) -> darray[u8] error[Uv1CasesError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = try EsPythonText::split_lines(source) else failure:
+                _ = failure
+                raise Uv1CasesError.NonAsciiPackage
+            output: mutable darray[u8] = []
+            emitted_line: mutable bool = false
+            for line in lines |output, emitted_line|:
+                field_name: sview = uv1_field_name(line)
+                remove_line: bool = field_name == Syntax::RAW_STREAM_NAME or field_name == Syntax::ENCODED_STREAM_NAME
+                if not remove_line:
+                    uv1_append_line(output, emitted_line, line, false, "", "")
+            output.push(10u8)
+            raise Uv1CasesError.PackageTooLarge if output.count > Limits::MAX_PACKAGE_BYTES
+            return output
+
+
+        def uv1_invalid_atlas(source: sview, invalid_stream_base64: sview) -> darray[u8] error[Uv1CasesError] can[Memory.Allocate, Abort.Panic]:
+            lines: darray[sview] = try EsPythonText::split_lines(source) else failure:
+                _ = failure
+                raise Uv1CasesError.NonAsciiPackage
+            output: mutable darray[u8] = []
+            emitted_line: mutable bool = false
+            has_meshopt_codec: mutable bool = false
+            for line in lines |output, emitted_line, has_meshopt_codec|:
+                if uv1_starts_with(line, Syntax::MESHOPT_CODEC_FIELD):
+                    has_meshopt_codec <- true
+                field_name: sview = uv1_field_name(line)
+                is_uv1_stream: bool = field_name == Syntax::RAW_STREAM_NAME or field_name == Syntax::ENCODED_STREAM_NAME
+                if not is_uv1_stream:
+                    uv1_append_line(output, emitted_line, line, false, "", "")
+            if not has_meshopt_codec:
+                uv1_append_line(output, emitted_line, "", true, Syntax::MESHOPT_CODEC_VALUE, "")
+            uv1_append_line(output, emitted_line, "", true, Syntax::ENCODED_STREAM_FIELD, invalid_stream_base64)
+            output.push(10u8)
+            raise Uv1CasesError.PackageTooLarge if output.count > Limits::MAX_PACKAGE_BYTES
+            return output
+
+
+        def uv1_field_name(line: sview) -> sview:
+            cursor: mutable usize = 0
+            while cursor < len(line) |line, cursor|:
+                return line[0:cursor] if sview_at(line, cursor) == 61u8
+                cursor <- cursor + 1
+            return line
