@@ -1,0 +1,186 @@
+# Python json.dumps(report, indent=2) compatible report projection.
+include "./bundled_notices_audit_model.elisa"
+
+using EsEngineBundledNoticesAudit
+
+
+module EsEngineBundledNoticesReportJson:
+    public:
+        error ReportJsonError:
+            OutputLimitExceeded
+
+
+        def encode_report(report: Report) -> darray[u8] error[ReportJsonError] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            output: mutable darray[u8] = []
+            try notice_json_append_text(output, "{\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_text(output, "\"schema\": " + f"{report.schema}" + ",\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_text(output, "\"catalog_complete\": ")
+            try notice_json_append_bool(output, report.catalog_complete)
+            try notice_json_append_text(output, ",\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_text(output, "\"dylib_notice_files_verified\": ")
+            try notice_json_append_bool(output, report.dylib_notice_files_verified)
+            try notice_json_append_text(output, ",\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_text(output, "\"libraries\": ")
+            try notice_json_append_libraries(output, report.libraries)
+            try notice_json_append_text(output, ",\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_text(output, "\"remaining\": ")
+            try notice_json_append_string_array(output, report.remaining, 1)
+            try notice_json_append_text(output, "\n}\n")
+            return output
+
+
+    private:
+        const module Limits:
+            OUTPUT_BYTES: usize = 67108864
+            HEX: sview = "0123456789abcdef"
+
+
+        def notice_json_append_byte(output: mutable darray[u8]&, byte: u8) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise ReportJsonError.OutputLimitExceeded if output.count >= Limits::OUTPUT_BYTES
+            output.push(byte)
+
+
+        def notice_json_append_text(output: mutable darray[u8]&, text: sview) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise ReportJsonError.OutputLimitExceeded if output.count > Limits::OUTPUT_BYTES or sview_len(text) > Limits::OUTPUT_BYTES - output.count
+            for index in 0..<sview_len(text) |output, text|:
+                output.push(sview_at(text, index))
+
+
+        def notice_json_append_indent(output: mutable darray[u8]&, depth: usize) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            for _ in 0..<(depth * 2) |output|:
+                try notice_json_append_byte(output, 32u8)
+
+
+        def notice_json_append_hex4(output: mutable darray[u8]&, value: u32) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            try notice_json_append_text(output, "\\u")
+            for shift in [12u32, 8u32, 4u32, 0u32] |output, value|:
+                try notice_json_append_byte(output, sview_at(Limits::HEX, ((value >> shift) & 15u32).usize()))
+
+
+        # Path names can contain undecodable filesystem bytes. Python decodes
+        # these with surrogateescape and json.dumps(ensure_ascii=True) emits
+        # each byte as a low-surrogate escape; valid Unicode uses the same
+        # lowercase UTF-16 escape spelling, including surrogate pairs.
+        def notice_json_next_codepoint(value: sview, cursor: mutable usize&, codepoint: mutable u32&) -> void:
+            first: u8 = sview_at(value, cursor)
+            width: mutable usize = 1
+            if first <= 127u8:
+                codepoint <- first.u32()
+            elif first >= 194u8 and first <= 223u8 and cursor + 1 < sview_len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                if second >= 128u8 and second <= 191u8:
+                    codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                    width <- 2
+                else:
+                    codepoint <- 56320u32 + first.u32()
+            elif first >= 224u8 and first <= 239u8 and cursor + 2 < sview_len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                decoded: u32 = ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                valid: bool = second >= 128u8 and second <= 191u8 and third >= 128u8 and third <= 191u8 and decoded >= 2048u32 and not (decoded >= 55296u32 and decoded <= 57343u32)
+                if valid:
+                    codepoint <- decoded
+                    width <- 3
+                else:
+                    codepoint <- 56320u32 + first.u32()
+            elif first >= 240u8 and first <= 244u8 and cursor + 3 < sview_len(value):
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                fourth: u8 = sview_at(value, cursor + 3)
+                decoded: u32 = ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+                valid: bool = second >= 128u8 and second <= 191u8 and third >= 128u8 and third <= 191u8 and fourth >= 128u8 and fourth <= 191u8 and decoded >= 65536u32 and decoded <= 1114111u32
+                if valid:
+                    codepoint <- decoded
+                    width <- 4
+                else:
+                    codepoint <- 56320u32 + first.u32()
+            else:
+                codepoint <- 56320u32 + first.u32()
+            cursor <- cursor + width
+
+
+        def notice_json_append_escaped(output: mutable darray[u8]&, value: sview) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            try notice_json_append_byte(output, 34u8)
+            cursor: mutable usize = 0
+            while cursor < sview_len(value):
+                codepoint: mutable u32 = 0u32
+                notice_json_next_codepoint(value, cursor, codepoint)
+                if codepoint == 34u32 or codepoint == 92u32:
+                    try notice_json_append_byte(output, 92u8)
+                    try notice_json_append_byte(output, codepoint.u8())
+                elif codepoint == 8u32:
+                    try notice_json_append_text(output, "\\b")
+                elif codepoint == 9u32:
+                    try notice_json_append_text(output, "\\t")
+                elif codepoint == 10u32:
+                    try notice_json_append_text(output, "\\n")
+                elif codepoint == 12u32:
+                    try notice_json_append_text(output, "\\f")
+                elif codepoint == 13u32:
+                    try notice_json_append_text(output, "\\r")
+                elif codepoint < 32u32 or codepoint > 126u32 and codepoint <= 65535u32:
+                    try notice_json_append_hex4(output, codepoint)
+                elif codepoint > 65535u32:
+                    high: u32 = 55296u32 + ((codepoint - 65536u32) >> 10)
+                    low: u32 = 56320u32 + ((codepoint - 65536u32) & 1023u32)
+                    try notice_json_append_hex4(output, high)
+                    try notice_json_append_hex4(output, low)
+                else:
+                    try notice_json_append_byte(output, codepoint.u8())
+            try notice_json_append_byte(output, 34u8)
+
+
+        def notice_json_append_bool(output: mutable darray[u8]&, value: bool) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            try notice_json_append_text(output, "true") if value
+            try notice_json_append_text(output, "false") if not value
+
+
+        def notice_json_append_string_array(output: mutable darray[u8]&, values: darray[sview], depth: usize) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            if values.count == 0:
+                try notice_json_append_text(output, "[]")
+                return
+            try notice_json_append_text(output, "[\n")
+            for index in 0..<values.count |output, values, depth|:
+                try notice_json_append_indent(output, depth + 1)
+                try notice_json_append_escaped(output, values[index])
+                try notice_json_append_text(output, ",") if index + 1 < values.count
+                try notice_json_append_text(output, "\n")
+            try notice_json_append_indent(output, depth)
+            try notice_json_append_byte(output, 93u8)
+
+
+        def notice_json_append_library(output: mutable darray[u8]&, library: LibraryReport, depth: usize) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            try notice_json_append_indent(output, depth)
+            try notice_json_append_text(output, "{\n")
+            try notice_json_append_indent(output, depth + 1)
+            try notice_json_append_text(output, "\"library\": ")
+            try notice_json_append_escaped(output, library.library)
+            try notice_json_append_text(output, ",\n")
+            try notice_json_append_indent(output, depth + 1)
+            try notice_json_append_text(output, "\"notices\": ")
+            try notice_json_append_string_array(output, library.notices, depth + 1)
+            try notice_json_append_text(output, ",\n")
+            try notice_json_append_indent(output, depth + 1)
+            try notice_json_append_text(output, "\"problems\": ")
+            try notice_json_append_string_array(output, library.problems, depth + 1)
+            try notice_json_append_text(output, "\n")
+            try notice_json_append_indent(output, depth)
+            try notice_json_append_byte(output, 125u8)
+
+
+        def notice_json_append_libraries(output: mutable darray[u8]&, libraries: darray[LibraryReport]) -> void error[ReportJsonError] can[Memory.Allocate, Abort.Panic]:
+            if libraries.count == 0:
+                try notice_json_append_text(output, "[]")
+                return
+            try notice_json_append_text(output, "[\n")
+            for index in 0..<libraries.count |output, libraries|:
+                try notice_json_append_library(output, libraries[index], 2)
+                try notice_json_append_text(output, ",") if index + 1 < libraries.count
+                try notice_json_append_text(output, "\n")
+            try notice_json_append_indent(output, 1)
+            try notice_json_append_byte(output, 93u8)
