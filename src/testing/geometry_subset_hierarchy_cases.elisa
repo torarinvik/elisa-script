@@ -1,0 +1,167 @@
+# Typed port of the hierarchy metadata mutations in
+# elisa-engine/scripts/geometry_subset_cases.py.
+include "../runtime/base64_model.elisa"
+
+using EsBase64
+
+
+module EsGeometrySubsetHierarchyCases:
+    public:
+        error HierarchyCasesError:
+            MissingExpectedField
+            InvalidPlacementEncoding
+            PlacementRecordTooShort
+            PackageTooLarge
+
+
+        const enum Verdict of u8:
+            Reject
+
+
+        struct Case:
+            verdict: Verdict
+            file_name: sview
+            package_bytes: darray[u8]
+            expected_diagnostic: sview
+
+
+        # The caller supplies the complete hierarchy package produced by the
+        # cooker; textual and binary mutations preserve unrelated fields.
+        def cases(hierarchy_package: sview) -> darray[Case] error[HierarchyCasesError] can[Memory.Allocate, Abort.Panic]:
+            raise HierarchyCasesError.PackageTooLarge if len(hierarchy_package) > Limits::MAX_PACKAGE_BYTES
+            bad_mesh_stride: darray[u8] = try hierarchy_replace_first(hierarchy_package, Syntax::MESH_STRIDE_80, Syntax::MESH_STRIDE_72)
+            bad_mesh_count: darray[u8] = try hierarchy_replace_first(hierarchy_package, Syntax::MESH_COUNT_3, Syntax::MESH_COUNT_4)
+            bad_placement_range: darray[u8] = try hierarchy_replace_record_u32(hierarchy_package, 12, 0u32)
+            bad_placement_partition: darray[u8] = try hierarchy_replace_record_u32(hierarchy_package, 16, 6u32)
+            return [
+                Case{verdict: Verdict.Reject, file_name: "hierarchy-mesh-stride.pkg", package_bytes: bad_mesh_stride, expected_diagnostic: Syntax::MESH_PLACEMENT_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "hierarchy-mesh-count.pkg", package_bytes: bad_mesh_count, expected_diagnostic: Syntax::UNPLACED_MESH_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "hierarchy-placement-range.pkg", package_bytes: bad_placement_range, expected_diagnostic: Syntax::PLACEMENT_RANGE_DIAGNOSTIC},
+                Case{verdict: Verdict.Reject, file_name: "hierarchy-placement-partition.pkg", package_bytes: bad_placement_partition, expected_diagnostic: Syntax::PLACEMENT_PARTITION_DIAGNOSTIC}
+            ]
+
+
+    private:
+        const module Limits:
+            MAX_PACKAGE_BYTES: usize = 16777216
+            MAX_DECODED_RECORD_BYTES: usize = 12582912
+            MAX_ENCODED_RECORD_BYTES: usize = 16777216
+
+
+        const module Syntax:
+            MESH_STRIDE_80: sview = "mesh_placement_stride=80"
+            MESH_STRIDE_72: sview = "mesh_placement_stride=72"
+            MESH_COUNT_3: sview = "mesh_count=3"
+            MESH_COUNT_4: sview = "mesh_count=4"
+            PLACEMENT_FIELD: sview = "mesh_placements_b64="
+            MESH_PLACEMENT_DIAGNOSTIC: sview = "mesh placement metadata"
+            UNPLACED_MESH_DIAGNOSTIC: sview = "leaves a mesh unplaced"
+            PLACEMENT_RANGE_DIAGNOSTIC: sview = "index is out of range"
+            PLACEMENT_PARTITION_DIAGNOSTIC: sview = "do not partition the streams"
+
+
+        def hierarchy_starts_with(value: sview, prefix: sview) -> bool:
+            return false if len(value) < len(prefix)
+            return value[0:len(prefix)] == prefix
+
+
+        def hierarchy_replace_first(source: sview, needle: sview, replacement: sview) -> darray[u8] error[HierarchyCasesError] can[Memory.Allocate, Abort.Panic]:
+            source_length: usize = len(source)
+            needle_length: usize = len(needle)
+            raise HierarchyCasesError.MissingExpectedField if needle_length == 0
+            cursor: mutable usize = 0
+            found: mutable bool = false
+            while cursor <= source_length and needle_length <= source_length - cursor and not found |source, needle, cursor, found|:
+                if source[cursor:cursor + needle_length] == needle:
+                    found <- true
+                else:
+                    cursor <- cursor + 1
+            raise HierarchyCasesError.MissingExpectedField if not found
+
+            output: mutable darray[u8] = []
+            output.reserve(source_length - needle_length + len(replacement))
+            for byte in source[0:cursor] |output|:
+                output.push(byte)
+            for byte in replacement |output|:
+                output.push(byte)
+            for byte in source[cursor + needle_length:source_length] |output|:
+                output.push(byte)
+            return output
+
+
+        def hierarchy_is_ascii_space(byte: u8) -> bool:
+            return (byte >= 9u8 and byte <= 13u8) or byte == 32u8
+
+
+        def hierarchy_trim_ascii_space(value: sview) -> sview:
+            low: mutable usize = 0
+            high: mutable usize = len(value)
+            while low < high and hierarchy_is_ascii_space(sview_at(value, low)) |value, low, high|:
+                low <- low + 1
+            while high > low and hierarchy_is_ascii_space(sview_at(value, high - 1)) |value, low, high|:
+                high <- high - 1
+            return value[low:high]
+
+
+        def hierarchy_is_base64_byte(byte: u8) -> bool:
+            return (byte >= 65u8 and byte <= 90u8) or (byte >= 97u8 and byte <= 122u8) or (byte >= 48u8 and byte <= 57u8) or byte == 43u8 or byte == 47u8 or byte == 61u8
+
+
+        # Python's base64.b64decode default discards bytes outside the
+        # standard alphabet before validating padding; retain that behavior.
+        def hierarchy_filter_base64(value: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            filtered: mutable darray[u8] = []
+            for byte in value |filtered|:
+                if hierarchy_is_base64_byte(byte):
+                    filtered.push(byte)
+            return filtered
+
+
+        def hierarchy_append_view(output: mutable darray[u8]&, value: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in value |output|:
+                output.push(byte)
+
+
+        def hierarchy_replace_record_u32(source: sview, field_offset: usize, value: u32) -> darray[u8] error[HierarchyCasesError] can[Memory.Allocate, Abort.Panic]:
+            source_length: usize = len(source)
+            field_prefix: sview = Syntax::PLACEMENT_FIELD
+            prefix_length: usize = len(field_prefix)
+            cursor: mutable usize = 0
+            found: mutable bool = false
+            output: mutable darray[u8] = []
+            output.reserve(source_length)
+            while cursor < source_length |source, cursor, found, output, field_prefix, prefix_length, field_offset, value|:
+                line_start: usize = cursor
+                while cursor < source_length and sview_at(source, cursor) != 10u8 and sview_at(source, cursor) != 13u8 |source, cursor, source_length|:
+                    cursor <- cursor + 1
+                line_end: usize = cursor
+                if cursor < source_length:
+                    first_break: u8 = sview_at(source, cursor)
+                    cursor <- cursor + 1
+                    if first_break == 13u8 and cursor < source_length and sview_at(source, cursor) == 10u8:
+                        cursor <- cursor + 1
+                line_after: usize = cursor
+                line: sview = source[line_start:line_end]
+                if not found and hierarchy_starts_with(line, field_prefix):
+                    encoded_source: sview = hierarchy_trim_ascii_space(source[line_start + prefix_length:line_end])
+                    filtered_base64: darray[u8] = hierarchy_filter_base64(encoded_source)
+                    records: mutable darray[u8] = try EsBase64::decode_base64(bytes_view(filtered_base64), Limits::MAX_DECODED_RECORD_BYTES) else failure:
+                        _ = failure
+                        raise HierarchyCasesError.InvalidPlacementEncoding
+                    raise HierarchyCasesError.PlacementRecordTooShort if field_offset > records.count or records.count - field_offset < 4
+                    records[field_offset] <- (value & 0xffu32).u8()
+                    records[field_offset + 1] <- ((value >> 8) & 0xffu32).u8()
+                    records[field_offset + 2] <- ((value >> 16) & 0xffu32).u8()
+                    records[field_offset + 3] <- ((value >> 24) & 0xffu32).u8()
+                    encoded_records: darray[u8] = try EsBase64::encode_base64(bytes_view(records), Limits::MAX_ENCODED_RECORD_BYTES) else failure:
+                        _ = failure
+                        raise HierarchyCasesError.InvalidPlacementEncoding
+                    hierarchy_append_view(output, field_prefix)
+                    for byte in encoded_records |output|:
+                        output.push(byte)
+                    output.push(10u8)
+                    found <- true
+                else:
+                    hierarchy_append_view(output, source[line_start:line_after])
+            raise HierarchyCasesError.MissingExpectedField if not found
+            return output
