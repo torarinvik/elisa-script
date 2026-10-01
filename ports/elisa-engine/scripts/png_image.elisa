@@ -1,0 +1,106 @@
+# Typed port of the small RGBA8 PNG helper in elisa-engine/scripts/png_image.py.
+# It emits a valid deterministic PNG with stored DEFLATE blocks; encoded bytes
+# differ from Python's zlib level-9 stream, while the decoded image is identical.
+module EsEnginePngImage:
+    public:
+        const module Limits:
+            MAX_DIMENSION: usize = 16384
+            MAX_FILTERED_BYTES: usize = 67108864
+
+
+        error PngEncodeError:
+            InvalidDimensions
+            DimensionLimitExceeded
+            ImageTooLarge
+            PixelLengthMismatch
+
+
+        def crc32(bytes: darray[u8]&) -> u32:
+            return png_crc32_range(bytes, 0, bytes.count)
+
+
+        # The caller must compare rendered image pixels rather than compressed
+        # bytes when using this replacement for Python's zlib-backed helper.
+        def encode_png(width: usize, height: usize, rgba: darray[u8]&) -> darray[u8] error[PngEncodeError] can[Memory.Allocate, Abort.Panic]:
+            raise PngEncodeError.InvalidDimensions if width == 0 or height == 0
+            raise PngEncodeError.DimensionLimitExceeded if width > Limits::MAX_DIMENSION or height > Limits::MAX_DIMENSION
+            row_bytes: usize = width * 4
+            filtered_row_bytes: usize = row_bytes + 1
+            raise PngEncodeError.ImageTooLarge if height > Limits::MAX_FILTERED_BYTES / filtered_row_bytes
+            filtered_bytes: usize = filtered_row_bytes * height
+            pixel_bytes: usize = row_bytes * height
+            raise PngEncodeError.PixelLengthMismatch if rgba.count != pixel_bytes
+
+            output: mutable darray[u8] = []
+            for byte in [137, 80, 78, 71, 13, 10, 26, 10] |output|:
+                output.push(byte.u8())
+
+            header: mutable darray[u8] = []
+            png_append_be32(header, width.u32())
+            png_append_be32(header, height.u32())
+            for byte in [8, 6, 0, 0, 0] |header|:
+                header.push(byte.u8())
+            png_append_chunk(output, Syntax::IHDR, header)
+
+            zlib_data: mutable darray[u8] = [0x78u8, 0x01u8]
+            adler_a: mutable u32 = 1
+            adler_b: mutable u32 = 0
+            raw_offset: mutable usize = 0
+            remaining: mutable usize = filtered_bytes
+            while remaining > 0 |rgba, row_bytes, filtered_row_bytes, zlib_data, adler_a, adler_b, raw_offset, remaining|:
+                block_size: usize = remaining if remaining < 65535 else 65535
+                final_block: bool = block_size == remaining
+                zlib_data.push(1 if final_block else 0)
+                zlib_data.push((block_size & 0xff).u8())
+                zlib_data.push((block_size >> 8).u8())
+                zlib_data.push((~block_size & 0xff).u8())
+                zlib_data.push(((~block_size >> 8) & 0xff).u8())
+                for offset in 0..<block_size |rgba, row_bytes, filtered_row_bytes, zlib_data, adler_a, adler_b, raw_offset|:
+                    raw_position: usize = raw_offset + offset
+                    row: usize = raw_position / filtered_row_bytes
+                    column: usize = raw_position % filtered_row_bytes
+                    value: u8 = 0 if column == 0 else rgba[row * row_bytes + column - 1]
+                    zlib_data.push(value)
+                    adler_a <- (adler_a + value.u32()) % 65521
+                    adler_b <- (adler_b + adler_a) % 65521
+                raw_offset <- raw_offset + block_size
+                remaining <- remaining - block_size
+            png_append_be32(zlib_data, (adler_b << 16) | adler_a)
+            png_append_chunk(output, Syntax::IDAT, zlib_data)
+            empty: darray[u8] = []
+            png_append_chunk(output, Syntax::IEND, empty)
+            return move output
+
+
+    private:
+        const module Syntax:
+            IHDR: u32 = 0x49484452
+            IDAT: u32 = 0x49444154
+            IEND: u32 = 0x49454e44
+
+
+        def png_crc32_range(bytes: darray[u8]&, start: usize, count: usize) -> u32:
+            crc: mutable u32 = 0xffffffff
+            for index in 0..<count |bytes, start, crc|:
+                crc <- crc ^ bytes[start + index].u32()
+                for _ in 0..<8 |crc|:
+                    mask: u32 = 0 - (crc & 1)
+                    crc <- (crc >> 1) ^ (0xedb88320 & mask)
+            return crc ^ 0xffffffff
+
+
+        def png_append_be32(bytes: mutable darray[u8]&, value: u32) -> void can[Memory.Allocate, Abort.Panic]:
+            bytes.push((value >> 24).u8())
+            bytes.push(((value >> 16) & 0xff).u8())
+            bytes.push(((value >> 8) & 0xff).u8())
+            bytes.push((value & 0xff).u8())
+
+
+        def png_append_chunk(output: mutable darray[u8]&, kind: u32, payload: darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+            png_append_be32(output, payload.count.u32())
+            checksum_start: usize = output.count
+            png_append_be32(output, kind)
+            for byte in payload |output|:
+                output.push(byte)
+            checksum: u32 = png_crc32_range(output, checksum_start, payload.count + 4)
+            png_append_be32(output, checksum)
