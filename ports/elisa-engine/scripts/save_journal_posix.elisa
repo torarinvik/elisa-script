@@ -1,0 +1,115 @@
+# Durable binary-write primitive for the save_journal.py port.
+# The caller owns transaction ordering and recovery decisions.
+# FileStream bounds this operation to the runtime's explicit 64 MiB budget;
+# the larger Python/model bound remains a known compatibility difference.
+include "../../../src/runtime/stream_posix.elisa"
+
+using EsRuntime
+
+
+module EsEngineSaveJournalPosix:
+    public:
+        error SaveJournalPosixError:
+            InvalidPath
+            ParentCreationFailed
+            PayloadTooLarge
+            OpenFailed
+            WriteFailed
+            ShortWrite
+            SyncFailed
+            CloseFailed
+            CleanupFailed
+
+
+        def write_synced_file(target: Path, payload: darray[u8]) -> usize error[SaveJournalPosixError] can[Directory.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            raise SaveJournalPosixError.PayloadTooLarge if payload.count > EsRuntime::FILE_STREAM_DEFAULT_MAX_BYTES
+            parent: Path = target.parent()
+            parent_created: bool = try create_directories(parent) else failure:
+                _ = failure
+                raise SaveJournalPosixError.ParentCreationFailed
+            raise SaveJournalPosixError.ParentCreationFailed if not parent_created
+
+            path_text: sview = f"{target}"
+            raise SaveJournalPosixError.InvalidPath if path_text == "" or len(path_text) >= Limits::MAX_PATH_BYTES or sview_contains_byte(path_text, 0u8)
+            path_bytes: mutable darray[u8] = []
+            for byte in path_text |path_bytes|:
+                path_bytes.push(byte)
+            path_bytes.push(0u8)
+            path_pointer: cstr = (&path_bytes[0]).cast[cstr] can Unsafe.PointerCast
+
+            stream: mutable FileStream = try file_stream_open(
+                path_pointer,
+                FileStreamMode.WriteBinary,
+                EsRuntime::FILE_STREAM_DEFAULT_MAX_BYTES,
+                FileStreamEncoding.Bytes
+            ) else failure:
+                _ = failure
+                raise SaveJournalPosixError.OpenFailed
+            cleanup: mutable FileStreamCleanupGuard = file_stream_cleanup_begin()
+            phase: mutable WritePhase = WritePhase.Write
+            machine over phase while phase != WritePhase.Done:
+                state SyncedWrite
+                start SyncedWrite
+
+                SyncedWrite, WritePhase.Write:
+                    if payload.count != 0:
+                        buffer: mutable u8& = (&payload[0]).cast[mutable u8&] can Unsafe.PointerCast
+                        catch file_stream_write_chunk(stream, buffer, payload.count):
+                            ok result:
+                                if result.count != payload.count:
+                                    raise SaveJournalPosixError.CleanupFailed if not save_journal_abort_stream(cleanup, stream)
+                                    raise SaveJournalPosixError.ShortWrite
+                            error failure:
+                                _ = failure
+                                raise SaveJournalPosixError.CleanupFailed if not save_journal_abort_stream(cleanup, stream)
+                                raise SaveJournalPosixError.WriteFailed
+                    phase <- WritePhase.Sync
+                    -> SyncedWrite
+
+                SyncedWrite, WritePhase.Sync:
+                    catch file_stream_sync(stream):
+                        ok synced:
+                            _ = synced
+                        error failure:
+                            _ = failure
+                            raise SaveJournalPosixError.CleanupFailed if not save_journal_abort_stream(cleanup, stream)
+                            raise SaveJournalPosixError.SyncFailed
+                    phase <- WritePhase.Close
+                    -> SyncedWrite
+
+                SyncedWrite, WritePhase.Close:
+                    catch file_stream_cleanup_commit(cleanup, stream):
+                        ok closed:
+                            _ = closed
+                        error failure:
+                            _ = failure
+                            raise SaveJournalPosixError.CloseFailed
+                    phase <- WritePhase.Done
+                    -> SyncedWrite
+
+                SyncedWrite, WritePhase.Done:
+                    break
+            return payload.count
+
+
+    private:
+        const module Limits:
+            MAX_PATH_BYTES: usize = 4096
+
+
+        const enum WritePhase of u8:
+            Write
+            Sync
+            Close
+            Done
+
+
+        def save_journal_abort_stream(cleanup: mutable FileStreamCleanupGuard&, stream: mutable FileStream&) -> bool can[Blocking.IO, Memory.Release]:
+            succeeded: mutable bool = true
+            catch file_stream_cleanup_abort(cleanup, stream):
+                ok closed:
+                    _ = closed
+                error failure:
+                    _ = failure
+                    succeeded <- false
+            return succeeded
