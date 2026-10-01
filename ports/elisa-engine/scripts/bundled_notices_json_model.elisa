@@ -1,0 +1,152 @@
+# Typed JSON catalog decoder for scripts/check_bundled_notices.py.
+# The filesystem adapter supplies discovered bundle paths and notice bytes.
+include "./bundled_notices_audit_model.elisa"
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+using EsEngineBundledNoticesAudit
+
+
+module EsEngineBundledNoticesJson:
+    public:
+        error BundledNoticesJsonError:
+            InvalidJson
+            InvalidRoot
+            MissingSources
+            InvalidSources
+            InvalidSourceEntry
+            InvalidMappings
+            InvalidMapping
+            InvalidNotices
+            InvalidRemaining
+
+
+        # Python's json.loads retains the last duplicate object key, and the
+        # notice script ignores the manifest's schema field. Preserve those
+        # semantics while projecting only fields consumed by its audit.
+        def catalog_from_json(source: sview) -> Catalog error[BundledNoticesJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise BundledNoticesJsonError.InvalidJson if sview_len(source) > DATA_MAX_INPUT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: DATA_MAX_INPUT_BYTES}
+            policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, limits, policy) else failure:
+                _ = failure
+                raise BundledNoticesJsonError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else failure:
+                _ = failure
+                raise BundledNoticesJsonError.InvalidJson
+            raise BundledNoticesJsonError.InvalidRoot if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise BundledNoticesJsonError.InvalidRoot if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            complete_index: usize = notices_member_index(document, root_index, "complete")
+            complete: bool = complete_index < document.nodes.count and document.nodes[complete_index].kind == JsonNodeKind.Bool and document.nodes[complete_index].bool_value
+
+            sources_index: usize = notices_member_index(document, root_index, "sources")
+            raise BundledNoticesJsonError.MissingSources if sources_index == JSON_INDEX_NONE
+            raise BundledNoticesJsonError.InvalidSources if sources_index >= document.nodes.count or document.nodes[sources_index].kind != JsonNodeKind.Array
+            sources_node: JsonNode = document.nodes[sources_index]
+            sources: mutable darray[NoticeSource] = []
+            for ordinal in 0..<sources_node.child_count |document, sources_node, sources|:
+                source_entry_index: usize = try notices_array_item(document, sources_node, ordinal) else failure:
+                    _ = failure
+                    raise BundledNoticesJsonError.InvalidSources
+                raise BundledNoticesJsonError.InvalidSourceEntry if source_entry_index >= document.nodes.count or document.nodes[source_entry_index].kind != JsonNodeKind.Object
+                name_index: usize = notices_member_index(document, source_entry_index, "name")
+                raise BundledNoticesJsonError.InvalidSourceEntry if name_index == JSON_INDEX_NONE
+                name: sview = try notices_text(document, name_index) else failure:
+                    _ = failure
+                    raise BundledNoticesJsonError.InvalidSourceEntry
+
+                excerpt_index: usize = notices_member_index(document, source_entry_index, "excerpt")
+                digest_owner: usize = source_entry_index if excerpt_index == JSON_INDEX_NONE else excerpt_index
+                raise BundledNoticesJsonError.InvalidSourceEntry if digest_owner >= document.nodes.count or document.nodes[digest_owner].kind != JsonNodeKind.Object
+                digest_index: usize = notices_member_index(document, digest_owner, "sha256")
+                raise BundledNoticesJsonError.InvalidSourceEntry if digest_index == JSON_INDEX_NONE
+                digest: sview = try notices_text(document, digest_index) else failure:
+                    _ = failure
+                    raise BundledNoticesJsonError.InvalidSourceEntry
+                sources.push(NoticeSource{name: name, sha256: digest})
+
+            mappings_index: usize = notices_member_index(document, root_index, "bundled_libraries")
+            mappings: mutable darray[LibraryMapping] = []
+            if mappings_index != JSON_INDEX_NONE:
+                raise BundledNoticesJsonError.InvalidMappings if mappings_index >= document.nodes.count or document.nodes[mappings_index].kind != JsonNodeKind.Object
+                mappings_node: JsonNode = document.nodes[mappings_index]
+                for ordinal in 0..<mappings_node.member_count |document, mappings_node, mappings|:
+                    member_index: usize = mappings_node.member_start + ordinal
+                    raise BundledNoticesJsonError.InvalidMappings if member_index >= document.members.count
+                    member: JsonMember = document.members[member_index]
+                    library_name: sview = try notices_key(document, member) else failure:
+                        _ = failure
+                        raise BundledNoticesJsonError.InvalidMapping
+                    raise BundledNoticesJsonError.InvalidMapping if member.value_index >= document.nodes.count or document.nodes[member.value_index].kind != JsonNodeKind.Object
+                    notices_index: usize = notices_member_index(document, member.value_index, "notices")
+                    notice_names: mutable darray[sview] = []
+                    if notices_index != JSON_INDEX_NONE:
+                        raise BundledNoticesJsonError.InvalidNotices if notices_index >= document.nodes.count or document.nodes[notices_index].kind != JsonNodeKind.Array
+                        notices_node: JsonNode = document.nodes[notices_index]
+                        for notice_ordinal in 0..<notices_node.child_count |document, notices_node, notice_names|:
+                            notice_index: usize = try notices_array_item(document, notices_node, notice_ordinal) else failure:
+                                _ = failure
+                                raise BundledNoticesJsonError.InvalidNotices
+                            notice_name: sview = try notices_text(document, notice_index) else failure:
+                                _ = failure
+                                raise BundledNoticesJsonError.InvalidNotices
+                            notice_names.push(notice_name)
+                    remaining_index: usize = notices_member_index(document, member.value_index, "remaining")
+                    has_remaining: bool = remaining_index != JSON_INDEX_NONE
+                    remaining: mutable sview = ""
+                    if has_remaining:
+                        remaining <- try notices_text(document, remaining_index) else failure:
+                            _ = failure
+                            raise BundledNoticesJsonError.InvalidMapping
+                    mappings.push(LibraryMapping{library_name: library_name, notices: notice_names, has_remaining: has_remaining, remaining: remaining})
+
+            remaining_index: usize = notices_member_index(document, root_index, "remaining")
+            remaining: mutable darray[sview] = []
+            if remaining_index != JSON_INDEX_NONE:
+                raise BundledNoticesJsonError.InvalidRemaining if remaining_index >= document.nodes.count or document.nodes[remaining_index].kind != JsonNodeKind.Array
+                remaining_node: JsonNode = document.nodes[remaining_index]
+                for ordinal in 0..<remaining_node.child_count |document, remaining_node, remaining|:
+                    value_index: usize = try notices_array_item(document, remaining_node, ordinal) else failure:
+                        _ = failure
+                        raise BundledNoticesJsonError.InvalidRemaining
+                    value: sview = try notices_text(document, value_index) else failure:
+                        _ = failure
+                        raise BundledNoticesJsonError.InvalidRemaining
+                    remaining.push(value)
+
+            return Catalog{complete: complete, sources: sources, bundled_libraries: mappings, remaining: remaining}
+
+
+    private:
+        def notices_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return try json_object_member_index(document, object_index, key) else JSON_INDEX_NONE
+
+
+        def notices_array_item(document: JsonDocument&, array: JsonNode, ordinal: usize) -> usize error[JsonContractError]:
+            raise JsonContractError.InvalidArrayChild if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            child_index: usize = array.child_start + ordinal
+            raise JsonContractError.InvalidArrayChild if child_index >= document.children.count
+            return document.children[child_index].value_index
+
+
+        def notices_text(document: JsonDocument&, node_index: usize) -> sview error[BundledNoticesJsonError, JsonContractError]:
+            raise BundledNoticesJsonError.InvalidSourceEntry if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise BundledNoticesJsonError.InvalidSourceEntry if node.kind != JsonNodeKind.Text
+            raise JsonContractError.InvalidScalarPayload if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            end: usize = node.scalar_start + node.scalar_bytes
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), end.i64())
+
+
+        def notices_key(document: JsonDocument&, member: JsonMember) -> sview error[JsonContractError]:
+            raise JsonContractError.InvalidMemberKey if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            end: usize = member.key_start + member.key_bytes
+            return string_view_slice(bytes_view(document.key_bytes), member.key_start.i64(), end.i64())
