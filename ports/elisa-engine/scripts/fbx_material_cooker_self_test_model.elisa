@@ -1,0 +1,122 @@
+# Typed counterpart of fbx_material_cooker_self_test.validate_material_package.
+include "../../../src/runtime/base64_model.elisa"
+include "../../../src/runtime/python_text_model.elisa"
+
+using EsBase64
+using EsPythonText
+
+
+module EsEngineFbxMaterialSelfTest:
+    public:
+        struct CookedField:
+            name: sview
+            value: sview
+
+
+        error FbxMaterialSelfTestError:
+            RequiredFieldMissing
+            InvalidBase64
+            InvalidNameStream
+            InvalidNameUtf8
+            MaterialPackageMismatch
+
+
+        def validate_material_package(fields: darray[CookedField]) -> void error[FbxMaterialSelfTestError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            stride: FieldLookup = fbx_material_field(fields, "slot_material_stride")
+            materials_field: FieldLookup = fbx_material_field(fields, "slot_materials_b64")
+            names_field: FieldLookup = fbx_material_field(fields, "slot_material_names_b64")
+            raise FbxMaterialSelfTestError.RequiredFieldMissing if not materials_field.found or not names_field.found
+            raise FbxMaterialSelfTestError.MaterialPackageMismatch if not stride.found or stride.value != "48"
+
+            materials: darray[u8] = try fbx_material_decode(materials_field.value)
+            names_data: darray[u8] = try fbx_material_decode(names_field.value)
+            raise FbxMaterialSelfTestError.MaterialPackageMismatch if materials.count != Limits::MATERIAL_BYTES
+            names: darray[sview] = try fbx_material_names(names_data)
+            raise FbxMaterialSelfTestError.MaterialPackageMismatch if names.count != 2 or names[0] != "First" or names[1] != "Second"
+
+            expected_factors: darray[f64] = [0.16, 0.32, 0.48, 0.75, 0.0, 0.434315, 0.3, 0.2, 0.1, 0.5, 0.7, 0.2, 0.1, 1.0, 0.0, 0.65359, 0.0, 0.0, 0.0, 0.5]
+            expected_tags: darray[u32] = [2u32, 0u32, 0u32, 0u32]
+            for record_index in 0..<Limits::RECORD_COUNT |materials, expected_factors, expected_tags|:
+                record_offset: usize = record_index * Limits::RECORD_BYTES
+                for factor_index in 0..<Limits::FACTORS_PER_RECORD |materials, expected_factors, record_offset, record_index|:
+                    actual: f64 = fbx_material_read_f32(materials, record_offset + factor_index * 4)
+                    expected: f64 = expected_factors[record_index * Limits::FACTORS_PER_RECORD + factor_index]
+                    difference: f64 = actual - expected
+                    # Preserve the Python helper's comparison behavior, including
+                    # NaN's unordered comparison.
+                    raise FbxMaterialSelfTestError.MaterialPackageMismatch if difference > Expected::FACTOR_TOLERANCE or difference < -Expected::FACTOR_TOLERANCE
+                for tag_index in 0..<Limits::TAGS_PER_RECORD |materials, expected_tags, record_offset, record_index|:
+                    actual_tag: u32 = fbx_material_read_u32(materials, record_offset + Limits::FACTORS_PER_RECORD * 4 + tag_index * 4)
+                    expected_tag: u32 = expected_tags[record_index * Limits::TAGS_PER_RECORD + tag_index]
+                    raise FbxMaterialSelfTestError.MaterialPackageMismatch if actual_tag != expected_tag
+
+
+    private:
+        struct FieldLookup:
+            found: bool = false
+            value: sview = ""
+
+
+        const module Limits:
+            RECORD_BYTES: usize = 48
+            RECORD_COUNT: usize = 2
+            FACTORS_PER_RECORD: usize = 10
+            TAGS_PER_RECORD: usize = 2
+            MATERIAL_BYTES: usize = 96
+
+
+        const module Expected:
+            FACTOR_TOLERANCE: f64 = 0.0001
+
+
+        def fbx_material_field(fields: darray[CookedField], name: sview) -> FieldLookup:
+            found: mutable bool = false
+            value: mutable sview = ""
+            for field in fields |name, found, value|:
+                if field.name == name:
+                    found <- true
+                    value <- field.value
+            return FieldLookup{found: found, value: value}
+
+
+        def fbx_material_decode(encoded: sview) -> darray[u8] error[FbxMaterialSelfTestError] can[Memory.Allocate, Abort.Panic]:
+            catch decode_base64(encoded):
+                ok decoded:
+                    return decoded
+                error failure:
+                    _ = failure
+                    raise FbxMaterialSelfTestError.InvalidBase64
+
+
+        def fbx_material_read_u32(bytes: darray[u8]&, offset: usize) -> u32:
+            return bytes[offset].u32() | (bytes[offset + 1].u32() << 8) | (bytes[offset + 2].u32() << 16) | (bytes[offset + 3].u32() << 24)
+
+
+        def fbx_material_read_f32(bytes: darray[u8]&, offset: usize) -> f64 can[Unsafe.PointerCast]:
+            bits: u32 = fbx_material_read_u32(bytes, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value.f64()
+
+
+        def fbx_material_names(bytes: darray[u8]&) -> darray[sview] error[FbxMaterialSelfTestError] can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            source: sview = bytes_view(bytes)
+            offset: mutable usize = 0
+            for _ in 0..<Limits::RECORD_COUNT |bytes, names, source, offset|:
+                raise FbxMaterialSelfTestError.InvalidNameStream if offset > bytes.count
+                raise FbxMaterialSelfTestError.InvalidNameStream if bytes.count - offset < 4
+                byte_count: usize = fbx_material_read_u32(bytes, offset).usize()
+                offset <- offset + 4
+                raise FbxMaterialSelfTestError.InvalidNameStream if byte_count > bytes.count - offset
+                name: sview = source[offset:offset + byte_count]
+                catch decode_utf8(name):
+                    ok decoded:
+                        _ = decoded
+                    error failure:
+                        _ = failure
+                        raise FbxMaterialSelfTestError.InvalidNameUtf8
+                names.push(name)
+                offset <- offset + byte_count
+            raise FbxMaterialSelfTestError.InvalidNameStream if offset != bytes.count
+            return names
