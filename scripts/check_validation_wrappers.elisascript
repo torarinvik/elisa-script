@@ -1,0 +1,458 @@
+# Source-only Elisascript port of check_validation_wrappers.sh.
+# POSIX shell syntax validation is deferred until a native shell parser exists.
+
+include "./shell_invocation_path.elisascript"
+include "./source_function_scope.elisascript"
+
+module EsValidationWrapperAudit:
+    using EsRuntime
+
+    private:
+        const module Inputs:
+            LOWERING: sview = "run_bounded_lowering.sh"
+            TEST_WRAPPER: sview = "run_bounded_test.sh"
+            STOPPER: sview = "stop_bounded_validation.sh"
+            SNAPSHOT_LIBRARY: sview = "validation_process_snapshot.sh"
+            SNAPSHOT_FIXTURE: sview = "test/validation/process_snapshot_test.sh"
+            PARITY_DIRECTORY: sview = "test/script_parity"
+
+
+        const module Limits:
+            DIRECTORY_ENTRIES: usize = 16384
+            DIRECTORY_PATH_BYTES: usize = 16777216
+            PATH_BYTES: usize = 4095
+            EINTR_RETRIES: usize = 8
+
+
+        const module Patterns:
+            DISABLED_FILE: sview = "elisascript-validation.disabled"
+            REAUTHORIZATION: sview = "ELISASCRIPT_VALIDATION_REAUTHORIZED:-0"
+            EXPECTED_COMPILER: sview = "expected_compiler_path=\"/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac\""
+
+
+        const module Messages:
+            MISSING_ROOT: sview = "validation wrapper audit: missing repository root"
+            UNRESOLVED_ROOT: sview = "validation wrapper audit: unable to resolve repository root"
+            MISSING_INPUT: sview = "validation wrapper audit: missing or non-executable "
+            MISSING_SNAPSHOT: sview = "validation wrapper audit: missing process snapshot library"
+            MISSING_FIXTURE: sview = "validation wrapper audit: missing process snapshot fixture"
+            READ_FAILED: sview = "validation wrapper audit: unable to read source: "
+            DIRECTORY_FAILED: sview = "validation wrapper audit: unable to enumerate source directory"
+            CONTRACT_MISSING: sview = "validation wrapper audit: source contract is missing: "
+            FORBIDDEN_SOURCE: sview = "validation wrapper audit: forbidden source form remains: "
+            CHECKER_NOT_FOUND: sview = "validation wrapper audit: no validation checker scripts were found"
+            PARITY_FIXTURE_NOT_FOUND: sview = "validation wrapper audit: no launcher parity fixtures were found"
+            SUCCESS: sview = "validation wrapper audit: disabled gate, pinned compiler, bounded snapshots, sampled guards, retained evidence, lease, parity attestations, and stop path present; shell syntax remains unchecked"
+
+
+        const enum DirectoryPhase of u8:
+            Scan
+            Done
+
+
+        const enum PathEnumerationError of u8:
+            InvalidPath
+            OpenFailed
+            ReadFailed
+            TooManyEntries
+            CloseFailed
+
+
+        const module ExitStatus:
+            FAILURE: i64 = 1
+            IO_FAILURE: i64 = 2
+
+
+        const enum WrapperKind of u8:
+            Lowering
+            Test
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def matching_paths(directory: Path, prefix: sview, suffix: sview, excluded_name: sview) -> darray[Path] error[PathEnumerationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            directory_text: sview = f"{directory}"
+            directory_length: usize = sview_len(directory_text)
+            raise PathEnumerationError.InvalidPath if directory_length == 0 or directory_length > Limits::PATH_BYTES or sview_contains_byte(directory_text, 0u8)
+            directory_bytes: mutable darray[u8] = []
+            for byte in directory_text |directory_bytes|:
+                directory_bytes.push(byte)
+            directory_bytes.push(0u8)
+            directory_pointer: cstr = (&directory_bytes[0]).cast[cstr]
+
+            stream: mutable heap void&? = EsRuntime::elisascript_posix_opendir(directory_pointer)
+            raise PathEnumerationError.OpenFailed if stream == null
+            directory_handle: mutable heap void& = stream
+            names: mutable darray[Path] = []
+            entry_count: mutable usize = 0
+            matched_path_bytes: mutable usize = 0
+            retries: mutable usize = 0
+            phase: mutable DirectoryPhase = DirectoryPhase.Scan
+            machine over phase while phase != DirectoryPhase.Done:
+                state Directory
+                start Directory
+
+                Directory, DirectoryPhase.Scan:
+                    errno: mutable i32& = EsRuntime::elisascript_posix_errno()
+                    errno[0] <- 0
+                    entry_pointer: mutable EsRuntime::ElisascriptDirectoryEntry&? = EsRuntime::elisascript_posix_readdir(directory_handle)
+                    if entry_pointer == null:
+                        if errno[0] == EsRuntime::DarwinErrno::EINTR and retries < Limits::EINTR_RETRIES:
+                            retries <- retries + 1
+                            -> Directory
+                        if errno[0] != 0:
+                            _ = EsRuntime::elisascript_posix_closedir(directory_handle)
+                            raise PathEnumerationError.ReadFailed
+                        phase <- DirectoryPhase.Done
+                        -> Directory
+
+                    retries <- 0
+                    entry: mutable EsRuntime::ElisascriptDirectoryEntry& = entry_pointer
+                    name_length: usize = entry.name_length.usize()
+                    if entry.record_length == 0u16 or name_length == 0 or name_length > 255 or entry.name[name_length] != 0:
+                        _ = EsRuntime::elisascript_posix_closedir(directory_handle)
+                        raise PathEnumerationError.ReadFailed
+                    invalid_name: mutable bool = false
+                    for byte_index in 0..<name_length |entry, invalid_name|:
+                        invalid_name <- true if entry.name[byte_index] == 0u8 or entry.name[byte_index] == 47u8
+                    if invalid_name:
+                        _ = EsRuntime::elisascript_posix_closedir(directory_handle)
+                        raise PathEnumerationError.ReadFailed
+                    entry_count <- entry_count + 1
+                    if entry_count > Limits::DIRECTORY_ENTRIES:
+                        _ = EsRuntime::elisascript_posix_closedir(directory_handle)
+                        raise PathEnumerationError.TooManyEntries
+                    entry_name: sview = sview(&entry.name[0], 0, name_length.i64())
+                    if entry_name != "." and entry_name != ".." and entry_name != excluded_name and entry_name.startswith(prefix) and entry_name.endswith(suffix):
+                        owned_name: sview = f"{entry_name}"
+                        matched_path: Path = directory.joinpath(owned_name)
+                        matched_path_length: usize = sview_len(f"{matched_path}")
+                        if matched_path_length > Limits::PATH_BYTES or matched_path_bytes > Limits::DIRECTORY_PATH_BYTES or matched_path_length > Limits::DIRECTORY_PATH_BYTES - matched_path_bytes:
+                            _ = EsRuntime::elisascript_posix_closedir(directory_handle)
+                            raise PathEnumerationError.TooManyEntries
+                        matched_path_bytes <- matched_path_bytes + matched_path_length
+                        names.push(matched_path)
+                    -> Directory
+
+                Directory, DirectoryPhase.Done:
+                    break
+
+            close_status: int = EsRuntime::elisascript_posix_closedir(directory_handle)
+            raise PathEnumerationError.CloseFailed if close_status != 0
+            return names
+
+
+        def require_patterns(input: Path, patterns: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if not found:
+                    diagnostic(Messages::CONTRACT_MISSING + f"{pattern}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def require_regex_patterns(input: Path, patterns: darray[sview], full_text: bool = false) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern_text in patterns:
+                pattern: Regex = regex(pattern_text)
+                found: mutable bool = false
+                if full_text:
+                    catch EsSourceFunctionScope::contains_file_regex_text(input, pattern):
+                        ok matched:
+                            found <- matched
+                        error _:
+                            diagnostic(Messages::READ_FAILED + f"{input}")
+                            return ExitStatus::IO_FAILURE
+                else:
+                    catch EsSourceFunctionScope::contains_file_regex_line(input, pattern):
+                        ok matched:
+                            found <- matched
+                        error _:
+                            diagnostic(Messages::READ_FAILED + f"{input}")
+                            return ExitStatus::IO_FAILURE
+                if not found:
+                    diagnostic(Messages::CONTRACT_MISSING + f"{pattern_text}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def reject_patterns(input: Path, patterns: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern in patterns:
+                found: bool = try EsSourceFunctionScope::contains_file_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if found:
+                    diagnostic(Messages::FORBIDDEN_SOURCE + f"{pattern}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def reject_regex_patterns(input: Path, patterns: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            for pattern_text in patterns:
+                pattern: Regex = regex(pattern_text)
+                found: bool = try EsSourceFunctionScope::contains_file_regex_line(input, pattern) else err:
+                    diagnostic(Messages::READ_FAILED + f"{input}")
+                    return ExitStatus::IO_FAILURE
+                if found:
+                    diagnostic(Messages::FORBIDDEN_SOURCE + f"{pattern_text}")
+                    return ExitStatus::FAILURE
+            return 0i64
+
+
+        def audit_wrapper(wrapper: Path, kind: WrapperKind) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast]:
+            status: mutable i64 = require_patterns(wrapper, [
+                "umask 077", "validation_caller_path=\"${PATH:-/usr/bin:/bin}\"", "PATH=/usr/bin:/bin", "export PATH",
+                "if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then", Patterns::REAUTHORIZATION,
+                Patterns::DISABLED_FILE, "sampled and reactive, not an OS-enforced hard memory cap",
+                "double-forked process", "Go projects/structpy-tree/compiler/bin/elisac", Patterns::EXPECTED_COMPILER,
+                "if [ \"$#\" -ne 1 ]; then", "compiler_path=\"$canonical_compiler_dir/$compiler_name\"",
+                "if [ \"$compiler_path\" != \"$expected_compiler_path\" ] || [ ! -f \"$compiler_path\" ] || [ ! -x \"$compiler_path\" ]; then",
+                "refusing symlinked compiler path", "process_group_rss_kb", "wait_for_owned_group_quiescence()",
+                "process_group_quiescence_status \"$quiescence_group_id\"", "if [ \"$quiescence_status\" -ne 1 ]; then",
+                "wait_for_owned_group_quiescence \"$process_root_pid\" \"$process_group_id\"",
+                "process_group_quiescence_unverified", "rss_poll_interval_seconds=0.05", "rss_limit_ceiling_kb=524288",
+                "if [ \"$rss_limit_kb\" -gt \"$rss_limit_ceiling_kb\" ]; then",
+                "RSS limit may not exceed 524288 KB (512 MiB)", "sleep \"$rss_poll_interval_seconds\"",
+                "rss_poll_interval_seconds=%s", "source_limit_bytes=65536",
+                "head -c \"$((source_limit_bytes + 1))\" <\"$source_file\" >\"$source_snapshot\"",
+                "wc -c <\"$source_snapshot\" 2>/dev/null", "if [ -L \"$source_file\" ]; then",
+                "source_bytes=%s\\nsource_limit_bytes=%s\\n", "snapshot_path_hex=%s\\n",
+                "source_snapshot=\"$(mktemp \"$source_parent/.elisascript-validation.XXXXXXXX\")\"",
+                "rm -f \"$source_snapshot\"", "process_tree_identities \"$process_root_pid\"",
+                "process_snapshot_row_limit=16384", ". \"$script_dir/validation_process_snapshot.sh\"",
+                "if [ ! -x /bin/ps ]; then",
+                "LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?",
+                "LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_identity_ps_status=$?",
+                "LC_ALL=C /bin/ps -o pgid= -p \"$1\"", "validation_lease_start=\"$(LC_ALL=C /bin/ps -o lstart=",
+                "lease_live_start=\"$(LC_ALL=C /bin/ps -o lstart=", "lease_live_command=\"$(LC_ALL=C /bin/ps -o command=",
+                "lease_current_start=\"$(LC_ALL=C /bin/ps -o lstart=", "__ELISASCRIPT_PS_STATUS__ %s\\n",
+                "validation_process_tree_identities_from_snapshot \"$process_tree_root\" \"$process_snapshot_row_limit\"",
+                "validation_process_identity_matches_from_snapshot \"$process_identity_pid\" \"$process_identity_group\" \"$process_identity_start\" \"$validation_wrapper_pgid\" \"$process_snapshot_row_limit\"",
+                "signal_process_tree_identities \"$process_tree_snapshot\" TERM",
+                "signal_process_tree_identities \"$process_tree_snapshot\" KILL", "kill_process_tree_immediately()",
+                "signal_process_pid", "kill \"-$signal_process_kind\" \"$signal_process_pid\"",
+                "setsid_path", "case \"$setsid_path\" in", "compiler_pgid", "validation_wrapper_pgid=",
+                "0|*[!0-9]*|\"$validation_wrapper_pgid\"", "process_group_rss_kb \"$compiler_pgid\" \"$compiler_pid\"",
+                "process_table_ps_status=$?", "/bin/ps -axo pid=,ppid=,pgid=,rss=", "head -n \"$((process_snapshot_row_limit + 2))\")\" || return 1",
+                "validation_process_group_rss_from_snapshot \"$process_group_id\" \"$process_root_pid\" \"$process_snapshot_row_limit\"",
+                "/bin/ps -axo pgid=,stat= 2>/dev/null; process_table_ps_status=$?",
+                "validation_process_group_has_live_members_from_snapshot \"$process_group_id\" \"$process_snapshot_row_limit\"",
+                "/bin/ps -axo pid=,stat= 2>/dev/null; process_table_ps_status=$?",
+                "validation_process_state_from_snapshot \"$process_id\" \"$process_snapshot_row_limit\"",
+                "compiler_process_state", "reap_compiler_if_exited",
+                "retaining validation lease because process-group quiescence could not be proven",
+                "if [ -n \"$compiler_pgid\" ] && process_group_has_processes \"$compiler_pgid\"; then",
+                "Keep the session leader as an unreaped child while live", "group members remain.",
+                "through TERM/grace/KILL escalation instead of allowing", "the numeric identifier to be recycled.",
+                "return 0", "Never retain a PGID after releasing the unreaped leader:",
+                "a later cleanup trap must not mistake a recycled ID for us.", "compiler_pgid=\"\"", "wait \"$compiler_pid\"",
+                "if [ \"$compiler_pgid\" != \"$compiler_pid\" ]; then",
+                "session leader PID does not own its process-group ID", "wait \"$compiler_pid\" 2>/dev/null || compiler_exit=$?",
+                "kill -KILL -- \"-$owned_group_id\"",
+                "validation_owned_process_group_id \"$process_root_pid\" \"$process_group_id\" \"$validation_wrapper_pgid\"",
+                "while :", "kill_process_tree \"$compiler_pid\" \"$compiler_pgid\"", "process_group_has_processes",
+                "rss_snapshot_or_containment_failed", "kill_process_tree_immediately \"$compiler_pid\" \"$compiler_pgid\"",
+                "kill -TERM -- \"-$owned_group_id\"", "kill_process_tree", "kill_process_tree_immediately \"$compiler_pid\" \"$compiler_pgid\"",
+                "validation_lease", "acquire_validation_lease", "if [ -e \"$validation_disabled_file\" ] || [ -L \"$validation_disabled_file\" ]; then",
+                "PATH=\"$validation_caller_path\" ELISA_LOCAL_COMPILER=\"$compiler_path\"",
+                "/bin/sh \"$script_dir/validation_identity.sh\"", "validation_compiler_binary_revision",
+                "validation_compiler_binary_modified",
+                "retained_log_budget_bytes=1073741824", "validation_log_bytes_used", "effective_log_limit_bytes",
+                "mktemp \"$validation_log_dir/", "preserving bounded-run evidence",
+                "numeric limits must not exceed 10 decimal digits"
+            ])
+            return status if status != 0i64
+
+            status <- require_regex_patterns(wrapper, [
+                "umask 077\\nvalidation_caller_path=\"\\$\\{PATH:-/usr/bin:/bin\\}\"\\nPATH=/usr/bin:/bin\\nexport PATH\\nscript_dir=",
+                "if process_identity_matches \"\\$signal_process_pid\" \"\\$signal_process_group\" \"\\$signal_process_start\"; then\\n[[:space:]]+kill \"-\\$signal_process_kind\" \"\\$signal_process_pid\"",
+                "kill_process_tree_immediately\\(\\)[\\s\\S]*?signal_process_tree_identities \"\\$process_tree_snapshot\" KILL",
+                "if \\[ -n \"\\$compiler_pgid\" \\] && process_group_has_processes \"\\$compiler_pgid\"; then\\n[[:space:]]+# Keep the session leader as an unreaped child while live\\n[[:space:]]+# group members remain\\.[^\\n]*\\n[[:space:]]+# through TERM/grace/KILL escalation instead of allowing\\n[[:space:]]+# the numeric identifier to be recycled\\.[^\\n]*\\n[[:space:]]+return 0\\n[[:space:]]+fi\\n[[:space:]]+# Never retain a PGID after releasing the unreaped leader:[^\\n]*\\n[[:space:]]+# a later cleanup trap must not mistake a recycled ID for us\\.[^\\n]*\\n[[:space:]]+compiler_pgid=\"\"\\n[[:space:]]+wait \"\\$compiler_pid\"",
+                "rss_snapshot_or_containment_failed[^\\n]*\\n[[:space:]]+if ! kill_process_tree_immediately \"\\$compiler_pid\" \"\\$compiler_pgid\"; then",
+                "rss_guard[^\\n]*\\n[[:space:]]+if ! kill_process_tree_immediately \"\\$compiler_pid\" \"\\$compiler_pgid\"; then",
+                "acquire_validation_lease\\n\\n([[:space:]]*#[^\\n]*\\n)+if \\[ -e \"\\$validation_disabled_file\" \\] \\|\\| \\[ -L \"\\$validation_disabled_file\" \\]; then",
+                "compiler_binary_revision=%s.*compiler_binary_modified=%s"
+            ], true)
+            return status if status != 0i64
+
+            if kind == WrapperKind.Lowering:
+                status <- require_patterns(wrapper, [
+                    "PATH=\"$validation_caller_path\" \"$setsid_path\" \"$compiler_path\" -O0 -emit lowered \"$source_snapshot\""
+                ])
+            else:
+                status <- require_patterns(wrapper, [
+                    "ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active PATH=\"$validation_caller_path\" \"$setsid_path\" \"$compiler_path\" -O0 -emit test \"$source_snapshot\""
+                ])
+            return status if status != 0i64
+
+            status <- reject_patterns(wrapper, [
+                "pgrep -P", "rm -f -- \"$log_file\"", "source_path=%s"
+            ])
+            return status if status != 0i64
+            status <- reject_regex_patterns(wrapper, [
+                "(^|[[:space:]])ps[[:space:]]+-", "Elisa-compiler|elisa-compiler/bin/elisac"
+            ])
+            return status if status != 0i64
+            return 0i64
+
+
+        def audit_checker_dependencies(scripts_directory: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read]:
+            checkers: darray[Path] = try matching_paths(scripts_directory, "check_", ".sh", "check_validation_wrappers.sh") else err:
+                diagnostic(Messages::DIRECTORY_FAILED)
+                return ExitStatus::IO_FAILURE
+            if checkers.count == 0:
+                diagnostic(Messages::CHECKER_NOT_FOUND)
+                return ExitStatus::FAILURE
+            for checker in checkers:
+                status: i64 = reject_regex_patterns(checker, ["IMPLEMENTATION_PLAN\\.md|SCRIPT_TASKS\\.md"])
+                return status if status != 0i64
+            return 0i64
+
+
+        def audit_parity_fixtures(parity_directory: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read]:
+            launchers: darray[Path] = try matching_paths(parity_directory, "", "_launcher_test.elisascript", "") else err:
+                diagnostic(Messages::DIRECTORY_FAILED)
+                return ExitStatus::IO_FAILURE
+            if launchers.count == 0:
+                diagnostic(Messages::PARITY_FIXTURE_NOT_FOUND)
+                return ExitStatus::FAILURE
+            for launcher in launchers:
+                status: i64 = require_patterns(launcher, [
+                    "ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "assert rss_guard == \"active\"",
+                    "getenv(\"ELISASCRIPT_VALIDATION_REAUTHORIZED\"", "assert reauthorized == \"1\"",
+                    "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac",
+                    "assert compiler =="
+                ])
+                return status if status != 0i64
+                status <- require_regex_patterns(launcher, ["assert compiler == .*pinned_compiler_path\\(\\)"])
+                return status if status != 0i64
+            return 0i64
+
+
+        def execute_all(repository_root: Path, scripts_directory: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            lowering: Path = scripts_directory.joinpath(Inputs::LOWERING)
+            test_wrapper: Path = scripts_directory.joinpath(Inputs::TEST_WRAPPER)
+            stopper: Path = scripts_directory.joinpath(Inputs::STOPPER)
+            snapshot_library: Path = scripts_directory.joinpath(Inputs::SNAPSHOT_LIBRARY)
+            wrappers: darray[Path] = [lowering, test_wrapper, stopper]
+            for wrapper in wrappers:
+                if not is_file(wrapper) or not is_executable(wrapper):
+                    diagnostic(Messages::MISSING_INPUT + f"{wrapper}")
+                    return ExitStatus::FAILURE
+            if not is_file(snapshot_library):
+                diagnostic(Messages::MISSING_SNAPSHOT)
+                return ExitStatus::FAILURE
+
+            status: mutable i64 = audit_checker_dependencies(scripts_directory)
+            return status if status != 0i64
+            status <- audit_wrapper(lowering, WrapperKind.Lowering)
+            return status if status != 0i64
+            status <- audit_wrapper(test_wrapper, WrapperKind.Test)
+            return status if status != 0i64
+
+            status <- require_patterns(snapshot_library, [
+                "validation_process_tree_pids_from_snapshot()", "validation_process_group_rss_from_snapshot()",
+                "validation_process_group_has_live_members_from_snapshot()", "validation_process_group_quiescence_from_snapshot()",
+                "validation_process_state_from_snapshot()", "validation_process_tree_identities_from_snapshot()",
+                "/usr/bin/awk -v target_pid=", "/usr/bin/awk -v group=", "/usr/bin/awk -v target=", "/usr/bin/awk -v root=",
+                "/usr/bin/awk -v group=\"$1\" -v root=\"$2\"", "NF != 8",
+                "start_token[pid] = $4 \"-\" $5 \"-\" $6 \"-\" $7 \"-\" $8",
+                "target_state ~ /^Z/", "target_rows > 1", "NF != 2", "NF != 4",
+                "if (overflow || malformed || ps_failed || !status_seen || process_rows > row_limit || NR > row_limit + 1 || found) exit 0",
+                "exit 1", "validation_owned_process_group_id()", "validation_process_start_token_matches()",
+                "validation_process_identity_matches_from_snapshot()", "status_seen { malformed = 1; exit }",
+                "[ \"$validation_group_candidate\" = \"$validation_group_root\" ] || return 1",
+                "[ \"$validation_group_candidate\" != \"$validation_group_wrapper\" ] || return 1",
+                "NR > row_limit + 1 { overflow = 1; exit }", "if (overflow || malformed || ps_failed || !status_seen",
+                "if (!scope_seen) exit 1", "queue[++tail] = child_pid", "length(value) <= 10 && value + 0 <= 2147483647",
+                "length($4) > 10 || ($4 + 0) > 1000000000", "tree_pid[pid] && process_group[pid] != group",
+                "if (pid in present)"
+            ])
+            return status if status != 0i64
+            status <- reject_regex_patterns(snapshot_library, ["^[[:space:]]*awk[[:space:]]+-v"])
+            return status if status != 0i64
+
+            snapshot_fixture: Path = repository_root.joinpath(Inputs::SNAPSHOT_FIXTURE)
+            if not is_file(snapshot_fixture):
+                diagnostic(Messages::MISSING_FIXTURE)
+                return ExitStatus::FAILURE
+            status <- require_patterns(snapshot_fixture, [
+                "validation_process_tree_pids_from_snapshot 10 4", "validation_process_identity_matches_from_snapshot",
+                "changed PGID is rejected", "recycled PID start token is rejected",
+                "wrapper process group is never eligible for per-PID signaling", "rows after the snapshot sentinel are rejected",
+                "duplicate PIDs are rejected from identity snapshots", "validation_process_group_rss_from_snapshot 10 10 8",
+                "validation_process_group_quiescence_from_snapshot", "failed group snapshot is inconclusive",
+                "oversized group snapshot is inconclusive", "malformed group row is inconclusive",
+                "PATH=/nonexistent validation_process_group_rss_from_snapshot 10 10 8", "RSS parser ignores caller PATH",
+                "RSS above the decimal-safe ceiling", "RSS integer wider than ten decimal digits",
+                "PID exceeds portable signed process-ID range", "PGID exceeds portable signed process-ID range",
+                "duplicate PID in RSS snapshot", "failed liveness snapshot conservatively retains leader",
+                "oversized liveness snapshot conservatively retains leader", "oversized process-state snapshot",
+                "tree identities preserve PGID and process start time", "malformed process identity row",
+                "process identity row-limit overflow", "live compiler process state", "zombie compiler process state",
+                "absent compiler process state", "validation_owned_process_group_id 301 301 100",
+                "matching process start token was rejected", "different process start token was accepted",
+                "unsafe process group accepted", "failed descendant process-table command", "RSS row-limit overflow",
+                "descendant escaping the isolated process group is rejected"
+            ])
+            return status if status != 0i64
+
+            parity_directory: Path = repository_root.joinpath(Inputs::PARITY_DIRECTORY)
+            status <- audit_parity_fixtures(parity_directory)
+            return status if status != 0i64
+
+            status <- require_patterns(stopper, [
+                "emergency-stop latch", "umask 077", "PATH=/usr/bin:/bin", "export PATH",
+                "owner.start", "process_tree_snapshot", ". \"$script_dir/validation_process_snapshot.sh\"",
+                "process_snapshot_row_limit=16384", "if [ ! -x /bin/ps ]; then",
+                "LC_ALL=C /bin/ps -axo pid=,ppid=,pgid=,lstart= 2>/dev/null; process_snapshot_ps_status=$?",
+                "owner_live_start=\"$(LC_ALL=C /bin/ps -o lstart=", "owner_live_command=\"$(LC_ALL=C /bin/ps -o command=",
+                "process_identity_current_start=\"$(LC_ALL=C /bin/ps -o lstart=",
+                "head -n \"$((process_snapshot_row_limit + 2))\")\" || return 1", "__ELISASCRIPT_PS_STATUS__ %s\\n",
+                "validation_process_tree_identities_from_snapshot \"$process_tree_root\" \"$process_snapshot_row_limit\"",
+                "refusing to signal from incomplete data", "process_snapshot_contains_pid()", "process_snapshot_group_for_pid()",
+                "owner_start_matches()", "process_identity_matches()",
+                "term_tree_snapshot=\"$(process_tree_identities \"$owner_pid\")\"",
+                "kill_tree_snapshot=\"$(process_tree_identities \"$owner_pid\")\"",
+                "validation_owned_process_group_id \"$process_pid\" \"$process_group_id\" \"$owner_group_id\"",
+                "if [ -n \"$owned_group_id\" ] && process_identity_matches \"$process_pid\" \"$process_start_token\"; then",
+                "if process_identity_matches \"$process_pid\" \"$process_start_token\"; then",
+                "kill -TERM -- \"-$owned_group_id\"", "kill -KILL -- \"-$owned_group_id\"",
+                "refusing stale PID escalation"
+            ])
+            return status if status != 0i64
+            status <- require_regex_patterns(stopper, ["umask 077\\nPATH=/usr/bin:/bin\\nexport PATH\\nscript_dir="], true)
+            return status if status != 0i64
+            status <- reject_patterns(stopper, ["pgrep -P"])
+            return status if status != 0i64
+            status <- reject_regex_patterns(stopper, ["(^|[[:space:]])ps[[:space:]]+-"])
+            return status if status != 0i64
+            return 0i64
+
+
+    public:
+        def run_root(repository_root: Path) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Directory.Read, File.Read]:
+            if not is_directory(repository_root):
+                diagnostic(Messages::MISSING_ROOT)
+                return ExitStatus::FAILURE
+            root: Path = path_normalize(repository_root)
+            scripts_directory: Path = root.joinpath("scripts")
+            status: i64 = execute_all(root, scripts_directory)
+            return status if status != 0i64
+            print(Messages::SUCCESS)
+            return 0i64
+
+
+        def run_default() -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+            root: Path = try EsShellInvocationPath::project_root(f"{Script::invocation_path()}") else err:
+                diagnostic(Messages::UNRESOLVED_ROOT)
+                return ExitStatus::FAILURE
+            return run_root(root)
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Write, Console.Format, Unsafe.PointerCast, Environment.Read, Directory.Read, File.Read]:
+    _ = arguments
+    return EsValidationWrapperAudit::run_default()
