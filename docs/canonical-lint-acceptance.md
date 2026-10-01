@@ -237,6 +237,13 @@ receipt and do not enter this publication path. Same-invocation storage and
 run-pool provenance remain exclusive host-caller obligations; allocation panic,
 cancellation and resource-memory accounting are still unqualified.
 
+This dormant receipt is specifically tied to a child-backed prepared-spawn
+owner and its completed/retired lifecycle. A future terminal parent-side
+replacement call has no child owner to certify; its returned exec errno and
+search/fallback evidence must not be forged into `Stage.Spawn` merely to reuse
+this payload shape. Define and validate the replacement failure contract at
+its own host boundary.
+
 Small codec and synthetic source-catch fixtures are authored but uncompiled/unrun.
 A separate opt-in `test/fixtures/process_launch_error/publication.elisa` uses the
 real Machine/guard helpers to model admission publication, typed extraction,
