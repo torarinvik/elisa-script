@@ -1,0 +1,129 @@
+#!/usr/bin/env elisascript
+# Elisascript companion for elisa-engine/scripts/test_crash_report.py.
+# This test compiles and runs native code only when explicitly invoked.
+include "./test_crash_report_plan.elisa"
+include "../../../src/runtime/bounded_text_posix.elisa"
+
+using EsEngineCrashReportTestPlan
+
+
+module EsEngineCrashReportTest:
+    private:
+        struct CommandResult:
+            status: i64
+            started: bool
+
+
+        def diagnostic(message: sview) -> void can[Console.Write]:
+            _ = write_stderr(message + "\n")
+
+
+        def temporary_parent() -> Path can[Environment.Read, Memory.Allocate, Abort.Panic]:
+            configured: sview = try getenv("TMPDIR", "\0") else "\0"
+            if configured != "\0" and configured != "":
+                return path(configured)
+            configured <- try getenv("TEMP", "\0") else "\0"
+            if configured != "\0" and configured != "":
+                return path(configured)
+            configured <- try getenv("TMP", "\0") else "\0"
+            return path(configured) if configured != "\0" and configured != ""
+            return path("/tmp")
+
+
+        def execute(program: sview, arguments: darray[sview]) -> CommandResult can[Process.Run, Memory.Allocate, Console.Write]:
+            status: i64 = try run_process(executable(program), arguments) else err:
+                diagnostic("unable to start command: " + program)
+                return CommandResult{status: 127, started: false}
+            CommandResult{status: status, started: true}
+
+
+        def print_reports(directory: sview) -> bool can[Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write]:
+            report_paths: darray[sview] = try path(directory).glob(Defaults::REPORT_PATTERN) else err:
+                diagnostic("unable to enumerate crash reports in " + directory)
+                return false
+            ordered_paths: darray[sview] = sorted(report_paths)
+            succeeded: mutable bool = true
+            for report_path in ordered_paths:
+                contents: sview = try EsBoundedText::read_utf8(path(report_path), Defaults::MAX_REPORT_BYTES) else err:
+                    diagnostic("unable to read crash report: " + report_path)
+                    succeeded <- false
+                    break
+                _ = write_stdout(contents + "\n")
+            return succeeded
+
+
+    public:
+        def run() -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Write, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            engine_root: Path = try path_real(Script::source_path().parent().parent().parent().parent().parent().joinpath("elisa-engine")) else err:
+                diagnostic("unable to resolve elisa-engine project root")
+                return 1i64
+            compiler: sview = try getenv("CXX", Defaults::COMPILER) else Defaults::COMPILER
+            parent: Path = temporary_parent()
+            temporary: Path = try temp_directory_in(parent, Defaults::TEMP_PREFIX) else err:
+                diagnostic("unable to create temporary crash-report test directory")
+                return 1i64
+            plan: Plan = EsEngineCrashReportTestPlan::plan(f"{engine_root}", f"{temporary}", compiler)
+
+            execution: mutable ExecutionState = initial_execution()
+            machine over execution while execution.phase != ExecutionPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, ExecutionPhase.Prepare:
+                    reports_created: bool = try create_directory(path(plan.reports_directory)) else false
+                    if not reports_created:
+                        diagnostic("unable to create crash-report output directory")
+                    execution <- try execution_after_prepare(execution, reports_created) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Compile:
+                    child: CommandResult = execute(plan.compile_command.program, plan.compile_command.arguments)
+                    if child.started and child.status != 0:
+                        _ = write_stdout("Crash-report regression did not compile.\n")
+                    execution <- try execution_after_compile(execution, child.status) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Run:
+                    child: CommandResult = execute(plan.test_command.program, plan.test_command.arguments)
+                    if child.started and child.status != 0:
+                        _ = write_stdout("Crash-report regression failed with status " + f"{child.status}" + ".\n")
+                    execution <- try execution_after_run(execution, child.status, child.started) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.ShowReports:
+                    reports_printed: bool = print_reports(plan.reports_directory)
+                    execution <- try execution_after_reports(execution, reports_printed) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Cleanup, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Cleanup:
+                    cleaned: bool = try remove_tree(temporary) else false
+                    if not cleaned:
+                        diagnostic("unable to clean up temporary crash-report test directory")
+                    execution <- try execution_after_cleanup(execution, cleaned) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.ReportSuccess:
+                    _ = write_stdout("Native crash-report tests passed.\n")
+                    execution <- try execution_after_success_report(execution) else err:
+                        diagnostic("invalid crash-report test execution state")
+                        ExecutionState{phase: ExecutionPhase.Done, exit_status: 1}
+                    -> Dispatch
+
+                Dispatch, ExecutionPhase.Done:
+                    break
+            return execution.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Write, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    _ = arguments
+    return EsEngineCrashReportTest::run()
