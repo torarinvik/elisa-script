@@ -21,6 +21,7 @@ module EsElisaPackageArchive:
             DuplicateSectionName
             SectionSizeRejected
             CompressionCandidateMissing
+            CompressionCandidateInvalid
             CompressionLevelMismatch
             PackageIndexTooLarge
             PackageTooLarge
@@ -56,6 +57,7 @@ module EsElisaPackageArchive:
                     raise ArchiveError.SectionSizeRejected if sections[entry].payload.count == 0 or sections[entry].payload.count > Limits::MAX_SECTION_BYTES
                     raise ArchiveError.CompressionCandidateMissing if sections[entry].zstd_candidate.count == 0
                     raise ArchiveError.CompressionLevelMismatch if sections[entry].zstd_level != compression_level
+                    raise ArchiveError.CompressionCandidateInvalid if not archive_zstd_frame_structurally_valid(sections[entry].zstd_candidate, sections[entry].payload.count)
                     if ordered_index > 0:
                         previous_name: sview = archive_entry_name(sections, ordered[ordered_index - 1])
                         raise ArchiveError.DuplicateSectionName if previous_name == sections[entry].name
@@ -119,6 +121,135 @@ module EsElisaPackageArchive:
             ALIGNMENT_BYTES: usize = 16
             MIN_COMPRESSION_LEVEL: i32 = -5
             MAX_COMPRESSION_LEVEL: i32 = 22
+
+
+        const enum ZstdFrameState of u8:
+            Magic
+            Descriptor
+            WindowDescriptor
+            ContentSize
+            BlockHeader
+            BlockContent
+            Checksum
+            Done
+            Invalid
+
+
+        const module ZstdFrame:
+            MAGIC_0: u8 = 40
+            MAGIC_1: u8 = 181
+            MAGIC_2: u8 = 47
+            MAGIC_3: u8 = 253
+            MAX_BLOCK_BYTES: usize = 131072
+            MAX_FRAME_BYTES: usize = Limits::MAX_SECTION_BYTES + 262144
+
+
+        # This checks one standard frame's framing and declared content size.
+        # It does not decode compressed blocks or verify an optional xxHash
+        # checksum; the host compressor remains responsible for proving that
+        # the frame decodes to the supplied bytes.
+        def archive_zstd_frame_structurally_valid(frame: darray[u8], expected_content_bytes: usize) -> bool:
+            return false if expected_content_bytes == 0 or frame.count < 6 or frame.count > ZstdFrame::MAX_FRAME_BYTES
+            frame_cursor: mutable usize = 0
+            frame_state: mutable ZstdFrameState = ZstdFrameState.Magic
+            content_size_field_bytes: mutable usize = 0
+            checksum_present: mutable bool = false
+            single_segment: mutable bool = false
+            block_maximum_bytes: mutable usize = ZstdFrame::MAX_BLOCK_BYTES
+            block_last: mutable bool = false
+            block_content_bytes: mutable usize = 0
+            steps: mutable usize = 0
+            while frame_state != ZstdFrameState.Done and frame_state != ZstdFrameState.Invalid |frame, frame_cursor, frame_state, content_size_field_bytes, checksum_present, single_segment, block_maximum_bytes, block_last, block_content_bytes, steps|:
+                steps <- steps + 1
+                if steps > frame.count + 8:
+                    frame_state <- ZstdFrameState.Invalid
+                    continue
+                match frame_state:
+                    ZstdFrameState.Magic:
+                        if frame[0] != ZstdFrame::MAGIC_0 or frame[1] != ZstdFrame::MAGIC_1 or frame[2] != ZstdFrame::MAGIC_2 or frame[3] != ZstdFrame::MAGIC_3:
+                            frame_state <- ZstdFrameState.Invalid
+                        else:
+                            frame_cursor <- 4
+                            frame_state <- ZstdFrameState.Descriptor
+                    ZstdFrameState.Descriptor:
+                        if frame_cursor >= frame.count:
+                            frame_state <- ZstdFrameState.Invalid
+                            continue
+                        header_descriptor: u8 = frame[frame_cursor]
+                        frame_cursor <- frame_cursor + 1
+                        content_size_flag: u8 = header_descriptor >> 6
+                        single_segment <- (header_descriptor & 32u8) != 0
+                        dictionary_flag: u8 = header_descriptor & 3u8
+                        checksum_present <- (header_descriptor & 4u8) != 0
+                        if (header_descriptor & 24u8) != 0 or dictionary_flag != 0:
+                            frame_state <- ZstdFrameState.Invalid
+                        elif content_size_flag == 0 and not single_segment:
+                            frame_state <- ZstdFrameState.WindowDescriptor
+                        else:
+                            content_size_field_bytes <- 1 if content_size_flag == 0 else (1usize << content_size_flag.usize())
+                            frame_state <- ZstdFrameState.ContentSize
+                    ZstdFrameState.WindowDescriptor:
+                        if frame_cursor >= frame.count:
+                            frame_state <- ZstdFrameState.Invalid
+                        else:
+                            window_descriptor: u8 = frame[frame_cursor]
+                            exponent: u64 = (window_descriptor >> 3).u64()
+                            mantissa: u64 = (window_descriptor & 7u8).u64()
+                            window_base: u64 = 1u64 << (10u64 + exponent)
+                            window_bytes: u64 = window_base + (window_base / 8u64) * mantissa
+                            block_maximum_bytes <- window_bytes.usize() if window_bytes < ZstdFrame::MAX_BLOCK_BYTES.u64() else ZstdFrame::MAX_BLOCK_BYTES
+                            frame_cursor <- frame_cursor + 1
+                            frame_state <- ZstdFrameState.ContentSize
+                    ZstdFrameState.ContentSize:
+                        if content_size_field_bytes == 0 or content_size_field_bytes > 8 or frame_cursor > frame.count or content_size_field_bytes > frame.count - frame_cursor:
+                            frame_state <- ZstdFrameState.Invalid
+                            continue
+                        declared_size: mutable u64 = 0
+                        for byte_index in 0..<content_size_field_bytes |frame, frame_cursor, content_size_field_bytes, declared_size|:
+                            declared_size <- declared_size | (frame[frame_cursor + byte_index].u64() << (byte_index * 8).u64())
+                        if content_size_field_bytes == 2:
+                            declared_size <- declared_size + 256u64
+                        frame_cursor <- frame_cursor + content_size_field_bytes
+                        if declared_size != expected_content_bytes.u64():
+                            frame_state <- ZstdFrameState.Invalid
+                        else:
+                            if single_segment:
+                                block_maximum_bytes <- declared_size.usize() if declared_size < ZstdFrame::MAX_BLOCK_BYTES.u64() else ZstdFrame::MAX_BLOCK_BYTES
+                            frame_state <- ZstdFrameState.BlockHeader
+                    ZstdFrameState.BlockHeader:
+                        if frame_cursor > frame.count or frame.count - frame_cursor < 3:
+                            frame_state <- ZstdFrameState.Invalid
+                            continue
+                        block_header: u32 = frame[frame_cursor].u32() | (frame[frame_cursor + 1].u32() << 8) | (frame[frame_cursor + 2].u32() << 16)
+                        frame_cursor <- frame_cursor + 3
+                        block_last <- (block_header & 1u32) != 0
+                        block_type: u32 = (block_header >> 1) & 3u32
+                        block_size: usize = (block_header >> 3).usize()
+                        if block_type == 3u32 or block_size > block_maximum_bytes:
+                            frame_state <- ZstdFrameState.Invalid
+                        else:
+                            block_content_bytes <- 1 if block_type == 1u32 else block_size
+                            frame_state <- ZstdFrameState.BlockContent
+                    ZstdFrameState.BlockContent:
+                        if frame_cursor > frame.count or block_content_bytes > frame.count - frame_cursor:
+                            frame_state <- ZstdFrameState.Invalid
+                            continue
+                        frame_cursor <- frame_cursor + block_content_bytes
+                        if block_last:
+                            frame_state <- ZstdFrameState.Checksum if checksum_present else ZstdFrameState.Done
+                        else:
+                            frame_state <- ZstdFrameState.BlockHeader
+                    ZstdFrameState.Checksum:
+                        if frame_cursor > frame.count or frame.count - frame_cursor != 4:
+                            frame_state <- ZstdFrameState.Invalid
+                        else:
+                            frame_cursor <- frame_cursor + 4
+                            frame_state <- ZstdFrameState.Done
+                    ZstdFrameState.Done:
+                        _ = frame_cursor
+                    ZstdFrameState.Invalid:
+                        _ = frame_cursor
+            return frame_state == ZstdFrameState.Done and frame_cursor == frame.count
 
 
         def archive_entry_name(sections: darray[SectionCandidate]&, entry: usize) -> sview:
