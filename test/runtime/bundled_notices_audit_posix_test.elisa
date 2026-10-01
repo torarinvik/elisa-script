@@ -2,6 +2,19 @@ include "../../ports/elisa-engine/scripts/bundled_notices_audit_posix.elisa"
 
 using EsEngineBundledNoticesAudit
 using EsEngineBundledNoticesAuditPosix
+using EsEngineBundledNoticesJson
+using EsJson
+
+
+def bundled_notice_test_audit_bundle(app: Path, catalog_path: Path) -> AuditedBundle can[Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+    result: mutable AuditedBundle = AuditedBundle{report: Report{}, catalog_owner: DecodedCatalog{catalog: Catalog{}, document: JsonDocument{}}}
+    catch audit_bundle(app, catalog_path):
+        ok value:
+            result <- value
+        error failure:
+            _ = failure
+            assert false
+    return result
 
 
 @test
@@ -48,4 +61,67 @@ def bundled_notice_filesystem_adapter_preserves_nested_python_glob_matching() ->
     assert report.libraries.count == 1
     assert report.libraries[0].notices == ["License[1]"]
     assert report.libraries[0].problems.count == 0
+    assert removed
+
+
+@test
+def bundled_notice_filesystem_adapter_matches_missing_tampered_and_unmapped_python_cases() -> void can[Directory.Read, Directory.Write, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+    temporary: Path = try temp_directory("elisascript-bundled-notices-cases") else failure:
+        _ = failure
+        assert false
+        return
+    app: Path = temporary.joinpath("Fixture.app")
+    frameworks: Path = app.joinpath("Contents/Frameworks")
+    notices: Path = app.joinpath("Contents/Resources/Notices")
+    catalog_path: Path = temporary.joinpath("notice-sources.json")
+    library_path: Path = frameworks.joinpath("libexample.dylib")
+    unknown_library_path: Path = frameworks.joinpath("libunknown.dylib")
+    notice_path: Path = notices.joinpath("Example.txt")
+
+    frameworks_created: bool = try create_directories(frameworks) else false
+    notices_created: bool = try create_directories(notices) else false
+    library_written: usize = try write_bytes(library_path, [102u8]) else 0usize
+    notice_contents: mutable darray[u8] = [110u8, 111u8, 116u8, 105u8, 99u8, 101u8]
+    digest: mutable darray[u8] = []
+    catch digest_hex(notice_contents):
+        ok value:
+            digest <- value
+        error failure:
+            _ = failure
+    catalog_text: sview = "{\"sources\":[{\"name\":\"Example\",\"sha256\":\"" + bytes_view(digest) + "\"}],\"complete\":false,\"bundled_libraries\":{\"libexample.dylib\":{\"notices\":[\"Example\"]}}}"
+    catalog_written: usize = try write_text(catalog_path, catalog_text) else 0usize
+    assert frameworks_created and notices_created and library_written == 1 and catalog_written == catalog_text.count
+
+    missing_bundle: AuditedBundle = bundled_notice_test_audit_bundle(app, catalog_path)
+    missing: Report = missing_bundle.report
+    assert not missing.dylib_notice_files_verified
+    assert not missing.catalog_complete
+    assert missing.libraries.count == 1
+    assert missing.libraries[0].problems == ["notice Example is missing or ambiguous"]
+
+    notice_written: usize = try write_bytes(notice_path, notice_contents) else 0usize
+    assert notice_written == notice_contents.count
+    matching_bundle: AuditedBundle = bundled_notice_test_audit_bundle(app, catalog_path)
+    assert matching_bundle.report.dylib_notice_files_verified
+    assert not matching_bundle.report.catalog_complete
+    assert matching_bundle.report.libraries[0].problems.count == 0
+
+    tampered: usize = try write_bytes(notice_path, [109u8, 111u8, 100u8, 105u8, 102u8, 105u8, 101u8, 100u8]) else 0usize
+    assert tampered == 8
+    tampered_bundle: AuditedBundle = bundled_notice_test_audit_bundle(app, catalog_path)
+    tampered_report: Report = tampered_bundle.report
+    assert not tampered_report.dylib_notice_files_verified
+    assert tampered_report.libraries[0].problems == ["notice Example differs from the catalog"]
+
+    restored: usize = try write_bytes(notice_path, notice_contents) else 0usize
+    unknown_written: usize = try write_bytes(unknown_library_path, [110u8]) else 0usize
+    assert restored == notice_contents.count and unknown_written == 1
+    unmapped_bundle: AuditedBundle = bundled_notice_test_audit_bundle(app, catalog_path)
+    unmapped_report: Report = unmapped_bundle.report
+    assert not unmapped_report.dylib_notice_files_verified
+    assert unmapped_report.libraries.count == 2
+    assert unmapped_report.libraries[1].library == "libunknown.dylib"
+    assert unmapped_report.libraries[1].problems == ["library has no notice mapping"]
+
+    removed: bool = try remove_tree(temporary) else false
     assert removed
