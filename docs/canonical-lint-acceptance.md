@@ -126,15 +126,32 @@ identity. The companion returns a generic status 1 on a typed process error;
 that must not be confused with a legacy child returning after exec failed.
 No full shell equivalence or accepted migration is claimed.
 
-The current interpreter's `run_process` implementation forks, calls `execvp`
-in the child, waits in the interpreter, and returns an integer status. That is
-not process replacement: a shell wrapper using `exec` becomes the tool process,
-so its parent observes the tool's signal termination directly, while the
-Elisascript interpreter currently survives and converts a signaled child into a
-numeric status. A script-facing, terminal `Process.Replace` capability and an
-authorized host entry are therefore prerequisites for this wrapper's process
-identity/signal contract; an ordinary embedded test must never replace its own
-runner process accidentally.
+The candidate now constructs owned C strings and a NULL-terminated argv, then
+calls the existing POSIX `execvp` bridge at the wrapper's terminal operation.
+If the bridge is linked into the actual launcher, successful execution replaces
+that process rather than returning a child status, preserving PID, inherited
+streams, and signal termination. This is source-level wiring only: it bypasses
+the typed process API, its availability from a standalone script has not been
+qualified, and invoking it in an embedded parity runner would replace the
+runner itself. A public, terminal `Process.Replace` capability with an
+authorized standalone host entry remains the proper reusable API. Returned
+exec failures still use candidate-specific diagnostics, and exact shell lookup,
+ENOEXEC fallback, status, and diagnostic parity remain open.
+
+## Terminal replacement wiring (source-only)
+
+The six-line canonical lint candidate now uses the POSIX replacement bridge
+instead of fork/wait. It passes the original selected command spelling as
+`argv[0]`, followed by the four fixed Ruff arguments, and retains every owned
+buffer until the non-returning success path. If `execvp` returns `-1`, errno is
+sampled immediately; ENOENT/ENOTDIR map to 127 and other failures map to 126.
+Unexpected bridge returns fail closed as 126 without reading stale errno.
+
+This closes the source-level fork/wait signal-status mismatch, but is not
+observed process-identity parity or an accepted port. The exact Bash `exec`
+lookup and failure diagnostics, standalone bridge availability, native ABI,
+and bounded end-to-end qualification remain open. No compiler, reference,
+launcher, lint, or parity process ran under the standing validation hold.
 
 ## Returned exec failures (source-only correction)
 
