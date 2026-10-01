@@ -4732,6 +4732,9 @@ Process replacement is denied by default in these ordinary runner APIs. The
 launcher uses the explicitly named `execute_elisascript_program_file_standalone_diagnostic`
 entrypoint, which grants replacement authority for that standalone process;
 test, differential, and embedded execution paths do not receive that grant.
+The grant travels through a dedicated host execution path rather than the
+caller-constructible invocation context or serialized bytecode; strict
+direct-only execution continues to reject the replacement opcode.
 Parser and semantic source failures also retain their first typed kind and
 bounded source coordinates before the parser region is released: parser failures
 preserve `Ast::ParseErrorKind`, semantic failures preserve

@@ -17,7 +17,6 @@ error InterpretError:
     InvalidNumber
     FileIo
     Process
-    ProcessReplacementUnavailable
     OutputLimit
     Environment
     Directory
@@ -34,6 +33,7 @@ error InterpretError:
     Panic
     Raised
     InvocationContextUnavailable
+    ProcessReplacementUnavailable
 
 
 extend EsIr:
@@ -51,7 +51,6 @@ extend EsIr:
             InvalidNumber
             FileIo
             Process
-            ProcessReplacementUnavailable
             OutputLimit
             Environment
             Directory
@@ -68,6 +67,7 @@ extend EsIr:
             Panic
             Raised
             InvocationContextUnavailable
+            ProcessReplacementUnavailable
 
 
         struct ContinuationFrame:
@@ -208,6 +208,9 @@ extend EsIr:
             resource_usage: mutable RuntimeResourceUsage = RuntimeResourceUsage{}
             # Immutable launch metadata is shared by nested calls and replay.
             invocation_context: ScriptInvocationContext = ScriptInvocationContext{}
+            # This is set only by the explicit standalone interpreter bridge;
+            # it is deliberately separate from caller-constructible metadata.
+            standalone_process_replacement_authorized: bool = false
             failure: mutable InterpretFailure
             # Explicit `raise Family.Tag` failures retain their static identity
             # while unwinding through nested calls. Built-in failures leave these
@@ -5270,7 +5273,7 @@ extend EsIr:
         def evaluate_replace_process(machine: mutable Machine&, storage: darray[RuntimeValue]&, executable: RuntimeValue, arguments: RuntimeValue) -> RuntimeValue can[Memory.Allocate, Abort.Panic]:
             # A static effect declaration is not host authorization. Only the
             # explicit standalone launcher entrypoint may grant this operation.
-            if not machine.invocation_context.standalone_process_replacement_granted:
+            if not machine.standalone_process_replacement_authorized:
                 interpret_set_failure(machine, InterpretFailure.ProcessReplacementUnavailable)
                 return runtime_void()
             if executable.kind != RuntimeValueKind.Text or arguments.kind != RuntimeValueKind.Array:
@@ -9812,14 +9815,15 @@ extend EsIr:
             return value
 
 
-        def interpret_with_resource_policy(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+    private:
+        def interpret_with_resource_policy_authorization(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext, standalone_process_replacement_authorized: bool) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
             raise InterpretError.OutputLimit if not runtime_resource_policy_valid(policy)
             raise InterpretError.UnsupportedInstruction if runtime_resource_policy_has_unaccounted_dimensions(policy)
             raise InterpretError.OutputLimit if module.globals.count > ES_RUNTIME_DEFAULT_MAX_STORAGE_VALUES
             raise InterpretError.VerificationFailed if verify(module).count != 0
             function_index: usize = find_function(module, entry)
             raise InterpretError.UnknownFunction if function_index == module.functions.count
-            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, invocation_context: invocation_context, process_output_limit: policy.output_bytes.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
+            machine: mutable Machine = Machine{steps: 0, step_limit: policy.steps, resource_policy: policy, resource_usage: RuntimeResourceUsage{}, invocation_context: invocation_context, standalone_process_replacement_authorized: standalone_process_replacement_authorized, process_output_limit: policy.output_bytes.u64(), failure: InterpretFailure.None, continuations: [], resume_requested: false, resume_value: runtime_void(), globals: []}
             for binding in module.globals |machine, storage|:
                 machine.globals.push(global_value(binding, machine, storage))
             if machine.failure != InterpretFailure.None:
@@ -9832,6 +9836,18 @@ extend EsIr:
             machine.resource_usage.retained_traces <- observations.count
             raise InterpretError.OutputLimit if not runtime_resource_usage_within_policy(machine.resource_usage, machine.resource_policy)
             return Execution{value: value, steps: machine.steps, policy: machine.resource_policy, usage: machine.resource_usage, engine: ExecutionEngine.ReferenceInterpreter}
+
+
+    public:
+        def interpret_with_resource_policy(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            return interpret_with_resource_policy_authorization(module, entry, arguments, observations, storage, policy, invocation_context, false)
+
+
+        # Host bridge used only by the explicit standalone bytecode entrypoint.
+        # The authorization cannot be placed in serialized IR or invocation
+        # metadata supplied by an embedding caller.
+        def interpret_standalone_with_resource_policy(module: Module&, entry: sview, arguments: darray[RuntimeValue]&, observations: mutable darray[Observation]&, storage: mutable darray[RuntimeValue]&, policy: RuntimeResourcePolicy, invocation_context: ScriptInvocationContext = ScriptInvocationContext{}) -> Execution error[InterpretError] can[Memory.Allocate, Abort.Panic]:
+            return interpret_with_resource_policy_authorization(module, entry, arguments, observations, storage, policy, invocation_context, true)
 
 
         # Compatibility entrypoint: callers that only provide a step limit get
