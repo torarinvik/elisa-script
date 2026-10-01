@@ -1,0 +1,407 @@
+# Typed projection of elisa-engine/native/dependency-manifest.json.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+
+
+module EsEngineDependencyManifestJson:
+    public:
+        const module Limits:
+            INPUT_BYTES: usize = DATA_MAX_INPUT_BYTES
+            LIBRARIES: usize = 4096
+            ARTIFACTS_PER_LIBRARY: usize = 65536
+            CACHE_VALUES: usize = 4096
+
+
+        const enum RevisionKind of u8:
+            MissingOrNull
+            Text
+            Other
+
+
+        struct Artifact:
+            path: sview
+            has_sha256: bool = false
+            sha256: sview = ""
+
+
+        struct Library:
+            name: sview
+            kind: sview = ""
+            path_environment: sview = "path_environment"
+            path_default: sview
+            revision_kind: RevisionKind = RevisionKind.MissingOrNull
+            revision: sview = ""
+            artifacts: darray[Artifact] = []
+            include_environment: sview = ""
+            has_include_default: bool = false
+            include_default: sview = ""
+            include_artifacts: darray[sview] = []
+
+
+        struct CacheValue:
+            key: sview
+            value: sview
+
+
+        struct BuildPolicy:
+            forbidden_link_names: darray[sview] = []
+            required_flags: darray[sview] = []
+            wicked_cache_path: sview = ""
+            wicked_cache_values: darray[CacheValue] = []
+
+
+        struct Manifest:
+            driver: sview
+            build: BuildPolicy
+            libraries: darray[Library]
+
+
+        # All projected text values borrow from `document`; retain this owner
+        # alongside the decoded typed view for the adapter's whole audit.
+        struct DecodedManifest:
+            manifest: Manifest
+            document: JsonDocument
+
+
+        error ManifestJsonError:
+            InputTooLarge
+            InvalidJson
+            InvalidManifest
+            UnsupportedSchema
+
+
+        def manifest_from_json(source: sview) -> DecodedManifest error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise ManifestJsonError.InputTooLarge if len(source) > Limits::INPUT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES}
+            policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, limits, policy) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidJson
+            document: JsonDocument = try parse_json_document(lexed) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidJson
+            raise ManifestJsonError.InvalidManifest if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise ManifestJsonError.InvalidManifest if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            raise ManifestJsonError.UnsupportedSchema if not manifest_schema_is_one(document, root_index)
+
+            driver_index: usize = manifest_member_index(document, root_index, "driver")
+            driver: sview = try manifest_required_text(document, driver_index) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+
+            build_index: usize = manifest_member_index(document, root_index, "build")
+            raise ManifestJsonError.InvalidManifest if build_index >= document.nodes.count or document.nodes[build_index].kind != JsonNodeKind.Object
+            forbidden_index: usize = manifest_member_index(document, build_index, "forbidden_link_names")
+            forbidden: darray[sview] = try manifest_text_array(document, forbidden_index, false) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+            flags_index: usize = manifest_member_index(document, build_index, "required_flags")
+            flags: darray[sview] = try manifest_text_array(document, flags_index, false) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+
+            cache_index: usize = manifest_member_index(document, build_index, "wicked_cache")
+            raise ManifestJsonError.InvalidManifest if cache_index >= document.nodes.count or document.nodes[cache_index].kind != JsonNodeKind.Object
+            cache_path_index: usize = manifest_member_index(document, cache_index, "path")
+            cache_path: sview = try manifest_required_text(document, cache_path_index) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+            cache_values_index: usize = manifest_member_index(document, cache_index, "values")
+            cache_values: darray[CacheValue] = try manifest_cache_values(document, cache_values_index) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+            build: BuildPolicy = BuildPolicy{
+                forbidden_link_names: forbidden,
+                required_flags: flags,
+                wicked_cache_path: cache_path,
+                wicked_cache_values: cache_values
+            }
+
+            libraries_index: usize = manifest_member_index(document, root_index, "libraries")
+            libraries: darray[Library] = try manifest_libraries(document, libraries_index) else failure:
+                _ = failure
+                raise ManifestJsonError.InvalidManifest
+            return DecodedManifest{
+                manifest: Manifest{driver: driver, build: build, libraries: libraries},
+                document: document
+            }
+
+
+    private:
+        const module NumberScan:
+            DIGIT_ZERO: u8 = 48
+            DIGIT_NINE: u8 = 57
+            EXP_LOWER: u8 = 101
+            EXP_UPPER: u8 = 69
+            DOT: u8 = 46
+            PLUS: u8 = 43
+            MINUS: u8 = 45
+
+
+        def manifest_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize:
+            return try json_object_member_index(document, object_index, key) else JSON_INDEX_NONE
+
+
+        def manifest_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) -> usize error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise ManifestJsonError.InvalidManifest if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise ManifestJsonError.InvalidManifest if array.child_start > document.children.count or ordinal > document.children.count - array.child_start
+            child_index: usize = array.child_start + ordinal
+            raise ManifestJsonError.InvalidManifest if child_index >= document.children.count
+            return document.children[child_index].value_index
+
+
+        def manifest_text(document: JsonDocument&, node_index: usize) -> sview error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise ManifestJsonError.InvalidManifest if node.kind != JsonNodeKind.Text
+            raise ManifestJsonError.InvalidManifest if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            end: usize = node.scalar_start + node.scalar_bytes
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), end.i64())
+
+
+        def manifest_required_text(document: JsonDocument&, node_index: usize) -> sview error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if node_index == JSON_INDEX_NONE
+            return try manifest_text(document, node_index)
+
+
+        def manifest_number_text(document: JsonDocument&, node_index: usize) -> sview error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise ManifestJsonError.InvalidManifest if node.kind != JsonNodeKind.Number
+            raise ManifestJsonError.InvalidManifest if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            end: usize = node.scalar_start + node.scalar_bytes
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), end.i64())
+
+
+        def manifest_optional_text(document: JsonDocument&, object_index: usize, key: sview, default: sview) -> sview error[ManifestJsonError]:
+            member_index: usize = manifest_member_index(document, object_index, key)
+            return default if member_index == JSON_INDEX_NONE
+            raise ManifestJsonError.InvalidManifest if member_index >= document.nodes.count or document.nodes[member_index].kind == JsonNodeKind.Null
+            return try manifest_text(document, member_index)
+
+
+        def manifest_text_array(document: JsonDocument&, array_index: usize, missing_is_empty: bool) -> darray[sview] error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            return [] if array_index == JSON_INDEX_NONE and missing_is_empty
+            raise ManifestJsonError.InvalidManifest if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            array: JsonNode = document.nodes[array_index]
+            raise ManifestJsonError.InvalidManifest if array.child_count > Limits::ARTIFACTS_PER_LIBRARY
+            result: mutable darray[sview] = []
+            result.reserve(array.child_count)
+            for ordinal in 0..<array.child_count |document, array_index, result|:
+                child_index: usize = try manifest_array_item(document, array_index, ordinal)
+                result.push(try manifest_text(document, child_index))
+            return result
+
+
+        def manifest_artifacts(document: JsonDocument&, array_index: usize) -> darray[Artifact] error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            return [] if array_index == JSON_INDEX_NONE
+            raise ManifestJsonError.InvalidManifest if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            array: JsonNode = document.nodes[array_index]
+            raise ManifestJsonError.InvalidManifest if array.child_count > Limits::ARTIFACTS_PER_LIBRARY
+            result: mutable darray[Artifact] = []
+            result.reserve(array.child_count)
+            for ordinal in 0..<array.child_count |document, array_index, result|:
+                child_index: usize = try manifest_array_item(document, array_index, ordinal)
+                raise ManifestJsonError.InvalidManifest if child_index >= document.nodes.count
+                child: JsonNode = document.nodes[child_index]
+                if child.kind == JsonNodeKind.Text:
+                    result.push(Artifact{path: try manifest_text(document, child_index)})
+                    continue
+                raise ManifestJsonError.InvalidManifest if child.kind != JsonNodeKind.Object
+                path_index: usize = manifest_member_index(document, child_index, "path")
+                artifact_path: sview = try manifest_required_text(document, path_index)
+                hash_index: usize = manifest_member_index(document, child_index, "sha256")
+                has_hash: mutable bool = false
+                if hash_index != JSON_INDEX_NONE:
+                    has_hash <- try manifest_truthy(document, hash_index)
+                hash: mutable sview = ""
+                if has_hash:
+                    hash <- try manifest_text(document, hash_index)
+                result.push(Artifact{path: artifact_path, has_sha256: has_hash, sha256: hash})
+            return result
+
+
+        def manifest_libraries(document: JsonDocument&, array_index: usize) -> darray[Library] error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            return [] if array_index == JSON_INDEX_NONE
+            raise ManifestJsonError.InvalidManifest if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            array: JsonNode = document.nodes[array_index]
+            raise ManifestJsonError.InvalidManifest if array.child_count > Limits::LIBRARIES
+            result: mutable darray[Library] = []
+            result.reserve(array.child_count)
+            for ordinal in 0..<array.child_count |document, array_index, result|:
+                entry_index: usize = try manifest_array_item(document, array_index, ordinal)
+                raise ManifestJsonError.InvalidManifest if entry_index >= document.nodes.count or document.nodes[entry_index].kind != JsonNodeKind.Object
+                name: sview = try manifest_optional_text(document, entry_index, "name", "")
+                kind: sview = try manifest_optional_text(document, entry_index, "kind", "")
+                path_environment: sview = try manifest_optional_text(document, entry_index, "path_environment", "path_environment")
+                path_default_index: usize = manifest_member_index(document, entry_index, "path_default")
+                path_default: sview = try manifest_required_text(document, path_default_index)
+                revision_index: usize = manifest_member_index(document, entry_index, "revision")
+                revision_kind: RevisionKind = RevisionKind.MissingOrNull
+                revision: mutable sview = ""
+                if revision_index != JSON_INDEX_NONE:
+                    raise ManifestJsonError.InvalidManifest if revision_index >= document.nodes.count
+                    if document.nodes[revision_index].kind == JsonNodeKind.Text:
+                        revision_kind <- RevisionKind.Text
+                        revision <- try manifest_text(document, revision_index)
+                    elif document.nodes[revision_index].kind != JsonNodeKind.Null:
+                        revision_kind <- RevisionKind.Other
+                artifacts_index: usize = manifest_member_index(document, entry_index, "artifacts")
+                artifacts: darray[Artifact] = try manifest_artifacts(document, artifacts_index)
+                include_environment: sview = try manifest_optional_text(document, entry_index, "include_environment", "")
+                include_default_index: usize = manifest_member_index(document, entry_index, "include_default")
+                has_include_default: mutable bool = false
+                if include_default_index != JSON_INDEX_NONE:
+                    has_include_default <- try manifest_truthy(document, include_default_index)
+                include_default: mutable sview = ""
+                if has_include_default:
+                    include_default <- try manifest_text(document, include_default_index)
+                include_artifacts_index: usize = manifest_member_index(document, entry_index, "include_artifacts")
+                include_artifacts: darray[sview] = try manifest_text_array(document, include_artifacts_index, true)
+                result.push(Library{
+                    name: name,
+                    kind: kind,
+                    path_environment: path_environment,
+                    path_default: path_default,
+                    revision_kind: revision_kind,
+                    revision: revision,
+                    artifacts: artifacts,
+                    include_environment: include_environment,
+                    has_include_default: has_include_default,
+                    include_default: include_default,
+                    include_artifacts: include_artifacts
+                })
+            return result
+
+
+        def manifest_cache_values(document: JsonDocument&, object_index: usize) -> darray[CacheValue] error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            raise ManifestJsonError.InvalidManifest if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            object: JsonNode = document.nodes[object_index]
+            raise ManifestJsonError.InvalidManifest if object.member_count > Limits::CACHE_VALUES
+            raise ManifestJsonError.InvalidManifest if object.member_start > document.members.count or object.member_count > document.members.count - object.member_start
+            result: mutable darray[CacheValue] = []
+            result.reserve(object.member_count)
+            for ordinal in 0..<object.member_count |document, object, result|:
+                member_index: usize = object.member_start + ordinal
+                raise ManifestJsonError.InvalidManifest if member_index >= document.members.count
+                member: JsonMember = document.members[member_index]
+                key: sview = try manifest_key(document, member)
+                continue if not manifest_cache_key_is_first(document, object_index, member_index, key)
+                value_index: usize = manifest_member_index(document, object_index, key)
+                value: sview = try manifest_text(document, value_index)
+                result.push(CacheValue{key: key, value: value})
+            return result
+
+
+        def manifest_cache_key_is_first(document: JsonDocument&, object_index: usize, member_index: usize, key: sview) -> bool error[ManifestJsonError] can[Memory.Allocate, Abort.Panic]:
+            object: JsonNode = document.nodes[object_index]
+            for previous_index in object.member_start..<member_index |document, key|:
+                raise ManifestJsonError.InvalidManifest if previous_index >= document.members.count
+                previous_key: sview = try manifest_key(document, document.members[previous_index])
+                return false if previous_key == key
+            return true
+
+
+        def manifest_key(document: JsonDocument&, member: JsonMember) -> sview error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            end: usize = member.key_start + member.key_bytes
+            return string_view_slice(bytes_view(document.key_bytes), member.key_start.i64(), end.i64())
+
+
+        def manifest_schema_is_one(document: JsonDocument&, root_index: usize) -> bool:
+            schema_index: usize = manifest_member_index(document, root_index, "schema")
+            return false if schema_index >= document.nodes.count
+            node: JsonNode = document.nodes[schema_index]
+            return node.bool_value if node.kind == JsonNodeKind.Bool
+            return false if node.kind != JsonNodeKind.Number
+            lexeme: sview = try manifest_number_text(document, schema_index) else failure:
+                _ = failure
+                return false
+            return manifest_number_is_one(lexeme)
+
+
+        def manifest_truthy(document: JsonDocument&, node_index: usize) -> bool error[ManifestJsonError]:
+            raise ManifestJsonError.InvalidManifest if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Null:
+                return false
+            elif node.kind == JsonNodeKind.Bool:
+                return node.bool_value
+            elif node.kind == JsonNodeKind.Number:
+                number: sview = try manifest_number_text(document, node_index)
+                return not manifest_number_is_zero(number)
+            elif node.kind == JsonNodeKind.Text:
+                return node.scalar_bytes > 0
+            elif node.kind == JsonNodeKind.Array:
+                return node.child_count > 0
+            elif node.kind == JsonNodeKind.Object:
+                return node.member_count > 0
+            return false
+
+
+        def manifest_number_is_zero(value: sview) -> bool:
+            for byte in value:
+                continue if byte == NumberScan::DOT or byte == NumberScan::EXP_LOWER or byte == NumberScan::EXP_UPPER or byte == NumberScan::PLUS or byte == NumberScan::MINUS
+                return false if byte != NumberScan::DIGIT_ZERO
+            return true
+
+
+        # Match Python's `json.loads` numeric equality with integer 1, which
+        # accepts true, 1.0, and exponent forms such as 10e-1 as well as 1.
+        def manifest_number_is_one(value: sview) -> bool:
+            length: usize = len(value)
+            return false if length == 0 or sview_at(value, 0) == NumberScan::MINUS
+            exponent_marker: mutable usize = length
+            decimal_point: mutable usize = length
+            for index in 0..<length |value, exponent_marker, decimal_point|:
+                byte: u8 = sview_at(value, index)
+                exponent_marker <- index if (byte == NumberScan::EXP_LOWER or byte == NumberScan::EXP_UPPER) and exponent_marker == length
+                decimal_point <- index if byte == NumberScan::DOT and decimal_point == length
+            mantissa_end: usize = exponent_marker
+            fractional_digits: mutable usize = 0
+            if decimal_point < mantissa_end:
+                fractional_digits <- mantissa_end - decimal_point - 1
+
+            first_nonzero: mutable usize = length
+            first_nonzero_digit_ordinal: mutable usize = 0
+            digit_count: mutable usize = 0
+            for index in 0..<mantissa_end |value, first_nonzero, first_nonzero_digit_ordinal, digit_count|:
+                byte: u8 = sview_at(value, index)
+                if byte >= NumberScan::DIGIT_ZERO and byte <= NumberScan::DIGIT_NINE:
+                    if first_nonzero == length and byte != NumberScan::DIGIT_ZERO:
+                        first_nonzero <- index
+                        first_nonzero_digit_ordinal <- digit_count
+                    digit_count <- digit_count + 1
+            return false if first_nonzero == length or sview_at(value, first_nonzero) != NumberScan::DIGIT_ZERO + 1
+            significant_end: mutable usize = first_nonzero + 1
+            while significant_end < mantissa_end and sview_at(value, significant_end) != NumberScan::DOT and sview_at(value, significant_end) == NumberScan::DIGIT_ZERO |value, significant_end, mantissa_end|:
+                significant_end <- significant_end + 1
+            for index in significant_end..<mantissa_end |value|:
+                return false if sview_at(value, index) != NumberScan::DOT and sview_at(value, index) != NumberScan::DIGIT_ZERO
+            trailing_zeroes: usize = digit_count - first_nonzero_digit_ordinal - 1
+            exponent: mutable i64 = 0
+            if exponent_marker < length:
+                cursor: mutable usize = exponent_marker + 1
+                exponent_sign: mutable i64 = 1
+                if cursor < length and sview_at(value, cursor) == NumberScan::PLUS:
+                    cursor <- cursor + 1
+                elif cursor < length and sview_at(value, cursor) == NumberScan::MINUS:
+                    exponent_sign <- -1
+                    cursor <- cursor + 1
+                for index in cursor..<length |value, exponent, exponent_sign|:
+                    digit: i64 = (sview_at(value, index) - NumberScan::DIGIT_ZERO).i64()
+                    if exponent > 100000000:
+                        return false
+                    exponent <- exponent * 10 + digit
+                exponent <- exponent * exponent_sign
+            return trailing_zeroes.i64() + exponent - fractional_digits.i64() == 0
