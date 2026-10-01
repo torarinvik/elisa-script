@@ -1,0 +1,188 @@
+# Deterministic ELPK v1 archive assembly from elisa-engine/scripts/elisa_package.py.
+# The caller supplies the zstd candidate produced at the requested level; this
+# module owns selection, checksums, layout, and bytes, not codec availability.
+include "elisa_package_manifest_model.elisa"
+include "png_image.elisa"
+
+module EsElisaPackageArchive:
+    public:
+        struct SectionCandidate:
+            name: sview
+            payload: darray[u8]
+            zstd_candidate: darray[u8]
+            zstd_level: i32
+
+
+        error ArchiveError:
+            CompressionLevelRejected
+            ManifestOverrideRejected
+            SectionCountRejected
+            SectionNameRejected
+            DuplicateSectionName
+            SectionSizeRejected
+            CompressionCandidateMissing
+            CompressionLevelMismatch
+            PackageIndexTooLarge
+            PackageTooLarge
+
+
+        # This is the pure serialization half of build_package_bytes. A host
+        # adapter must produce one real zstd candidate per payload first.
+        def assemble_package_bytes(sections: darray[SectionCandidate]&, dependencies: darray[sview]&, compression_level: i32 = 3) -> darray[u8] error[ArchiveError, EsElisaPackageManifest::ManifestError] can[Memory.Allocate, Abort.Panic]:
+            raise ArchiveError.CompressionLevelRejected if compression_level < Limits::MIN_COMPRESSION_LEVEL or compression_level > Limits::MAX_COMPRESSION_LEVEL
+            raise ArchiveError.SectionCountRejected if sections.count == 0 or sections.count >= Limits::MAX_SECTIONS
+            for index in 0..<sections.count:
+                raise ArchiveError.ManifestOverrideRejected if sections[index].name == Syntax::MANIFEST_NAME
+
+            manifest: darray[u8] = try EsElisaPackageManifest::manifest_bytes(dependencies)
+            ordered: mutable darray[usize] = []
+            ordered.reserve(sections.count + 1)
+            for index in 0..<sections.count |ordered|:
+                ordered.push(index)
+            ordered.push(sections.count)
+            for index in 0..<ordered.count |ordered|:
+                for candidate in index + 1..<ordered.count |ordered|:
+                    left_name: sview = archive_entry_name(sections, ordered[index])
+                    right_name: sview = archive_entry_name(sections, ordered[candidate])
+                    if archive_text_before(right_name, left_name):
+                        earlier: usize = ordered[index]
+                        ordered[index] <- ordered[candidate]
+                        ordered[candidate] <- earlier
+
+            for ordered_index in 0..<ordered.count:
+                entry: usize = ordered[ordered_index]
+                if entry != sections.count:
+                    raise ArchiveError.SectionNameRejected if not EsElisaPackageCli::safe_section_name(sections[entry].name)
+                    raise ArchiveError.SectionSizeRejected if sections[entry].payload.count == 0 or sections[entry].payload.count > Limits::MAX_SECTION_BYTES
+                    raise ArchiveError.CompressionCandidateMissing if sections[entry].zstd_candidate.count == 0
+                    raise ArchiveError.CompressionLevelMismatch if sections[entry].zstd_level != compression_level
+                    if ordered_index > 0:
+                        previous_name: sview = archive_entry_name(sections, ordered[ordered_index - 1])
+                        raise ArchiveError.DuplicateSectionName if previous_name == sections[entry].name
+
+            count: usize = ordered.count
+            index_size: usize = count * Limits::ENTRY_BYTES
+            payload_offset: usize = Limits::HEADER_BYTES + index_size
+            raise ArchiveError.PackageIndexTooLarge if payload_offset > Limits::MAX_PACKAGE_BYTES
+            for entry in ordered:
+                payload_offset <- archive_align_up(payload_offset)
+                raise ArchiveError.PackageTooLarge if payload_offset > Limits::MAX_PACKAGE_BYTES
+                stored_size: usize = archive_stored_size(sections, manifest, entry)
+                raise ArchiveError.PackageTooLarge if stored_size > Limits::MAX_PACKAGE_BYTES - payload_offset
+                payload_offset <- payload_offset + stored_size
+
+            package: mutable darray[u8] = []
+            package.reserve(payload_offset)
+            for _ in 0..<payload_offset |package|:
+                package.push(0u8)
+            for index in 0..<sview_len(Syntax::MAGIC) |package|:
+                package[index] <- sview_at(Syntax::MAGIC, index)
+            archive_write_u16_le(package, 4, 1u16)
+            archive_write_u16_le(package, 6, count.u16())
+            archive_write_u64_le(package, 8, Limits::HEADER_BYTES.u64())
+            archive_write_u64_le(package, 16, index_size.u64())
+
+            payload_offset <- Limits::HEADER_BYTES + index_size
+            for index in 0..<ordered.count |package, payload_offset|:
+                entry: usize = ordered[index]
+                payload_offset <- archive_align_up(payload_offset)
+                entry_offset: usize = Limits::HEADER_BYTES + index * Limits::ENTRY_BYTES
+                entry_name: sview = archive_entry_name(sections, entry)
+                for name_byte in 0..<sview_len(entry_name) |package, entry_offset, entry_name|:
+                    package[entry_offset + name_byte] <- sview_at(entry_name, name_byte)
+                stored_size: usize = archive_stored_size(sections, manifest, entry)
+                raw_size: usize = archive_raw_size(sections, manifest, entry)
+                compressed: bool = archive_entry_is_compressed(sections, entry)
+                archive_write_u64_le(package, entry_offset + 16, payload_offset.u64())
+                archive_write_u64_le(package, entry_offset + 24, stored_size.u64())
+                archive_write_u64_le(package, entry_offset + 32, raw_size.u64())
+                archive_write_u32_le(package, entry_offset + 40, 1u32 if compressed else 0u32)
+                archive_write_u32_le(package, entry_offset + 44, archive_entry_crc32(sections, manifest, entry))
+                for byte_index in 0..<stored_size |package, sections, manifest, entry, compressed, payload_offset|:
+                    package[payload_offset + byte_index] <- archive_entry_byte(sections, manifest, entry, compressed, byte_index)
+                payload_offset <- payload_offset + stored_size
+            return package
+
+
+    private:
+        const module Syntax:
+            MAGIC: sview = "ELPK"
+            MANIFEST_NAME: sview = "manifest"
+
+
+        const module Limits:
+            HEADER_BYTES: usize = 32
+            ENTRY_BYTES: usize = 48
+            MAX_PACKAGE_BYTES: usize = 67108864
+            MAX_SECTION_BYTES: usize = 67108864
+            MAX_SECTIONS: usize = 256
+            ALIGNMENT_BYTES: usize = 16
+            MIN_COMPRESSION_LEVEL: i32 = -5
+            MAX_COMPRESSION_LEVEL: i32 = 22
+
+
+        def archive_entry_name(sections: darray[SectionCandidate]&, entry: usize) -> sview:
+            return Syntax::MANIFEST_NAME if entry == sections.count else sections[entry].name
+
+
+        def archive_text_before(left: sview, right: sview) -> bool:
+            left_length: usize = sview_len(left)
+            right_length: usize = sview_len(right)
+            common: usize = left_length if left_length < right_length else right_length
+            for index in 0..<common |left, right|:
+                return sview_at(left, index) < sview_at(right, index) if sview_at(left, index) != sview_at(right, index)
+            return left_length < right_length
+
+
+        def archive_align_up(offset: usize) -> usize:
+            return ((offset + Limits::ALIGNMENT_BYTES - 1) / Limits::ALIGNMENT_BYTES) * Limits::ALIGNMENT_BYTES
+
+
+        def archive_entry_is_compressed(sections: darray[SectionCandidate]&, entry: usize) -> bool:
+            return false if entry == sections.count
+            return sections[entry].zstd_candidate.count < sections[entry].payload.count
+
+
+        def archive_stored_size(sections: darray[SectionCandidate]&, manifest: darray[u8]&, entry: usize) -> usize:
+            if entry == sections.count:
+                return manifest.count
+            if archive_entry_is_compressed(sections, entry):
+                return sections[entry].zstd_candidate.count
+            return sections[entry].payload.count
+
+
+        def archive_raw_size(sections: darray[SectionCandidate]&, manifest: darray[u8]&, entry: usize) -> usize:
+            if entry == sections.count:
+                return manifest.count
+            return sections[entry].payload.count
+
+
+        def archive_entry_crc32(sections: darray[SectionCandidate]&, manifest: darray[u8]&, entry: usize) -> u32:
+            if entry == sections.count:
+                return EsEnginePngImage::crc32(manifest)
+            return EsEnginePngImage::crc32(sections[entry].payload)
+
+
+        def archive_entry_byte(sections: darray[SectionCandidate]&, manifest: darray[u8]&, entry: usize, compressed: bool, index: usize) -> u8:
+            if entry == sections.count:
+                return manifest[index]
+            if compressed:
+                return sections[entry].zstd_candidate[index]
+            return sections[entry].payload[index]
+
+
+        def archive_write_u16_le(data: mutable darray[u8]&, offset: usize, value: u16) -> void:
+            data[offset] <- value.u8()
+            data[offset + 1] <- (value >> 8).u8()
+
+
+        def archive_write_u32_le(data: mutable darray[u8]&, offset: usize, value: u32) -> void:
+            data[offset] <- value.u8()
+            data[offset + 1] <- (value >> 8).u8()
+            data[offset + 2] <- (value >> 16).u8()
+            data[offset + 3] <- (value >> 24).u8()
+
+
+        def archive_write_u64_le(data: mutable darray[u8]&, offset: usize, value: u64) -> void:
+            for byte_index in 0..<8usize |data, offset, value|:
+                data[offset + byte_index] <- (value >> (byte_index * 8).u64()).u8()
