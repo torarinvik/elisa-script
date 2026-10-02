@@ -1,0 +1,277 @@
+# Read bounded embedded glTF image bytes from bufferViews or strict base64
+# data URIs, then validate the declared image MIME and encoded dimensions.
+include "../../../src/runtime/base64_model.elisa"
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "elisa_package_image_probe_model.elisa"
+include "gltf_material_textures_model.elisa"
+
+using EsBase64
+using EsData
+using EsElisaPackageImageProbe
+using EsEngineGltfMaterialTextures
+using EsJson
+
+
+module EsEngineGltfImagePayload:
+    public:
+        const module Limits:
+            IMAGE_BYTES: usize = 67108864
+            ENCODED_URI_BYTES: usize = IMAGE_BYTES * 2
+
+
+        const enum ImageMimeKind of u8:
+            Png
+            Jpeg
+            Ktx2
+
+
+        struct ImagePayload:
+            image_index: usize
+            mime: ImageMimeKind
+            width: u32
+            height: u32
+            bytes: darray[u8]
+
+
+        struct MaterialImagePayloads:
+            images: darray[ImagePayload] = []
+            total_bytes: usize = 0
+
+
+        error ImagePayloadError:
+            InvalidDocument
+            InvalidBuffer
+            InvalidImageRecord
+            MissingImages
+            InvalidImages
+            ImageIndexOutOfRange
+            UnsupportedImageProperty
+            ImageHasUriAndBufferView
+            MissingBufferView
+            InvalidBufferView
+            UnsupportedBufferView
+            ImageNotEmbedded
+            InvalidDataUri
+            MimeTypeContradiction
+            ImageTooLarge
+            InvalidBase64
+            UnsupportedMimeType
+            MimeSignatureMismatch
+            Ktx2DimensionsNotBlockAligned
+            AggregateImageBytesOutOfRange
+            InvalidTexturePlan
+
+
+        # The package archive limits each image section to 64 MiB. URI text
+        # is bounded before Base64 decoding, whose decoded output has the same
+        # cap. `encoded_image_dimensions` applies the package image parser's
+        # container and dimension checks.
+        def image_payload(document: JsonDocument&, buffer: darray[u8]&, image_index: usize) ImagePayload error[ImagePayloadError, ImageProbeError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise ImagePayloadError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise ImagePayloadError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            raise ImagePayloadError.InvalidBuffer if buffer.count > Limits::IMAGE_BYTES
+            root_index: usize = document.roots[0]
+            raise ImagePayloadError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            images_member: usize = image_member_index(document, root_index, "images")
+            raise ImagePayloadError.MissingImages if images_member == JSON_INDEX_NONE
+            images_index: usize = document.members[images_member].value_index
+            raise ImagePayloadError.InvalidImages if images_index >= document.nodes.count or document.nodes[images_index].kind != JsonNodeKind.Array
+            images: JsonNode = document.nodes[images_index]
+            raise ImagePayloadError.ImageIndexOutOfRange if image_index >= images.child_count
+            image_node_index: usize = try image_array_item(document, images_index, image_index)
+            raise ImagePayloadError.InvalidImageRecord if document.nodes[image_node_index].kind != JsonNodeKind.Object
+            try validate_image_properties(document, image_node_index)
+
+            uri_index: usize = image_member_index(document, image_node_index, "uri")
+            view_index: usize = image_member_index(document, image_node_index, "bufferView")
+            raise ImagePayloadError.ImageHasUriAndBufferView if uri_index != JSON_INDEX_NONE and view_index != JSON_INDEX_NONE
+            mime: sview = ""
+            image_data: mutable darray[u8] = []
+            if view_index != JSON_INDEX_NONE:
+                mime_index: usize = image_member_index(document, image_node_index, "mimeType")
+                raise ImagePayloadError.UnsupportedMimeType if mime_index == JSON_INDEX_NONE
+                mime <- try image_text_value(document, mime_index)
+                image_data <- try image_buffer_view_bytes(document, buffer, view_index)
+            else:
+                raise ImagePayloadError.ImageNotEmbedded if uri_index == JSON_INDEX_NONE
+                uri: sview = try image_text_value(document, uri_index)
+                raise ImagePayloadError.ImageNotEmbedded if not uri.startswith("data:")
+                parts: darray[sview] = uri.partition(";base64,")
+                raise ImagePayloadError.InvalidDataUri if parts.count != 3 or parts[1] == ""
+                raise ImagePayloadError.ImageTooLarge if len(parts[2]) > Limits::ENCODED_URI_BYTES
+                mime <- string_view_slice(parts[0], 5i64, len(parts[0]).i64())
+                mime_index: usize = image_member_index(document, image_node_index, "mimeType")
+                if mime_index != JSON_INDEX_NONE:
+                    declared_mime: sview = try image_text_value(document, mime_index)
+                    raise ImagePayloadError.MimeTypeContradiction if declared_mime != mime
+                catch decode_base64(parts[2], Limits::IMAGE_BYTES):
+                    ok decoded:
+                        image_data <- decoded
+                    error failure:
+                        raise ImagePayloadError.ImageTooLarge if failure == Base64Error.OutputTooLarge or failure == Base64Error.InputTooLarge
+                        raise ImagePayloadError.InvalidBase64
+
+            mime_kind: ImageMimeKind = try image_mime_kind(mime)
+            raise ImagePayloadError.MimeSignatureMismatch if not image_signature_matches(image_data, mime_kind)
+            dimensions: Dimensions = try encoded_image_dimensions(image_data)
+            raise ImagePayloadError.Ktx2DimensionsNotBlockAligned if mime_kind == ImageMimeKind.Ktx2 and (dimensions.width % 4u32 != 0u32 or dimensions.height % 4u32 != 0u32)
+            return ImagePayload{image_index: image_index, mime: mime_kind, width: dimensions.width, height: dimensions.height, bytes: image_data}
+
+
+        # Resolve each distinct sampled image once, in source index order.
+        # The total image-byte cap prevents individually valid sections from
+        # accumulating beyond the package's overall byte budget.
+        def material_image_payloads(document: JsonDocument&, buffer: darray[u8]&, textures: MaterialTexturePlan&) MaterialImagePayloads error[ImagePayloadError, ImageProbeError, JsonContractError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise ImagePayloadError.InvalidTexturePlan if textures.materials.count > EsEngineGltfMaterialRecords::Limits::MAX_MATERIAL_SLOTS
+            image_indices: mutable darray[usize] = []
+            for material in textures.materials |image_indices|:
+                raise ImagePayloadError.InvalidTexturePlan if material.image_indices.count != EsEngineGltfMaterialTextures::Limits::SLOT_COUNT
+                for image_index in material.image_indices |image_indices|:
+                    if image_index != JSON_INDEX_NONE:
+                        present: mutable bool = false
+                        for existing in image_indices |image_index, present|:
+                            present <- true if existing == image_index
+                        if not present:
+                            image_indices.push(image_index)
+            for left in 0..<image_indices.count |image_indices|:
+                for right in left + 1..<image_indices.count |image_indices, left|:
+                    if image_indices[right] < image_indices[left]:
+                        selected: usize = image_indices[left]
+                        image_indices[left] <- image_indices[right]
+                        image_indices[right] <- selected
+
+            output: mutable MaterialImagePayloads = MaterialImagePayloads{}
+            for image_index in image_indices |document, buffer, output|:
+                payload: ImagePayload = try image_payload(document, buffer, image_index)
+                raise ImagePayloadError.AggregateImageBytesOutOfRange if payload.bytes.count > Limits::IMAGE_BYTES - output.total_bytes
+                output.total_bytes <- output.total_bytes + payload.bytes.count
+                output.images.push(payload)
+            return output
+
+
+    private:
+        def image_buffer_view_bytes(document: JsonDocument&, buffer: darray[u8]&, reference_index: usize) darray[u8] error[ImagePayloadError] can[Memory.Allocate, Abort.Panic]:
+            reference: i64 = try image_integer(document, reference_index)
+            raise ImagePayloadError.MissingBufferView if reference < 0
+            root_index: usize = document.roots[0]
+            views_member: usize = image_member_index(document, root_index, "bufferViews")
+            raise ImagePayloadError.MissingBufferView if views_member == JSON_INDEX_NONE
+            views_index: usize = document.members[views_member].value_index
+            raise ImagePayloadError.InvalidBufferView if views_index >= document.nodes.count or document.nodes[views_index].kind != JsonNodeKind.Array
+            views: JsonNode = document.nodes[views_index]
+            raise ImagePayloadError.MissingBufferView if reference >= views.child_count.i64()
+            view_index: usize = try image_array_item(document, views_index, reference.usize())
+            raise ImagePayloadError.InvalidBufferView if document.nodes[view_index].kind != JsonNodeKind.Object
+            buffer_index: usize = image_member_index(document, view_index, "buffer")
+            raise ImagePayloadError.UnsupportedBufferView if buffer_index == JSON_INDEX_NONE
+            buffer_ordinal: i64 = try image_integer(document, buffer_index)
+            raise ImagePayloadError.UnsupportedBufferView if buffer_ordinal != 0
+            stride_index: usize = image_member_index(document, view_index, "byteStride")
+            raise ImagePayloadError.UnsupportedBufferView if stride_index != JSON_INDEX_NONE
+            offset_index: usize = image_member_index(document, view_index, "byteOffset")
+            length_index: usize = image_member_index(document, view_index, "byteLength")
+            raise ImagePayloadError.InvalidBufferView if length_index == JSON_INDEX_NONE
+            offset: i64 = 0i64 if offset_index == JSON_INDEX_NONE else try image_integer(document, offset_index)
+            length: i64 = try image_integer(document, length_index)
+            raise ImagePayloadError.InvalidBufferView if offset < 0 or length <= 0
+            raise ImagePayloadError.ImageTooLarge if length > Limits::IMAGE_BYTES.i64()
+            raise ImagePayloadError.InvalidBufferView if offset > buffer.count.i64()
+            raise ImagePayloadError.InvalidBufferView if length.usize() > buffer.count - offset.usize()
+            start: usize = offset.usize()
+            end: usize = start + length.usize()
+            data: mutable darray[u8] = []
+            for byte_index in start..<end |buffer, data|:
+                data.push(buffer[byte_index])
+            return data
+
+
+        def validate_image_properties(document: JsonDocument&, image_index: usize) void error[ImagePayloadError]:
+            image: JsonNode = document.nodes[image_index]
+            try image_object_range_valid(document, image)
+            for ordinal in 0..<image.member_count |document, image|:
+                member: JsonMember = document.members[image.member_start + ordinal]
+                allowed: bool = try image_key_is(document, member, "uri")
+                allowed <- true if try image_key_is(document, member, "mimeType")
+                allowed <- true if try image_key_is(document, member, "bufferView")
+                allowed <- true if try image_key_is(document, member, "name")
+                raise ImagePayloadError.UnsupportedImageProperty if not allowed
+
+
+        def image_mime_kind(mime: sview) ImageMimeKind error[ImagePayloadError]:
+            return ImageMimeKind::Png if mime == "image/png"
+            return ImageMimeKind::Jpeg if mime == "image/jpeg"
+            return ImageMimeKind::Ktx2 if mime == "image/ktx2"
+            raise ImagePayloadError.UnsupportedMimeType
+
+
+        def image_signature_matches(data: darray[u8]&, mime: ImageMimeKind) bool:
+            if mime == ImageMimeKind.Png:
+                return false if data.count < 8
+                return data[0] == 137u8 and data[1] == 80u8 and data[2] == 78u8 and data[3] == 71u8 and data[4] == 13u8 and data[5] == 10u8 and data[6] == 26u8 and data[7] == 10u8
+            elif mime == ImageMimeKind.Jpeg:
+                return data.count >= 3 and data[0] == 255u8 and data[1] == 216u8 and data[2] == 255u8
+            else:
+                return false if data.count < 12
+                return data[0] == 171u8 and data[1] == 75u8 and data[2] == 84u8 and data[3] == 88u8 and data[4] == 32u8 and data[5] == 50u8 and data[6] == 48u8 and data[7] == 187u8 and data[8] == 13u8 and data[9] == 10u8 and data[10] == 26u8 and data[11] == 10u8
+
+
+        def image_text_value(document: JsonDocument&, node_index: usize) sview error[ImagePayloadError]:
+            raise ImagePayloadError.InvalidImageRecord if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Text
+            node: JsonNode = document.nodes[node_index]
+            raise ImagePayloadError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def image_integer(document: JsonDocument&, node_index: usize) i64 error[ImagePayloadError] can[Memory.Allocate, Abort.Panic]:
+            raise ImagePayloadError.InvalidBufferView if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise ImagePayloadError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise ImagePayloadError.InvalidBufferView
+            return parsed
+
+
+        def image_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) usize error[ImagePayloadError]:
+            raise ImagePayloadError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise ImagePayloadError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise ImagePayloadError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise ImagePayloadError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def image_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[ImagePayloadError]:
+            raise ImagePayloadError.InvalidDocument if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            try image_object_range_valid(document, owner)
+            return JSON_INDEX_NONE if owner.member_count == 0
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, key, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                selected <- member.value_index if try image_key_is(document, member, key)
+            return selected
+
+
+        def image_object_range_valid(document: JsonDocument&, owner: JsonNode) -> void error[ImagePayloadError]:
+            if owner.member_count == 0:
+                raise ImagePayloadError.InvalidDocument if owner.member_start != JSON_INDEX_NONE or owner.member_key_order_start != JSON_INDEX_NONE
+                return
+            raise ImagePayloadError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            raise ImagePayloadError.InvalidDocument if owner.member_key_order_start > document.member_key_order.count or owner.member_count > document.member_key_order.count - owner.member_key_order_start
+
+
+        def image_key_is(document: JsonDocument&, member: JsonMember, expected: sview) bool error[ImagePayloadError]:
+            raise ImagePayloadError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true

@@ -1,0 +1,107 @@
+include "../../src/runtime/data_model.elisa"
+include "../../src/runtime/json_model.elisa"
+include "../../ports/elisa-engine/scripts/gltf_image_payload_model.elisa"
+
+using EsBase64
+using EsData
+using EsEngineGltfImagePayload
+using EsEngineGltfMaterialTextures
+using EsJson
+
+
+def image_payload_rejects(source: sview, buffer: darray[u8], expected: ImagePayloadError) bool can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document(source) else failure:
+        _ = failure
+        return false
+    rejected: mutable bool = false
+    catch image_payload(document, buffer, 0):
+        ok payload:
+            _ = payload
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+def png_payload_fixture() darray[u8]:
+    return [
+        137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8,
+        0u8, 0u8, 0u8, 13u8, 73u8, 72u8, 68u8, 82u8,
+        0u8, 0u8, 0u8, 4u8, 0u8, 0u8, 0u8, 3u8,
+        8u8, 6u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8
+    ]
+
+
+def png_payload_fixture_with_dimensions(width: u8, height: u8) darray[u8]:
+    png: mutable darray[u8] = png_payload_fixture()
+    png[19] <- width
+    png[23] <- height
+    return png
+
+
+@test
+def gltf_image_payload_reads_buffer_view_and_base64_data_uri() -> void can[Memory.Allocate, Abort.Panic]:
+    png: darray[u8] = png_payload_fixture()
+    view_document: JsonDocument = try parse_document("{\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":33}],\"images\":[{\"bufferView\":0,\"mimeType\":\"image/png\"}]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    from_view: ImagePayload = try image_payload(view_document, png, 0)
+    assert from_view.mime == ImageMimeKind.Png and from_view.width == 4u32 and from_view.height == 3u32
+    assert from_view.bytes == png
+
+    encoded: darray[u8] = try encode_base64(bytes_view(png), EsEngineGltfImagePayload::Limits::ENCODED_URI_BYTES)
+    uri: sview = "data:image/png;base64," + bytes_view(encoded)
+    uri_document: JsonDocument = try parse_document("{\"images\":[{\"uri\":\"" + uri + "\"}]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    from_uri: ImagePayload = try image_payload(uri_document, [], 0)
+    assert from_uri.mime == ImageMimeKind.Png and from_uri.bytes == png
+
+
+@test
+def gltf_image_payload_rejects_unembedded_oversized_malformed_and_mismatched_images() -> void can[Memory.Allocate, Abort.Panic]:
+    png: darray[u8] = png_payload_fixture()
+    encoded: darray[u8] = try encode_base64(bytes_view(png))
+    uri: sview = "data:image/png;base64," + bytes_view(encoded)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"asset.png\"}]}", [], ImagePayloadError.ImageNotEmbedded)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"data:image/png;base64,!!!!\"}]}", [], ImagePayloadError.InvalidBase64)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"" + uri + "\",\"mimeType\":\"image/jpeg\"}]}", [], ImagePayloadError.MimeTypeContradiction)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"" + uri + "\",\"bufferView\":0}]}", [], ImagePayloadError.ImageHasUriAndBufferView)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"" + uri + "\",\"unknown\":1}]}", [], ImagePayloadError.UnsupportedImageProperty)
+    assert image_payload_rejects("{\"images\":[{\"uri\":\"data:image/png;base64,AA==\"}]}", [], ImagePayloadError.MimeSignatureMismatch)
+    assert image_payload_rejects("{\"images\":[null]}", [], ImagePayloadError.InvalidImageRecord)
+    assert image_payload_rejects("{\"bufferViews\":[{\"buffer\":0,\"byteLength\":33,\"byteStride\":4}],\"images\":[{\"bufferView\":0,\"mimeType\":\"image/png\"}]}", png, ImagePayloadError.UnsupportedBufferView)
+    assert image_payload_rejects("{\"bufferViews\":[{\"buffer\":0,\"byteOffset\":1,\"byteLength\":33}],\"images\":[{\"bufferView\":0,\"mimeType\":\"image/png\"}]}", png, ImagePayloadError.InvalidBufferView)
+
+
+@test
+def gltf_material_image_payloads_deduplicate_and_return_source_order() -> void can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+    first: darray[u8] = png_payload_fixture_with_dimensions(4u8, 3u8)
+    second: darray[u8] = png_payload_fixture_with_dimensions(8u8, 4u8)
+    first_encoded: darray[u8] = try encode_base64(bytes_view(first))
+    second_encoded: darray[u8] = try encode_base64(bytes_view(second))
+    source: sview = "{\"images\":[{\"uri\":\"data:image/png;base64," + bytes_view(first_encoded) + "\"},{\"uri\":\"data:image/png;base64," + bytes_view(second_encoded) + "\"}]}"
+    document: JsonDocument = try parse_document(source) else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    textures: MaterialTexturePlan = MaterialTexturePlan{materials: [
+        MaterialTextureRecord{image_indices: [1u, 0u, 1u, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE]},
+        MaterialTextureRecord{image_indices: [0u, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE, JSON_INDEX_NONE]}
+    ]}
+    payloads: MaterialImagePayloads = material_image_payloads(document, [], textures)
+    assert payloads.images.count == 2 and payloads.total_bytes == first.count + second.count
+    assert payloads.images[0].image_index == 0u and payloads.images[0].width == 4u32 and payloads.images[0].height == 3u32
+    assert payloads.images[1].image_index == 1u and payloads.images[1].width == 8u32 and payloads.images[1].height == 4u32
+
+
+@test
+def gltf_material_image_payloads_empty_texture_plan_produces_no_payloads() -> void can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+    document: JsonDocument = try parse_document("{\"images\":[{}]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    textures: MaterialTexturePlan = MaterialTexturePlan{}
+    payloads: MaterialImagePayloads = material_image_payloads(document, [], textures)
+    assert payloads.images.count == 0 and payloads.total_bytes == 0
