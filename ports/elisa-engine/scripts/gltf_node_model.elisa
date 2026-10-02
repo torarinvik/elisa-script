@@ -1,0 +1,301 @@
+# JSON boundary and node-property decoder for cook_gltf_nodes.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "gltf_accessor_model.elisa"
+include "gltf_affine_model.elisa"
+include "gltf_node_graph_model.elisa"
+
+using EsData
+using EsJson
+using EsEngineGltfAffine
+
+
+module EsEngineGltfNodes:
+    public:
+        error NodeDecodeError:
+            InvalidJson
+            InvalidDocument
+            InvalidNodeCount
+            InvalidNode
+            UnsupportedNodeProperty
+            InvalidMeshIndex
+            InvalidChildren
+            InvalidNodeTransform
+            InvalidScene
+            UnsupportedSceneProperty
+            InvalidSceneGraph
+
+
+        # Complete JSON-to-world-placement boundary for the node helper.
+        # Parsing stays on the bounded KeepLast JSON path used by the other
+        # glTF readers; the returned records retain mesh and source-node IDs.
+        def mesh_placement_records(source: sview, mesh_count: usize, allow_singular_mesh_transforms: bool = false) -> darray[EsEngineGltfNodeGraph::MeshPlacement] error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            document: JsonDocument = try EsEngineGltfAccessor::parse_document(source) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidJson
+            return try node_mesh_placement_records(document, mesh_count, allow_singular_mesh_transforms)
+
+
+        def node_mesh_placement_records(document: JsonDocument&, mesh_count: usize, allow_singular_mesh_transforms: bool = false) -> darray[EsEngineGltfNodeGraph::MeshPlacement] error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise NodeDecodeError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            root_index: usize = document.roots[0]
+            raise NodeDecodeError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            nodes_index: usize = try node_member_index(document, root_index, "nodes")
+            raise NodeDecodeError.InvalidNodeCount if nodes_index == JSON_INDEX_NONE or nodes_index >= document.nodes.count
+            nodes_array: JsonNode = document.nodes[nodes_index]
+            raise NodeDecodeError.InvalidNodeCount if nodes_array.kind != JsonNodeKind.Array or nodes_array.child_count == 0 or nodes_array.child_count > EsEngineGltfNodeGraph::Limits::MAX_NODES
+
+            nodes: mutable darray[EsEngineGltfNodeGraph::GltfNode] = []
+            for ordinal in 0..<nodes_array.child_count |document, nodes_array, nodes, mesh_count|:
+                node_index: usize = try node_array_item(document, nodes_index, ordinal)
+                raise NodeDecodeError.InvalidNode if document.nodes[node_index].kind != JsonNodeKind.Object
+                try node_validate_properties(document, node_index)
+
+                mesh_field: usize = try node_member_index(document, node_index, "mesh")
+                has_mesh: bool = mesh_field != JSON_INDEX_NONE
+                mesh_index: mutable usize = 0u
+                if has_mesh:
+                    mesh_number: i64 = try node_integer_value(document, mesh_field) else failure:
+                        _ = failure
+                        raise NodeDecodeError.InvalidMeshIndex
+                    raise NodeDecodeError.InvalidMeshIndex if mesh_number < 0
+                    raise NodeDecodeError.InvalidMeshIndex if mesh_number.usize() >= mesh_count
+                    mesh_index <- mesh_number.usize()
+
+                children_field: usize = try node_member_index(document, node_index, "children")
+                children: darray[usize] = []
+                if children_field != JSON_INDEX_NONE:
+                    raise NodeDecodeError.InvalidChildren if children_field >= document.nodes.count or document.nodes[children_field].kind != JsonNodeKind.Array
+                    child_array: JsonNode = document.nodes[children_field]
+                    raise NodeDecodeError.InvalidChildren if child_array.child_count > nodes_array.child_count
+                    for child_ordinal in 0..<child_array.child_count |document, child_array, children, nodes_array|:
+                        child_node: usize = try node_array_item(document, children_field, child_ordinal)
+                        child_number: i64 = try node_integer_value(document, child_node) else failure:
+                            _ = failure
+                            raise NodeDecodeError.InvalidChildren
+                        raise NodeDecodeError.InvalidChildren if child_number < 0
+                        raise NodeDecodeError.InvalidChildren if child_number.usize() >= nodes_array.child_count
+                        children.push(child_number.usize())
+
+                local_transform: Affine3x4 = try node_local_transform(document, node_index)
+                nodes.push(EsEngineGltfNodeGraph::GltfNode{has_mesh: has_mesh, mesh_index: mesh_index, children: children, local_transform: local_transform})
+
+            scenes_index: usize = try node_member_index(document, root_index, "scenes")
+            raise NodeDecodeError.InvalidScene if scenes_index == JSON_INDEX_NONE or scenes_index >= document.nodes.count
+            scenes: JsonNode = document.nodes[scenes_index]
+            raise NodeDecodeError.InvalidScene if scenes.kind != JsonNodeKind.Array or scenes.child_count != 1
+
+            active_scene_index: usize = try node_member_index(document, root_index, "scene")
+            raise NodeDecodeError.InvalidScene if active_scene_index == JSON_INDEX_NONE or not node_scene_index_is_zero(document, active_scene_index)
+            scene_index: usize = try node_array_item(document, scenes_index, 0u)
+            raise NodeDecodeError.InvalidScene if document.nodes[scene_index].kind != JsonNodeKind.Object
+            try node_validate_scene_properties(document, scene_index)
+            scene_nodes_index: usize = try node_member_index(document, scene_index, "nodes")
+            raise NodeDecodeError.InvalidScene if scene_nodes_index == JSON_INDEX_NONE or scene_nodes_index >= document.nodes.count
+            scene_nodes: JsonNode = document.nodes[scene_nodes_index]
+            raise NodeDecodeError.InvalidScene if scene_nodes.kind != JsonNodeKind.Array or scene_nodes.child_count == 0 or scene_nodes.child_count > nodes_array.child_count
+
+            roots: mutable darray[usize] = []
+            for ordinal in 0..<scene_nodes.child_count |document, scene_nodes, scene_nodes_index, roots, nodes_array|:
+                root_node: usize = try node_array_item(document, scene_nodes_index, ordinal)
+                root_number: i64 = try node_integer_value(document, root_node) else failure:
+                    _ = failure
+                    raise NodeDecodeError.InvalidScene
+                raise NodeDecodeError.InvalidScene if root_number < 0
+                raise NodeDecodeError.InvalidScene if root_number.usize() >= nodes_array.child_count
+                roots.push(root_number.usize())
+
+            return try EsEngineGltfNodeGraph::mesh_placement_records(nodes, roots, mesh_count, allow_singular_mesh_transforms) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidSceneGraph
+
+
+    private:
+        def node_local_transform(document: JsonDocument&, node_index: usize) -> Affine3x4 error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            matrix_field: usize = try node_member_index(document, node_index, "matrix")
+            translation_field: usize = try node_member_index(document, node_index, "translation")
+            rotation_field: usize = try node_member_index(document, node_index, "rotation")
+            scale_field: usize = try node_member_index(document, node_index, "scale")
+            if matrix_field != JSON_INDEX_NONE:
+                raise NodeDecodeError.InvalidNodeTransform if translation_field != JSON_INDEX_NONE or rotation_field != JSON_INDEX_NONE or scale_field != JSON_INDEX_NONE
+                values: darray[f64] = try node_float_array(document, matrix_field, 16) else failure:
+                    _ = failure
+                    raise NodeDecodeError.InvalidNodeTransform
+                return try affine_from_column_major(values) else failure:
+                    _ = failure
+                    raise NodeDecodeError.InvalidNodeTransform
+
+            translation_values: darray[f64] = try node_optional_float_array(document, translation_field, [0.0, 0.0, 0.0], 3)
+            rotation_values: darray[f64] = try node_optional_float_array(document, rotation_field, [0.0, 0.0, 0.0, 1.0], 4)
+            scale_values: darray[f64] = try node_optional_float_array(document, scale_field, [1.0, 1.0, 1.0], 3)
+            translation: Vec3 = try vec3_from_values(translation_values) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidNodeTransform
+            rotation: Quaternion = try quaternion_from_values(rotation_values) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidNodeTransform
+            scale: Vec3 = try vec3_from_values(scale_values) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidNodeTransform
+            return try affine_from_trs(translation, rotation, scale) else failure:
+                _ = failure
+                raise NodeDecodeError.InvalidNodeTransform
+
+
+        def node_optional_float_array(document: JsonDocument&, field_index: usize, fallback: darray[f64], expected_count: usize) -> darray[f64] error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            return fallback if field_index == JSON_INDEX_NONE
+            return try node_float_array(document, field_index, expected_count)
+
+
+        def node_float_array(document: JsonDocument&, array_index: usize, expected_count: usize) -> darray[f64] error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidNodeTransform if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            array: JsonNode = document.nodes[array_index]
+            raise NodeDecodeError.InvalidNodeTransform if array.child_count != expected_count
+            values: mutable darray[f64] = []
+            for ordinal in 0..<array.child_count |document, array_index, array, values|:
+                value_index: usize = try node_array_item(document, array_index, ordinal)
+                values.push(try node_float_value(document, value_index))
+            return values
+
+
+        def node_float_value(document: JsonDocument&, node_index: usize) f64 error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidNodeTransform if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise NodeDecodeError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable f64 = 0.0
+            catch parse_float(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise NodeDecodeError.InvalidNodeTransform
+            raise NodeDecodeError.InvalidNodeTransform if not node_finite_f64(parsed)
+            return parsed
+
+
+        def node_integer_value(document: JsonDocument&, node_index: usize) i64 error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidDocument if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise NodeDecodeError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise NodeDecodeError.InvalidDocument
+            return parsed
+
+
+        def node_scene_index_is_zero(document: JsonDocument&, node_index: usize) bool error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidScene if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            if node.kind == JsonNodeKind.Bool:
+                return not node.bool_value
+            if node.kind == JsonNodeKind.Number:
+                value: f64 = try node_float_value(document, node_index) else failure:
+                    _ = failure
+                    return false
+                return value == 0.0
+            return false
+
+
+        def node_validate_properties(document: JsonDocument&, object_index: usize) void error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidDocument if object_index >= document.nodes.count
+            object: JsonNode = document.nodes[object_index]
+            raise NodeDecodeError.InvalidDocument if object.kind != JsonNodeKind.Object
+            if object.member_count == 0:
+                raise NodeDecodeError.InvalidDocument if object.member_start != JSON_INDEX_NONE
+                return
+            raise NodeDecodeError.InvalidDocument if object.member_start > document.members.count or object.member_count > document.members.count - object.member_start
+            for ordinal in 0..<object.member_count |document, object, object_index|:
+                member: JsonMember = document.members[object.member_start + ordinal]
+                allowed: bool = try node_property_allowed(document, member)
+                raise NodeDecodeError.UnsupportedNodeProperty if not allowed
+
+
+        def node_validate_scene_properties(document: JsonDocument&, object_index: usize) void error[NodeDecodeError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeDecodeError.InvalidDocument if object_index >= document.nodes.count
+            object: JsonNode = document.nodes[object_index]
+            raise NodeDecodeError.InvalidDocument if object.kind != JsonNodeKind.Object
+            if object.member_count == 0:
+                raise NodeDecodeError.InvalidDocument if object.member_start != JSON_INDEX_NONE
+                return
+            raise NodeDecodeError.InvalidDocument if object.member_start > document.members.count or object.member_count > document.members.count - object.member_start
+            for ordinal in 0..<object.member_count |document, object, object_index|:
+                member: JsonMember = document.members[object.member_start + ordinal]
+                allowed: bool = try node_scene_property_allowed(document, member)
+                raise NodeDecodeError.UnsupportedSceneProperty if not allowed
+
+
+        def node_property_allowed(document: JsonDocument&, member: JsonMember) bool error[NodeDecodeError]:
+            matches: mutable bool = try node_key_is(document, member, "name")
+            return true if matches
+            matches <- try node_key_is(document, member, "mesh")
+            return true if matches
+            matches <- try node_key_is(document, member, "skin")
+            return true if matches
+            matches <- try node_key_is(document, member, "children")
+            return true if matches
+            matches <- try node_key_is(document, member, "matrix")
+            return true if matches
+            matches <- try node_key_is(document, member, "translation")
+            return true if matches
+            matches <- try node_key_is(document, member, "rotation")
+            return true if matches
+            matches <- try node_key_is(document, member, "scale")
+            return true if matches
+            matches <- try node_key_is(document, member, "weights")
+            return true if matches
+            matches <- try node_key_is(document, member, "camera")
+            return true if matches
+            return try node_key_is(document, member, "extensions")
+
+
+        def node_scene_property_allowed(document: JsonDocument&, member: JsonMember) bool error[NodeDecodeError]:
+            matches: bool = try node_key_is(document, member, "nodes")
+            return true if matches
+            return try node_key_is(document, member, "name")
+
+
+        def node_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[NodeDecodeError]:
+            raise NodeDecodeError.InvalidDocument if object_index >= document.nodes.count
+            object: JsonNode = document.nodes[object_index]
+            raise NodeDecodeError.InvalidDocument if object.kind != JsonNodeKind.Object
+            if object.member_count == 0:
+                raise NodeDecodeError.InvalidDocument if object.member_start != JSON_INDEX_NONE
+                return JSON_INDEX_NONE
+            raise NodeDecodeError.InvalidDocument if object.member_start > document.members.count or object.member_count > document.members.count - object.member_start
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<object.member_count |document, object, selected|:
+                member: JsonMember = document.members[object.member_start + ordinal]
+                raise NodeDecodeError.InvalidDocument if member.value_index >= document.nodes.count
+                matches: bool = try node_key_is(document, member, key)
+                selected <- member.value_index if matches
+            return selected
+
+
+        def node_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) usize error[NodeDecodeError]:
+            raise NodeDecodeError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise NodeDecodeError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise NodeDecodeError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise NodeDecodeError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def node_key_is(document: JsonDocument&, member: JsonMember, expected: sview) bool error[NodeDecodeError]:
+            raise NodeDecodeError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def node_finite_f64(value: f64) -> bool:
+            return value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
