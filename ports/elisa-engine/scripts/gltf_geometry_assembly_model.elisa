@@ -44,6 +44,7 @@ module EsEngineGltfGeometryAssembly:
             PrimitiveCountOutOfRange
             InvalidPrimitive
             InvalidSourceKey
+            InvalidCacheReference
             SourceIdentityCountMismatch
             SharedPositionAttributesDiffer
             MorphTargetCountMismatch
@@ -124,6 +125,76 @@ module EsEngineGltfGeometryAssembly:
                 assembly.has_morph_shape <- true
                 assembly.morph_target_count <- primitive.vertices.morph_targets.count
                 assembly.morph_normals_present <- has_morph_normals
+
+
+        # Cache-backed path used by document cookers. A repeated source key
+        # reads only the cached vertex metadata and this primitive's indices;
+        # it does not copy cached vertex streams just to append a draw.
+        def append_cached_placement_primitive(assembly: mutable PlacementAssembly&, cache: VertexSourceCache&, primitive: CachedTrianglePrimitive, material_index: usize) void error[GeometryAssemblyError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeometryAssemblyError.InvalidCacheReference if primitive.cache_entry_index >= cache.entries.count
+            entry_index: usize = primitive.cache_entry_index
+            raise GeometryAssemblyError.InvalidSourceKey if not vertex_source_keys_equal(cache.entries[entry_index].key, primitive.source_key)
+            source_count: usize = cache.entries[entry_index].vertices.count
+            raise GeometryAssemblyError.SourceIdentityCountMismatch if source_count != primitive.vertex_count
+            raise GeometryAssemblyError.InvalidSourceKey if not geometry_assembly_valid_source_key(primitive.source_key)
+
+            block_index: mutable usize = assembly.blocks.count
+            for ordinal in 0..<assembly.blocks.count |assembly, primitive, block_index|:
+                prior: GeometryBlock = assembly.blocks[ordinal]
+                if prior.source_key.position_accessor == primitive.source_key.position_accessor:
+                    raise GeometryAssemblyError.SharedPositionAttributesDiffer if not vertex_source_keys_equal(prior.source_key, primitive.source_key)
+                    raise GeometryAssemblyError.SourceIdentityCountMismatch if prior.vertices.count != source_count
+                    block_index <- ordinal
+
+            if block_index == assembly.blocks.count:
+                source_primitive: TrianglePrimitive = TrianglePrimitive{
+                    vertices: cache.entries[entry_index].vertices,
+                    triangles: primitive.triangles,
+                    source_key: primitive.source_key
+                }
+                try append_placement_primitive(assembly, source_primitive, material_index)
+                return
+
+            raise GeometryAssemblyError.InvalidBudget if assembly.vertex_budget > Limits::MAX_VERTICES or assembly.index_budget > Limits::MAX_INDICES
+            raise GeometryAssemblyError.InvalidBudget if assembly.source_vertex_count > assembly.vertex_budget or assembly.index_count > assembly.index_budget
+            raise GeometryAssemblyError.PrimitiveCountOutOfRange if assembly.primitives.count >= Limits::MAX_PRIMITIVES
+            raise GeometryAssemblyError.InvalidPrimitive if primitive.triangles.count < 3 or primitive.triangles.count % 3 != 0 or primitive.triangles.count > Limits::MAX_INDICES
+            raise GeometryAssemblyError.IndexBudgetExceeded if primitive.triangles.count > assembly.index_budget - assembly.index_count
+
+            morph_count: usize = cache.entries[entry_index].vertices.morph_targets.count
+            raise GeometryAssemblyError.InvalidPrimitive if morph_count > Limits::MAX_MORPH_TARGETS
+            raise GeometryAssemblyError.InvalidSourceKey if primitive.source_key.morph_targets.count != morph_count
+            morph_normals_present: mutable bool = false
+            if morph_count > 0:
+                morph_normals_present <- cache.entries[entry_index].vertices.morph_targets[0].has_normals
+            raise GeometryAssemblyError.MorphTargetCountMismatch if assembly.has_morph_shape and assembly.morph_target_count != morph_count
+            raise GeometryAssemblyError.InconsistentMorphNormalStreams if assembly.has_morph_shape and assembly.morph_normals_present != morph_normals_present
+            for ordinal in 0..<morph_count |cache, entry_index, primitive, source_count, morph_normals_present|:
+                target: MorphTargetStreams = cache.entries[entry_index].vertices.morph_targets[ordinal]
+                target_key: MorphSourceKey = primitive.source_key.morph_targets[ordinal]
+                raise GeometryAssemblyError.InconsistentMorphNormalStreams if target.has_normals != morph_normals_present
+                raise GeometryAssemblyError.InvalidPrimitive if target.positions.count != source_count * 12
+                raise GeometryAssemblyError.InvalidPrimitive if target.has_normals and target.normals.count != source_count * 12
+                raise GeometryAssemblyError.InvalidPrimitive if not target.has_normals and target.normals.count != 0
+                raise GeometryAssemblyError.InvalidSourceKey if (target_key.normal_accessor >= 0) != target.has_normals
+
+            for index in primitive.triangles |primitive, source_count|:
+                raise GeometryAssemblyError.InvalidPrimitive if index.usize() >= source_count
+            indices: darray[u32] = try placed_indices(primitive.triangles, assembly.matrix) else failure:
+                _ = failure
+                raise GeometryAssemblyError.IndexPlacementFailed
+            for index in indices |assembly, block_index|:
+                assembly.blocks[block_index].triangles.push(index)
+            assembly.primitives.push(PlacedPrimitive{
+                block_index: block_index,
+                indices: indices,
+                material_index: material_index
+            })
+            assembly.index_count <- assembly.index_count + primitive.triangles.count
+            if not assembly.has_morph_shape:
+                assembly.has_morph_shape <- true
+                assembly.morph_target_count <- morph_count
+                assembly.morph_normals_present <- morph_normals_present
 
 
     private:

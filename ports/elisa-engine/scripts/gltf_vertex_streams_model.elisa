@@ -13,6 +13,10 @@ module EsEngineGltfVertexStreams:
         const module Limits:
             MAX_VERTICES: usize = 2000000
             MAX_MORPH_TARGETS: usize = 32
+            # Geometry input is bounded to 256 meshes with at most 16
+            # primitives each.
+            MAX_SOURCE_CACHE_ENTRIES: usize = 4096
+            MAX_SOURCE_CACHE_LOOKUPS: usize = 4096
             # Derived from source limits: at most 2M vertices, all base
             # streams plus four-lane skin data, and 32 position/normal morphs.
             MAX_TOTAL_STREAM_BYTES: usize = 2147483648
@@ -66,6 +70,29 @@ module EsEngineGltfVertexStreams:
             source_key: VertexSourceKey = VertexSourceKey{}
 
 
+        struct VertexSourceCacheEntry:
+            key: VertexSourceKey
+            vertices: VertexStreams
+
+
+        # Keep one cache per sealed JsonDocument and unchanged backing buffer.
+        # Its aggregate limits follow the geometry cooker's source bounds.
+        struct VertexSourceCache:
+            entries: darray[VertexSourceCacheEntry] = []
+            source_vertex_count: usize = 0
+            stream_bytes: usize = 0
+            lookups: usize = 0
+            hits: usize = 0
+            misses: usize = 0
+
+
+        struct CachedTrianglePrimitive:
+            source_key: VertexSourceKey = VertexSourceKey{}
+            cache_entry_index: usize = 0
+            vertex_count: usize = 0
+            triangles: darray[u32] = []
+
+
         error VertexStreamError:
             InvalidDocument
             InvalidPrimitive
@@ -95,6 +122,7 @@ module EsEngineGltfVertexStreams:
             InvalidIndexCount
             IndexOutOfRange
             IndexDataInvalid
+            SourceCacheLimitExceeded
 
 
         # Decode one primitive's compact little-endian streams. Mesh/primitive
@@ -109,18 +137,55 @@ module EsEngineGltfVertexStreams:
         # is the smallest unit that represents an actual triangle primitive.
         def read_triangle_primitive(document: JsonDocument&, buffer: darray[u8]&, mesh_index: usize, primitive_ordinal: usize = 0u) TrianglePrimitive error[VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             primitive_index: usize = try vertex_mesh_primitive_index(document, mesh_index, primitive_ordinal)
-            mode_index: usize = try vertex_member_index(document, primitive_index, "mode")
-            if mode_index != JSON_INDEX_NONE:
-                mode: f64 = try vertex_number_value(document, mode_index) else failure:
-                    _ = failure
-                    raise VertexStreamError.UnsupportedPrimitiveMode
-                raise VertexStreamError.UnsupportedPrimitiveMode if mode != 4.0
-
+            try vertex_validate_triangle_mode(document, primitive_index)
+            source_key: VertexSourceKey = try vertex_primitive_source_key(document, primitive_index)
             vertices: VertexStreams = try read_primitive_vertex_streams_at(document, buffer, primitive_index)
             triangles: darray[u32] = try EsEngineGltfAccessor::index_stream(document, buffer, primitive_index, vertices.count.i64()) else failure:
                 raise vertex_index_error(failure)
-            source_key: VertexSourceKey = try vertex_primitive_source_key(document, primitive_index)
             return TrianglePrimitive{vertices: vertices, triangles: triangles, source_key: source_key}
+
+
+        def new_vertex_source_cache() VertexSourceCache:
+            return VertexSourceCache{}
+
+
+        # Reuse only decoded vertex streams; every primitive still validates
+        # its own schema, mode, and index accessor. The caller owns this cache
+        # for one sealed document/buffer pair across all mesh placements.
+        def read_triangle_primitive_cached(document: JsonDocument&, buffer: darray[u8]&, mesh_index: usize, primitive_ordinal: usize, cache: mutable VertexSourceCache&) CachedTrianglePrimitive error[VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise VertexStreamError.SourceCacheLimitExceeded if cache.entries.count > Limits::MAX_SOURCE_CACHE_ENTRIES
+            raise VertexStreamError.SourceCacheLimitExceeded if cache.lookups >= Limits::MAX_SOURCE_CACHE_LOOKUPS
+            raise VertexStreamError.SourceCacheLimitExceeded if cache.source_vertex_count > Limits::MAX_VERTICES or cache.stream_bytes > Limits::MAX_TOTAL_STREAM_BYTES
+            primitive_index: usize = try vertex_mesh_primitive_index(document, mesh_index, primitive_ordinal)
+            try vertex_validate_triangle_mode(document, primitive_index)
+            source_key: VertexSourceKey = try vertex_primitive_source_key(document, primitive_index)
+            entry_index: usize = vertex_source_cache_find(cache, source_key)
+
+            vertex_count: mutable usize = 0
+            if entry_index < cache.entries.count:
+                vertex_count <- cache.entries[entry_index].vertices.count
+                cache.hits <- cache.hits + 1
+            else:
+                raise VertexStreamError.SourceCacheLimitExceeded if cache.entries.count >= Limits::MAX_SOURCE_CACHE_ENTRIES
+                vertices: VertexStreams = try read_primitive_vertex_streams_at(document, buffer, primitive_index)
+                stream_bytes: usize = vertex_source_stream_bytes(vertices)
+                raise VertexStreamError.SourceCacheLimitExceeded if vertices.count > Limits::MAX_VERTICES - cache.source_vertex_count
+                raise VertexStreamError.SourceCacheLimitExceeded if stream_bytes > Limits::MAX_TOTAL_STREAM_BYTES - cache.stream_bytes
+                cache.entries.push(VertexSourceCacheEntry{key: source_key, vertices: vertices})
+                cache.source_vertex_count <- cache.source_vertex_count + vertices.count
+                cache.stream_bytes <- cache.stream_bytes + stream_bytes
+                cache.misses <- cache.misses + 1
+                vertex_count <- vertices.count
+
+            cache.lookups <- cache.lookups + 1
+            triangles: darray[u32] = try EsEngineGltfAccessor::index_stream(document, buffer, primitive_index, vertex_count.i64()) else failure:
+                raise vertex_index_error(failure)
+            return CachedTrianglePrimitive{
+                source_key: source_key,
+                cache_entry_index: entry_index,
+                vertex_count: vertex_count,
+                triangles: triangles
+            }
 
 
         # Compare canonical source identities without depending on structural
@@ -234,8 +299,43 @@ module EsEngineGltfVertexStreams:
 
 
     private:
+        def vertex_validate_triangle_mode(document: JsonDocument&, primitive_index: usize) void error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
+            mode_index: usize = try vertex_member_index(document, primitive_index, "mode")
+            return if mode_index == JSON_INDEX_NONE
+            mode: f64 = try vertex_number_value(document, mode_index) else failure:
+                _ = failure
+                raise VertexStreamError.UnsupportedPrimitiveMode
+            raise VertexStreamError.UnsupportedPrimitiveMode if mode != 4.0
+
+
+        def vertex_source_cache_find(cache: VertexSourceCache&, key: VertexSourceKey) usize:
+            selected: mutable usize = cache.entries.count
+            for ordinal in 0..<cache.entries.count |cache, key, selected|:
+                selected <- ordinal if vertex_source_keys_equal(cache.entries[ordinal].key, key)
+            return selected
+
+
+        def vertex_source_stream_bytes(vertices: VertexStreams&) usize:
+            total: mutable usize = vertices.positions.count + vertices.normals.count + vertices.tangents.count + vertices.uvs.count + vertices.uv1s.count
+            total <- total + vertices.skin.joints.count * 4 + vertices.skin.weights.count * 4
+            for target in vertices.morph_targets |total|:
+                total <- total + target.positions.count + target.normals.count
+            return total
+
+
         def vertex_primitive_source_key(document: JsonDocument&, primitive_index: usize) VertexSourceKey error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
             attributes_index: usize = try vertex_member_index(document, primitive_index, "attributes")
+            raise VertexStreamError.MissingAttributes if attributes_index == JSON_INDEX_NONE or attributes_index >= document.nodes.count or document.nodes[attributes_index].kind != JsonNodeKind.Object
+            try vertex_validate_attributes(document, attributes_index)
+            targets_index: usize = try vertex_member_index(document, primitive_index, "targets")
+            if targets_index != JSON_INDEX_NONE:
+                raise VertexStreamError.InvalidMorphTargets if targets_index >= document.nodes.count or document.nodes[targets_index].kind != JsonNodeKind.Array or document.nodes[targets_index].child_count > Limits::MAX_MORPH_TARGETS
+                targets_to_validate: JsonNode = document.nodes[targets_index]
+                for ordinal in 0..<targets_to_validate.child_count |document, targets_index, targets_to_validate|:
+                    target_index: usize = try vertex_array_item(document, targets_index, ordinal)
+                    raise VertexStreamError.InvalidMorphTargets if document.nodes[target_index].kind != JsonNodeKind.Object
+                    try vertex_validate_morph_target(document, target_index)
+
             key: mutable VertexSourceKey = VertexSourceKey{
                 position_accessor: try vertex_required_attribute_reference(document, attributes_index, "POSITION", VertexStreamError.MissingPositions),
                 normal_accessor: try vertex_optional_attribute_reference(document, attributes_index, "NORMAL"),
@@ -245,7 +345,6 @@ module EsEngineGltfVertexStreams:
                 joints0_accessor: try vertex_optional_attribute_reference(document, attributes_index, "JOINTS_0"),
                 weights0_accessor: try vertex_optional_attribute_reference(document, attributes_index, "WEIGHTS_0")
             }
-            targets_index: usize = try vertex_member_index(document, primitive_index, "targets")
             return key if targets_index == JSON_INDEX_NONE
             targets: JsonNode = document.nodes[targets_index]
             for ordinal in 0..<targets.child_count |document, targets_index, key|:
