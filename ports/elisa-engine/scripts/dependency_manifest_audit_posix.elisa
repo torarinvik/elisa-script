@@ -4,12 +4,16 @@ include "./dependency_manifest_cli_model.elisa"
 include "./dependency_manifest_digest_posix.elisa"
 include "../../../src/runtime/bounded_text_posix.elisa"
 include "../../../src/runtime/process_model.elisa"
+include "../../../src/runtime/environment_lookup_posix.elisa"
+include "../../../src/runtime/passwd_home_posix.elisa"
 
 using EsEngineDependencyManifestJson
 using EsEngineDependencyManifestCli
 using EsEngineDependencyManifestDigestPosix
 using EsBoundedText
 using EsProcess
+using EsEnvironmentLookup
+using EsPasswdHomePosix
 
 
 module EsEngineDependencyManifestAuditPosix:
@@ -31,6 +35,10 @@ module EsEngineDependencyManifestAuditPosix:
             started: bool = false
             present: bool = false
             value: sview = ""
+
+
+        error HomeExpansionError:
+            HomeUnavailable
 
 
         def diagnostic(message: sview) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
@@ -96,17 +104,50 @@ module EsEngineDependencyManifestAuditPosix:
             return canonical_or_absolute(projects.joinpath("elisa-engine"))
 
 
-        def expand_home(value: sview) -> sview can[Environment.Read, Memory.Allocate, Abort.Panic]:
-            return value if value != "~" and not value.startswith("~/")
-            home: sview = try getenv("HOME", "") else failure:
-                _ = failure
-                return value
-            return value if home == ""
-            return home if value == "~"
-            return home + value[1:len(value)]
+        def expand_home(value: sview) -> sview error[HomeExpansionError] can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            value_length: usize = sview_len(value)
+            return value if value_length == 0 or sview_at(value, 0) != 126u8
+
+            prefix_end: mutable usize = 1
+            while prefix_end < value_length and sview_at(value, prefix_end) != 47u8 |value, prefix_end|:
+                prefix_end <- prefix_end + 1
+            username: sview = string_view_slice(value, 1, prefix_end.i64())
+            home_bytes: mutable darray[u8] = []
+
+            if username == "":
+                home_environment: EsEnvironmentLookup::Value = try EsEnvironmentLookup::lookup("HOME") else failure:
+                    _ = failure
+                    raise HomeExpansionError.HomeUnavailable
+                if home_environment.present:
+                    for byte in home_environment.bytes |home_bytes|:
+                        home_bytes.push(byte)
+                else:
+                    account_home: mutable EsPasswdHomePosix::HomeLookup = zeroed
+                    catch EsPasswdHomePosix::current_user_home():
+                        ok result:
+                            account_home <- result
+                        error _:
+                            raise HomeExpansionError.HomeUnavailable
+                    raise HomeExpansionError.HomeUnavailable if account_home.state != EsPasswdHomePosix::LookupState.HomeFound
+                    home_bytes <- account_home.home_directory
+            else:
+                account_home: mutable EsPasswdHomePosix::HomeLookup = zeroed
+                catch EsPasswdHomePosix::named_user_home(username):
+                    ok result:
+                        account_home <- result
+                    error _:
+                        raise HomeExpansionError.HomeUnavailable
+                raise HomeExpansionError.HomeUnavailable if account_home.state != EsPasswdHomePosix::LookupState.HomeFound
+                home_bytes <- account_home.home_directory
+
+            suffix: sview = string_view_slice(value, prefix_end.i64(), value_length.i64())
+            return "/" if home_bytes.count == 0 and suffix == ""
+            return suffix if home_bytes.count == 0
+            raise HomeExpansionError.HomeUnavailable if sview_at(bytes_view(home_bytes), 0) == 126u8
+            return bytes_view(home_bytes) + suffix
 
 
-        def resolve_configured_path(root: Path, fallback: sview, environment_key: sview) -> Path can[Environment.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+        def resolve_configured_path(root: Path, fallback: sview, environment_key: sview) -> Path error[HomeExpansionError] can[Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
             configured: mutable sview = ""
             if environment_key != "":
                 configured <- try getenv(environment_key, "") else failure:
@@ -151,7 +192,7 @@ module EsEngineDependencyManifestAuditPosix:
             return try EsBoundedText::read_utf8(candidate, Limits::SOURCE_BYTES)
 
 
-        def audit_manifest(root: Path, manifest: Manifest) -> darray[sview] can[Directory.Read, Environment.Read, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+        def audit_manifest(root: Path, manifest: Manifest) -> darray[sview] error[HomeExpansionError] can[Directory.Read, Environment.Read, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
             failures: mutable darray[sview] = []
             names: mutable darray[sview] = []
 
@@ -334,7 +375,14 @@ module EsEngineDependencyManifestAuditPosix:
                         diagnostic("manifest JSON is malformed or has an invalid shape")
                     return 1i64
 
-            failures: darray[sview] = audit_manifest(selected_root, decoded.manifest)
+            failures: mutable darray[sview] = []
+            catch audit_manifest(selected_root, decoded.manifest):
+                ok result:
+                    failures <- result
+                error failure:
+                    _ = failure
+                    diagnostic("Could not determine home directory.")
+                    return 1i64
             if failures.count != 0:
                 for failure in failures:
                     diagnostic(failure)

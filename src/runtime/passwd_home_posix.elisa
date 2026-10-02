@@ -1,0 +1,121 @@
+# Bounded Darwin arm64 passwd-database access shared by path and process adapters.
+
+module EsPasswdHomePosix:
+    using EsRuntime
+
+    public:
+        const module Limits:
+            BUFFER_BYTES: usize = 65536
+            USERNAME_BYTES: usize = 1024
+            HOME_BYTES: usize = 65536
+
+
+        const enum LookupState of u8:
+            HomeFound
+            UserNotFound
+            LookupUnavailable
+
+
+        struct HomeLookup:
+            state: LookupState = LookupState.LookupUnavailable
+            home_directory: darray[u8] = []
+
+
+        error LookupError:
+            HomePointerOutsideBuffer
+            HomeStringUnterminated
+            HomeLimitExceeded
+
+
+    private:
+        # Darwin arm64's pwd.h `struct passwd`; libc's reentrant lookup APIs
+        # populate this record and point its strings into our bounded buffer.
+        struct DarwinPasswdRecord:
+            name: u8&?
+            password: u8&?
+            user: u32
+            group: u32
+            changed: i64
+            class_name: u8&?
+            gecos: u8&?
+            home_directory: u8&?
+            shell: u8&?
+            expires: i64
+
+
+        @link_name(getuid)
+        extern passwd_home_real_user() -> u32 can[Blocking.IO]
+
+        @link_name(getpwuid_r)
+        extern passwd_home_getpwuid(user: u32, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
+
+        @link_name(getpwnam_r)
+        extern passwd_home_getpwnam(name: cstr, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
+
+
+        def copy_home_bytes(home_pointer: u8&?, buffer: darray[u8]&) -> darray[u8] error[LookupError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return [] if home_pointer == null
+            home: u8& = home_pointer
+
+            # Find by pointer identity before scanning: never dereference a
+            # libc-owned pointer outside the storage passed to *_r.
+            start: mutable usize = buffer.count
+            for index in 0..<buffer.count |buffer, start|:
+                element_pointer: u8& = (&buffer[index]).cast[u8&]
+                if element_pointer == home:
+                    start <- index
+                    break
+            raise LookupError.HomePointerOutsideBuffer if start == buffer.count
+
+            owned: mutable darray[u8] = []
+            for index in start..<buffer.count |buffer, owned|:
+                byte: u8 = buffer[index]
+                return owned if byte == 0u8
+                raise LookupError.HomeLimitExceeded if owned.count >= Limits::HOME_BYTES
+                owned.push(byte)
+            raise LookupError.HomeStringUnterminated
+
+
+        def zeroed_buffer() -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            buffer: mutable darray[u8] = []
+            buffer.reserve(Limits::BUFFER_BYTES)
+            for _ in 0..<Limits::BUFFER_BYTES |buffer|:
+                buffer.push(0u8)
+            return buffer
+
+
+        def lookup(username: sview, current_user: bool) -> HomeLookup error[LookupError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            owned_name: mutable darray[u8] = []
+            if not current_user:
+                username_length: usize = sview_len(username)
+                return HomeLookup{state: LookupState.LookupUnavailable} if username_length == 0 or username_length > Limits::USERNAME_BYTES or sview_contains_byte(username, 0u8)
+                owned_name.reserve(username_length + 1)
+                for index in 0..<username_length |username, owned_name|:
+                    owned_name.push(sview_at(username, index))
+                owned_name.push(0u8)
+
+            record: mutable DarwinPasswdRecord = zeroed
+            buffer: mutable darray[u8] = zeroed_buffer()
+            result: mutable DarwinPasswdRecord&? = null
+            result_pointer: mutable DarwinPasswdRecord&?& = (&result).cast[mutable DarwinPasswdRecord&?&]
+            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
+            status: i32 = 0
+            if current_user:
+                status <- passwd_home_getpwuid(passwd_home_real_user(), record, buffer_pointer, buffer.count, result_pointer)
+            else:
+                username_pointer: cstr = (&owned_name[0]).cast[cstr]
+                status <- passwd_home_getpwnam(username_pointer, record, buffer_pointer, buffer.count, result_pointer)
+            return HomeLookup{state: LookupState.LookupUnavailable} if status != 0
+            return HomeLookup{state: LookupState.UserNotFound} if result == null
+            return HomeLookup{state: LookupState.UserNotFound} if current_user and record.home_directory == null
+            home_directory: darray[u8] = try copy_home_bytes(record.home_directory, buffer)
+            return HomeLookup{state: LookupState.HomeFound, home_directory: home_directory}
+
+
+    public:
+        def current_user_home() -> HomeLookup error[LookupError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            return try lookup("", true)
+
+
+        def named_user_home(username: sview) -> HomeLookup error[LookupError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            return try lookup(username, false)

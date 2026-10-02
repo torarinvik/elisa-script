@@ -2,18 +2,18 @@
 # This remains opt-in: callers own the PATH plan and credential snapshot.
 include "directory_posix.elisa"
 include "bash_exec_lookup_model.elisa"
+include "passwd_home_posix.elisa"
 
 using EsRuntime
 
 module EsBashExecLookupPosix:
     using EsEnvironmentLookup
+    using EsPasswdHomePosix
 
     public:
         const module Limits:
             CANDIDATE_PATH_BYTES: usize = EsBashExecLookup::Limits::CANDIDATE_PATH_BYTES
             SUPPLEMENTARY_GROUPS: usize = 1024
-            PASSWD_BUFFER_BYTES: usize = 65536
-            PASSWD_USERNAME_BYTES: usize = 1024
 
 
         const enum TildeEnvironmentVariable of u8:
@@ -67,22 +67,6 @@ module EsBashExecLookupPosix:
 
 
     private:
-        # Darwin arm64's pwd.h `struct passwd`. Keep this ABI declaration
-        # private to the Darwin adapter; reentrant libc APIs write the full
-        # record into caller-owned storage.
-        struct DarwinPasswdRecord:
-            name: u8&?
-            password: u8&?
-            user: u32
-            group: u32
-            changed: i64
-            class_name: u8&?
-            gecos: u8&?
-            home_directory: u8&?
-            shell: u8&?
-            expires: i64
-
-
         const enum ReachedTildeEnvironmentNeed of u8:
             None
             Home
@@ -149,86 +133,42 @@ module EsBashExecLookupPosix:
         @link_name(getegid)
         extern bash_lookup_effective_group() -> u32
 
-        @link_name(getuid)
-        extern bash_lookup_real_user() -> u32 can[Blocking.IO]
-
-        @link_name(getpwuid_r)
-        extern bash_lookup_getpwuid(user: u32, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
-
-        @link_name(getpwnam_r)
-        extern bash_lookup_getpwnam(name: cstr, record: mutable DarwinPasswdRecord&, buffer: mutable u8&, buffer_size: usize, result: mutable DarwinPasswdRecord&?&) -> i32 can[Blocking.IO]
-
         @link_name(getgroups)
         extern bash_lookup_getgroups(count: i32, groups: mutable u32&?) -> i32 can[Blocking.IO]
 
 
-        def copy_passwd_home_bytes(home_pointer: u8&?, buffer: darray[u8]&) -> darray[u8] error[ObservationError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            return [] if home_pointer == null
-            home: u8& = home_pointer
-
-            # POSIX *_r results point into the supplied buffer. Locate the
-            # borrowed string by pointer identity first, then copy only within
-            # that allocation; never scan an unbounded libc pointer.
-            start: mutable usize = buffer.count
-            for index in 0..<buffer.count |buffer, start|:
-                element_pointer: u8& = (&buffer[index]).cast[u8&]
-                if element_pointer == home:
-                    start <- index
-                    break
-            raise ObservationError.PasswordHomePointerOutsideBuffer if start == buffer.count
-
-            owned: mutable darray[u8] = []
-            for index in start..<buffer.count |buffer, owned|:
-                byte: u8 = buffer[index]
-                return owned if byte == 0u8
-                raise ObservationError.PasswordHomeLimitExceeded if owned.count >= EsBashExecLookup::Limits::PATH_BYTES
-                owned.push(byte)
-            raise ObservationError.PasswordHomeStringUnterminated
-
-
-        def zeroed_passwd_buffer() -> darray[u8] can[Memory.Allocate, Abort.Panic]:
-            buffer: mutable darray[u8] = []
-            buffer.reserve(Limits::PASSWD_BUFFER_BYTES)
-            for _ in 0..<Limits::PASSWD_BUFFER_BYTES |buffer|:
-                buffer.push(0u8)
-            return buffer
+        def passwd_home_error(error: EsPasswdHomePosix::LookupError) -> ObservationError:
+            if error == EsPasswdHomePosix::LookupError.HomePointerOutsideBuffer:
+                return ObservationError.PasswordHomePointerOutsideBuffer
+            if error == EsPasswdHomePosix::LookupError.HomeStringUnterminated:
+                return ObservationError.PasswordHomeStringUnterminated
+            return ObservationError.PasswordHomeLimitExceeded
 
 
         def current_account_home_directory() -> AccountHomeSnapshot error[ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            record: mutable DarwinPasswdRecord = zeroed
-            buffer: mutable darray[u8] = zeroed_passwd_buffer()
-            result: mutable DarwinPasswdRecord&? = null
-            result_pointer: mutable DarwinPasswdRecord&?& = (&result).cast[mutable DarwinPasswdRecord&?&]
-            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
-            status: i32 = bash_lookup_getpwuid(bash_lookup_real_user(), record, buffer_pointer, buffer.count, result_pointer)
-            return AccountHomeSnapshot{lookup_complete: true} if status != 0 or result == null or record.home_directory == null
-            home_directory: darray[u8] = try copy_passwd_home_bytes(record.home_directory, buffer)
-            return AccountHomeSnapshot{lookup_complete: true, home_found: true, bytes: home_directory}
+            lookup: mutable EsPasswdHomePosix::HomeLookup = zeroed
+            catch EsPasswdHomePosix::current_user_home():
+                ok value:
+                    lookup <- value
+                error failure:
+                    raise passwd_home_error(failure)
+            return AccountHomeSnapshot{lookup_complete: true} if lookup.state != EsPasswdHomePosix::LookupState.HomeFound
+            return AccountHomeSnapshot{lookup_complete: true, home_found: true, bytes: lookup.home_directory}
 
 
         def named_user_home_lookup(username: sview) -> EsBashExecLookup::NamedUserHomeLookup error[ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
-            username_length: usize = sview_len(username)
-            owned_name: mutable darray[u8] = []
-            if username_length > Limits::PASSWD_USERNAME_BYTES:
-                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.LookupUnavailable}
-            owned_name.reserve(username_length + 1)
-            for index in 0..<username_length |username, owned_name|:
-                owned_name.push(sview_at(username, index))
-            owned_name.push(0u8)
-
-            record: mutable DarwinPasswdRecord = zeroed
-            buffer: mutable darray[u8] = zeroed_passwd_buffer()
-            result: mutable DarwinPasswdRecord&? = null
-            result_pointer: mutable DarwinPasswdRecord&?& = (&result).cast[mutable DarwinPasswdRecord&?&]
-            username_pointer: cstr = (&owned_name[0]).cast[cstr]
-            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
-            status: i32 = bash_lookup_getpwnam(username_pointer, record, buffer_pointer, buffer.count, result_pointer)
-            if status != 0:
-                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.LookupUnavailable}
-            if result == null:
-                return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.UserNotFound}
-            home: darray[u8] = try copy_passwd_home_bytes(record.home_directory, buffer)
-            return EsBashExecLookup::NamedUserHomeLookup{username: try copy_environment_bytes(username), state: EsBashExecLookup::NamedUserHomeState.HomeFound, home_directory: home}
+            lookup: mutable EsPasswdHomePosix::HomeLookup = zeroed
+            catch EsPasswdHomePosix::named_user_home(username):
+                ok value:
+                    lookup <- value
+                error failure:
+                    raise passwd_home_error(failure)
+            copied_username: darray[u8] = try copy_environment_bytes(username)
+            if lookup.state == EsPasswdHomePosix::LookupState.HomeFound:
+                return EsBashExecLookup::NamedUserHomeLookup{username: copied_username, state: EsBashExecLookup::NamedUserHomeState.HomeFound, home_directory: lookup.home_directory}
+            if lookup.state == EsPasswdHomePosix::LookupState.UserNotFound:
+                return EsBashExecLookup::NamedUserHomeLookup{username: copied_username, state: EsBashExecLookup::NamedUserHomeState.UserNotFound}
+            return EsBashExecLookup::NamedUserHomeLookup{username: copied_username, state: EsBashExecLookup::NamedUserHomeState.LookupUnavailable}
 
 
         def resolve_path_directory_with_named_user_lookup(directory: sview, tilde: mutable EsBashExecLookup::PathTildeContext&) -> darray[u8] error[EsBashExecLookup::LookupError, ObservationError] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
