@@ -1,0 +1,119 @@
+# Area-weighted generated normals from a complete placement block's topology.
+include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
+include "gltf_affine_model.elisa"
+
+using EsEngineGltfAffine
+
+
+module EsEngineGltfGeneratedNormals:
+    public:
+        const module Limits:
+            MAX_VERTICES: usize = 2000000
+            MAX_INDICES: usize = 15000000
+            MAX_STREAM_BYTES: usize = 67108864
+            DEGENERATE_LENGTH: f64 = 0.00000000000000000001
+            FLOAT32_MAXIMUM: f64 = 3.4028234663852886e38
+
+
+        error GeneratedNormalsError:
+            InvalidVertexCount
+            InvalidPositionByteCount
+            PositionInputLimitExceeded
+            NonFinitePosition
+            InvalidTriangleIndexCount
+            IndexOutOfRange
+            DegenerateVertex
+            OutputLimitExceeded
+            GeneratedNormalInvalid
+
+
+        # Matches cook_gltf_geometry.generated_normals: each unnormalized face
+        # cross product is accumulated at all three corners in triangle order,
+        # then each vertex accumulator is normalized and packed as little-endian
+        # float32.
+        def generate_vertex_normals(positions: darray[u8]&, vertex_count: usize, indices: darray[u32]&) darray[u8] error[GeneratedNormalsError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeneratedNormalsError.InvalidVertexCount if vertex_count == 0 or vertex_count > Limits::MAX_VERTICES
+            raise GeneratedNormalsError.PositionInputLimitExceeded if positions.count > Limits::MAX_STREAM_BYTES
+            raise GeneratedNormalsError.InvalidPositionByteCount if positions.count != vertex_count * 12
+            raise GeneratedNormalsError.InvalidTriangleIndexCount if indices.count < 3 or indices.count % 3 != 0 or indices.count > Limits::MAX_INDICES
+
+            points: mutable darray[Vec3] = []
+            for vertex in 0..<vertex_count |positions, points|:
+                offset: usize = vertex * 12
+                x: f32 = generated_normals_read_f32(positions, offset)
+                y: f32 = generated_normals_read_f32(positions, offset + 4)
+                z: f32 = generated_normals_read_f32(positions, offset + 8)
+                raise GeneratedNormalsError.NonFinitePosition if not generated_normals_finite(x.f64()) or not generated_normals_finite(y.f64()) or not generated_normals_finite(z.f64())
+                points.push(Vec3{x: x.f64(), y: y.f64(), z: z.f64()})
+
+            accumulators: mutable darray[Vec3] = []
+            for _ in 0..<vertex_count |accumulators|:
+                accumulators.push(Vec3{})
+            triangle_count: usize = indices.count / 3
+            for triangle in 0..<triangle_count |points, indices, accumulators|:
+                first: usize = triangle * 3
+                first_vertex: usize = indices[first].usize()
+                second_vertex: usize = indices[first + 1].usize()
+                third_vertex: usize = indices[first + 2].usize()
+                raise GeneratedNormalsError.IndexOutOfRange if first_vertex >= vertex_count or second_vertex >= vertex_count or third_vertex >= vertex_count
+
+                a: Vec3 = points[first_vertex]
+                b: Vec3 = points[second_vertex]
+                c: Vec3 = points[third_vertex]
+                ab_x: f64 = b.x - a.x
+                ab_y: f64 = b.y - a.y
+                ab_z: f64 = b.z - a.z
+                ac_x: f64 = c.x - a.x
+                ac_y: f64 = c.y - a.y
+                ac_z: f64 = c.z - a.z
+                cross: Vec3 = Vec3{
+                    x: ab_y * ac_z - ab_z * ac_y,
+                    y: ab_z * ac_x - ab_x * ac_z,
+                    z: ab_x * ac_y - ab_y * ac_x
+                }
+                for corner in 0..<3 |indices, accumulators, first, cross|:
+                    vertex_index: usize = indices[first + corner].usize()
+                    accumulated: Vec3 = accumulators[vertex_index]
+                    accumulators[vertex_index] <- Vec3{
+                        x: accumulated.x + cross.x,
+                        y: accumulated.y + cross.y,
+                        z: accumulated.z + cross.z
+                    }
+
+            raise GeneratedNormalsError.OutputLimitExceeded if vertex_count > Limits::MAX_STREAM_BYTES / 12
+            output: mutable darray[u8] = []
+            for vertex in 0..<vertex_count |accumulators, output|:
+                normal: Vec3 = accumulators[vertex]
+                length: f64 = sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z)
+                raise GeneratedNormalsError.DegenerateVertex if not generated_normals_finite(length) or length <= Limits::DEGENERATE_LENGTH
+                try generated_normals_append_f32(output, normal.x / length)
+                try generated_normals_append_f32(output, normal.y / length)
+                try generated_normals_append_f32(output, normal.z / length)
+            return output
+
+
+    private:
+        def generated_normals_append_f32(output: mutable darray[u8]&, value: f64) void error[GeneratedNormalsError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeneratedNormalsError.GeneratedNormalInvalid if not generated_normals_finite(value) or fabs(value) > Limits::FLOAT32_MAXIMUM
+            packed: f32 = value.f32()
+            bits: mutable u32 = 0u32
+            _ = memcpy((&bits).cast[mutable void&], (&packed).cast[void&], 4)
+            output.push((bits & 255u32).u8())
+            output.push(((bits >> 8) & 255u32).u8())
+            output.push(((bits >> 16) & 255u32).u8())
+            output.push((bits >> 24).u8())
+
+
+        def generated_normals_read_u32(data: darray[u8]&, offset: usize) u32:
+            return data[offset].u32() | (data[offset + 1].u32() << 8) | (data[offset + 2].u32() << 16) | (data[offset + 3].u32() << 24)
+
+
+        def generated_normals_read_f32(data: darray[u8]&, offset: usize) f32 can[Unsafe.PointerCast]:
+            bits: u32 = generated_normals_read_u32(data, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
+
+
+        def generated_normals_finite(value: f64) bool:
+            return value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
