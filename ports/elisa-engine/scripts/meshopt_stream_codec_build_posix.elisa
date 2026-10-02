@@ -1,0 +1,148 @@
+# On-demand POSIX compiler/cache adapter for the meshopt stream codec.
+include "./meshopt_stream_codec_build_model.elisa"
+include "./dependency_manifest_digest_posix.elisa"
+include "./cooked_meshopt_test_stream_model.elisa"
+include "../../../src/runtime/executable_lookup_posix.elisa"
+
+using EsEngineCookedMeshoptTestStream
+using EsEngineDependencyManifestDigestPosix
+using EsEngineMeshoptCodecBuild
+using EsExecutableLookupPosix
+using EsProcess
+
+
+module EsEngineMeshoptCodecBuildPosix:
+    public:
+        error CodecBuildError:
+            InvalidEngineRoot
+            MissingPinnedSource
+            SourceLimitExceeded
+            SourceFingerprintFailed
+            CompilerUnavailable
+            CompilerVersionFailed
+            InvalidBuildRecipe
+            CachePathUnsafe
+            BuildDirectoryFailed
+            CacheStampRemovalFailed
+            BuildFailed
+            BuildInputsChanged
+            StampWriteFailed
+
+
+        const module Limits:
+            SOURCE_BYTES: usize = 67108864
+            TOTAL_SOURCE_BYTES: usize = 134217728
+            VERSION_TIMEOUT_MICROS: i64 = 30000000i64
+            BUILD_TIMEOUT_MICROS: i64 = 120000000i64
+            VERSION_OUTPUT_BYTES: i64 = 1048576i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+            STAMP_BYTES: usize = 128
+
+
+        def ensure_codec(engine_root: Path) -> Executable error[CodecBuildError] can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            root: Path = try path_real(engine_root) else failure:
+                _ = failure
+                raise CodecBuildError.InvalidEngineRoot
+            compiler_name: sview = try getenv("CXX", EsEngineMeshoptCodecBuild::Policy::DEFAULT_COMPILER) else failure:
+                _ = failure
+                raise CodecBuildError.CompilerUnavailable
+            compiler: sview = EsExecutableLookupPosix::which(compiler_name)
+            raise CodecBuildError.CompilerUnavailable if compiler == ""
+
+            build_recipe: EsEngineMeshoptCodecBuild::Recipe = try EsEngineMeshoptCodecBuild::recipe(root, compiler) else failure:
+                _ = failure
+                raise CodecBuildError.InvalidBuildRecipe
+
+            for source in build_recipe.source_paths:
+                present: bool = try is_file(source) else false
+                raise CodecBuildError.MissingPinnedSource if not present
+                source_size: usize = try file_size(source) else failure:
+                    _ = failure
+                    raise CodecBuildError.MissingPinnedSource
+                raise CodecBuildError.SourceLimitExceeded if source_size > Limits::SOURCE_BYTES
+
+            version_capture: ProcessCapture = try subprocess.capture_result(
+                executable(compiler), ["--version"], "", Limits::VERSION_TIMEOUT_MICROS, Limits::VERSION_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                raise CodecBuildError.CompilerVersionFailed
+            raise CodecBuildError.CompilerVersionFailed if version_capture.process_exit_status != 0i64
+            developer_dir: sview = try getenv("DEVELOPER_DIR", "") else failure:
+                _ = failure
+                ""
+            fingerprint_bytes: darray[u8] = try codec_fingerprint(build_recipe, version_capture.process_stdout, developer_dir)
+            fingerprint: sview = bytes_view(fingerprint_bytes)
+
+            build_directory: Path = build_recipe.output.parent()
+            raise CodecBuildError.CachePathUnsafe if is_symlink(build_directory)
+            cached: bool = meshopt_codec_cache_matches(build_recipe.output, build_recipe.stamp, fingerprint)
+            if cached:
+                return executable(f"{build_recipe.output}")
+
+            created: bool = try create_directories(build_directory) else false
+            raise CodecBuildError.BuildDirectoryFailed if not created
+            raise CodecBuildError.CachePathUnsafe if is_symlink(build_directory) or is_symlink(build_recipe.output) or is_symlink(build_recipe.stamp)
+            stale_stamp: bool = try is_file(build_recipe.stamp) else false
+            if stale_stamp:
+                stamp_removed: bool = try remove_file(build_recipe.stamp) else false
+                raise CodecBuildError.CacheStampRemovalFailed if not stamp_removed
+
+            build_capture: ProcessCapture = try subprocess.capture_result(
+                executable(build_recipe.compiler), build_recipe.arguments, "", Limits::BUILD_TIMEOUT_MICROS, Limits::PROCESS_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                raise CodecBuildError.BuildFailed
+            raise CodecBuildError.BuildFailed if build_capture.process_exit_status != 0i64
+            built: bool = try is_file(build_recipe.output) else false
+            raise CodecBuildError.BuildFailed if not built or is_symlink(build_recipe.output)
+
+            final_fingerprint_bytes: darray[u8] = try codec_fingerprint(build_recipe, version_capture.process_stdout, developer_dir)
+            raise CodecBuildError.BuildInputsChanged if final_fingerprint_bytes != fingerprint_bytes
+
+            stamp_contents: sview = fingerprint + "\n"
+            stamp_written: usize = try write_text(build_recipe.stamp, stamp_contents) else failure:
+                _ = failure
+                raise CodecBuildError.StampWriteFailed
+            raise CodecBuildError.StampWriteFailed if stamp_written != len(stamp_contents)
+            return executable(f"{build_recipe.output}")
+
+
+        def decode_vertex_stream_on_demand(engine_root: Path, fields: darray[EsEngineCookedMeshoptTestStream::CookedField], name: sview, vertex_count: i64, vertex_stride: i64) -> darray[u8] error[CodecBuildError, EsEngineCookedMeshoptTestStream::MeshoptTestStreamError, ProcessError] can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            codec: Executable = try ensure_codec(engine_root)
+            return try EsEngineCookedMeshoptTestStream::decode_vertex_stream(fields, name, vertex_count, vertex_stride, codec)
+
+
+    private:
+        def codec_fingerprint(build_recipe: EsEngineMeshoptCodecBuild::Recipe, compiler_version: sview, developer_dir: sview) -> darray[u8] error[CodecBuildError] can[File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            context: mutable EsSha256Stream::Context = try EsEngineMeshoptCodecBuild::fingerprint_begin(build_recipe, compiler_version, developer_dir) else failure:
+                _ = failure
+                raise CodecBuildError.InvalidBuildRecipe
+            total_bytes: mutable usize = 0
+            for source in build_recipe.source_paths |context, total_bytes|:
+                source_size: usize = try file_size(source) else failure:
+                    _ = failure
+                    raise CodecBuildError.MissingPinnedSource
+                raise CodecBuildError.SourceLimitExceeded if source_size > Limits::SOURCE_BYTES or source_size > Limits::TOTAL_SOURCE_BYTES - total_bytes
+                total_bytes <- total_bytes + source_size
+                try EsEngineDependencyManifestDigestPosix::update_file(context, source, Limits::SOURCE_BYTES) else failure:
+                    _ = failure
+                    raise CodecBuildError.SourceFingerprintFailed
+            return try EsEngineMeshoptCodecBuild::fingerprint_finish(context) else failure:
+                _ = failure
+                raise CodecBuildError.InvalidBuildRecipe
+
+
+        def meshopt_codec_cache_matches(output: Path, stamp: Path, expected_fingerprint: sview) -> bool can[File.Read, Memory.Allocate, Abort.Panic]:
+            return false if is_symlink(output) or is_symlink(stamp)
+            output_exists: bool = try is_file(output) else false
+            return false if not output_exists
+            stamp_exists: bool = try is_file(stamp) else false
+            return false if not stamp_exists
+            stamp_size: usize = try file_size(stamp) else failure:
+                _ = failure
+                return false
+            return false if stamp_size == 0 or stamp_size > Limits::STAMP_BYTES
+            contents: sview = try read_text(stamp) else failure:
+                _ = failure
+                return false
+            return contents.strip() == expected_fingerprint
