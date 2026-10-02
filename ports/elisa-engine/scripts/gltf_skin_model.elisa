@@ -9,6 +9,7 @@ include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
 include "gltf_affine_model.elisa"
 include "gltf_accessor_model.elisa"
 include "gltf_node_graph_model.elisa"
+include "gltf_node_model.elisa"
 
 using EsData
 using EsJson
@@ -17,6 +18,7 @@ using EsJsonParse
 using EsEngineGltfAffine
 using EsEngineGltfAccessor
 using EsEngineGltfNodeGraph
+using EsEngineGltfNodes
 
 
 module EsEngineGltfSkin:
@@ -55,6 +57,20 @@ module EsEngineGltfSkin:
             bindings: darray[PlacementSkinBinding] = []
 
 
+        struct SkinSourceGraph:
+            nodes: darray[GltfNode] = []
+            roots: darray[usize] = []
+            parent_indices: darray[i64] = []
+            world_transforms: darray[Affine3x4] = []
+
+
+    private:
+        struct SkinTraversalFrame:
+            node_index: usize
+            parent_world: Affine3x4
+
+
+    public:
         error SkinError:
             InvalidDocument
             InvalidAttributes
@@ -78,6 +94,7 @@ module EsEngineGltfSkin:
             InvalidSkinPlacement
             SkinNotReferenced
             PaletteLimitExceeded
+            InvalidNodeGraph
             RestMatrixHasZeroScale
             RestMatrixContainsShear
             InvalidRestMatrixRotation
@@ -203,6 +220,50 @@ module EsEngineGltfSkin:
                 has_skin_streams: true,
                 palette_count: palette_total,
                 bindings: bindings
+            }
+
+
+        # Decode one validated scene graph for rig consumers and retain
+        # source-node parents/world transforms by stable node index.
+        def read_skin_source_graph(document: JsonDocument&, mesh_count: usize) SkinSourceGraph error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            scene: EsEngineGltfNodes::DecodedNodeScene = try EsEngineGltfNodes::decode_node_scene(document, mesh_count) else failure:
+                _ = failure
+                raise SkinError.InvalidDocument
+            _ = try EsEngineGltfNodeGraph::mesh_placement_records(scene.nodes, scene.roots, mesh_count, true) else failure:
+                _ = failure
+                raise SkinError.InvalidNodeGraph
+
+            parents: mutable darray[i64] = []
+            worlds: mutable darray[Affine3x4] = []
+            for _ in 0..<scene.nodes.count |parents, worlds|:
+                parents.push(-1i64)
+                worlds.push(Affine3x4{})
+            for parent_index in 0..<scene.nodes.count |scene, parents|:
+                node: GltfNode = scene.nodes[parent_index]
+                for child_index in node.children |scene, parents, parent_index|:
+                    raise SkinError.InvalidNodeGraph if child_index >= scene.nodes.count
+                    raise SkinError.InvalidNodeGraph if child_index == parent_index or parents[child_index] >= 0
+                    parents[child_index] <- parent_index.i64()
+
+            identity: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0}
+            pending: mutable darray[SkinTraversalFrame] = []
+            for ordinal in 0..<scene.roots.count |scene, pending, identity|:
+                root_index: usize = scene.roots[scene.roots.count - ordinal - 1]
+                pending.push(SkinTraversalFrame{node_index: root_index, parent_world: identity})
+            while pending.count > 0 |scene, pending, worlds|:
+                frame: SkinTraversalFrame = pending.pop()
+                node: GltfNode = scene.nodes[frame.node_index]
+                world: Affine3x4 = multiply_affine(frame.parent_world, node.local_transform)
+                raise SkinError.InvalidNodeGraph if not affine_is_finite(world)
+                worlds[frame.node_index] <- world
+                for ordinal in 0..<node.children.count |scene, pending, world|:
+                    child_index: usize = node.children[node.children.count - ordinal - 1]
+                    pending.push(SkinTraversalFrame{node_index: child_index, parent_world: world})
+            return SkinSourceGraph{
+                nodes: scene.nodes,
+                roots: scene.roots,
+                parent_indices: parents,
+                world_transforms: worlds
             }
 
 
