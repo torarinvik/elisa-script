@@ -1,0 +1,222 @@
+# Typed port of cook_gltf_skin.read_influences. Accessor byte layout stays in
+# EsEngineGltfAccessor; this module owns the skin-specific schema and weights.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+include "gltf_accessor_model.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+using EsEngineGltfAccessor
+
+
+module EsEngineGltfSkin:
+    public:
+        const module Limits:
+            MAX_VERTICES: usize = 2000000
+            WEIGHTS_PER_VERTEX: usize = 4
+            WEIGHT_SUM_TOLERANCE: f64 = 0.005
+
+
+        error SkinError:
+            InvalidDocument
+            InvalidAttributes
+            MissingSkinAttributes
+            InvalidAccessorIndex
+            JointAccessorMustBeVec4
+            WeightAccessorMustBeVec4
+            InfluenceCountMismatch
+            InvalidJointAccessorFormat
+            InvalidWeightAccessorFormat
+            InvalidJointAccessorData
+            InvalidWeightAccessorData
+            InvalidInfluenceWeights
+            InfluenceLimitExceeded
+
+
+        # glTF stores four float32 weights. Keeping their native width is
+        # byte-faithful; each value is also exactly representable as f64.
+        struct SkinInfluences:
+            joints: darray[u32] = []
+            weights: darray[f32] = []
+
+
+        def read_influences(document: JsonDocument&, buffer: darray[u8]&, attributes_index: usize, vertex_count: i64) -> SkinInfluences error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise SkinError.InvalidDocument if document.roots[0] >= document.nodes.count or document.nodes[document.roots[0]].kind != JsonNodeKind.Object
+            raise SkinError.InvalidAttributes if attributes_index >= document.nodes.count or document.nodes[attributes_index].kind != JsonNodeKind.Object
+            raise SkinError.InfluenceLimitExceeded if vertex_count < 0 or vertex_count.usize() > Limits::MAX_VERTICES
+
+            joint_reference_index: usize = try skin_member_index(document, attributes_index, "JOINTS_0")
+            weight_reference_index: usize = try skin_member_index(document, attributes_index, "WEIGHTS_0")
+            raise SkinError.MissingSkinAttributes if joint_reference_index == JSON_INDEX_NONE or weight_reference_index == JSON_INDEX_NONE
+            joint_reference: i64 = try skin_integer_value(document, joint_reference_index) else failure:
+                _ = failure
+                raise SkinError.InvalidAccessorIndex
+            weight_reference: i64 = try skin_integer_value(document, weight_reference_index) else failure:
+                _ = failure
+                raise SkinError.InvalidAccessorIndex
+
+            joint_accessor_index: usize = try skin_accessor_index(document, joint_reference)
+            weight_accessor_index: usize = try skin_accessor_index(document, weight_reference)
+            joint_is_vec4: bool = try skin_text_field_is(document, joint_accessor_index, "type", "VEC4")
+            weight_is_vec4: bool = try skin_text_field_is(document, weight_accessor_index, "type", "VEC4")
+            raise SkinError.JointAccessorMustBeVec4 if not joint_is_vec4
+            raise SkinError.WeightAccessorMustBeVec4 if not weight_is_vec4
+
+            joint_count: i64 = try skin_integer_field(document, joint_accessor_index, "count") else failure:
+                _ = failure
+                raise SkinError.InfluenceCountMismatch
+            weight_count: i64 = try skin_integer_field(document, weight_accessor_index, "count") else failure:
+                _ = failure
+                raise SkinError.InfluenceCountMismatch
+            raise SkinError.InfluenceCountMismatch if joint_count != vertex_count or weight_count != vertex_count
+
+            joint_component: i64 = try skin_integer_field(document, joint_accessor_index, "componentType") else failure:
+                _ = failure
+                raise SkinError.InvalidJointAccessorFormat
+            weight_component: i64 = try skin_integer_field(document, weight_accessor_index, "componentType") else failure:
+                _ = failure
+                raise SkinError.InvalidWeightAccessorFormat
+            joint_normalized: bool = try skin_optional_boolean_field(document, joint_accessor_index, "normalized", false)
+            raise SkinError.InvalidJointAccessorFormat if (joint_component != 5121i64 and joint_component != 5123i64) or joint_normalized
+            raise SkinError.InvalidWeightAccessorFormat if weight_component != 5126i64
+
+            joint_data: darray[u8] = try accessor_bytes(document, buffer, joint_reference) else failure:
+                _ = failure
+                raise SkinError.InvalidJointAccessorData
+            weight_data: darray[u8] = try accessor_bytes(document, buffer, weight_reference) else failure:
+                _ = failure
+                raise SkinError.InvalidWeightAccessorData
+
+            count: usize = vertex_count.usize()
+            joint_stride: usize = 4 if joint_component == 5121i64 else 8
+            raise SkinError.InvalidDocument if count > Limits::MAX_VERTICES
+            raise SkinError.InvalidDocument if joint_data.count != count * joint_stride or weight_data.count != count * 16
+
+            influences: mutable SkinInfluences = SkinInfluences{}
+            for vertex in 0..<count |joint_data, weight_data, joint_stride, influences|:
+                joint_offset: usize = vertex * joint_stride
+                weight_offset: usize = vertex * 16
+                for lane in 0..<Limits::WEIGHTS_PER_VERTEX |joint_data, joint_offset, joint_stride, influences|:
+                    byte_offset: usize = joint_offset + lane if joint_stride == 4 else joint_offset + lane * 2
+                    joint: u32 = joint_data[byte_offset].u32()
+                    if joint_stride == 8:
+                        joint <- joint | (joint_data[byte_offset + 1].u32() << 8)
+                    influences.joints.push(joint)
+
+                weight_sum: mutable f64 = 0.0
+                for lane in 0..<Limits::WEIGHTS_PER_VERTEX |weight_data, weight_offset, weight_sum, influences|:
+                    offset: usize = weight_offset + lane * 4
+                    bits: u32 = skin_read_u32(weight_data, offset)
+                    raise SkinError.InvalidInfluenceWeights if (bits & 2139095040u32) == 2139095040u32
+                    value: f32 = skin_read_f32(weight_data, offset)
+                    raise SkinError.InvalidInfluenceWeights if value < 0.0f32
+                    weight_sum <- weight_sum + value.f64()
+                    influences.weights.push(value)
+                deviation: f64 = weight_sum - 1.0
+                raise SkinError.InvalidInfluenceWeights if deviation < -Limits::WEIGHT_SUM_TOLERANCE or deviation > Limits::WEIGHT_SUM_TOLERANCE
+            return influences
+
+
+    private:
+        def skin_accessor_index(document: JsonDocument&, reference: i64) -> usize error[SkinError]:
+            raise SkinError.InvalidAccessorIndex if reference < 0
+            raise SkinError.InvalidDocument if document.roots.count != 1
+            root_index: usize = document.roots[0]
+            accessors_index: usize = try skin_member_index(document, root_index, "accessors")
+            raise SkinError.InvalidAccessorIndex if accessors_index == JSON_INDEX_NONE
+            raise SkinError.InvalidDocument if accessors_index >= document.nodes.count
+            accessors: JsonNode = document.nodes[accessors_index]
+            raise SkinError.InvalidDocument if accessors.kind != JsonNodeKind.Array
+            raise SkinError.InvalidAccessorIndex if reference.usize() >= accessors.child_count
+            accessor_index: usize = try skin_array_item(document, accessors_index, reference.usize())
+            raise SkinError.InvalidAccessorIndex if document.nodes[accessor_index].kind != JsonNodeKind.Object
+            return accessor_index
+
+
+        def skin_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[SkinError]:
+            raise SkinError.InvalidDocument if object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise SkinError.InvalidDocument if owner.kind != JsonNodeKind.Object
+            raise SkinError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                raise SkinError.InvalidDocument if member.value_index >= document.nodes.count
+                matches: bool = try skin_key_is(document, member, key)
+                selected <- member.value_index if matches
+            return selected
+
+
+        def skin_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) -> usize error[SkinError]:
+            raise SkinError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise SkinError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise SkinError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise SkinError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def skin_integer_field(document: JsonDocument&, object_index: usize, key: sview) i64 error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            field_index: usize = try skin_member_index(document, object_index, key)
+            raise SkinError.InvalidDocument if field_index == JSON_INDEX_NONE
+            return try skin_integer_value(document, field_index)
+
+
+        def skin_integer_value(document: JsonDocument&, node_index: usize) i64 error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidDocument if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise SkinError.InvalidDocument if node.kind != JsonNodeKind.Number
+            raise SkinError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise SkinError.InvalidDocument
+            return parsed
+
+
+        def skin_optional_boolean_field(document: JsonDocument&, object_index: usize, key: sview, fallback: bool) bool error[SkinError]:
+            field_index: usize = try skin_member_index(document, object_index, key)
+            return fallback if field_index == JSON_INDEX_NONE
+            raise SkinError.InvalidDocument if field_index >= document.nodes.count or document.nodes[field_index].kind != JsonNodeKind.Bool
+            return document.nodes[field_index].bool_value
+
+
+        def skin_text_field_is(document: JsonDocument&, object_index: usize, key: sview, expected: sview) bool error[SkinError]:
+            field_index: usize = try skin_member_index(document, object_index, key)
+            return false if field_index == JSON_INDEX_NONE or field_index >= document.nodes.count
+            node: JsonNode = document.nodes[field_index]
+            return false if node.kind != JsonNodeKind.Text
+            raise SkinError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return false if node.scalar_bytes != len(expected)
+            for offset in 0..<node.scalar_bytes |document, node, expected|:
+                return false if document.scalar_data[node.scalar_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def skin_key_is(document: JsonDocument&, member: JsonMember, expected: sview) bool error[SkinError]:
+            raise SkinError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def skin_read_u32(bytes: darray[u8]&, offset: usize) u32:
+            return bytes[offset].u32() | (bytes[offset + 1].u32() << 8) | (bytes[offset + 2].u32() << 16) | (bytes[offset + 3].u32() << 24)
+
+
+        def skin_read_f32(bytes: darray[u8]&, offset: usize) f32 can[Unsafe.PointerCast]:
+            bits: u32 = skin_read_u32(bytes, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
