@@ -1,0 +1,388 @@
+# Global runtime-stream layout for assembled glTF placements.
+# MikkBlockResult is the validated result of the native MikkTSpace protocol;
+# source vertex IDs remap skin, UV1, and morph streams at tangent seams.
+include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
+include "./gltf_geometry_assembly_model.elisa"
+
+using EsEngineGltfGeometryAssembly
+using EsEngineGltfPrimitivePlacement
+using EsEngineGltfSkin
+using EsEngineGltfVertexStreams
+
+
+module EsEngineGltfGeometryFlatten:
+    public:
+        const module Limits:
+            MAX_VERTICES: usize = EsEngineGltfGeometryAssembly::Limits::MAX_VERTICES
+            MAX_INDICES: usize = EsEngineGltfGeometryAssembly::Limits::MAX_INDICES
+            MAX_SUBSETS: usize = 16
+            NO_RESULT: usize = 4294967295
+            FLOAT64_MAXIMUM: f64 = 1.7976931348623157e308
+
+
+        struct MikkBlockResult:
+            placement_index: usize
+            block_index: usize
+            positions: darray[u8] = []
+            normals: darray[u8] = []
+            uvs: darray[u8] = []
+            tangents: darray[u8] = []
+            indices: darray[u32] = []
+            source_vertices: darray[u32] = []
+
+
+        struct MaterialSubset:
+            index_start: usize
+            index_count: usize
+            material_slot: usize
+
+
+        struct PlacementRange:
+            has_vertex_start: bool = false
+            vertex_start: usize = 0
+            vertex_count: usize = 0
+            has_index_start: bool = false
+            index_start: usize = 0
+            index_count: usize = 0
+            has_subset_start: bool = false
+            subset_start: usize = 0
+            subset_count: usize = 0
+
+
+        struct MorphGeometry:
+            positions: darray[u8] = []
+            has_normals: bool = false
+            normals: darray[u8] = []
+
+
+        struct FlattenedGeometry:
+            positions: darray[u8] = []
+            normals: darray[u8] = []
+            tangents: darray[u8] = []
+            uvs: darray[u8] = []
+            has_uv1s: bool = false
+            uv1s: darray[u8] = []
+            indices: darray[u32] = []
+            has_skin_streams: bool = false
+            skin_indices: darray[u32] = []
+            skin_weights: darray[f32] = []
+            morph_targets: darray[MorphGeometry] = []
+            subsets: darray[MaterialSubset] = []
+            placements: darray[PlacementRange] = []
+            vertex_count: usize = 0
+            index_count: usize = 0
+
+
+        error GeometryFlattenError:
+            EmptyPlacementSet
+            InvalidPlacement
+            InvalidBlock
+            InvalidPrimitiveRange
+            MissingMikkResult
+            UnexpectedMikkResult
+            DuplicateMikkResult
+            InvalidMikkLayout
+            InvalidMikkIndex
+            InvalidMikkSourceVertex
+            InvalidMikkTangent
+            VertexLimitExceeded
+            IndexLimitExceeded
+            SubsetLimitExceeded
+            MorphShapeMismatch
+            SkinShapeMismatch
+            MissingPlacementRanges
+
+
+        # Finalize generated normals block-wide, apply Mikk seam remaps, and
+        # flatten per-placement blocks into the global vertex/index order used
+        # by cook_gltf_geometry.normalized_geometry. Material slot IDs are
+        # already normalized; package metadata and binary serialization follow.
+        def flatten_geometry(geometry: GeometryPlacementSet, mikk_results: darray[MikkBlockResult]&) FlattenedGeometry error[GeometryFlattenError, PrimitivePlacementError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeometryFlattenError.EmptyPlacementSet if geometry.placements.count == 0
+            raise GeometryFlattenError.InvalidPlacement if geometry.placements.count > EsEngineGltfGeometryAssembly::Limits::MAX_PLACEMENTS
+            raise GeometryFlattenError.MorphShapeMismatch if not geometry.has_morph_shape or geometry.morph_target_count > EsEngineGltfGeometryAssembly::Limits::MAX_MORPH_TARGETS
+            raise GeometryFlattenError.IndexLimitExceeded if geometry.index_count == 0 or geometry.index_count > Limits::MAX_INDICES
+            raise GeometryFlattenError.UnexpectedMikkResult if mikk_results.count > geometry.placements.count * EsEngineGltfGeometryAssembly::Limits::MAX_PRIMITIVES
+
+            result: mutable FlattenedGeometry = FlattenedGeometry{has_skin_streams: geometry.has_skin_streams}
+            for placement in geometry.placements |result|:
+                for block in placement.geometry.blocks |result|:
+                    result.has_uv1s <- true if block.vertices.has_uv1s
+            for _ in 0..<geometry.placements.count |result.placements|:
+                result.placements.push(PlacementRange{})
+            for _ in 0..<geometry.morph_target_count |result.morph_targets, geometry|:
+                result.morph_targets.push(MorphGeometry{has_normals: geometry.morph_normals_present})
+
+            used_mikk: mutable darray[bool] = []
+            for _ in 0..<mikk_results.count |used_mikk|:
+                used_mikk.push(false)
+
+            block_bases: mutable darray[darray[usize]] = []
+            block_mikk_indices: mutable darray[darray[usize]] = []
+            block_corner_cursors: mutable darray[darray[usize]] = []
+
+            for placement_index in 0..<geometry.placements.count |geometry, mikk_results, used_mikk, block_bases, block_mikk_indices, block_corner_cursors, result|:
+                placement: AssembledMeshPlacement = geometry.placements[placement_index]
+                raise GeometryFlattenError.InvalidPlacement if placement.geometry.blocks.count == 0 or placement.geometry.blocks.count > EsEngineGltfGeometryAssembly::Limits::MAX_PRIMITIVES
+                raise GeometryFlattenError.InvalidPlacement if placement.geometry.primitives.count == 0 or placement.geometry.primitives.count > EsEngineGltfGeometryAssembly::Limits::MAX_PRIMITIVES
+
+                bases: mutable darray[usize] = []
+                mikk_indices: mutable darray[usize] = []
+                corner_cursors: mutable darray[usize] = []
+
+                for block_index in 0..<placement.geometry.blocks.count |placement, placement_index, block_index, mikk_results, used_mikk, bases, mikk_indices, corner_cursors, result|:
+                    original_block: GeometryBlock = placement.geometry.blocks[block_index]
+                    block: GeometryBlock = try generate_block_normals(original_block)
+                    try geometry_flat_validate_block(block, geometry)
+                    mikk_index: usize = try geometry_flat_find_mikk_result(mikk_results, placement_index, block_index)
+                    cooked_vertex_count: mutable usize = block.vertices.count
+
+                    if block.vertices.has_tangents:
+                        raise GeometryFlattenError.UnexpectedMikkResult if mikk_index != Limits::NO_RESULT
+                    else:
+                        raise GeometryFlattenError.MissingMikkResult if mikk_index == Limits::NO_RESULT
+                        used_mikk[mikk_index] <- true
+                        cooked: MikkBlockResult = mikk_results[mikk_index]
+                        try geometry_flat_validate_mikk(cooked, block)
+                        cooked_vertex_count <- cooked.source_vertices.count
+
+                    existing_vertex_count: usize = result.positions.count / 12
+                    raise GeometryFlattenError.VertexLimitExceeded if cooked_vertex_count > Limits::MAX_VERTICES or existing_vertex_count > Limits::MAX_VERTICES - cooked_vertex_count
+                    bytes_per_vertex: usize = 48 + (8 if result.has_uv1s else 0) + (32 if geometry.has_skin_streams else 0) + geometry.morph_target_count * (12 + (12 if geometry.morph_normals_present else 0))
+                    output_vertex_count: usize = existing_vertex_count + cooked_vertex_count
+                    raise GeometryFlattenError.VertexLimitExceeded if output_vertex_count > EsEngineGltfVertexStreams::Limits::MAX_TOTAL_STREAM_BYTES / bytes_per_vertex
+                    bases.push(existing_vertex_count)
+                    mikk_indices.push(mikk_index)
+
+                    if block.vertices.has_tangents:
+                        try geometry_flat_append_bytes(result.positions, block.vertices.positions)
+                        try geometry_flat_append_bytes(result.normals, block.vertices.normals)
+                        try geometry_flat_append_bytes(result.tangents, block.vertices.tangents)
+                        try geometry_flat_append_bytes(result.uvs, block.vertices.uvs)
+                        try geometry_flat_append_source_attributes(result, block.vertices, identity_vertices(block.vertices.count), geometry)
+                    else:
+                        cooked: MikkBlockResult = mikk_results[mikk_index]
+                        try geometry_flat_append_bytes(result.positions, cooked.positions)
+                        try geometry_flat_append_bytes(result.normals, cooked.normals)
+                        try geometry_flat_append_bytes(result.tangents, cooked.tangents)
+                        try geometry_flat_append_bytes(result.uvs, cooked.uvs)
+                        try geometry_flat_append_source_attributes(result, block.vertices, cooked.source_vertices, geometry)
+
+                    corner_cursors.push(0)
+                    placement_range: mutable PlacementRange = result.placements[placement_index]
+                    cooked_count: usize = (result.positions.count / 12) - bases[block_index]
+                    if not placement_range.has_vertex_start:
+                        placement_range.has_vertex_start <- true
+                        placement_range.vertex_start <- bases[block_index]
+                    placement_range.vertex_count <- placement_range.vertex_count + cooked_count
+                    result.placements[placement_index] <- placement_range
+
+                block_bases.push(bases)
+                block_mikk_indices.push(mikk_indices)
+                block_corner_cursors.push(corner_cursors)
+
+            for result_index in 0..<used_mikk.count |used_mikk|:
+                raise GeometryFlattenError.UnexpectedMikkResult if not used_mikk[result_index]
+
+            for placement_index in 0..<geometry.placements.count |geometry, block_bases, block_mikk_indices, block_corner_cursors, result|:
+                placement: AssembledMeshPlacement = geometry.placements[placement_index]
+                for primitive_index in 0..<placement.geometry.primitives.count |placement, placement_index, block_bases, block_mikk_indices, block_corner_cursors, result|:
+                    primitive: PlacedPrimitive = placement.geometry.primitives[primitive_index]
+                    raise GeometryFlattenError.InvalidPrimitiveRange if primitive.block_index >= placement.geometry.blocks.count
+                    block_index: usize = primitive.block_index
+                    block: GeometryBlock = placement.geometry.blocks[block_index]
+                    cursor: usize = block_corner_cursors[placement_index][block_index]
+                    raise GeometryFlattenError.InvalidPrimitiveRange if primitive.indices.count < 3 or primitive.indices.count % 3 != 0
+                    raise GeometryFlattenError.InvalidPrimitiveRange if cursor > block.triangles.count or primitive.indices.count > block.triangles.count - cursor
+
+                    placement_range: mutable PlacementRange = result.placements[placement_index]
+                    if not placement_range.has_index_start:
+                        placement_range.has_index_start <- true
+                        placement_range.index_start <- result.indices.count
+                    raise GeometryFlattenError.IndexLimitExceeded if primitive.indices.count > Limits::MAX_INDICES - result.indices.count
+
+                    mikk_index: usize = block_mikk_indices[placement_index][block_index]
+                    base_vertex: usize = block_bases[placement_index][block_index]
+                    for corner in 0..<primitive.indices.count |primitive, block, cursor, mikk_index, mikk_results, base_vertex, result|:
+                        source_index: u32 = primitive.indices[corner]
+                        raise GeometryFlattenError.InvalidPrimitiveRange if block.triangles[cursor + corner] != source_index
+                        local_index: mutable u32 = source_index
+                        if mikk_index != Limits::NO_RESULT:
+                            local_index <- mikk_results[mikk_index].indices[cursor + corner]
+                        cooked_count: mutable usize = block.vertices.count
+                        if mikk_index != Limits::NO_RESULT:
+                            cooked_count <- mikk_results[mikk_index].source_vertices.count
+                        raise GeometryFlattenError.InvalidMikkIndex if local_index.usize() >= cooked_count
+                        result.indices.push((base_vertex + local_index.usize()).u32())
+
+                    block_corner_cursors[placement_index][block_index] <- cursor + primitive.indices.count
+                    placement_range.index_count <- placement_range.index_count + primitive.indices.count
+                    primitive_index_start: usize = result.indices.count - primitive.indices.count
+                    try geometry_flat_append_subset(result, primitive_index_start, primitive.indices.count, primitive.material_index)
+                    result.placements[placement_index] <- placement_range
+
+                for block_index in 0..<placement.geometry.blocks.count |placement, placement_index, block_corner_cursors, block_mikk_indices, mikk_results|:
+                    block: GeometryBlock = placement.geometry.blocks[block_index]
+                    raise GeometryFlattenError.InvalidPrimitiveRange if block_corner_cursors[placement_index][block_index] != block.triangles.count
+                    mikk_index: usize = block_mikk_indices[placement_index][block_index]
+                    if mikk_index != Limits::NO_RESULT:
+                        raise GeometryFlattenError.InvalidPrimitiveRange if mikk_results[mikk_index].indices.count != block.triangles.count
+
+            raise GeometryFlattenError.IndexLimitExceeded if result.indices.count != geometry.index_count or result.indices.count > Limits::MAX_INDICES
+            result.vertex_count <- result.positions.count / 12
+            result.index_count <- result.indices.count
+            for placement_index in 0..<result.placements.count |result|:
+                placement_range: mutable PlacementRange = result.placements[placement_index]
+                raise GeometryFlattenError.MissingPlacementRanges if not placement_range.has_vertex_start or not placement_range.has_index_start or placement_range.vertex_count == 0 or placement_range.index_count == 0
+                first: usize = placement_range.index_start
+                last: usize = first + placement_range.index_count
+                for subset_index in 0..<result.subsets.count |result, first, last, placement_range|:
+                    subset: MaterialSubset = result.subsets[subset_index]
+                    if subset.index_start < last and subset.index_start + subset.index_count > first:
+                        if not placement_range.has_subset_start:
+                            placement_range.has_subset_start <- true
+                            placement_range.subset_start <- subset_index
+                        placement_range.subset_count <- placement_range.subset_count + 1
+                raise GeometryFlattenError.MissingPlacementRanges if not placement_range.has_subset_start or placement_range.subset_count == 0
+                result.placements[placement_index] <- placement_range
+
+            raise GeometryFlattenError.VertexLimitExceeded if result.vertex_count == 0 or result.vertex_count > Limits::MAX_VERTICES
+            raise GeometryFlattenError.VertexLimitExceeded if result.normals.count != result.vertex_count * 12 or result.tangents.count != result.vertex_count * 16 or result.uvs.count != result.vertex_count * 8 or result.positions.count != result.vertex_count * 12
+            raise GeometryFlattenError.MorphShapeMismatch if result.has_uv1s and result.uv1s.count != result.vertex_count * 8
+            raise GeometryFlattenError.SkinShapeMismatch if result.has_skin_streams and (result.skin_indices.count != result.vertex_count * 4 or result.skin_weights.count != result.vertex_count * 4)
+            for target in result.morph_targets |result|:
+                raise GeometryFlattenError.MorphShapeMismatch if target.positions.count != result.vertex_count * 12
+                raise GeometryFlattenError.MorphShapeMismatch if target.has_normals and target.normals.count != result.vertex_count * 12
+                raise GeometryFlattenError.MorphShapeMismatch if not target.has_normals and target.normals.count != 0
+            return result
+
+
+    private:
+        def geometry_flat_validate_block(block: GeometryBlock, geometry: GeometryPlacementSet) void error[GeometryFlattenError]:
+            vertices: VertexStreams = block.vertices
+            raise GeometryFlattenError.InvalidBlock if vertices.count == 0 or vertices.count > Limits::MAX_VERTICES
+            raise GeometryFlattenError.InvalidBlock if vertices.positions.count != vertices.count * 12 or vertices.uvs.count != vertices.count * 8
+            raise GeometryFlattenError.InvalidBlock if not vertices.has_normals or vertices.normals.count != vertices.count * 12
+            raise GeometryFlattenError.InvalidBlock if vertices.has_tangents and vertices.tangents.count != vertices.count * 16
+            raise GeometryFlattenError.InvalidBlock if not vertices.has_tangents and vertices.tangents.count != 0
+            raise GeometryFlattenError.InvalidBlock if vertices.has_uv1s and vertices.uv1s.count != vertices.count * 8
+            raise GeometryFlattenError.InvalidBlock if not vertices.has_uv1s and vertices.uv1s.count != 0
+            raise GeometryFlattenError.SkinShapeMismatch if vertices.has_skin != geometry.has_skin_streams
+            raise GeometryFlattenError.SkinShapeMismatch if vertices.has_skin and (vertices.skin.joints.count != vertices.count * 4 or vertices.skin.weights.count != vertices.count * 4)
+            raise GeometryFlattenError.SkinShapeMismatch if not vertices.has_skin and (vertices.skin.joints.count != 0 or vertices.skin.weights.count != 0)
+            raise GeometryFlattenError.MorphShapeMismatch if vertices.morph_targets.count != geometry.morph_target_count
+            raise GeometryFlattenError.InvalidBlock if block.triangles.count < 3 or block.triangles.count % 3 != 0 or block.triangles.count > Limits::MAX_INDICES
+            for index in block.triangles |block, vertices|:
+                raise GeometryFlattenError.InvalidBlock if index.usize() >= vertices.count
+            for target_index in 0..<vertices.morph_targets.count |vertices, geometry, target_index|:
+                target: MorphTargetStreams = vertices.morph_targets[target_index]
+                raise GeometryFlattenError.MorphShapeMismatch if target.has_normals != geometry.morph_normals_present
+                raise GeometryFlattenError.MorphShapeMismatch if target.positions.count != vertices.count * 12
+                raise GeometryFlattenError.MorphShapeMismatch if target.has_normals and target.normals.count != vertices.count * 12
+                raise GeometryFlattenError.MorphShapeMismatch if not target.has_normals and target.normals.count != 0
+
+
+        def geometry_flat_find_mikk_result(results: darray[MikkBlockResult]&, placement_index: usize, block_index: usize) usize error[GeometryFlattenError] can[Abort.Panic]:
+            found: mutable usize = Limits::NO_RESULT
+            for index in 0..<results.count |results, placement_index, block_index, found|:
+                if results[index].placement_index == placement_index and results[index].block_index == block_index:
+                    raise GeometryFlattenError.DuplicateMikkResult if found != Limits::NO_RESULT
+                    found <- index
+            return found
+
+
+        def geometry_flat_validate_mikk(result: MikkBlockResult, source: GeometryBlock) void error[GeometryFlattenError] can[Abort.Panic, Unsafe.PointerCast]:
+            output_vertices: usize = result.source_vertices.count
+            source_vertices: usize = source.vertices.count
+            raise GeometryFlattenError.InvalidMikkLayout if output_vertices == 0 or output_vertices > Limits::MAX_VERTICES
+            raise GeometryFlattenError.InvalidMikkLayout if result.positions.count != output_vertices * 12 or result.normals.count != output_vertices * 12 or result.uvs.count != output_vertices * 8 or result.tangents.count != output_vertices * 16
+            raise GeometryFlattenError.InvalidMikkLayout if result.indices.count != source.triangles.count
+            for source_vertex in result.source_vertices |source_vertices|:
+                raise GeometryFlattenError.InvalidMikkSourceVertex if source_vertex.usize() >= source_vertices
+            for index in result.indices |output_vertices|:
+                raise GeometryFlattenError.InvalidMikkIndex if index.usize() >= output_vertices
+            for vertex in 0..<output_vertices |result, vertex|:
+                offset: usize = vertex * 16
+                tx: f64 = geometry_flat_read_f32(result.tangents, offset).f64()
+                ty: f64 = geometry_flat_read_f32(result.tangents, offset + 4).f64()
+                tz: f64 = geometry_flat_read_f32(result.tangents, offset + 8).f64()
+                handedness: f64 = geometry_flat_read_f32(result.tangents, offset + 12).f64()
+                normal_offset: usize = vertex * 12
+                nx: f64 = geometry_flat_read_f32(result.normals, normal_offset).f64()
+                ny: f64 = geometry_flat_read_f32(result.normals, normal_offset + 4).f64()
+                nz: f64 = geometry_flat_read_f32(result.normals, normal_offset + 8).f64()
+                tangent_length: f64 = sqrt(tx * tx + ty * ty + tz * tz)
+                tangent_dot_normal: f64 = tx * nx + ty * ny + tz * nz
+                raise GeometryFlattenError.InvalidMikkTangent if not geometry_flat_finite(tx) or not geometry_flat_finite(ty) or not geometry_flat_finite(tz) or not geometry_flat_finite(handedness)
+                raise GeometryFlattenError.InvalidMikkTangent if not geometry_flat_finite(tangent_length) or abs(tangent_length - 1.0) > 0.02
+                raise GeometryFlattenError.InvalidMikkTangent if not geometry_flat_finite(tangent_dot_normal) or abs(tangent_dot_normal) > 0.02
+                raise GeometryFlattenError.InvalidMikkTangent if abs(abs(handedness) - 1.0) > 0.0001
+
+
+        def geometry_flat_append_source_attributes(output: mutable FlattenedGeometry&, source: VertexStreams, source_vertices: darray[u32], geometry: GeometryPlacementSet) void error[GeometryFlattenError] can[Memory.Allocate, Abort.Panic]:
+            raise GeometryFlattenError.InvalidMikkLayout if source_vertices.count == 0
+            if geometry.has_skin_streams:
+                for source_vertex in source_vertices |source, output|:
+                    raise GeometryFlattenError.InvalidMikkSourceVertex if source_vertex.usize() >= source.count
+                    for lane in 0..<EsEngineGltfSkin::Limits::WEIGHTS_PER_VERTEX |source_vertex, source, output|:
+                        index: usize = source_vertex.usize() * EsEngineGltfSkin::Limits::WEIGHTS_PER_VERTEX + lane
+                        output.skin_indices.push(source.skin.joints[index])
+                        output.skin_weights.push(source.skin.weights[index])
+
+            for target_index in 0..<geometry.morph_target_count |source, source_vertices, geometry, target_index, output|:
+                target: MorphTargetStreams = source.morph_targets[target_index]
+                for source_vertex in source_vertices |target, source, output|:
+                    try geometry_flat_append_remapped_vertex(output.morph_targets[target_index].positions, target.positions, source_vertex, source.count, 12)
+                    if target.has_normals:
+                        try geometry_flat_append_remapped_vertex(output.morph_targets[target_index].normals, target.normals, source_vertex, source.count, 12)
+
+            if output.has_uv1s:
+                if source.has_uv1s:
+                    for source_vertex in source_vertices |source, output|:
+                        try geometry_flat_append_remapped_vertex(output.uv1s, source.uv1s, source_vertex, source.count, 8)
+                else:
+                    for _ in 0..<source_vertices.count |output|:
+                        for _ in 0..<8 |output|:
+                            output.uv1s.push(0u8)
+
+
+        def geometry_flat_append_remapped_vertex(output: mutable darray[u8]&, source: darray[u8]&, source_vertex: u32, source_count: usize, stride: usize) void error[GeometryFlattenError] can[Memory.Allocate, Abort.Panic]:
+            raise GeometryFlattenError.InvalidMikkSourceVertex if source_vertex.usize() >= source_count or source.count != source_count * stride
+            start: usize = source_vertex.usize() * stride
+            for offset in 0..<stride |source, start, output|:
+                output.push(source[start + offset])
+
+
+        def geometry_flat_append_bytes(output: mutable darray[u8]&, source: darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+            for byte in source |output|:
+                output.push(byte)
+
+
+        def geometry_flat_append_subset(output: mutable FlattenedGeometry&, index_start: usize, index_count: usize, material_slot: usize) void error[GeometryFlattenError] can[Memory.Allocate, Abort.Panic]:
+            if output.subsets.count > 0 and output.subsets[output.subsets.count - 1].material_slot == material_slot:
+                output.subsets[output.subsets.count - 1].index_count <- output.subsets[output.subsets.count - 1].index_count + index_count
+                return
+            raise GeometryFlattenError.SubsetLimitExceeded if output.subsets.count >= Limits::MAX_SUBSETS
+            output.subsets.push(MaterialSubset{index_start: index_start, index_count: index_count, material_slot: material_slot})
+
+
+        def identity_vertices(count: usize) darray[u32] can[Memory.Allocate, Abort.Panic]:
+            values: mutable darray[u32] = []
+            for index in 0..<count |values|:
+                values.push(index.u32())
+            return values
+
+
+        def geometry_flat_read_u32(bytes: darray[u8]&, offset: usize) u32:
+            return bytes[offset].u32() | (bytes[offset + 1].u32() << 8) | (bytes[offset + 2].u32() << 16) | (bytes[offset + 3].u32() << 24)
+
+
+        def geometry_flat_read_f32(bytes: darray[u8]&, offset: usize) f32 can[Unsafe.PointerCast]:
+            bits: u32 = geometry_flat_read_u32(bytes, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
+
+
+        def geometry_flat_finite(value: f64) bool:
+            return value <= Limits::FLOAT64_MAXIMUM and value >= -Limits::FLOAT64_MAXIMUM
