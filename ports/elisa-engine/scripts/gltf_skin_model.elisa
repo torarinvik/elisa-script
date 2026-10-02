@@ -71,6 +71,14 @@ module EsEngineGltfSkin:
             rig_nodes: darray[usize] = []
 
 
+        struct SkinRigParentPlan:
+            # Source entries point to another source node, a virtual basis ID,
+            # or -1 for a root; -2 marks source nodes outside the rig.
+            source_parent_indices: darray[i64] = []
+            basis_boundary_indices: darray[i64] = []
+            basis_transforms: darray[Affine3x4] = []
+
+
     private:
         struct SkinTraversalFrame:
             node_index: usize
@@ -79,6 +87,10 @@ module EsEngineGltfSkin:
 
         def skin_affine_is_identity(matrix: Affine3x4) bool:
             return matrix.m00 == 1.0 and matrix.m01 == 0.0 and matrix.m02 == 0.0 and matrix.m03 == 0.0 and matrix.m10 == 0.0 and matrix.m11 == 1.0 and matrix.m12 == 0.0 and matrix.m13 == 0.0 and matrix.m20 == 0.0 and matrix.m21 == 0.0 and matrix.m22 == 1.0 and matrix.m23 == 0.0
+
+
+        def skin_affine_near_identity(matrix: Affine3x4, tolerance: f64) bool:
+            return abs(matrix.m00 - 1.0) <= tolerance and abs(matrix.m01) <= tolerance and abs(matrix.m02) <= tolerance and abs(matrix.m03) <= tolerance and abs(matrix.m10) <= tolerance and abs(matrix.m11 - 1.0) <= tolerance and abs(matrix.m12) <= tolerance and abs(matrix.m13) <= tolerance and abs(matrix.m20) <= tolerance and abs(matrix.m21) <= tolerance and abs(matrix.m22 - 1.0) <= tolerance and abs(matrix.m23) <= tolerance
 
 
     public:
@@ -105,7 +117,9 @@ module EsEngineGltfSkin:
             InvalidSkinPlacement
             SkinNotReferenced
             PaletteLimitExceeded
+            RigNodeLimitExceeded
             InvalidNodeGraph
+            InvalidMeshSpaceRoot
             RestMatrixHasZeroScale
             RestMatrixContainsShear
             InvalidRestMatrixRotation
@@ -389,6 +403,92 @@ module EsEngineGltfSkin:
                 mesh_space_ancestors: mesh_space_ancestors,
                 animated_nodes: animated_nodes,
                 rig_nodes: rig_nodes
+            }
+
+
+        # Resolve nearest rig parents and synthesize one mesh-relative basis
+        # per distinct non-identity boundary, before topological ordering.
+        def skin_rig_parent_plan(graph: SkinSourceGraph&, membership: SkinRigMembership&) -> SkinRigParentPlan error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            node_count: usize = graph.nodes.count
+            raise SkinError.InvalidNodeGraph if node_count == 0 or node_count > Limits::MAX_NODES or graph.parent_indices.count != node_count or graph.world_transforms.count != node_count
+            raise SkinError.InvalidNodeGraph if membership.mesh_root >= node_count or membership.mesh_space_ancestors.count != node_count or membership.animated_nodes.count != node_count
+            raise SkinError.InvalidNodeGraph if not membership.mesh_space_ancestors[membership.mesh_root]
+            raise SkinError.InvalidNodeGraph if membership.rig_nodes.count == 0 or membership.rig_nodes.count > node_count
+
+            rig_members: mutable darray[bool] = []
+            source_parents: mutable darray[i64] = []
+            for _ in 0..<node_count |rig_members, source_parents|:
+                rig_members.push(false)
+                source_parents.push(-2i64)
+            for node_index in membership.rig_nodes |rig_members|:
+                raise SkinError.InvalidNodeGraph if node_index >= node_count or rig_members[node_index]
+                rig_members[node_index] <- true
+
+            for node_index in 0..<node_count |graph|:
+                parent_index: i64 = graph.parent_indices[node_index]
+                raise SkinError.InvalidNodeGraph if parent_index < -1i64 or parent_index >= node_count.i64()
+
+            identity: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0}
+            mesh_inverse: mutable Affine3x4 = Affine3x4{}
+            mesh_inverse_ready: mutable bool = false
+            basis_boundaries: mutable darray[i64] = []
+            basis_transforms: mutable darray[Affine3x4] = []
+            for node_index in membership.rig_nodes |graph, membership, rig_members, source_parents, identity, mesh_inverse, mesh_inverse_ready, basis_boundaries, basis_transforms|:
+                ancestor: mutable i64 = graph.parent_indices[node_index]
+                ancestor_steps: mutable usize = 0
+                parent_found: mutable bool = false
+                while ancestor >= 0 and not parent_found |graph, rig_members, source_parents, ancestor, ancestor_steps, parent_found|:
+                    raise SkinError.InvalidNodeGraph if ancestor.usize() >= node_count or ancestor_steps >= node_count
+                    ancestor_index: usize = ancestor.usize()
+                    if rig_members[ancestor_index]:
+                        source_parents[node_index] <- ancestor
+                        parent_found <- true
+                    else:
+                        ancestor <- graph.parent_indices[ancestor_index]
+                    ancestor_steps <- ancestor_steps + 1
+                raise SkinError.InvalidNodeGraph if ancestor < -1i64 and not parent_found
+
+                if not parent_found:
+                    boundary: mutable i64 = graph.parent_indices[node_index]
+                    boundary_steps: mutable usize = 0
+                    boundary_found: mutable bool = false
+                    while boundary >= 0 and not boundary_found |graph, membership, boundary, boundary_steps, boundary_found|:
+                        raise SkinError.InvalidNodeGraph if boundary.usize() >= node_count or boundary_steps >= node_count
+                        boundary_index: usize = boundary.usize()
+                        if membership.mesh_space_ancestors[boundary_index]:
+                            boundary_found <- true
+                        else:
+                            boundary <- graph.parent_indices[boundary_index]
+                        boundary_steps <- boundary_steps + 1
+                    raise SkinError.InvalidNodeGraph if boundary < -1i64
+                    if boundary == membership.mesh_root.i64():
+                        source_parents[node_index] <- -1i64
+                    else:
+                        if not mesh_inverse_ready:
+                            mesh_inverse <- try inverse_affine(graph.world_transforms[membership.mesh_root]) else failure:
+                                _ = failure
+                                raise SkinError.InvalidMeshSpaceRoot
+                            mesh_inverse_ready <- true
+                        boundary_world: Affine3x4 = identity if boundary < 0i64 else graph.world_transforms[boundary.usize()]
+                        basis: Affine3x4 = multiply_affine(mesh_inverse, boundary_world)
+                        raise SkinError.InvalidNodeGraph if not affine_is_finite(basis)
+                        if skin_affine_near_identity(basis, Limits::AFFINE_TOLERANCE):
+                            source_parents[node_index] <- -1i64
+                        else:
+                            basis_index: mutable usize = JSON_INDEX_NONE
+                            for candidate_index in 0..<basis_boundaries.count |basis_boundaries, basis_index, boundary|:
+                                basis_index <- candidate_index if basis_boundaries[candidate_index] == boundary
+                            if basis_index == JSON_INDEX_NONE:
+                                raise SkinError.RigNodeLimitExceeded if membership.rig_nodes.count + basis_boundaries.count >= Limits::MAX_NODES
+                                basis_boundaries.push(boundary)
+                                basis_transforms.push(basis)
+                                basis_index <- basis_boundaries.count - 1
+                            source_parents[node_index] <- node_count.i64() + basis_index.i64()
+
+            return SkinRigParentPlan{
+                source_parent_indices: source_parents,
+                basis_boundary_indices: basis_boundaries,
+                basis_transforms: basis_transforms
             }
 
 
