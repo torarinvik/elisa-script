@@ -1,0 +1,166 @@
+# Resolve glTF primitive material references into the normalized slot IDs
+# consumed by document-level geometry assembly.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "gltf_geometry_assembly_model.elisa"
+
+using EsData
+using EsEngineGltfGeometryAssembly
+using EsEngineGltfNodes
+using EsEngineGltfSkin
+using EsEngineGltfVertexStreams
+using EsJson
+
+
+module EsEngineGltfMaterialBindings:
+    public:
+        const module Limits:
+            MAX_MATERIAL_SLOTS: usize = 16
+            MAX_PRIMITIVES: usize = EsEngineGltfGeometryAssembly::Limits::MAX_PRIMITIVES
+            MAX_MESHES: usize = EsEngineGltfGeometryAssembly::Limits::MAX_PLACEMENTS
+
+
+        struct MaterialBindingPlan:
+            slot_count: usize
+            material_indices_by_mesh: darray[darray[usize]] = []
+
+
+        struct MaterialBoundGeometry:
+            bindings: MaterialBindingPlan
+            geometry: GeometryPlacementSet
+
+
+        error MaterialBindingError:
+            InvalidDocument
+            MissingMeshes
+            MeshCountOutOfRange
+            InvalidMesh
+            MissingPrimitives
+            PrimitiveCountOutOfRange
+            InvalidPrimitive
+            MaterialCountOutOfRange
+            InvalidMaterial
+            MaterialBindingMissing
+            MaterialBindingInvalid
+            MaterialBindingOutOfRange
+            UnexpectedMaterialBinding
+
+
+        # Parse only the slot-binding contract needed by the geometry
+        # assembler. This does not validate material records, extensions,
+        # textures, samplers, or image payloads.
+        def document_material_bindings(document: JsonDocument&) MaterialBindingPlan error[MaterialBindingError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise MaterialBindingError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise MaterialBindingError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            raise MaterialBindingError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+
+            meshes_member: usize = material_binding_member_index(document, root_index, "meshes")
+            raise MaterialBindingError.MissingMeshes if meshes_member == JSON_INDEX_NONE
+            meshes_index: usize = document.members[meshes_member].value_index
+            raise MaterialBindingError.InvalidDocument if document.nodes[meshes_index].kind != JsonNodeKind.Array
+            meshes: JsonNode = document.nodes[meshes_index]
+            raise MaterialBindingError.MeshCountOutOfRange if meshes.child_count == 0 or meshes.child_count > Limits::MAX_MESHES
+
+            materials_member: usize = material_binding_member_index(document, root_index, "materials")
+            materials_index: mutable usize = JSON_INDEX_NONE
+            material_count: mutable usize = 0
+            if materials_member != JSON_INDEX_NONE:
+                materials_index <- document.members[materials_member].value_index
+                raise MaterialBindingError.InvalidDocument if document.nodes[materials_index].kind != JsonNodeKind.Array
+                material_count <- document.nodes[materials_index].child_count
+            raise MaterialBindingError.MaterialCountOutOfRange if material_count > Limits::MAX_MATERIAL_SLOTS
+            if materials_member != JSON_INDEX_NONE:
+                for material_ordinal in 0..<material_count |document, materials_index|:
+                    material_index: usize = try material_binding_array_item(document, materials_index, material_ordinal)
+                    raise MaterialBindingError.InvalidMaterial if document.nodes[material_index].kind != JsonNodeKind.Object
+            slot_count: usize = 1 if material_count == 0 else material_count
+
+            indices_by_mesh: mutable darray[darray[usize]] = []
+            for mesh_ordinal in 0..<meshes.child_count |document, meshes_index, meshes, material_count, indices_by_mesh|:
+                mesh_index: usize = try material_binding_array_item(document, meshes_index, mesh_ordinal)
+                raise MaterialBindingError.InvalidMesh if document.nodes[mesh_index].kind != JsonNodeKind.Object
+                primitives_member: usize = material_binding_member_index(document, mesh_index, "primitives")
+                raise MaterialBindingError.MissingPrimitives if primitives_member == JSON_INDEX_NONE
+                primitives_index: usize = document.members[primitives_member].value_index
+                raise MaterialBindingError.InvalidMesh if document.nodes[primitives_index].kind != JsonNodeKind.Array
+                primitives: JsonNode = document.nodes[primitives_index]
+                raise MaterialBindingError.PrimitiveCountOutOfRange if primitives.child_count == 0 or primitives.child_count > Limits::MAX_PRIMITIVES
+
+                mesh_materials: mutable darray[usize] = []
+                for primitive_ordinal in 0..<primitives.child_count |document, primitives_index, primitives, material_count, mesh_materials|:
+                    primitive_index: usize = try material_binding_array_item(document, primitives_index, primitive_ordinal)
+                    raise MaterialBindingError.InvalidPrimitive if document.nodes[primitive_index].kind != JsonNodeKind.Object
+                    binding_member: usize = material_binding_member_index(document, primitive_index, "material")
+                    if material_count == 0:
+                        if binding_member != JSON_INDEX_NONE:
+                            binding_index: usize = document.members[binding_member].value_index
+                            raise MaterialBindingError.UnexpectedMaterialBinding if document.nodes[binding_index].kind != JsonNodeKind.Null
+                        mesh_materials.push(0)
+                    else:
+                        raise MaterialBindingError.MaterialBindingMissing if binding_member == JSON_INDEX_NONE
+                        binding_index: usize = document.members[binding_member].value_index
+                        material_ordinal: i64 = try material_binding_integer(document, binding_index)
+                        raise MaterialBindingError.MaterialBindingOutOfRange if material_ordinal < 0 or material_ordinal.usize() >= material_count
+                        mesh_materials.push(material_ordinal.usize())
+                indices_by_mesh.push(mesh_materials)
+
+            return MaterialBindingPlan{slot_count: slot_count, material_indices_by_mesh: indices_by_mesh}
+
+
+        # End-to-end typed bridge through material binding and placement
+        # assembly; callers can pass the returned geometry to tangent and
+        # package stages without manually rebuilding the slot map.
+        def assemble_document_with_material_bindings(document: JsonDocument&, buffer: darray[u8]&, cache: mutable VertexSourceCache&) MaterialBoundGeometry error[MaterialBindingError, JsonContractError, GeometryAssemblyError, NodeDecodeError, SkinError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            bindings: MaterialBindingPlan = try document_material_bindings(document)
+            geometry: GeometryPlacementSet = try assemble_document_placements(document, buffer, bindings.material_indices_by_mesh, cache)
+            return MaterialBoundGeometry{bindings: bindings, geometry: geometry}
+
+
+    private:
+        def material_binding_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[MaterialBindingError]:
+            raise MaterialBindingError.InvalidDocument if object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise MaterialBindingError.InvalidDocument if owner.kind != JsonNodeKind.Object
+            if owner.member_count == 0:
+                raise MaterialBindingError.InvalidDocument if owner.member_start != JSON_INDEX_NONE
+                return JSON_INDEX_NONE
+            raise MaterialBindingError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, key, selected|:
+                member_index: usize = owner.member_start + ordinal
+                member: JsonMember = document.members[member_index]
+                raise MaterialBindingError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+                matches: bool = false
+                if member.key_bytes == len(key):
+                    matches <- true
+                    for offset in 0..<member.key_bytes |document, member, key, matches|:
+                        matches <- false if document.key_bytes[member.key_start + offset] != sview_at(key, offset.i64())
+                selected <- member_index if matches
+            return selected
+
+
+        def material_binding_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) usize error[MaterialBindingError]:
+            raise MaterialBindingError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise MaterialBindingError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise MaterialBindingError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise MaterialBindingError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def material_binding_integer(document: JsonDocument&, node_index: usize) i64 error[MaterialBindingError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialBindingError.MaterialBindingInvalid if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise MaterialBindingError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise MaterialBindingError.MaterialBindingInvalid
+            return parsed
