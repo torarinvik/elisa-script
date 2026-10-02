@@ -8,6 +8,7 @@ include "../../../src/runtime/json_parse_model.elisa"
 include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
 include "gltf_affine_model.elisa"
 include "gltf_accessor_model.elisa"
+include "gltf_node_graph_model.elisa"
 
 using EsData
 using EsJson
@@ -15,6 +16,7 @@ using EsJsonLex
 using EsJsonParse
 using EsEngineGltfAffine
 using EsEngineGltfAccessor
+using EsEngineGltfNodeGraph
 
 
 module EsEngineGltfSkin:
@@ -28,6 +30,29 @@ module EsEngineGltfSkin:
             MINIMUM_SCALE: f64 = 0.000000000001
             ORTHOGONALITY_TOLERANCE: f64 = 0.00001
             MAXIMUM_F64: f64 = 1.7976931348623157e308
+            MAX_NODES: usize = EsEngineGltfNodeGraph::Limits::MAX_NODES
+
+
+        # Geometry palette layout derived from a validated scene-level skin
+        # normalization. Static bindings create one shared rigid bind slot.
+        const enum PlacementSkinBindingKind of u8:
+            Unskinned
+            Palette
+            Static
+
+
+        struct PlacementSkinBinding:
+            kind: PlacementSkinBindingKind = PlacementSkinBindingKind.Unskinned
+            palette_offset: usize = 0
+            palette_count: usize = 0
+
+
+        struct PlacementSkinPalettePlan:
+            has_skin_streams: bool = false
+            palette_count: usize = 0
+            # Indexed by source node index so traversal order cannot alter
+            # the palette offsets assigned by the Python cooker.
+            bindings: darray[PlacementSkinBinding] = []
 
 
         error SkinError:
@@ -49,6 +74,10 @@ module EsEngineGltfSkin:
             NonFiniteInverseBindMatrix
             NonAffineInverseBindMatrix
             SingularInverseBindMatrix
+            InvalidSkinTable
+            InvalidSkinPlacement
+            SkinNotReferenced
+            PaletteLimitExceeded
             RestMatrixHasZeroScale
             RestMatrixContainsShear
             InvalidRestMatrixRotation
@@ -60,6 +89,121 @@ module EsEngineGltfSkin:
         struct SkinInfluences:
             joints: darray[u32] = []
             weights: darray[f32] = []
+
+
+        # Port the palette-offset decisions from cook_gltf_skin.normalize.
+        # Rig construction remains a separate step; inputs to this planner
+        # must have valid skin definitions and node graphs.
+        def placement_skin_palette_plan(document: JsonDocument&) PlacementSkinPalettePlan error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise SkinError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            root_index: usize = document.roots[0]
+            raise SkinError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            nodes_index: usize = try skin_member_index(document, root_index, "nodes")
+            raise SkinError.InvalidSkinPlacement if nodes_index == JSON_INDEX_NONE or nodes_index >= document.nodes.count or document.nodes[nodes_index].kind != JsonNodeKind.Array
+            nodes: JsonNode = document.nodes[nodes_index]
+            raise SkinError.InvalidSkinPlacement if nodes.child_count == 0 or nodes.child_count > Limits::MAX_NODES
+
+            skins_index: usize = try skin_member_index(document, root_index, "skins")
+            skin_count: mutable usize = 0
+            if skins_index != JSON_INDEX_NONE and document.nodes[skins_index].kind != JsonNodeKind.Null:
+                raise SkinError.InvalidSkinTable if document.nodes[skins_index].kind != JsonNodeKind.Array
+                skin_count <- document.nodes[skins_index].child_count
+            raise SkinError.InvalidSkinTable if skin_count > Limits::MAX_JOINTS
+
+            skin_joint_counts: mutable darray[usize] = []
+            for skin_index in 0..<skin_count |document, skins_index, skin_joint_counts, nodes|:
+                skin_node_index: usize = try skin_array_item(document, skins_index, skin_index)
+                raise SkinError.InvalidSkinTable if document.nodes[skin_node_index].kind != JsonNodeKind.Object
+                joints_index: usize = try skin_member_index(document, skin_node_index, "joints")
+                raise SkinError.InvalidSkinTable if joints_index == JSON_INDEX_NONE or document.nodes[joints_index].kind != JsonNodeKind.Array
+                joints: JsonNode = document.nodes[joints_index]
+                raise SkinError.InfluenceLimitExceeded if joints.child_count == 0 or joints.child_count > Limits::MAX_JOINTS
+                unique_joints: mutable darray[bool] = []
+                for _ in 0..<nodes.child_count |unique_joints|:
+                    unique_joints.push(false)
+                for joint_ordinal in 0..<joints.child_count |document, joints_index, joints, unique_joints, nodes|:
+                    joint_node: usize = try skin_array_item(document, joints_index, joint_ordinal)
+                    joint_index: i64 = try skin_integer_value(document, joint_node)
+                    raise SkinError.InvalidSkinTable if joint_index < 0 or joint_index.usize() >= nodes.child_count
+                    raise SkinError.InvalidSkinTable if unique_joints[joint_index.usize()]
+                    unique_joints[joint_index.usize()] <- true
+                skin_joint_counts.push(joints.child_count)
+
+            bindings: mutable darray[PlacementSkinBinding] = []
+            node_has_mesh: mutable darray[bool] = []
+            node_skin_indices: mutable darray[i64] = []
+            skin_used: mutable darray[bool] = []
+            for _ in 0..<nodes.child_count |bindings, node_has_mesh, node_skin_indices|:
+                bindings.push(PlacementSkinBinding{})
+                node_has_mesh.push(false)
+                node_skin_indices.push(-1i64)
+            for _ in 0..<skin_count |skin_used|:
+                skin_used.push(false)
+
+            skinned_placement_count: mutable usize = 0
+            static_placement_count: mutable usize = 0
+            for node_ordinal in 0..<nodes.child_count |document, nodes_index, nodes, bindings, node_has_mesh, node_skin_indices, skin_used, skinned_placement_count, static_placement_count|:
+                node_index: usize = try skin_array_item(document, nodes_index, node_ordinal)
+                raise SkinError.InvalidSkinPlacement if document.nodes[node_index].kind != JsonNodeKind.Object
+                mesh_field: usize = try skin_member_index(document, node_index, "mesh")
+                skin_field: usize = try skin_member_index(document, node_index, "skin")
+                raise SkinError.InvalidSkinPlacement if skin_field != JSON_INDEX_NONE and mesh_field == JSON_INDEX_NONE
+                if mesh_field != JSON_INDEX_NONE:
+                    node_has_mesh[node_ordinal] <- true
+                    if skin_field == JSON_INDEX_NONE:
+                        static_placement_count <- static_placement_count + 1
+                    else:
+                        skin_index: i64 = try skin_integer_value(document, skin_field)
+                        raise SkinError.InvalidSkinPlacement if skin_index < 0 or skin_index.usize() >= skin_count
+                        node_skin_indices[node_ordinal] <- skin_index
+                        skin_used[skin_index.usize()] <- true
+                        skinned_placement_count <- skinned_placement_count + 1
+
+            if skin_count == 0:
+                return PlacementSkinPalettePlan{bindings: bindings}
+            raise SkinError.InvalidSkinPlacement if skinned_placement_count == 0
+            for skin_index in 0..<skin_count |skin_used|:
+                raise SkinError.SkinNotReferenced if not skin_used[skin_index]
+
+            palette_total: mutable usize = 0
+            if skin_count == 1 and static_placement_count == 0:
+                palette_total <- skin_joint_counts[0]
+                for node_index in 0..<nodes.child_count |node_skin_indices, bindings, skin_joint_counts|:
+                    if node_skin_indices[node_index] == 0i64:
+                        bindings[node_index] <- PlacementSkinBinding{
+                            kind: PlacementSkinBindingKind.Palette,
+                            palette_offset: 0,
+                            palette_count: skin_joint_counts[0]
+                        }
+            else:
+                for node_index in 0..<nodes.child_count |node_skin_indices, bindings, skin_joint_counts, palette_total|:
+                    skin_index: i64 = node_skin_indices[node_index]
+                    if skin_index >= 0:
+                        joint_count: usize = skin_joint_counts[skin_index.usize()]
+                        raise SkinError.PaletteLimitExceeded if joint_count > Limits::MAX_JOINTS - palette_total
+                        bindings[node_index] <- PlacementSkinBinding{
+                            kind: PlacementSkinBindingKind.Palette,
+                            palette_offset: palette_total,
+                            palette_count: joint_count
+                        }
+                        palette_total <- palette_total + joint_count
+                if static_placement_count > 0:
+                    raise SkinError.PaletteLimitExceeded if palette_total >= Limits::MAX_JOINTS
+                    for node_index in 0..<nodes.child_count |node_has_mesh, node_skin_indices, bindings, palette_total|:
+                        if node_has_mesh[node_index] and node_skin_indices[node_index] < 0:
+                            bindings[node_index] <- PlacementSkinBinding{
+                                kind: PlacementSkinBindingKind.Static,
+                                palette_offset: palette_total,
+                                palette_count: 1
+                            }
+                    palette_total <- palette_total + 1
+            return PlacementSkinPalettePlan{
+                has_skin_streams: true,
+                palette_count: palette_total,
+                bindings: bindings
+            }
 
 
         def read_influences(document: JsonDocument&, buffer: darray[u8]&, attributes_index: usize, vertex_count: i64) -> SkinInfluences error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
@@ -296,6 +440,9 @@ module EsEngineGltfSkin:
             raise SkinError.InvalidDocument if object_index >= document.nodes.count
             owner: JsonNode = document.nodes[object_index]
             raise SkinError.InvalidDocument if owner.kind != JsonNodeKind.Object
+            if owner.member_count == 0:
+                raise SkinError.InvalidDocument if owner.member_start != JSON_INDEX_NONE or owner.member_key_order_start != JSON_INDEX_NONE
+                return JSON_INDEX_NONE
             raise SkinError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
             selected: mutable usize = JSON_INDEX_NONE
             for ordinal in 0..<owner.member_count |document, owner, selected|:
