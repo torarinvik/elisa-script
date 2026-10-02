@@ -1,0 +1,176 @@
+#!/usr/bin/env elisascript
+# Bounded Elisascript counterpart of elisa-engine/scripts/fetch_tracy.py.
+include "../../../src/runtime/process_model.elisa"
+
+using EsProcess
+
+
+module EsEngineFetchTracy:
+    private:
+        const module Pin:
+            REPOSITORY: sview = "https://github.com/wolfpld/tracy.git"
+            TAG: sview = "v0.14.1"
+            COMMIT: sview = "30997d5ca6bb632cc10807a1da8a6d3de0aeeb3c"
+            CLIENT_RELATIVE_PATH: sview = "dependencies/tracy/public/TracyClient.cpp"
+
+
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 120000000i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+
+
+        const enum FetchPhase of u8:
+            ResolveRoot
+            CheckCheckout
+            Clone
+            VerifyRevision
+            VerifyClient
+            ReportReady
+            Done
+
+
+        struct FetchState:
+            phase: FetchPhase
+            engine_root: Path
+            tracy_directory: Path
+            command_arguments: darray[sview]
+            exit_status: i64
+
+
+        struct GitCapture:
+            started: bool = false
+            status: i64 = 127i64
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        def run_git(arguments: darray[sview]) -> GitCapture can[Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format]:
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable("git"), arguments, "", Limits::PROCESS_TIMEOUT_MICROS, Limits::PROCESS_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                return GitCapture{}
+            return GitCapture{
+                started: true,
+                status: capture.process_exit_status,
+                stdout: capture.process_stdout,
+                stderr: capture.process_stderr
+            }
+
+
+        def command_description(arguments: darray[sview]) -> sview can[Memory.Allocate, Abort.Panic]:
+            description: mutable sview = "git"
+            for argument in arguments |description|:
+                description <- description + " " + argument
+            return description
+
+
+        def report_command_failure(arguments: darray[sview], capture: GitCapture) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
+            details: sview = capture.stderr.strip()
+            details <- capture.stdout.strip() if details == ""
+            _ = write_stderr("command failed (" + command_description(arguments) + "): " + details + "\n")
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # The Python fetcher intentionally ignores extra argv; preserve that behavior.
+            _ = arguments
+            state: mutable FetchState = FetchState{
+                phase: FetchPhase.ResolveRoot,
+                engine_root: path("."),
+                tracy_directory: path("."),
+                command_arguments: [],
+                exit_status: 1i64
+            }
+
+            machine over state while state.phase != FetchPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, FetchPhase.ResolveRoot:
+                    source: Path = try path_real(Script::source_path()) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve Tracy fetcher source path\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    engine_candidate: Path = source.parent().parent().parent().parent().parent().joinpath("elisa-engine")
+                    engine_root: Path = try path_real(engine_candidate) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve elisa-engine project root\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    state.engine_root <- engine_root
+                    state.tracy_directory <- engine_root.joinpath("dependencies").joinpath("tracy")
+                    state.phase <- FetchPhase.CheckCheckout
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckCheckout:
+                    metadata_directory: Path = state.tracy_directory.joinpath(".git")
+                    checkout_exists: bool = try is_directory(metadata_directory) else false
+                    if checkout_exists:
+                        state.phase <- FetchPhase.VerifyRevision
+                    else:
+                        dependencies: Path = state.engine_root.joinpath("dependencies")
+                        parent_created: bool = try create_directories(dependencies) else false
+                        if not parent_created:
+                            _ = write_stderr("unable to create Tracy dependency directory: " + f"{dependencies}" + "\n")
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.command_arguments <- [
+                                "clone", "--branch", Pin::TAG, "--depth", "1", Pin::REPOSITORY, f"{state.tracy_directory}"
+                            ]
+                            state.phase <- FetchPhase.Clone
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Clone:
+                    capture: GitCapture = run_git(state.command_arguments)
+                    if not capture.started or capture.status != 0i64:
+                        report_command_failure(state.command_arguments, capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.VerifyRevision
+                    -> Dispatch
+
+                Dispatch, FetchPhase.VerifyRevision:
+                    state.command_arguments <- ["-C", f"{state.tracy_directory}", "rev-parse", "HEAD"]
+                    capture: GitCapture = run_git(state.command_arguments)
+                    if not capture.started or capture.status != 0i64:
+                        report_command_failure(state.command_arguments, capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        head: sview = capture.stdout.strip()
+                        if head != Pin::COMMIT:
+                            _ = write_stderr(
+                                "tracy checkout is " + head + ", expected " + Pin::COMMIT + "; remove " + f"{state.tracy_directory}" + " and re-run to reset\n"
+                            )
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.phase <- FetchPhase.VerifyClient
+                    -> Dispatch
+
+                Dispatch, FetchPhase.VerifyClient:
+                    client: Path = state.tracy_directory.joinpath("public").joinpath("TracyClient.cpp")
+                    client_exists: bool = try is_file(client) else false
+                    if not client_exists:
+                        _ = write_stderr("Tracy client is missing: " + f"{client}" + "\n")
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.ReportReady
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ReportReady:
+                    short_commit: sview = string_view_slice(Pin::COMMIT, 0i64, 12i64)
+                    print("tracy " + Pin::TAG + " (" + short_commit + ") ready:")
+                    print("  " + Pin::CLIENT_RELATIVE_PATH)
+                    state.exit_status <- 0i64
+                    state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Done:
+                    break
+
+            return state.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineFetchTracy::run(arguments)
