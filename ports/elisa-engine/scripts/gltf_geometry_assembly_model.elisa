@@ -27,6 +27,21 @@ module EsEngineGltfGeometryAssembly:
             material_index: usize = 0
 
 
+        # Produced from the document's normalized skin plan: ordinary palette
+        # entries carry source influences, Static synthesizes a rigid bind for
+        # unskinned placements when another placement activates skin output.
+        const enum PlacementSkinBindingKind of u8:
+            Unskinned
+            Palette
+            Static
+
+
+        struct PlacementSkinBinding:
+            kind: PlacementSkinBindingKind = PlacementSkinBindingKind.Unskinned
+            palette_offset: usize = 0
+            palette_count: usize = 0
+
+
         # One instance per mesh placement. The caller passes the remaining
         # model-wide budgets so sequential placements share Python's global
         # vertex and index limits rather than resetting them per mesh.
@@ -34,6 +49,7 @@ module EsEngineGltfGeometryAssembly:
             matrix: Affine3x4
             vertex_budget: usize
             index_budget: usize
+            skin_binding: PlacementSkinBinding = PlacementSkinBinding{}
             blocks: darray[GeometryBlock] = []
             primitives: darray[PlacedPrimitive] = []
             source_vertex_count: usize = 0
@@ -46,6 +62,7 @@ module EsEngineGltfGeometryAssembly:
         struct GeometryPlacementInput:
             placement: MeshPlacement
             material_indices: darray[usize] = []
+            skin_binding: PlacementSkinBinding = PlacementSkinBinding{}
 
 
         struct AssembledMeshPlacement:
@@ -58,6 +75,7 @@ module EsEngineGltfGeometryAssembly:
             placements: darray[AssembledMeshPlacement] = []
             source_vertex_count: usize = 0
             index_count: usize = 0
+            has_skin_streams: bool = false
             has_morph_shape: bool = false
             morph_target_count: usize = 0
             morph_normals_present: bool = false
@@ -74,6 +92,10 @@ module EsEngineGltfGeometryAssembly:
             MaterialBindingCountMismatch
             SourceIdentityCountMismatch
             SharedPositionAttributesDiffer
+            SkinBindingMismatch
+            SkinAttributeMismatch
+            InvalidSkinPalette
+            SkinJointOutOfPalette
             MorphTargetCountMismatch
             InconsistentMorphNormalStreams
             VertexBudgetExceeded
@@ -82,26 +104,30 @@ module EsEngineGltfGeometryAssembly:
             IndexPlacementFailed
 
 
-        def new_placement_assembly(matrix: Affine3x4, vertex_budget: usize, index_budget: usize) PlacementAssembly error[GeometryAssemblyError]:
+        def new_placement_assembly(matrix: Affine3x4, vertex_budget: usize, index_budget: usize, skin_binding: PlacementSkinBinding = PlacementSkinBinding{}) PlacementAssembly error[GeometryAssemblyError]:
             raise GeometryAssemblyError.InvalidBudget if vertex_budget > Limits::MAX_VERTICES or index_budget > Limits::MAX_INDICES
+            try geometry_assembly_validate_skin_binding(skin_binding)
             return PlacementAssembly{
                 matrix: matrix,
                 vertex_budget: vertex_budget,
-                index_budget: index_budget
+                index_budget: index_budget,
+                skin_binding: skin_binding
             }
 
 
         # Decode and assemble one mesh instance from its source JSON. Material
         # indices must already be validated against the document's material
         # table; the shared cache must belong to this document and buffer.
-        def assemble_mesh_placement(document: JsonDocument&, buffer: darray[u8]&, mesh_index: usize, matrix: Affine3x4, material_indices: darray[usize]&, cache: mutable VertexSourceCache&, vertex_budget: usize, index_budget: usize) PlacementAssembly error[GeometryAssemblyError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            primitive_count: usize = try read_mesh_primitive_count(document, mesh_index)
+        def assemble_mesh_placement(document: JsonDocument&, buffer: darray[u8]&, placement: MeshPlacement, material_indices: darray[usize]&, cache: mutable VertexSourceCache&, vertex_budget: usize, index_budget: usize, skin_binding: PlacementSkinBinding = PlacementSkinBinding{}) PlacementAssembly error[GeometryAssemblyError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try geometry_assembly_validate_placement_skin_binding(placement, skin_binding)
+            effective_transform: Affine3x4 = geometry_assembly_effective_transform(placement)
+            primitive_count: usize = try read_mesh_primitive_count(document, placement.mesh_index)
             raise GeometryAssemblyError.PrimitiveCountOutOfRange if primitive_count == 0 or primitive_count > Limits::MAX_PRIMITIVES
             raise GeometryAssemblyError.MaterialBindingCountMismatch if material_indices.count != primitive_count
 
-            assembly: mutable PlacementAssembly = try new_placement_assembly(matrix, vertex_budget, index_budget)
-            for ordinal in 0..<primitive_count |document, buffer, mesh_index, material_indices, cache, assembly|:
-                primitive: CachedTrianglePrimitive = try read_triangle_primitive_cached(document, buffer, mesh_index, ordinal, cache)
+            assembly: mutable PlacementAssembly = try new_placement_assembly(effective_transform, vertex_budget, index_budget, skin_binding)
+            for ordinal in 0..<primitive_count |document, buffer, placement, material_indices, cache, assembly|:
+                primitive: CachedTrianglePrimitive = try read_triangle_primitive_cached(document, buffer, placement.mesh_index, ordinal, cache)
                 try append_cached_placement_primitive(assembly, cache, primitive, material_indices[ordinal])
             return assembly
 
@@ -115,22 +141,25 @@ module EsEngineGltfGeometryAssembly:
             raise GeometryAssemblyError.EmptyPlacementList if inputs.count == 0
             raise GeometryAssemblyError.PlacementCountOutOfRange if inputs.count > Limits::MAX_PLACEMENTS
 
-            identity: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0}
             remaining_vertices: mutable usize = Limits::MAX_VERTICES
             remaining_indices: mutable usize = Limits::MAX_INDICES
             result: mutable GeometryPlacementSet = GeometryPlacementSet{}
-            for ordinal in 0..<inputs.count |document, buffer, inputs, cache, identity, remaining_vertices, remaining_indices, result|:
+            for ordinal in 0..<inputs.count |document, buffer, inputs, cache, remaining_vertices, remaining_indices, result|:
                 input: GeometryPlacementInput = inputs[ordinal]
-                effective_transform: Affine3x4 = identity if input.placement.has_skin else input.placement.world_transform
+                has_skin_streams: bool = input.skin_binding.kind != PlacementSkinBindingKind.Unskinned
+                if ordinal == 0:
+                    result.has_skin_streams <- has_skin_streams
+                else:
+                    raise GeometryAssemblyError.SkinBindingMismatch if result.has_skin_streams != has_skin_streams
                 geometry: PlacementAssembly = try assemble_mesh_placement(
                     document,
                     buffer,
-                    input.placement.mesh_index,
-                    effective_transform,
+                    input.placement,
                     input.material_indices,
                     cache,
                     remaining_vertices,
-                    remaining_indices
+                    remaining_indices,
+                    input.skin_binding
                 )
                 raise GeometryAssemblyError.VertexBudgetExceeded if geometry.source_vertex_count > remaining_vertices
                 raise GeometryAssemblyError.IndexBudgetExceeded if geometry.index_count > remaining_indices
@@ -147,7 +176,7 @@ module EsEngineGltfGeometryAssembly:
                 result.index_count <- result.index_count + geometry.index_count
                 result.placements.push(AssembledMeshPlacement{
                     placement: input.placement,
-                    effective_transform: effective_transform,
+                    effective_transform: geometry.matrix,
                     geometry: geometry
                 })
             return result
@@ -161,6 +190,7 @@ module EsEngineGltfGeometryAssembly:
         # mesh placement and source document. Material binding validation is
         # performed by the document-level caller before this boundary.
         def append_placement_primitive(assembly: mutable PlacementAssembly&, primitive: TrianglePrimitive, material_index: usize) void error[GeometryAssemblyError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try geometry_assembly_validate_skin_binding(assembly.skin_binding)
             raise GeometryAssemblyError.InvalidBudget if assembly.vertex_budget > Limits::MAX_VERTICES or assembly.index_budget > Limits::MAX_INDICES
             raise GeometryAssemblyError.InvalidBudget if assembly.source_vertex_count > assembly.vertex_budget or assembly.index_count > assembly.index_budget
             raise GeometryAssemblyError.PrimitiveCountOutOfRange if assembly.primitives.count >= Limits::MAX_PRIMITIVES
@@ -189,15 +219,17 @@ module EsEngineGltfGeometryAssembly:
                 placed: TrianglePrimitive = try transform_triangle_primitive(primitive, assembly.matrix) else failure:
                     _ = failure
                     raise GeometryAssemblyError.PlacementTransformFailed
+                placed_vertices: VertexStreams = try geometry_assembly_bind_skin_streams(placed.vertices, assembly.skin_binding)
                 indices <- placed.triangles
                 assembly.blocks.push(GeometryBlock{
-                    vertices: placed.vertices,
+                    vertices: placed_vertices,
                     triangles: [],
                     source_key: primitive.source_key
                 })
                 block_index <- assembly.blocks.count - 1
                 assembly.source_vertex_count <- assembly.source_vertex_count + primitive.vertices.count
             else:
+                try geometry_assembly_validate_skin_vertex_binding(primitive.vertices, assembly.skin_binding)
                 indices <- try placed_indices(primitive.triangles, assembly.matrix) else failure:
                     _ = failure
                     raise GeometryAssemblyError.IndexPlacementFailed
@@ -220,6 +252,7 @@ module EsEngineGltfGeometryAssembly:
         # reads only the cached vertex metadata and this primitive's indices;
         # it does not copy cached vertex streams just to append a draw.
         def append_cached_placement_primitive(assembly: mutable PlacementAssembly&, cache: VertexSourceCache&, primitive: CachedTrianglePrimitive, material_index: usize) void error[GeometryAssemblyError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try geometry_assembly_validate_skin_binding(assembly.skin_binding)
             raise GeometryAssemblyError.InvalidCacheReference if primitive.cache_entry_index >= cache.entries.count
             entry_index: usize = primitive.cache_entry_index
             raise GeometryAssemblyError.InvalidSourceKey if not vertex_source_keys_equal(cache.entries[entry_index].key, primitive.source_key)
@@ -324,6 +357,76 @@ module EsEngineGltfGeometryAssembly:
                 raise GeometryAssemblyError.InvalidSourceKey if (target_key.normal_accessor >= 0) != target.has_normals
             for index in primitive.triangles |primitive, count|:
                 raise GeometryAssemblyError.InvalidPrimitive if index.usize() >= count
+
+
+        def geometry_assembly_effective_transform(placement: MeshPlacement) Affine3x4:
+            return Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0} if placement.has_skin
+            return placement.world_transform
+
+
+        def geometry_assembly_validate_skin_binding(binding: PlacementSkinBinding) void error[GeometryAssemblyError]:
+            if binding.kind == PlacementSkinBindingKind.Unskinned:
+                raise GeometryAssemblyError.InvalidSkinPalette if binding.palette_offset != 0 or binding.palette_count != 0
+                return
+            raise GeometryAssemblyError.InvalidSkinPalette if binding.palette_count == 0
+            raise GeometryAssemblyError.InvalidSkinPalette if binding.palette_offset > EsEngineGltfSkin::Limits::MAX_JOINTS
+            raise GeometryAssemblyError.InvalidSkinPalette if binding.palette_count > EsEngineGltfSkin::Limits::MAX_JOINTS - binding.palette_offset
+            raise GeometryAssemblyError.InvalidSkinPalette if binding.kind == PlacementSkinBindingKind.Static and binding.palette_count != 1
+
+
+        def geometry_assembly_validate_placement_skin_binding(placement: MeshPlacement, binding: PlacementSkinBinding) void error[GeometryAssemblyError]:
+            try geometry_assembly_validate_skin_binding(binding)
+            raise GeometryAssemblyError.SkinBindingMismatch if placement.has_skin and binding.kind != PlacementSkinBindingKind.Palette
+            raise GeometryAssemblyError.SkinBindingMismatch if not placement.has_skin and binding.kind == PlacementSkinBindingKind.Palette
+
+
+        def geometry_assembly_bind_skin_streams(vertices: VertexStreams, binding: PlacementSkinBinding) VertexStreams error[GeometryAssemblyError] can[Memory.Allocate, Abort.Panic]:
+            try geometry_assembly_validate_skin_vertex_binding(vertices, binding)
+            if binding.kind == PlacementSkinBindingKind.Unskinned:
+                return vertices
+
+            joints: mutable darray[u32] = []
+            weights: mutable darray[f32] = []
+            if binding.kind == PlacementSkinBindingKind.Static:
+                for _ in 0..<vertices.count |joints, binding|:
+                    for lane in 0..<EsEngineGltfSkin::Limits::WEIGHTS_PER_VERTEX |joints, binding|:
+                        joints.push(binding.palette_offset.u32())
+                        weight: f32 = 0.0f32
+                        if lane == 0:
+                            weight <- 1.0f32
+                        weights.push(weight)
+            else:
+                for joint in vertices.skin.joints |joints, binding|:
+                    joints.push((binding.palette_offset + joint.usize()).u32())
+                weights <- vertices.skin.weights
+
+            return VertexStreams{
+                positions: vertices.positions,
+                has_normals: vertices.has_normals,
+                normals: vertices.normals,
+                has_tangents: vertices.has_tangents,
+                tangents: vertices.tangents,
+                uvs: vertices.uvs,
+                has_uv1s: vertices.has_uv1s,
+                uv1s: vertices.uv1s,
+                has_skin: true,
+                skin: EsEngineGltfSkin::SkinInfluences{joints: joints, weights: weights},
+                morph_targets: vertices.morph_targets,
+                count: vertices.count,
+                triangles: vertices.triangles
+            }
+
+
+        def geometry_assembly_validate_skin_vertex_binding(vertices: VertexStreams, binding: PlacementSkinBinding) void error[GeometryAssemblyError] can[Abort.Panic]:
+            try geometry_assembly_validate_skin_binding(binding)
+            if binding.kind == PlacementSkinBindingKind.Unskinned or binding.kind == PlacementSkinBindingKind.Static:
+                raise GeometryAssemblyError.SkinAttributeMismatch if vertices.has_skin
+                return
+            raise GeometryAssemblyError.SkinAttributeMismatch if not vertices.has_skin
+            raise GeometryAssemblyError.SkinAttributeMismatch if vertices.skin.joints.count != vertices.count * EsEngineGltfSkin::Limits::WEIGHTS_PER_VERTEX
+            raise GeometryAssemblyError.SkinAttributeMismatch if vertices.skin.weights.count != vertices.count * EsEngineGltfSkin::Limits::WEIGHTS_PER_VERTEX
+            for joint in vertices.skin.joints |binding|:
+                raise GeometryAssemblyError.SkinJointOutOfPalette if joint.usize() >= binding.palette_count
 
 
         def geometry_assembly_valid_source_key(key: VertexSourceKey) bool:
