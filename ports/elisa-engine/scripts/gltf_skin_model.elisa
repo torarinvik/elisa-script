@@ -88,6 +88,15 @@ module EsEngineGltfSkin:
             cluster_joints: darray[usize] = []
 
 
+        struct SkinRig:
+            node_ids: darray[usize] = []
+            parent_indices: darray[i64] = []
+            rest_transforms: darray[darray[f64]] = []
+            source_node_ordered_indices: darray[i64] = []
+            cluster_joints: darray[usize] = []
+            inverse_bind_matrices: darray[f32] = []
+
+
     private:
         struct SkinTraversalFrame:
             node_index: usize
@@ -134,6 +143,7 @@ module EsEngineGltfSkin:
             RigNodeLimitExceeded
             InvalidNodeGraph
             InvalidMeshSpaceRoot
+            InvalidRestTransform
             RestMatrixHasZeroScale
             RestMatrixContainsShear
             InvalidRestMatrixRotation
@@ -615,6 +625,45 @@ module EsEngineGltfSkin:
             }
 
 
+        # Attach source-local and synthetic-basis rest transforms to the
+        # ordered hierarchy and preserve inverse binds in authored joint order.
+        def materialize_skin_rig(document: JsonDocument&, buffer: darray[u8]&, graph: SkinSourceGraph&, membership: SkinRigMembership&, parent_plan: SkinRigParentPlan&, order: SkinRigOrder&, skin_index: usize) -> SkinRig error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            node_count: usize = graph.nodes.count
+            raise SkinError.InvalidNodeGraph if order.ordered_node_ids.count == 0 or order.ordered_node_ids.count > Limits::MAX_NODES
+            raise SkinError.InvalidNodeGraph if order.ordered_parent_indices.count != order.ordered_node_ids.count or order.source_node_ordered_indices.count != node_count
+            raise SkinError.InvalidNodeGraph if order.cluster_joints.count != membership.joint_source_indices.count
+            raise SkinError.InvalidNodeGraph if parent_plan.basis_transforms.count != parent_plan.basis_boundary_indices.count
+
+            rest_transforms: mutable darray[darray[f64]] = []
+            for ordinal in 0..<order.ordered_node_ids.count |document, order, parent_plan, node_count, rest_transforms|:
+                node_id: usize = order.ordered_node_ids[ordinal]
+                if node_id < node_count:
+                    rest_transforms.push(try skin_node_rest_transform(document, node_id))
+                else:
+                    basis_index: usize = node_id - node_count
+                    raise SkinError.InvalidNodeGraph if basis_index >= parent_plan.basis_transforms.count
+                    rest_transforms.push(try rest_matrix_transform(parent_plan.basis_transforms[basis_index]))
+
+            inverse_bind_matrices: darray[f32] = try read_inverse_bind_matrices(document, buffer, skin_index, membership.joint_source_indices.count.i64())
+            return SkinRig{
+                node_ids: order.ordered_node_ids,
+                parent_indices: order.ordered_parent_indices,
+                rest_transforms: rest_transforms,
+                source_node_ordered_indices: order.source_node_ordered_indices,
+                cluster_joints: order.cluster_joints,
+                inverse_bind_matrices: inverse_bind_matrices
+            }
+
+
+        # End-to-end composition point for one selected skin rig.
+        def build_skin_rig(document: JsonDocument&, buffer: darray[u8]&, mesh_count: usize, skin_index: usize) -> SkinRig error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            graph: SkinSourceGraph = try read_skin_source_graph(document, mesh_count)
+            membership: SkinRigMembership = try skin_rig_membership(document, graph, skin_index)
+            parent_plan: SkinRigParentPlan = try skin_rig_parent_plan(graph, membership)
+            order: SkinRigOrder = try skin_rig_topological_order(graph, membership, parent_plan)
+            return try materialize_skin_rig(document, buffer, graph, membership, parent_plan, order, skin_index)
+
+
         def read_influences(document: JsonDocument&, buffer: darray[u8]&, attributes_index: usize, vertex_count: i64) -> SkinInfluences error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
             raise SkinError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
@@ -962,6 +1011,68 @@ module EsEngineGltfSkin:
             h: f64 = matrix[6]
             i: f64 = matrix[10]
             return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+
+
+        def skin_node_rest_transform(document: JsonDocument&, node_index: usize) -> darray[f64] error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidRestTransform if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Object
+            matrix_field: usize = try skin_member_index(document, node_index, "matrix")
+            translation_field: usize = try skin_member_index(document, node_index, "translation")
+            rotation_field: usize = try skin_member_index(document, node_index, "rotation")
+            scale_field: usize = try skin_member_index(document, node_index, "scale")
+            if matrix_field != JSON_INDEX_NONE:
+                raise SkinError.InvalidRestTransform if translation_field != JSON_INDEX_NONE or rotation_field != JSON_INDEX_NONE or scale_field != JSON_INDEX_NONE
+                matrix_values: darray[f64] = try skin_float_array(document, matrix_field, 16)
+                matrix: Affine3x4 = try affine_from_column_major(matrix_values) else failure:
+                    _ = failure
+                    raise SkinError.InvalidRestTransform
+                return try rest_matrix_transform(matrix)
+
+            translation: darray[f64] = try skin_optional_float_array(document, translation_field, [0.0, 0.0, 0.0], 3)
+            rotation: darray[f64] = try skin_optional_float_array(document, rotation_field, [0.0, 0.0, 0.0, 1.0], 4)
+            scale: darray[f64] = try skin_optional_float_array(document, scale_field, [1.0, 1.0, 1.0], 3)
+            quaternion_length: f64 = sqrt(rotation[0] * rotation[0] + rotation[1] * rotation[1] + rotation[2] * rotation[2] + rotation[3] * rotation[3])
+            raise SkinError.InvalidRestMatrixRotation if not skin_finite_f64(quaternion_length) or quaternion_length <= Limits::MINIMUM_SCALE or fabs(quaternion_length - 1.0) > EsEngineGltfAffine::Limits::ROTATION_TOLERANCE
+            raise SkinError.RestMatrixHasZeroScale if scale[0] == 0.0 or scale[1] == 0.0 or scale[2] == 0.0
+            transform: mutable darray[f64] = []
+            for index in 0..<3 |translation, transform|:
+                transform.push(translation[index])
+            for index in 0..<4 |rotation, quaternion_length, transform|:
+                transform.push(rotation[index] / quaternion_length)
+            for index in 0..<3 |scale, transform|:
+                transform.push(scale[index])
+            return transform
+
+
+        def skin_optional_float_array(document: JsonDocument&, field_index: usize, fallback: darray[f64], expected_count: usize) -> darray[f64] error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            return fallback if field_index == JSON_INDEX_NONE
+            return try skin_float_array(document, field_index, expected_count)
+
+
+        def skin_float_array(document: JsonDocument&, array_index: usize, expected_count: usize) -> darray[f64] error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidRestTransform if array_index >= document.nodes.count or document.nodes[array_index].kind != JsonNodeKind.Array
+            values_node: JsonNode = document.nodes[array_index]
+            raise SkinError.InvalidRestTransform if values_node.child_count != expected_count
+            values: mutable darray[f64] = []
+            for ordinal in 0..<values_node.child_count |document, array_index, values_node, values|:
+                element_index: usize = try skin_array_item(document, array_index, ordinal)
+                values.push(try skin_float_value(document, element_index))
+            return values
+
+
+        def skin_float_value(document: JsonDocument&, node_index: usize) f64 error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidRestTransform if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise SkinError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable f64 = 0.0
+            catch parse_float(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise SkinError.InvalidRestTransform
+            raise SkinError.InvalidRestTransform if not skin_finite_f64(parsed)
+            return parsed
 
 
         def skin_finite_f64(value: f64) -> bool:
