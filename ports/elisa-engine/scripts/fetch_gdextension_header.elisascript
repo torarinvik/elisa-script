@@ -1,0 +1,222 @@
+#!/usr/bin/env elisascript
+# Bounded Elisascript counterpart of elisa-engine/scripts/fetch_gdextension_header.py.
+include "./temp_directory.elisa"
+include "../../../src/runtime/executable_lookup_posix.elisa"
+include "../../../src/runtime/macos_app_copy_posix.elisa"
+include "../../../src/runtime/process_model.elisa"
+
+using EsEngineTempDirectory
+using EsExecutableLookupPosix
+using EsMacosAppCopyPosix
+using EsProcess
+
+
+module EsEngineFetchGdextensionHeader:
+    private:
+        const module Files:
+            PROJECT_CONFIGURATION: sview = "config_version=5\n\n[application]\nconfig/name=\"elisa-gdext-header\"\n"
+            HEADER_NAME: sview = "gdextension_interface.h"
+            TARGET_RELATIVE_PATH: sview = "dependencies/gdextension/gdextension_interface.h"
+
+
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 120000000i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+
+
+        const enum FetchPhase of u8:
+            ResolveRoot
+            FindGodot
+            CreateWorkspace
+            WriteProject
+            RunGodot
+            ValidateHeader
+            CreateTargetDirectory
+            CopyHeader
+            Cleanup
+            ReportReady
+            Done
+
+
+        struct CommandCapture:
+            started: bool = false
+            status: i64 = 127i64
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct FetchState:
+            phase: FetchPhase
+            engine_root: Path
+            target_directory: Path
+            work_directory: Path
+            godot: sview
+            godot_result: CommandCapture
+            exit_status: i64
+
+
+        def capture_command(program: sview, arguments: darray[sview]) -> CommandCapture can[Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format]:
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable(program), arguments, "", Limits::PROCESS_TIMEOUT_MICROS, Limits::PROCESS_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                return CommandCapture{}
+            return CommandCapture{
+                started: true,
+                status: capture.process_exit_status,
+                stdout: capture.process_stdout,
+                stderr: capture.process_stderr
+            }
+
+
+        def forward_godot_output(result: CommandCapture) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
+            _ = write_stderr(result.stdout + "\n")
+            _ = write_stderr(result.stderr + "\n")
+
+
+        def cleanup_workspace(work_directory: Path) -> void can[File.Write]:
+            _ = try remove_tree(work_directory) else false
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # The Python fetcher has no argument parser and ignores extra argv.
+            _ = arguments
+            state: mutable FetchState = FetchState{
+                phase: FetchPhase.ResolveRoot,
+                engine_root: path("."),
+                target_directory: path("."),
+                work_directory: path("."),
+                godot: "",
+                godot_result: CommandCapture{},
+                exit_status: 1i64
+            }
+
+            machine over state while state.phase != FetchPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, FetchPhase.ResolveRoot:
+                    source: Path = try path_real(Script::source_path()) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve GDExtension header fetcher source path\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    engine_candidate: Path = source.parent().parent().parent().parent().parent().joinpath("elisa-engine")
+                    engine_root: Path = try path_real(engine_candidate) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve elisa-engine project root\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    state.engine_root <- engine_root
+                    state.target_directory <- engine_root.joinpath("dependencies").joinpath("gdextension")
+                    state.phase <- FetchPhase.FindGodot
+                    -> Dispatch
+
+                Dispatch, FetchPhase.FindGodot:
+                    configured: sview = try getenv("GODOT_BIN", "") else ""
+                    if configured != "":
+                        state.godot <- configured
+                    else:
+                        located: sview = EsExecutableLookupPosix::which("godot")
+                        if located == "":
+                            _ = write_stderr("Install Godot or set GODOT_BIN to its executable path.\n")
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.godot <- located
+                    state.phase <- FetchPhase.CreateWorkspace if state.phase != FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CreateWorkspace:
+                    temporary: Path = try EsEngineTempDirectory::create("elisa-gdext-header-") else failure:
+                        _ = failure
+                        _ = write_stderr("unable to create a temporary Godot project directory\n")
+                        state.phase <- FetchPhase.Done
+                        path(".")
+                    if state.phase != FetchPhase.Done:
+                        state.work_directory <- temporary
+                        state.phase <- FetchPhase.WriteProject
+                    -> Dispatch
+
+                Dispatch, FetchPhase.WriteProject:
+                    project_file: Path = state.work_directory.joinpath("project.godot")
+                    written: usize = try write_text(project_file, Files::PROJECT_CONFIGURATION) else failure:
+                        _ = failure
+                        0usize
+                    if written != sview_len(Files::PROJECT_CONFIGURATION):
+                        _ = write_stderr("unable to write the temporary Godot project configuration\n")
+                        state.phase <- FetchPhase.Cleanup
+                    else:
+                        state.phase <- FetchPhase.RunGodot
+                    -> Dispatch
+
+                Dispatch, FetchPhase.RunGodot:
+                    arguments: darray[sview] = [
+                        "--headless", "--path", f"{state.work_directory}", "--dump-gdextension-interface"
+                    ]
+                    state.godot_result <- capture_command(state.godot, arguments)
+                    if not state.godot_result.started:
+                        _ = write_stderr("unable to start Godot or capture its bounded output\n")
+                        state.phase <- FetchPhase.Cleanup
+                    else:
+                        state.phase <- FetchPhase.ValidateHeader
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ValidateHeader:
+                    header: Path = state.work_directory.joinpath(Files::HEADER_NAME)
+                    header_exists: bool = try is_file(header) else false
+                    if state.godot_result.status != 0i64 or not header_exists:
+                        forward_godot_output(state.godot_result)
+                        _ = write_stderr("godot failed to dump the GDExtension interface header\n")
+                        state.phase <- FetchPhase.Cleanup
+                    else:
+                        state.phase <- FetchPhase.CreateTargetDirectory
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CreateTargetDirectory:
+                    target_created: bool = try create_directories(state.target_directory) else false
+                    if not target_created:
+                        _ = write_stderr("unable to create GDExtension dependency directory: " + f"{state.target_directory}" + "\n")
+                        state.phase <- FetchPhase.Cleanup
+                    else:
+                        state.phase <- FetchPhase.CopyHeader
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CopyHeader:
+                    header: Path = state.work_directory.joinpath(Files::HEADER_NAME)
+                    destination: Path = state.target_directory.joinpath(Files::HEADER_NAME)
+                    copied: bool = false
+                    catch EsMacosAppCopyPosix::copy_macos_app_file(header, destination):
+                        ok value:
+                            copied <- value
+                        error failure:
+                            _ = failure
+                    if not copied:
+                        _ = write_stderr("unable to copy the generated GDExtension interface header\n")
+                        state.phase <- FetchPhase.Cleanup
+                    else:
+                        state.phase <- FetchPhase.Cleanup
+                        state.exit_status <- 0i64
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Cleanup:
+                    cleanup_workspace(state.work_directory)
+                    if state.exit_status == 0i64:
+                        state.phase <- FetchPhase.ReportReady
+                    else:
+                        state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ReportReady:
+                    print("gdextension header ready: " + Files::TARGET_RELATIVE_PATH)
+                    state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Done:
+                    break
+
+            return state.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineFetchGdextensionHeader::run(arguments)
