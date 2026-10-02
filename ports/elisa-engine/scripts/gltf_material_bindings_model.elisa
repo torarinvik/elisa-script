@@ -3,11 +3,17 @@
 include "../../../src/runtime/data_model.elisa"
 include "../../../src/runtime/json_model.elisa"
 include "gltf_geometry_assembly_model.elisa"
+include "cook_gltf_material_factors_model.elisa"
+include "gltf_material_records_model.elisa"
+include "gltf_material_textures_model.elisa"
 
 using EsData
 using EsEngineGltfGeometryAssembly
 using EsEngineGltfNodes
 using EsEngineGltfSkin
+using EsEngineGltfMaterialFactors
+using EsEngineGltfMaterialRecords
+using EsEngineGltfMaterialTextures
 using EsEngineGltfVertexStreams
 using EsJson
 
@@ -30,6 +36,17 @@ module EsEngineGltfMaterialBindings:
             geometry: GeometryPlacementSet
 
 
+        struct DocumentMaterialPlan:
+            bindings: MaterialBindingPlan
+            records: MaterialRecordSet
+            textures: MaterialTexturePlan
+
+
+        struct MaterialDocumentGeometry:
+            materials: DocumentMaterialPlan
+            geometry: GeometryPlacementSet
+
+
         error MaterialBindingError:
             InvalidDocument
             MissingMeshes
@@ -44,6 +61,7 @@ module EsEngineGltfMaterialBindings:
             MaterialBindingInvalid
             MaterialBindingOutOfRange
             UnexpectedMaterialBinding
+            TexturedPrimitiveMissingTexCoord0
 
 
         # Parse only the slot-binding contract needed by the geometry
@@ -109,6 +127,37 @@ module EsEngineGltfMaterialBindings:
             return MaterialBindingPlan{slot_count: slot_count, material_indices_by_mesh: indices_by_mesh}
 
 
+        # Join source material bindings, core records, and fully resolved
+        # texture metadata before geometry assembly. Textured primitives must
+        # expose TEXCOORD_0, matching the Python cooker.
+        def document_material_plan(document: JsonDocument&) DocumentMaterialPlan error[MaterialBindingError, MaterialRecordError, MaterialTextureError, MaterialFactorError, JsonContractError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            bindings: MaterialBindingPlan = try document_material_bindings(document)
+            records: MaterialRecordSet = try document_material_records(document)
+            textures: MaterialTexturePlan = try document_material_textures(document)
+            raise MaterialBindingError.InvalidDocument if records.records.count != textures.materials.count
+            if records.records.count != 0:
+                root_index: usize = document.roots[0]
+                meshes_member: usize = material_binding_member_index(document, root_index, "meshes")
+                meshes_index: usize = document.members[meshes_member].value_index
+                for mesh_ordinal in 0..<bindings.material_indices_by_mesh.count |document, meshes_index, bindings, textures|:
+                    mesh_index: usize = try material_binding_array_item(document, meshes_index, mesh_ordinal)
+                    primitives_member: usize = material_binding_member_index(document, mesh_index, "primitives")
+                    primitives_index: usize = document.members[primitives_member].value_index
+                    material_slots: darray[usize] = bindings.material_indices_by_mesh[mesh_ordinal]
+                    for primitive_ordinal in 0..<material_slots.count |document, primitives_index, material_slots, textures|:
+                        slot: usize = material_slots[primitive_ordinal]
+                        raise MaterialBindingError.InvalidDocument if slot >= textures.materials.count
+                        if textures.materials[slot].has_any_texture:
+                            primitive_index: usize = try material_binding_array_item(document, primitives_index, primitive_ordinal)
+                            attributes_member: usize = material_binding_member_index(document, primitive_index, "attributes")
+                            raise MaterialBindingError.TexturedPrimitiveMissingTexCoord0 if attributes_member == JSON_INDEX_NONE
+                            attributes_index: usize = document.members[attributes_member].value_index
+                            raise MaterialBindingError.InvalidPrimitive if attributes_index >= document.nodes.count or document.nodes[attributes_index].kind != JsonNodeKind.Object
+                            texcoord_member: usize = material_binding_member_index(document, attributes_index, "TEXCOORD_0")
+                            raise MaterialBindingError.TexturedPrimitiveMissingTexCoord0 if texcoord_member == JSON_INDEX_NONE
+            return DocumentMaterialPlan{bindings: bindings, records: records, textures: textures}
+
+
         # End-to-end typed bridge through material binding and placement
         # assembly; callers can pass the returned geometry to tangent and
         # package stages without manually rebuilding the slot map.
@@ -116,6 +165,12 @@ module EsEngineGltfMaterialBindings:
             bindings: MaterialBindingPlan = try document_material_bindings(document)
             geometry: GeometryPlacementSet = try assemble_document_placements(document, buffer, bindings.material_indices_by_mesh, cache)
             return MaterialBoundGeometry{bindings: bindings, geometry: geometry}
+
+
+        def assemble_document_with_materials(document: JsonDocument&, buffer: darray[u8]&, cache: mutable VertexSourceCache&) MaterialDocumentGeometry error[MaterialBindingError, MaterialRecordError, MaterialTextureError, MaterialFactorError, JsonContractError, GeometryAssemblyError, NodeDecodeError, SkinError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            materials: DocumentMaterialPlan = try document_material_plan(document)
+            geometry: GeometryPlacementSet = try assemble_document_placements(document, buffer, materials.bindings.material_indices_by_mesh, cache)
+            return MaterialDocumentGeometry{materials: materials, geometry: geometry}
 
 
     private:
