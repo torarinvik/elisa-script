@@ -2,9 +2,11 @@
 # cook_gltf_geometry.normalized_geometry.
 include "gltf_primitive_placement_model.elisa"
 include "gltf_node_graph_model.elisa"
+include "gltf_node_model.elisa"
 
 using EsEngineGltfAffine
 using EsEngineGltfNodeGraph
+using EsEngineGltfNodes
 using EsEngineGltfNodeStreams
 using EsEngineGltfPrimitivePlacement
 using EsEngineGltfSkin
@@ -88,6 +90,10 @@ module EsEngineGltfGeometryAssembly:
             IndexBudgetExceeded
             PlacementTransformFailed
             IndexPlacementFailed
+            MeshCountOutOfRange
+            MaterialMapCountMismatch
+            SkinBindingMapMismatch
+            SingularStaticPlacement
 
 
         def new_placement_assembly(matrix: Affine3x4, vertex_budget: usize, index_budget: usize, skin_binding: PlacementSkinBinding = PlacementSkinBinding{}) PlacementAssembly error[GeometryAssemblyError]:
@@ -166,6 +172,37 @@ module EsEngineGltfGeometryAssembly:
                     geometry: geometry
                 })
             return result
+
+
+        # Connect the validated document's node graph and skin palette plan to
+        # placement-local accessor decoding and bounded source-cache assembly.
+        # Material indices are output slot IDs, already normalized by the
+        # document material layer, and are supplied once per source mesh.
+        def assemble_document_placements(document: JsonDocument&, buffer: darray[u8]&, material_indices_by_mesh: darray[darray[usize]]&, cache: mutable VertexSourceCache&) GeometryPlacementSet error[GeometryAssemblyError, JsonContractError, NodeDecodeError, SkinError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeometryAssemblyError.MeshCountOutOfRange if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise GeometryAssemblyError.MeshCountOutOfRange if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            meshes_index: usize = try json_object_member_index(document, root_index, "meshes")
+            raise GeometryAssemblyError.MeshCountOutOfRange if meshes_index == JSON_INDEX_NONE or meshes_index >= document.nodes.count or document.nodes[meshes_index].kind != JsonNodeKind.Array
+            mesh_count: usize = document.nodes[meshes_index].child_count
+            raise GeometryAssemblyError.MeshCountOutOfRange if mesh_count == 0 or mesh_count > Limits::MAX_PLACEMENTS
+            raise GeometryAssemblyError.MaterialMapCountMismatch if material_indices_by_mesh.count != mesh_count
+
+            skin_plan: PlacementSkinPalettePlan = try placement_skin_palette_plan(document)
+            placements: darray[MeshPlacement] = try node_mesh_placement_records(document, mesh_count, skin_plan.has_skin_streams)
+            inputs: mutable darray[GeometryPlacementInput] = []
+            for placement in placements |skin_plan, material_indices_by_mesh, inputs|:
+                raise GeometryAssemblyError.SkinBindingMapMismatch if placement.node_index >= skin_plan.bindings.count
+                binding: PlacementSkinBinding = skin_plan.bindings[placement.node_index]
+                raise GeometryAssemblyError.SkinBindingMapMismatch if placement.has_skin and binding.kind != PlacementSkinBindingKind.Palette
+                raise GeometryAssemblyError.SkinBindingMapMismatch if not placement.has_skin and binding.kind == PlacementSkinBindingKind.Palette
+                raise GeometryAssemblyError.SingularStaticPlacement if not placement.has_skin and determinant_affine(placement.world_transform) == 0.0
+                inputs.push(GeometryPlacementInput{
+                    placement: placement,
+                    material_indices: material_indices_by_mesh[placement.mesh_index],
+                    skin_binding: binding
+                })
+            return try assemble_geometry_placements(document, buffer, inputs, cache)
 
 
         # Append one decoded primitive in source order. The first primitive
