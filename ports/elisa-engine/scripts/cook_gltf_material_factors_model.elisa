@@ -1,0 +1,261 @@
+# Typed material-factor validation and sidecar encoding for
+# elisa-engine/scripts/cook_gltf_material_factors.py.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+
+
+module EsEngineGltfMaterialFactors:
+    public:
+        const module Limits:
+            INPUT_BYTES: usize = DATA_MAX_INPUT_BYTES
+
+
+        const module Sidecar:
+            NORMAL_SCALE_STRIDE: usize = 4
+            OCCLUSION_STRENGTH_STRIDE: usize = 4
+            CLEARCOAT_FACTOR_STRIDE: usize = 12
+            CLEARCOAT_EXTENSION: sview = "KHR_materials_clearcoat"
+            DEFAULT_NORMAL_SCALE: f64 = 1.0
+            DEFAULT_OCCLUSION_STRENGTH: f64 = 1.0
+            DEFAULT_CLEARCOAT_FACTOR: f64 = 0.0
+            DEFAULT_CLEARCOAT_ROUGHNESS: f64 = 0.0
+            DEFAULT_CLEARCOAT_NORMAL_SCALE: f64 = 1.0
+
+
+        error MaterialFactorError:
+            InputTooLarge
+            InvalidJson
+            InvalidDocument
+            InvalidUnitFactor(label: sview)
+            InvalidUnitFactorList(label: sview, count: usize)
+            UnsupportedMaterialExtensions
+            UnsupportedClearcoatProperties
+            ClearcoatExtensionNotListed
+
+
+        # Keep factors as f64 through default comparison. The Python helper
+        # compares Python floats before struct.pack rounds them to float32.
+        struct MaterialSlotFactors:
+            normal_scale: f64 = Sidecar::DEFAULT_NORMAL_SCALE
+            occlusion_strength: f64 = Sidecar::DEFAULT_OCCLUSION_STRENGTH
+            clearcoat_factor: f64 = Sidecar::DEFAULT_CLEARCOAT_FACTOR
+            clearcoat_roughness: f64 = Sidecar::DEFAULT_CLEARCOAT_ROUGHNESS
+            clearcoat_normal_scale: f64 = Sidecar::DEFAULT_CLEARCOAT_NORMAL_SCALE
+
+
+        struct FactorSidecars:
+            normal_scales: darray[u8] = []
+            occlusion_strengths: darray[u8] = []
+            clearcoat_factors: darray[u8] = []
+
+
+        # JSON parsing retains exact number lexemes; KeepLast matches
+        # json.loads for duplicate object keys.
+        def parse_document(source: sview) -> JsonDocument error[MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialFactorError.InputTooLarge if len(source) > Limits::INPUT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::INPUT_BYTES}
+            policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, limits, policy) else failure:
+                _ = failure
+                raise MaterialFactorError.InvalidJson
+            return try parse_json_document(lexed) else failure:
+                _ = failure
+                raise MaterialFactorError.InvalidJson
+
+
+        # `node_index` must name a JSON number. Bool is a distinct node kind,
+        # so Python's type(value) check (which rejects bool) is preserved.
+        def unit_factor(document: JsonDocument&, node_index: usize, label: sview) -> f64 error[MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            factor: f64 = try factor_number(document, node_index, label) else failure:
+                raise failure if failure == MaterialFactorError.InvalidDocument
+                raise MaterialFactorError.InvalidUnitFactor(label)
+            raise MaterialFactorError.InvalidUnitFactor(label) if not (factor >= 0.0 and factor <= 1.0)
+            return factor
+
+
+        # The indexed JSON value must be an array of exactly `count` numeric
+        # values, matching the source helper's list and exact-length checks.
+        def unit_factors(document: JsonDocument&, node_index: usize, count: usize, label: sview) -> darray[f64] error[MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialFactorError.InvalidDocument if document.state != JsonDocumentState.Sealed or node_index >= document.nodes.count
+            values_node: JsonNode = document.nodes[node_index]
+            raise MaterialFactorError.InvalidUnitFactorList(label, count) if values_node.kind != JsonNodeKind.Array or values_node.child_count != count
+            raise MaterialFactorError.InvalidDocument if values_node.child_start > document.children.count or values_node.child_count > document.children.count - values_node.child_start
+            values: mutable darray[f64] = []
+            for ordinal in 0..<count |document, values_node, values|:
+                child_index: usize = values_node.child_start + ordinal
+                child: JsonArrayChild = document.children[child_index]
+                raise MaterialFactorError.InvalidDocument if child.owner_index != node_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+                factor: f64 = try factor_number(document, child.value_index, label) else failure:
+                    raise failure if failure == MaterialFactorError.InvalidDocument
+                    raise MaterialFactorError.InvalidUnitFactor(label)
+                raise MaterialFactorError.InvalidUnitFactor(label) if not (factor >= 0.0 and factor <= 1.0)
+                values.push(factor)
+            return values
+
+
+        # The caller supplies one material object from a parsed root document.
+        # Only KHR_materials_clearcoat is currently representable; accepting
+        # any other material extension would silently lose runtime behavior.
+        def validate_clearcoat(document: JsonDocument&, material_index: usize) -> void error[MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialFactorError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise MaterialFactorError.InvalidDocument if document.roots[0] >= document.nodes.count or document.nodes[document.roots[0]].kind != JsonNodeKind.Object
+            raise MaterialFactorError.InvalidDocument if material_index >= document.nodes.count or document.nodes[material_index].kind != JsonNodeKind.Object
+            raise MaterialFactorError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+
+            extensions_index: usize = try factor_member_index(document, material_index, "extensions")
+            if extensions_index != JSON_INDEX_NONE:
+                raise MaterialFactorError.UnsupportedMaterialExtensions if extensions_index >= document.nodes.count or document.nodes[extensions_index].kind != JsonNodeKind.Object
+                extensions_node: JsonNode = document.nodes[extensions_index]
+                try factor_object_range_valid(document, extensions_node)
+                for ordinal in 0..<extensions_node.member_count |document, extensions_node|:
+                    member: JsonMember = document.members[extensions_node.member_start + ordinal]
+                    is_clearcoat: bool = try factor_key_is(document, member, Sidecar::CLEARCOAT_EXTENSION)
+                    raise MaterialFactorError.UnsupportedMaterialExtensions if not is_clearcoat
+
+            clearcoat_index: usize = JSON_INDEX_NONE
+            if extensions_index != JSON_INDEX_NONE:
+                clearcoat_index <- try factor_member_index(document, extensions_index, Sidecar::CLEARCOAT_EXTENSION)
+            if clearcoat_index != JSON_INDEX_NONE:
+                raise MaterialFactorError.UnsupportedClearcoatProperties if clearcoat_index >= document.nodes.count or document.nodes[clearcoat_index].kind != JsonNodeKind.Object
+                clearcoat_node: JsonNode = document.nodes[clearcoat_index]
+                try factor_object_range_valid(document, clearcoat_node)
+                for ordinal in 0..<clearcoat_node.member_count |document, clearcoat_node|:
+                    member: JsonMember = document.members[clearcoat_node.member_start + ordinal]
+                    recognized: mutable bool = false
+                    matches: mutable bool = try factor_key_is(document, member, "clearcoatFactor")
+                    recognized <- true if matches
+                    matches <- try factor_key_is(document, member, "clearcoatTexture")
+                    recognized <- true if matches
+                    matches <- try factor_key_is(document, member, "clearcoatRoughnessFactor")
+                    recognized <- true if matches
+                    matches <- try factor_key_is(document, member, "clearcoatRoughnessTexture")
+                    recognized <- true if matches
+                    matches <- try factor_key_is(document, member, "clearcoatNormalTexture")
+                    recognized <- true if matches
+                    raise MaterialFactorError.UnsupportedClearcoatProperties if not recognized
+
+                root_index: usize = document.roots[0]
+                used_index: usize = try factor_member_index(document, root_index, "extensionsUsed")
+                if used_index == JSON_INDEX_NONE:
+                    raise MaterialFactorError.ClearcoatExtensionNotListed
+                raise MaterialFactorError.ClearcoatExtensionNotListed if used_index >= document.nodes.count or document.nodes[used_index].kind != JsonNodeKind.Array
+                used_node: JsonNode = document.nodes[used_index]
+                raise MaterialFactorError.InvalidDocument if used_node.child_start > document.children.count or used_node.child_count > document.children.count - used_node.child_start
+                listed: mutable bool = false
+                for ordinal in 0..<used_node.child_count |document, used_node, listed|:
+                    child: JsonArrayChild = document.children[used_node.child_start + ordinal]
+                    raise MaterialFactorError.InvalidDocument if child.owner_index != used_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+                    is_clearcoat: bool = try factor_text_is(document, child.value_index, Sidecar::CLEARCOAT_EXTENSION)
+                    listed <- true if is_clearcoat
+                raise MaterialFactorError.ClearcoatExtensionNotListed if not listed
+
+            factor_index: mutable usize = JSON_INDEX_NONE
+            roughness_index: mutable usize = JSON_INDEX_NONE
+            if clearcoat_index != JSON_INDEX_NONE:
+                factor_index <- try factor_member_index(document, clearcoat_index, "clearcoatFactor")
+                roughness_index <- try factor_member_index(document, clearcoat_index, "clearcoatRoughnessFactor")
+            if factor_index != JSON_INDEX_NONE:
+                _ = try unit_factor(document, factor_index, "clearcoatFactor")
+            if roughness_index != JSON_INDEX_NONE:
+                _ = try unit_factor(document, roughness_index, "clearcoatRoughnessFactor")
+
+
+        # Emit the three optional streams in material-slot order. Once any
+        # slot differs from its default, all slots are serialized, including
+        # default-valued rows, just like the Python struct.pack calls.
+        def factor_sidecars(slots: darray[MaterialSlotFactors]) -> FactorSidecars error[MaterialFactorError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            has_normal_scales: mutable bool = false
+            has_occlusion_strengths: mutable bool = false
+            has_clearcoat_factors: mutable bool = false
+            for slot in slots |has_normal_scales, has_occlusion_strengths, has_clearcoat_factors|:
+                has_normal_scales <- true if slot.normal_scale != Sidecar::DEFAULT_NORMAL_SCALE
+                has_occlusion_strengths <- true if slot.occlusion_strength != Sidecar::DEFAULT_OCCLUSION_STRENGTH
+                has_clearcoat_factors <- true if slot.clearcoat_factor != Sidecar::DEFAULT_CLEARCOAT_FACTOR or slot.clearcoat_roughness != Sidecar::DEFAULT_CLEARCOAT_ROUGHNESS or slot.clearcoat_normal_scale != Sidecar::DEFAULT_CLEARCOAT_NORMAL_SCALE
+
+            output: mutable FactorSidecars = FactorSidecars{}
+            if has_normal_scales:
+                for slot in slots |output|:
+                    factor_append_f32_le(output.normal_scales, slot.normal_scale)
+            if has_occlusion_strengths:
+                for slot in slots |output|:
+                    factor_append_f32_le(output.occlusion_strengths, slot.occlusion_strength)
+            if has_clearcoat_factors:
+                for slot in slots |output|:
+                    factor_append_f32_le(output.clearcoat_factors, slot.clearcoat_factor)
+                    factor_append_f32_le(output.clearcoat_factors, slot.clearcoat_roughness)
+                    factor_append_f32_le(output.clearcoat_factors, slot.clearcoat_normal_scale)
+            return output
+
+
+    private:
+        def factor_number(document: JsonDocument&, node_index: usize, label: sview) -> f64 error[MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialFactorError.InvalidDocument if document.state != JsonDocumentState.Sealed or node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise MaterialFactorError.InvalidUnitFactor(label) if node.kind != JsonNodeKind.Number
+            raise MaterialFactorError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable f64 = 0.0
+            catch parse_float(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise MaterialFactorError.InvalidUnitFactor(label)
+            return parsed
+
+
+        def factor_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize error[MaterialFactorError]:
+            raise MaterialFactorError.InvalidDocument if document.state != JsonDocumentState.Sealed or object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise MaterialFactorError.InvalidDocument if owner.kind != JsonNodeKind.Object
+            try factor_object_range_valid(document, owner)
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                matches: bool = try factor_key_is(document, member, key)
+                selected <- member.value_index if matches
+            return selected
+
+
+        def factor_object_range_valid(document: JsonDocument&, owner: JsonNode) -> void error[MaterialFactorError]:
+            raise MaterialFactorError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+
+
+        def factor_key_is(document: JsonDocument&, member: JsonMember, expected: sview) -> bool error[MaterialFactorError]:
+            raise MaterialFactorError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def factor_text_is(document: JsonDocument&, node_index: usize, expected: sview) -> bool error[MaterialFactorError]:
+            raise MaterialFactorError.InvalidDocument if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            return false if node.kind != JsonNodeKind.Text
+            raise MaterialFactorError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return false if node.scalar_bytes != len(expected)
+            for offset in 0..<node.scalar_bytes |document, node, expected|:
+                return false if document.scalar_data[node.scalar_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def factor_append_u32_le(output: mutable darray[u8]&, value: u32) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push((value & 255u32).u8())
+            output.push(((value >> 8) & 255u32).u8())
+            output.push(((value >> 16) & 255u32).u8())
+            output.push((value >> 24).u8())
+
+
+        def factor_append_f32_le(output: mutable darray[u8]&, value: f64) -> void can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            converted: f32 = value.f32()
+            bits: mutable u32 = 0u32
+            _ = memcpy((&bits).cast[mutable void&], (&converted).cast[void&], 4)
+            factor_append_u32_le(output, bits)

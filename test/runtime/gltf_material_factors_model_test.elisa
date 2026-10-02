@@ -1,0 +1,164 @@
+include "../../src/runtime/data_model.elisa"
+include "../../src/runtime/json_model.elisa"
+include "../../ports/elisa-engine/scripts/cook_gltf_material_factors_model.elisa"
+
+using EsData
+using EsJson
+using EsEngineGltfMaterialFactors
+
+
+def factor_node(document: JsonDocument&, object_index: usize, key: sview) -> usize error[JsonContractError]:
+    member_index: usize = try json_object_member_index(document, object_index, key)
+    return JSON_INDEX_NONE if member_index == JSON_INDEX_NONE else document.members[member_index].value_index
+
+
+def material_factor_rejects(source: sview, key: sview, expected: MaterialFactorError) -> bool can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document(source) else failure:
+        _ = failure
+        return false
+    node_index: usize = try factor_node(document, document.roots[0], key) else failure:
+        _ = failure
+        return false
+    rejected: mutable bool = false
+    catch unit_factor(document, node_index, key):
+        ok value:
+            _ = value
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+@test
+def material_unit_factor_accepts_json_numbers_and_rejects_non_numbers_and_out_of_range_values() -> void can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document("{\"zero\":0,\"one\":1.0}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    zero_index: usize = try factor_node(document, document.roots[0], "zero") else failure:
+        _ = failure
+        assert false
+        JSON_INDEX_NONE
+    one_index: usize = try factor_node(document, document.roots[0], "one") else failure:
+        _ = failure
+        assert false
+        JSON_INDEX_NONE
+    assert unit_factor(document, zero_index, "zero") == 0.0
+    assert unit_factor(document, one_index, "one") == 1.0
+
+    duplicate: JsonDocument = try parse_document("{\"factor\":0,\"factor\":1}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    duplicate_index: usize = try factor_node(duplicate, duplicate.roots[0], "factor") else failure:
+        _ = failure
+        assert false
+        JSON_INDEX_NONE
+    assert unit_factor(duplicate, duplicate_index, "factor") == 1.0
+
+    assert material_factor_rejects("{\"factor\":true}", "factor", MaterialFactorError.InvalidUnitFactor("factor"))
+    assert material_factor_rejects("{\"factor\":-0.01}", "factor", MaterialFactorError.InvalidUnitFactor("factor"))
+    assert material_factor_rejects("{\"factor\":1.01}", "factor", MaterialFactorError.InvalidUnitFactor("factor"))
+    assert material_factor_rejects("{\"factor\":1e9999}", "factor", MaterialFactorError.InvalidUnitFactor("factor"))
+
+
+@test
+def material_unit_factors_require_exact_numeric_array_shape() -> void can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document("{\"values\":[1,0.5,0]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    values_index: usize = try factor_node(document, document.roots[0], "values") else failure:
+        _ = failure
+        assert false
+        JSON_INDEX_NONE
+    values: darray[f64] = unit_factors(document, values_index, 3, "values")
+    assert values == [1.0, 0.5, 0.0]
+    assert material_factor_list_rejects("{\"values\":null}", 3)
+    assert material_factor_list_rejects("{\"values\":[1,0]}", 3)
+    assert material_factor_list_rejects("{\"values\":[1,true,0]}", 3)
+
+
+def material_factor_list_rejects(source: sview, count: usize) -> bool can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document(source) else failure:
+        _ = failure
+        return false
+    values_index: usize = try factor_node(document, document.roots[0], "values") else failure:
+        _ = failure
+        return false
+    rejected: mutable bool = false
+    catch unit_factors(document, values_index, count, "values"):
+        ok values:
+            _ = values
+        error failure:
+            rejected <- failure == MaterialFactorError.InvalidUnitFactor("values") or failure == MaterialFactorError.InvalidUnitFactorList("values", count)
+    return rejected
+
+
+@test
+def material_clearcoat_validation_preserves_supported_extension_rules_and_defaults() -> void can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document("{\"extensionsUsed\":[\"KHR_materials_clearcoat\"],\"materials\":[{\"extensions\":{\"KHR_materials_clearcoat\":{\"clearcoatFactor\":0.5,\"clearcoatRoughnessFactor\":1,\"clearcoatTexture\":{\"index\":0}}}}]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    root: usize = document.roots[0]
+    materials_member: usize = try json_object_member_index(document, root, "materials")
+    materials_index: usize = document.members[materials_member].value_index
+    material_index: usize = document.children[document.nodes[materials_index].child_start].value_index
+    validate_clearcoat(document, material_index)
+
+    defaults: JsonDocument = try parse_document("{\"materials\":[{}]}") else failure:
+        _ = failure
+        assert false
+        JsonDocument{}
+    defaults_root: usize = defaults.roots[0]
+    defaults_member: usize = try json_object_member_index(defaults, defaults_root, "materials")
+    defaults_array: usize = defaults.members[defaults_member].value_index
+    default_material: usize = defaults.children[defaults.nodes[defaults_array].child_start].value_index
+    validate_clearcoat(defaults, default_material)
+
+    assert material_clearcoat_rejects("{\"materials\":[{\"extensions\":{\"OTHER\":{}}}]}", MaterialFactorError.UnsupportedMaterialExtensions)
+    assert material_clearcoat_rejects("{\"materials\":[{\"extensions\":{\"KHR_materials_clearcoat\":{\"unknown\":1}}}]}", MaterialFactorError.UnsupportedClearcoatProperties)
+    assert material_clearcoat_rejects("{\"materials\":[{\"extensions\":{\"KHR_materials_clearcoat\":{}}}]}", MaterialFactorError.ClearcoatExtensionNotListed)
+    assert material_clearcoat_rejects("{\"extensionsUsed\":[\"KHR_materials_clearcoat\"],\"materials\":[{\"extensions\":{\"KHR_materials_clearcoat\":{\"clearcoatFactor\":true}}}]}", MaterialFactorError.InvalidUnitFactor("clearcoatFactor"))
+
+
+def material_clearcoat_rejects(source: sview, expected: MaterialFactorError) -> bool can[Memory.Allocate, Abort.Panic]:
+    document: JsonDocument = try parse_document(source) else failure:
+        _ = failure
+        return false
+    root: usize = document.roots[0]
+    materials_member: usize = try json_object_member_index(document, root, "materials") else failure:
+        _ = failure
+        return false
+    materials_index: usize = document.members[materials_member].value_index
+    material_index: usize = document.children[document.nodes[materials_index].child_start].value_index
+    rejected: mutable bool = false
+    catch validate_clearcoat(document, material_index):
+        ok _:
+            _ = _
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+@test
+def material_factor_sidecars_omit_defaults_and_pack_all_slots_little_endian() -> void can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+    defaults: FactorSidecars = factor_sidecars([MaterialSlotFactors{}, MaterialSlotFactors{}])
+    assert defaults.normal_scales.count == 0
+    assert defaults.occlusion_strengths.count == 0
+    assert defaults.clearcoat_factors.count == 0
+
+    slots: darray[MaterialSlotFactors] = [
+        MaterialSlotFactors{},
+        MaterialSlotFactors{normal_scale: 0.5, occlusion_strength: 0.25, clearcoat_factor: 0.25, clearcoat_roughness: 0.5}
+    ]
+    packed: FactorSidecars = factor_sidecars(slots)
+    assert packed.normal_scales.count == 2 * Sidecar::NORMAL_SCALE_STRIDE
+    assert packed.occlusion_strengths.count == 2 * Sidecar::OCCLUSION_STRENGTH_STRIDE
+    assert packed.clearcoat_factors.count == 2 * Sidecar::CLEARCOAT_FACTOR_STRIDE
+    assert packed.normal_scales == [0u8, 0u8, 128u8, 63u8, 0u8, 0u8, 0u8, 63u8]
+    assert packed.occlusion_strengths == [0u8, 0u8, 128u8, 63u8, 0u8, 0u8, 128u8, 62u8]
+    assert packed.clearcoat_factors == [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 128u8, 63u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 128u8, 62u8, 0u8, 0u8, 0u8, 63u8, 0u8, 0u8, 128u8, 63u8]
+
+    rounded_default: FactorSidecars = factor_sidecars([MaterialSlotFactors{normal_scale: 1.00000001}])
+    assert rounded_default.normal_scales == [0u8, 0u8, 128u8, 63u8]
