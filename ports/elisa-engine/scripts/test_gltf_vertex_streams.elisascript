@@ -1,25 +1,32 @@
 #!/usr/bin/env elisascript
-# Focused source fixture for the typed glTF vertex-stream reader.
-include "./gltf_vertex_streams_model.elisa"
+# Focused source fixture for typed glTF primitive decoding and placement.
+include "./gltf_primitive_placement_model.elisa"
 
 using EsJson
+using EsEngineGltfAffine
 using EsEngineGltfAccessor
+using EsEngineGltfPrimitivePlacement
 using EsEngineGltfVertexStreams
 
 
 module EsEngineGltfVertexStreamsTest:
     public:
-        def run() -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
-            source: sview = "{\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":1,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"byteOffset\":0,\"byteLength\":12},{\"byteOffset\":12,\"byteLength\":3}],\"meshes\":[{\"primitives\":[{\"mode\":4.0,\"indices\":1,\"attributes\":{\"POSITION\":0}}]}]}"
+        def run() -> i64 can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            source: sview = "{\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,\"componentType\":5121,\"count\":3,\"type\":\"SCALAR\"}],\"bufferViews\":[{\"byteOffset\":0,\"byteLength\":36},{\"byteOffset\":36,\"byteLength\":3}],\"meshes\":[{\"primitives\":[{\"mode\":4.0,\"indices\":1,\"attributes\":{\"POSITION\":0}}]}]}"
             document: JsonDocument = try EsEngineGltfAccessor::parse_document(source) else failure:
                 _ = failure
                 print("glTF vertex streams: valid fixture did not parse")
                 return 1i64
-            buffer: darray[u8] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]
+            buffer: mutable darray[u8] = []
+            for _ in 0..<36 |buffer|:
+                buffer.push(0u8)
+            buffer.push(0u8)
+            buffer.push(1u8)
+            buffer.push(2u8)
             valid_streams: mutable bool = false
             catch read_mesh_primitive_vertex_streams(document, buffer, 0u, 0u):
                 ok streams:
-                    valid_streams <- streams.count == 1 and streams.positions.count == 12 and not streams.has_normals and not streams.has_tangents and streams.uvs.count == 8 and not streams.has_uv1s and streams.morph_targets.count == 0
+                    valid_streams <- streams.count == 3 and streams.positions.count == 36 and not streams.has_normals and not streams.has_tangents and streams.uvs.count == 24 and not streams.has_uv1s and streams.morph_targets.count == 0 and streams.triangles.count == 0
                     for byte in streams.uvs:
                         valid_streams <- false if byte != 0u8
                 error failure:
@@ -31,16 +38,69 @@ module EsEngineGltfVertexStreamsTest:
             triangle_read: mutable bool = false
             catch read_triangle_primitive(document, buffer, 0u, 0u):
                 ok primitive:
-                    triangle_read <- primitive.vertices.count == 1 and primitive.triangles.count == 3
-                    for index in primitive.triangles:
-                        triangle_read <- false if index != 0u32
+                    triangle_read <- primitive.vertices.count == 3 and primitive.triangles.count == 3
+                    if triangle_read:
+                        triangle_read <- primitive.triangles[0] == 0u32 and primitive.triangles[1] == 1u32 and primitive.triangles[2] == 2u32
                 error failure:
                     _ = failure
             if not triangle_read:
                 print("glTF vertex streams: triangle primitive did not decode its index stream")
                 return 1i64
 
-            out_of_range_buffer: darray[u8] = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 1u8, 0u8]
+            decoded_primitive: mutable TrianglePrimitive = TrianglePrimitive{vertices: VertexStreams{}, triangles: []}
+            decoded: mutable bool = false
+            catch read_triangle_primitive(document, buffer, 0u, 0u):
+                ok primitive:
+                    decoded_primitive <- primitive
+                    decoded <- true
+                error failure:
+                    _ = failure
+            if not decoded:
+                print("glTF vertex streams: placement fixture primitive did not decode")
+                return 1i64
+            translation: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0, m03: 2.0, m13: 3.0, m23: 4.0}
+            expected_vertex_bytes: darray[u8] = [0u8, 0u8, 0u8, 64u8, 0u8, 0u8, 64u8, 64u8, 0u8, 0u8, 128u8, 64u8]
+            expected_position_bytes: mutable darray[u8] = []
+            for _ in 0..<3 |expected_vertex_bytes, expected_position_bytes|:
+                for byte in expected_vertex_bytes |expected_position_bytes|:
+                    expected_position_bytes.push(byte)
+            placement_correct: mutable bool = false
+            catch transform_triangle_primitive(decoded_primitive, translation):
+                ok placed:
+                    placement_correct <- placed.vertices.positions.count == expected_position_bytes.count and placed.vertices.uvs.count == decoded_primitive.vertices.uvs.count and placed.triangles.count == decoded_primitive.triangles.count
+                    if placement_correct:
+                        for offset in 0..<expected_position_bytes.count |placed, expected_position_bytes|:
+                            placement_correct <- false if placed.vertices.positions[offset] != expected_position_bytes[offset]
+                    for offset in 0..<placed.vertices.uvs.count |placed|:
+                        placement_correct <- false if placed.vertices.uvs[offset] != 0u8
+                    if placement_correct:
+                        for ordinal in 0..<placed.triangles.count |placed|:
+                            placement_correct <- false if placed.triangles[ordinal] != decoded_primitive.triangles[ordinal]
+                error failure:
+                    _ = failure
+            if not placement_correct:
+                print("glTF vertex streams: affine placement did not preserve expected transformed/default streams")
+                return 1i64
+
+            mirror: Affine3x4 = Affine3x4{m00: -1.0, m11: 1.0, m22: 1.0}
+            mirrored_winding: mutable bool = false
+            catch transform_triangle_primitive(decoded_primitive, mirror):
+                ok placed:
+                    mirrored_winding <- placed.triangles.count == 3
+                    if mirrored_winding:
+                        mirrored_winding <- placed.triangles[0] == 0u32 and placed.triangles[1] == 2u32 and placed.triangles[2] == 1u32
+                error failure:
+                    _ = failure
+            if not mirrored_winding:
+                print("glTF vertex streams: mirrored placement did not reverse triangle winding")
+                return 1i64
+
+            out_of_range_buffer: mutable darray[u8] = []
+            for _ in 0..<36 |out_of_range_buffer|:
+                out_of_range_buffer.push(0u8)
+            out_of_range_buffer.push(0u8)
+            out_of_range_buffer.push(3u8)
+            out_of_range_buffer.push(0u8)
             rejected_index: mutable bool = false
             catch read_triangle_primitive(document, out_of_range_buffer, 0u, 0u):
                 ok primitive:
@@ -84,6 +144,6 @@ module EsEngineGltfVertexStreamsTest:
             return 0i64
 
 
-def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
     _ = arguments
     return EsEngineGltfVertexStreamsTest::run()
