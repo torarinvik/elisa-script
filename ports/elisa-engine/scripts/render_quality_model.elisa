@@ -13,6 +13,7 @@ module EsEngineRenderQuality:
             MINIMUM_CAPTURE_CONTRAST: f64 = 0.04
             MINIMUM_OCCLUSION_DARKENING: f64 = 0.01
             PIXEL_PATCH_WIDTH_RATIO: usize = 160
+            MAX_FILTERED_PNG_BYTES: usize = 268435456
 
 
         const enum RenderPixelFormat of u8:
@@ -45,6 +46,58 @@ module EsEngineRenderQuality:
             InvalidFrame
             IncompatibleFrames
             CoordinateOutOfRange
+
+
+        error PngScanlineError:
+            InvalidDimensions
+            InputTooLarge
+            FilteredLengthMismatch
+            UnknownFilter
+
+
+        def reconstruct_png_scanlines(width: usize, height: usize, format: RenderPixelFormat, filtered: darray[u8]&) -> RenderFrame error[PngScanlineError] can[Memory.Allocate, Abort.Panic]:
+            raise PngScanlineError.InvalidDimensions if width == 0 or height == 0
+            channels: usize = pixel_channel_count(format)
+            raise PngScanlineError.InputTooLarge if width > (Policy::MAX_FILTERED_PNG_BYTES - 1) / channels
+            row_bytes: usize = width * channels
+            filtered_row_bytes: usize = row_bytes + 1
+            raise PngScanlineError.InputTooLarge if height > Policy::MAX_FILTERED_PNG_BYTES / filtered_row_bytes
+            expected_filtered_bytes: usize = height * filtered_row_bytes
+            raise PngScanlineError.FilteredLengthMismatch if filtered.count != expected_filtered_bytes
+
+            pixels: mutable darray[u8] = []
+            pixels.reserve(row_bytes * height)
+            for row in 0..<height |filtered, format, channels, row_bytes, filtered_row_bytes, pixels|:
+                source_row: usize = row * filtered_row_bytes
+                filter_kind: u8 = filtered[source_row]
+                raise PngScanlineError.UnknownFilter if filter_kind > 4
+                destination_row: usize = row * row_bytes
+                for column in 0..<row_bytes |filtered, format, channels, row_bytes, source_row, filter_kind, row, destination_row, pixels|:
+                    raw: u32 = filtered[source_row + 1 + column].u32()
+                    left: mutable u32 = 0
+                    up: mutable u32 = 0
+                    upper_left: mutable u32 = 0
+                    left <- pixels[destination_row + column - channels].u32() if column >= channels
+                    if row > 0:
+                        previous_row: usize = destination_row - row_bytes
+                        up <- pixels[previous_row + column].u32()
+                        upper_left <- pixels[previous_row + column - channels].u32() if column >= channels
+                    predictor: mutable u32 = 0
+                    match filter_kind:
+                        0:
+                            pass
+                        1:
+                            predictor <- left
+                        2:
+                            predictor <- up
+                        3:
+                            predictor <- (left + up) / 2
+                        4:
+                            predictor <- png_paeth_predictor(left, up, upper_left)
+                        _:
+                            raise PngScanlineError.UnknownFilter
+                    pixels.push(((raw + predictor) & 255u32).u8())
+            return RenderFrame{width: width, height: height, format: format, pixels: pixels}
 
 
         def patch_luminance(frame: RenderFrame&, x_permille: usize, y_permille: usize) -> f64 error[RenderQualityError] can[Abort.Panic]:
@@ -99,6 +152,20 @@ module EsEngineRenderQuality:
 
 
     private:
+        def absolute_i32(value: i32) -> u32:
+            return (-value).u32() if value < 0 else value.u32()
+
+
+        def png_paeth_predictor(left: u32, up: u32, upper_left: u32) -> u32:
+            estimate: i32 = left.i32() + up.i32() - upper_left.i32()
+            left_distance: u32 = absolute_i32(estimate - left.i32())
+            up_distance: u32 = absolute_i32(estimate - up.i32())
+            upper_left_distance: u32 = absolute_i32(estimate - upper_left.i32())
+            return left if left_distance <= up_distance and left_distance <= upper_left_distance
+            return up if up_distance <= upper_left_distance
+            return upper_left
+
+
         def pixel_channel_count(format: RenderPixelFormat) -> usize:
             return 3 if format == RenderPixelFormat.Rgb8 else 4
 
