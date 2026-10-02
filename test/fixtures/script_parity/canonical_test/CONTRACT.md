@@ -48,7 +48,15 @@ not reinterpreted as a mode. Repeated `-m` options are preserved in order; the
 wrapper does not second-guess pytest's own precedence rules.
 
 The shared runner explicitly progresses through cwd change, environment
-selection, mode decoding, and tool launch. An invalid canonical mode produces
+selection, mode decoding, and tool launch. The launch step uses the standalone
+`replace_process` capability, so a successful Python exec replaces the
+Elisascript process instead of forking and translating the child's exit status.
+The ordinary standalone CLI grants this capability only to its file entrypoint;
+embedded execution remains denied unless a dynamic handler intercepts the
+effect. Source fixtures pin the reference wrapper spelling, Bash exec line and
+126/127 errno classification. These changes are source-only and unqualified;
+PID identity, signal termination and returned-exec diagnostics still require
+the gated child-process matrix. An invalid canonical mode produces
 status 2 and usage on stderr without launching the tool, even if the configured
 Python executable does not exist. An inaccessible root fails before mode
 decoding, matching the shell's order on ordinary inputs. Usage includes the
@@ -153,20 +161,22 @@ Compare independently expected observations, not just reference/candidate
 agreement. Campaign may not be implemented by calling its original shell
 wrapper or by routing the candidate to the reference.
 
-The default three-case `CampaignOnly` wave isolates the smallest wrapper's
-forced-mode and argument-forwarding behavior. It stages both unchanged shell
-scripts because the reference campaign shim execs its sibling canonical wrapper,
-but stages only the campaign Elisascript entry point and shared implementation.
-It does not run lint ordinary, signal, or exec-failure cases. The broader
-`WrapperFamily` wave remains explicit and adds the canonical invalid-mode
-diagnostics described above.
+The default `CampaignOnly` wave checks three ordinary forced-mode/argument-
+forwarding cases plus an independent missing-Python exec-failure case. It stages
+both unchanged shell scripts because the reference campaign shim execs its
+sibling canonical wrapper, but stages only the campaign Elisascript entry point
+and shared implementation. It does not run lint ordinary or signal cases. The
+`CanonicalOnly` wave likewise adds one exact missing-Python failure case to its
+seven ordinary cases. The broader `WrapperFamily` wave runs both wrapper
+failure cases and remains explicit for the canonical invalid-mode diagnostics
+described above.
 
 The seven ordinary-case `CanonicalOnly` wave separately exercises the mode
 parser, forwarded pytest argv, and Python selection for the shared runner. It
 adds two invalid-mode diagnostic cases for raw relative invocation spellings.
 It stages the canonical shell reference and its Elisascript entry/helper,
-without the campaign shim or lint assets. It also skips lint signal and
-exec-failure cases.
+without the campaign shim or lint assets. It skips the lint signal case and the
+lint-specific exec-failure matrix.
 
 Each wrapper wave hashes the live shell reference or references it uses against
 the unchanged snapshots before setup and after cleanup. `CanonicalOnly` checks
@@ -177,11 +187,13 @@ lock against concurrent edits; no live script is executed by the check.
 
 ## Open parity gaps
 
-The current runner forks/waits instead of Bash exec, so PID identity,
-interactive job control/signals, cancellation, and signal termination remain
-unqualified. Bash's 126/127 execution failures/diagnostics are not reproduced
-by the runner; host/cwd/environment failures use candidate-specific messages.
-Logical PWD and symlink spelling also need dedicated qualification.
+Successful launches now request process replacement, matching Bash's exec
+shape, but PID identity, interactive job control/signals, cancellation, and
+signal termination remain unqualified until observed. Returned exec failures
+map errno to 126/127 and construct Bash-style diagnostics in source, but that
+mapping and exact bytes are also unrun and unqualified; host/cwd/environment
+failures use candidate-specific messages. Logical PWD and symlink spelling
+also need dedicated qualification.
 
 Invalid-mode usage keeps the caller's raw invocation spelling in both Bash and
 Elisascript. The `.sh` and `.elisascript` names produce intentionally different
