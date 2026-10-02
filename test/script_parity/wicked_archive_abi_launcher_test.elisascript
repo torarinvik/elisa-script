@@ -1,0 +1,234 @@
+# Differential test for the real Wicked archive ABI checker entry points.
+# Run only through run_bounded_test.sh after explicit validation reauthorization.
+# The compiler and symbol-tool children are generated shell stubs, never host toolchains.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsWickedArchiveAbiLauncherParity:
+    private:
+        const module Commands:
+            PYTHON: sview = "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14"
+            REFERENCE: sview = "../elisa-engine/scripts/check_wicked_archive_abi.py"
+            CANDIDATE: sview = "ports/elisa-engine/scripts/check_wicked_archive_abi.elisascript"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            MAX_PROCESS_OUTPUT_BYTES: u64 = 16384u64
+            TIMEOUT_STEPS: u64 = 120000u64
+
+
+        const module Fixtures:
+            FAKE_CXX: sview = "#!/bin/sh\nif [ \"${ELISA_ABI_FIXTURE_COMPILE_FAIL:-0}\" = 1 ]; then exit 29; fi\noutput=\nfor argument do output=\"$argument\"; done\n[ -n \"$output\" ] || exit 31\n: > \"$output\"\n"
+            FAILING_LLVM_NM: sview = "#!/bin/sh\nprintf '%s\\n' 'fixture llvm-nm fallback' >&2\nexit 11\n"
+            FAKE_NM: sview = "#!/bin/sh\ntarget=\nfor argument do target=\"$argument\"; done\ncase \"$target\" in\n  *archive-old.a) version=220106 ;;\n  *archive-new.a) version=230101 ;;\n  *.o) version=\"${ELISA_ABI_FIXTURE_COMPILER_VERSION:-230101}\" ;;\n  *) version=\"${ELISA_ABI_FIXTURE_ARCHIVE_VERSION:-230101}\" ;;\nesac\nprintf 'fixture symbol [abi:nqn%s]\\n' \"$version\"\n"
+
+
+        def write_executable(target: Path, contents: sview) -> bool can[Blocking.IO, File.Write, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast]:
+            written: usize = try write_text(target, contents) else failure:
+                _ = failure
+                return false
+            return false if written != sview_len(contents)
+            return try chmod(target, 493u64) else false
+
+
+        def write_empty_file(target: Path) -> bool can[File.Write, Memory.Allocate, Abort.Panic]:
+            written: usize = try write_bytes(target, []) else failure:
+                _ = failure
+                return false
+            return written == 0usize
+
+
+        def test_environment(bin_directory: Path, temporary_directory: Path, archive_version: sview, compiler_version: sview, compile_fail: sview) -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            return [
+                DifferentialEnvironmentEntry{name: "PATH", value: f"{bin_directory}"},
+                DifferentialEnvironmentEntry{name: "TMPDIR", value: f"{temporary_directory}"},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "LANG", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISA_ABI_FIXTURE_ARCHIVE_VERSION", value: archive_version},
+                DifferentialEnvironmentEntry{name: "ELISA_ABI_FIXTURE_COMPILER_VERSION", value: compiler_version},
+                DifferentialEnvironmentEntry{name: "ELISA_ABI_FIXTURE_COMPILE_FAIL", value: compile_fail}
+            ]
+
+
+        def bounded_run(target: sview, arguments: darray[sview], name: sview, environment: darray[DifferentialEnvironmentEntry]&) -> DifferentialRun error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: name,
+                target: target,
+                arguments: arguments,
+                working_directory: "/",
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            return try run_differential_process(runner)
+
+
+        def pair_matches(launcher: sview, reference: sview, candidate: sview, reference_arguments: darray[sview], candidate_arguments: darray[sview], environment: darray[DifferentialEnvironmentEntry]&, expected_status: i64, expected_stdout: sview, expected_stderr: sview, label: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, Unsafe.PointerCast]:
+            reference_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch bounded_run(Commands::PYTHON, reference_arguments, "python-wicked-abi-" + label, environment):
+                ok value:
+                    reference_run <- value
+                error failure:
+                    _ = failure
+                    print("Wicked ABI parity: Python reference exceeded process bounds for " + label)
+                    return false
+
+            candidate_run: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch bounded_run(launcher, candidate_arguments, "elisascript-wicked-abi-" + label, environment):
+                ok value:
+                    candidate_run <- value
+                error failure:
+                    _ = failure
+                    print("Wicked ABI parity: Elisascript candidate exceeded process bounds for " + label)
+                    return false
+
+            comparison: DifferentialComparison = compare_differential_runs(reference_run, candidate_run)
+            return false if reference_run.outcome != DifferentialRunOutcome.Completed or candidate_run.outcome != DifferentialRunOutcome.Completed
+            return false if not comparison.equal
+            return false if reference_run.exit_status != expected_status or reference_run.stdout != expected_stdout or reference_run.stderr != expected_stderr
+            return false if candidate_run.exit_status != expected_status or candidate_run.stdout != expected_stdout or candidate_run.stderr != expected_stderr
+            return true
+
+
+        def remove_temporary(root: Path) -> bool can[File.Write]:
+            return try remove_tree(root) else false
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def bounded_parity(launcher: sview) -> bool can[Blocking.IO, Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format, Console.Write]:
+            reference_path: Path = try path_real(path(Commands::REFERENCE)) else failure:
+                _ = failure
+                return false
+            candidate_path: Path = try path_real(path(Commands::CANDIDATE)) else failure:
+                _ = failure
+                return false
+            return false if not is_file(path(Commands::PYTHON)) or launcher == "" or not launcher.startswith("/")
+
+            temporary: Path = try temp_directory("elisascript wicked ABI parity ") else failure:
+                _ = failure
+                return false
+            bin_directory: Path = temporary.joinpath("fake tools")
+            temporary_files: Path = temporary.joinpath("temp files")
+            directories_ready: bool = try create_directories(bin_directory) and create_directories(temporary_files) else false
+            if not directories_ready:
+                _ = remove_temporary(temporary)
+                return false
+
+            fake_cxx: Path = bin_directory.joinpath("fixture-cxx")
+            fake_llvm_nm: Path = bin_directory.joinpath("llvm-nm")
+            fake_nm: Path = bin_directory.joinpath("nm")
+            archive_main: Path = temporary.joinpath("archive-main.a")
+            archive_old: Path = temporary.joinpath("archive-old.a")
+            archive_new: Path = temporary.joinpath("archive-new.a")
+            fixtures_ready: bool = write_executable(fake_cxx, Fixtures::FAKE_CXX)
+            fixtures_ready <- write_executable(fake_llvm_nm, Fixtures::FAILING_LLVM_NM) if fixtures_ready
+            fixtures_ready <- write_executable(fake_nm, Fixtures::FAKE_NM) if fixtures_ready
+            fixtures_ready <- write_empty_file(archive_main) if fixtures_ready
+            fixtures_ready <- write_empty_file(archive_old) if fixtures_ready
+            fixtures_ready <- write_empty_file(archive_new) if fixtures_ready
+            if not fixtures_ready:
+                _ = remove_temporary(temporary)
+                return false
+
+            reference: sview = f"{reference_path}"
+            candidate: sview = f"{candidate_path}"
+            main_path: sview = f"{archive_main}"
+            old_path: sview = f"{archive_old}"
+            new_path: sview = f"{archive_new}"
+            environment: darray[DifferentialEnvironmentEntry] = test_environment(
+                bin_directory, temporary_files, "230101", "230101", "0"
+            )
+
+            plain_ok: bool = pair_matches(
+                launcher, reference, candidate,
+                [reference, main_path], [candidate, main_path], environment,
+                0i64,
+                "Wicked ABI check: all tagged archives use libc++ ABI 230101\n",
+                "",
+                "plain"
+            )
+
+            compiler_success_environment: darray[DifferentialEnvironmentEntry] = test_environment(
+                bin_directory, temporary_files, "230101", "230101", "0"
+            )
+            compiler_success_ok: bool = pair_matches(
+                launcher, reference, candidate,
+                [reference, "--compiler", "fixture-cxx", main_path],
+                [candidate, "--compiler", "fixture-cxx", main_path],
+                compiler_success_environment,
+                0i64,
+                "Wicked ABI check: compiler and all tagged archives use libc++ ABI 230101\n",
+                "",
+                "compiler-match"
+            )
+
+            mixed_environment: darray[DifferentialEnvironmentEntry] = test_environment(
+                bin_directory, temporary_files, "230101", "230101", "0"
+            )
+            mixed_ok: bool = pair_matches(
+                launcher, reference, candidate,
+                [reference, old_path, new_path], [candidate, old_path, new_path], mixed_environment,
+                1i64,
+                "",
+                "Wicked ABI check: linked archives contain mixed libc++ ABI tags:\n  " + old_path + ": 220106\n  " + new_path + ": 230101\nRebuild every C++ archive and the Elisa native bridge with one toolchain.\n",
+                "mixed"
+            )
+
+            mismatch_environment: darray[DifferentialEnvironmentEntry] = test_environment(
+                bin_directory, temporary_files, "230101", "230101", "0"
+            )
+            mismatch_ok: bool = pair_matches(
+                launcher, reference, candidate,
+                [reference, "--compiler", "fixture-cxx", old_path],
+                [candidate, "--compiler", "fixture-cxx", old_path],
+                mismatch_environment,
+                1i64,
+                "",
+                "Wicked ABI check: C++ compiler libc++ ABI tags (230101) do not match linked archive tags (220106); select a matching compiler or rebuild all C++ archives.\n",
+                "compiler-mismatch"
+            )
+
+            compile_failure_environment: darray[DifferentialEnvironmentEntry] = test_environment(
+                bin_directory, temporary_files, "230101", "230101", "1"
+            )
+            compile_failure_ok: bool = pair_matches(
+                launcher, reference, candidate,
+                [reference, "--compiler", "fixture-cxx", main_path],
+                [candidate, "--compiler", "fixture-cxx", main_path],
+                compile_failure_environment,
+                2i64,
+                "",
+                "Wicked ABI check: could not compile the C++ ABI probe with " + f"{fake_cxx}" + ": exit status 29\n",
+                "compiler-failure"
+            )
+
+            removed: bool = remove_temporary(temporary)
+            return plain_ok and compiler_success_ok and mixed_ok and mismatch_ok and compile_failure_ok and removed
+
+
+@test
+def wicked_archive_abi_python_and_elisascript_match_under_bounded_fake_tools() -> void:
+    can Blocking.IO, Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format, Console.Write:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else failure:
+            ""
+        rss_guard: sview = try getenv("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "") else failure:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else failure:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else failure:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else failure:
+            ""
+        assert reauthorized == "1"
+        assert rss_guard == "active"
+        assert compiler == EsWickedArchiveAbiLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsWickedArchiveAbiLauncherParity::pinned_compiler_path()
+        assert EsWickedArchiveAbiLauncherParity::bounded_parity(launcher)
