@@ -1,0 +1,144 @@
+#!/usr/bin/env elisascript
+# Elisa port of elisa-engine/scripts/check_source_length.py.
+include "../../../src/runtime/source_length_stream_posix.elisa"
+
+
+module EsEngineSourceLengthCheck:
+    public:
+        struct Violation:
+            path: Path
+            line_count: usize
+
+
+        struct AuditReport:
+            violations: darray[Violation] = []
+
+
+        error SourceLengthCheckError:
+            EnumerationFailed
+            SourceReadFailed
+            InvalidUtf8
+
+
+    private:
+        const module Policy:
+            MAX_SOURCE_LINES: usize = 600
+            SOURCE_ROOTS: darray[sview] = ["src", "test", "proof", "examples", "scripts", "native", "backends", "docs"]
+            SOURCE_SUFFIXES: darray[sview] = [".elisa", ".elisascript", ".cpp", ".h", ".inc", ".py", ".gd", ".md"]
+
+
+        struct WalkFrame:
+            directory: Path
+            entries: darray[sview]
+            cursor: usize = 0
+
+
+        def selected_suffix(candidate: Path) -> bool can[Memory.Allocate, Abort.Panic]:
+            suffix: sview = candidate.suffix()
+            for allowed in Policy::SOURCE_SUFFIXES:
+                return true if suffix == allowed
+            return false
+
+
+        # pathlib.rglob("*") includes dot paths but does not descend through
+        # directory symlinks. Use an explicit stack rather than Path.rglob,
+        # whose current runtime glob intentionally omits hidden recursive
+        # entries. Sorted directory entries plus depth-first descent preserve
+        # pathlib's component-wise sorted Path order.
+        def collect_source_files(base: Path) -> darray[Path] error[SourceLengthCheckError] can[Blocking.IO, Directory.Read, File.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            files: mutable darray[Path] = []
+            frames: mutable darray[WalkFrame] = []
+            root_entries: darray[sview] = try list_directory(base) else failure:
+                _ = failure
+                raise SourceLengthCheckError.EnumerationFailed
+            frames.push(WalkFrame{directory: base, entries: root_entries})
+
+            while frames.count > 0:
+                frame_index: usize = frames.count - 1
+                frame: mutable WalkFrame = frames[frame_index]
+                if frame.cursor >= frame.entries.count:
+                    _ = frames.pop()
+                    continue
+
+                name: sview = frame.entries[frame.cursor]
+                frame.cursor <- frame.cursor + 1
+                frames[frame_index] <- frame
+                candidate: Path = frame.directory.joinpath(name)
+                directory: bool = try is_directory(candidate) else false
+                if directory:
+                    if not is_symlink(candidate):
+                        entries: darray[sview] = try list_directory(candidate) else failure:
+                            _ = failure
+                            raise SourceLengthCheckError.EnumerationFailed
+                        frames.push(WalkFrame{directory: candidate, entries: entries})
+                else:
+                    regular_file: bool = try is_file(candidate) else false
+                    if regular_file and selected_suffix(candidate):
+                        files.push(candidate)
+            return files
+
+
+    public:
+        def audit(root: Path) -> AuditReport error[SourceLengthCheckError] can[Blocking.IO, Directory.Read, File.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            candidates: mutable darray[Path] = []
+            plan: Path = root.joinpath("Elisa_Engine_Architecture_and_Plan.md")
+            plan_exists: bool = try is_file(plan) else false
+            candidates.push(plan) if plan_exists
+
+            for relative_root in Policy::SOURCE_ROOTS |candidates|:
+                base: Path = root.joinpath(relative_root)
+                continue if not (try is_directory(base) else false)
+                files: darray[Path] = try collect_source_files(base) else failure:
+                    _ = failure
+                    raise SourceLengthCheckError.EnumerationFailed
+                for candidate in files |candidates|:
+                    candidates.push(candidate)
+
+            report: mutable AuditReport = AuditReport{}
+            for candidate in candidates |report|:
+                scanned: EsSourceLengthFile::ScanResult = try EsSourceLengthFile::read_utf8_line_count(candidate) else failure:
+                    if failure == EsSourceLengthFile::ReadError.InvalidUtf8:
+                        raise SourceLengthCheckError.InvalidUtf8
+                    raise SourceLengthCheckError.SourceReadFailed
+                if scanned.lines > Policy::MAX_SOURCE_LINES:
+                    report.violations.push(Violation{path: candidate, line_count: scanned.lines})
+            return report
+
+
+        def run_from_source(source_path: Path) -> i64 can[Blocking.IO, Directory.Read, File.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            source: Path = try path_real(source_path) else failure:
+                _ = failure
+                _ = write_stderr("unable to resolve source-length checker path\n")
+                return 1i64
+            engine_candidate: Path = source.parent().parent().parent().parent().parent().joinpath("elisa-engine")
+            engine_root: Path = try path_real(engine_candidate) else failure:
+                _ = failure
+                _ = write_stderr("unable to resolve elisa-engine project root\n")
+                return 1i64
+            report: AuditReport = try audit(engine_root) else failure:
+                if failure == SourceLengthCheckError.EnumerationFailed:
+                    _ = write_stderr("unable to enumerate engine source files\n")
+                elif failure == SourceLengthCheckError.InvalidUtf8:
+                    _ = write_stderr("an engine source file is not valid UTF-8\n")
+                else:
+                    _ = write_stderr("unable to read an engine source file\n")
+                return 1i64
+
+            if report.violations.count > 0:
+                root_text: sview = f"{engine_root}"
+                prefix_length: i64 = sview_len(root_text).i64() + 1i64
+                for violation in report.violations:
+                    full_path: sview = f"{violation.path}"
+                    relative_path: sview = string_view_slice(full_path, prefix_length, sview_len(full_path).i64())
+                    _ = write_stderr(
+                        relative_path + ": " + f"{violation.line_count}" + " lines (maximum " + f"{Policy::MAX_SOURCE_LINES}" + ")\n"
+                    )
+                return 1i64
+
+            print("Source-length policy passed (" + f"{Policy::MAX_SOURCE_LINES}" + "-line maximum).")
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Directory.Read, File.Read, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    _ = arguments
+    return EsEngineSourceLengthCheck::run_from_source(path(Script::source_path()))
