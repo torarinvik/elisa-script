@@ -1,7 +1,7 @@
 # String representation for dependency-manifest diagnostics.
-# Mirrors CPython repr's quote choice and ASCII escaping; non-ASCII UTF-8 bytes
-# are preserved, so CPython's Unicode isprintable table remains a qualification
-# boundary for nonprintable non-ASCII characters.
+# Mirrors CPython repr's quote choice and escaping for ASCII plus common Unicode
+# nonprintables. The full Unicode isprintable table remains a qualification
+# boundary for unassigned or newly categorized non-ASCII codepoints.
 module EsEngineDependencyManifestRepr:
     private:
         def lowercase_hex_digit(value: u8) -> u8:
@@ -9,11 +9,88 @@ module EsEngineDependencyManifestRepr:
             return 87u8 + value
 
 
-        def append_hex_escape(output: mutable darray[u8]&, value: u8) can[Memory.Allocate, Abort.Panic]:
+        def decode_next_utf8(value: sview, cursor: mutable usize&, codepoint: mutable u32&) -> usize:
+            first: u8 = sview_at(value, cursor)
+            if first <= 127u8:
+                codepoint <- first.u32()
+                cursor <- cursor + 1
+                return 1
+            if first >= 194u8 and first <= 223u8 and len(value) - cursor >= 2:
+                second: u8 = sview_at(value, cursor + 1)
+                if second >= 128u8 and second <= 191u8:
+                    codepoint <- ((first & 31u8).u32() << 6) | (second & 63u8).u32()
+                    cursor <- cursor + 2
+                    return 2
+            if first >= 224u8 and first <= 239u8 and len(value) - cursor >= 3:
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                if second >= 128u8 and second <= 191u8 and third >= 128u8 and third <= 191u8:
+                    candidate: u32 = ((first & 15u8).u32() << 12) | ((second & 63u8).u32() << 6) | (third & 63u8).u32()
+                    if candidate >= 2048u32 and not (candidate >= 55296u32 and candidate <= 57343u32):
+                        codepoint <- candidate
+                        cursor <- cursor + 3
+                        return 3
+            if first >= 240u8 and first <= 244u8 and len(value) - cursor >= 4:
+                second: u8 = sview_at(value, cursor + 1)
+                third: u8 = sview_at(value, cursor + 2)
+                fourth: u8 = sview_at(value, cursor + 3)
+                if second >= 128u8 and second <= 191u8 and third >= 128u8 and third <= 191u8 and fourth >= 128u8 and fourth <= 191u8:
+                    candidate: u32 = ((first & 7u8).u32() << 18) | ((second & 63u8).u32() << 12) | ((third & 63u8).u32() << 6) | (fourth & 63u8).u32()
+                    if candidate >= 65536u32 and candidate <= 1114111u32:
+                        codepoint <- candidate
+                        cursor <- cursor + 4
+                        return 4
+            codepoint <- first.u32()
+            cursor <- cursor + 1
+            return 1
+
+
+        def unicode_nonprintable(codepoint: u32) -> bool:
+            return true if codepoint >= 128u32 and codepoint <= 159u32
+            return true if codepoint == 160u32 or codepoint == 173u32 or codepoint == 5760u32 or codepoint == 6158u32
+            return true if codepoint >= 1536u32 and codepoint <= 1541u32
+            return true if codepoint == 1564u32 or codepoint == 1757u32 or codepoint == 1807u32
+            return true if codepoint == 2192u32 or codepoint == 2193u32 or codepoint == 2274u32
+            return true if codepoint >= 8192u32 and codepoint <= 8207u32
+            return true if codepoint >= 8232u32 and codepoint <= 8239u32
+            return true if codepoint >= 8288u32 and codepoint <= 8303u32
+            return true if codepoint >= 0xFFF9u32 and codepoint <= 0xFFFBu32
+            return true if codepoint == 0xFEFFu32 or codepoint == 0x110BDu32 or codepoint == 0x110CDu32 or codepoint == 0xE0001u32
+            return true if codepoint >= 0x13430u32 and codepoint <= 0x1343Fu32
+            return true if codepoint >= 0x1BCA0u32 and codepoint <= 0x1BCA3u32
+            return true if codepoint >= 0x1D173u32 and codepoint <= 0x1D17Au32
+            return true if codepoint >= 0xE0020u32 and codepoint <= 0xE007Fu32
+            return true if codepoint >= 0xE000u32 and codepoint <= 0xF8FFu32
+            return true if codepoint >= 0xF0000u32 and codepoint <= 0xFFFFDu32
+            return true if codepoint >= 0x100000u32 and codepoint <= 0x10FFFDu32
+            return true if codepoint >= 0xFDD0u32 and codepoint <= 0xFDEFu32
+            return true if (codepoint & 0xFFFFu32) >= 0xFFFEu32
+            return false
+
+
+        def append_fixed_hex(output: mutable darray[u8]&, value: u32, digits: usize) can[Memory.Allocate, Abort.Panic]:
+            for index in 0..<digits |output, value, digits|:
+                shift: u32 = ((digits - index - 1).u32()) * 4u32
+                nibble: u8 = ((value >> shift) & 15u32).u8()
+                output.push(lowercase_hex_digit(nibble))
+
+
+        def append_codepoint_escape(output: mutable darray[u8]&, codepoint: u32) can[Memory.Allocate, Abort.Panic]:
             output.push(92u8)
-            output.push(120u8)
-            output.push(lowercase_hex_digit(value >> 4))
-            output.push(lowercase_hex_digit(value & 15u8))
+            if codepoint <= 255u32:
+                output.push(120u8)
+                append_fixed_hex(output, codepoint, 2)
+            elif codepoint <= 65535u32:
+                output.push(117u8)
+                append_fixed_hex(output, codepoint, 4)
+            else:
+                output.push(85u8)
+                append_fixed_hex(output, codepoint, 8)
+
+
+        def append_source_range(output: mutable darray[u8]&, value: sview, start: usize, end: usize) can[Memory.Allocate, Abort.Panic]:
+            for index in start..<end |output, value|:
+                output.push(sview_at(value, index))
 
 
     public:
@@ -22,22 +99,26 @@ module EsEngineDependencyManifestRepr:
             has_double_quote: bool = sview_contains_byte(value, 34u8)
             delimiter: u8 = 34u8 if has_single_quote and not has_double_quote else 39u8
             output: mutable darray[u8] = [delimiter]
-            for byte in value |output|:
-                if byte == 92u8 or byte == delimiter:
+            cursor: mutable usize = 0
+            while cursor < len(value) |value, output, cursor|:
+                start: usize = cursor
+                codepoint: mutable u32 = 0u32
+                _ = decode_next_utf8(value, cursor, codepoint)
+                if codepoint == 92u32 or codepoint == delimiter.u32():
                     output.push(92u8)
-                    output.push(byte)
-                elif byte == 9u8:
+                    append_source_range(output, value, start, cursor)
+                elif codepoint == 9u32:
                     output.push(92u8)
                     output.push(116u8)
-                elif byte == 10u8:
+                elif codepoint == 10u32:
                     output.push(92u8)
                     output.push(110u8)
-                elif byte == 13u8:
+                elif codepoint == 13u32:
                     output.push(92u8)
                     output.push(114u8)
-                elif byte < 32u8 or byte == 127u8:
-                    append_hex_escape(output, byte)
+                elif codepoint < 32u32 or codepoint == 127u32 or unicode_nonprintable(codepoint):
+                    append_codepoint_escape(output, codepoint)
                 else:
-                    output.push(byte)
+                    append_source_range(output, value, start, cursor)
             output.push(delimiter)
             return bytes_view(output)
