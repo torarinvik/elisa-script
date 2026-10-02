@@ -68,6 +68,7 @@ module EsEngineGltfSkin:
             mesh_root: usize = 0
             mesh_space_ancestors: darray[bool] = []
             animated_nodes: darray[bool] = []
+            joint_source_indices: darray[usize] = []
             rig_nodes: darray[usize] = []
 
 
@@ -79,10 +80,23 @@ module EsEngineGltfSkin:
             basis_transforms: darray[Affine3x4] = []
 
 
+        struct SkinRigOrder:
+            # Node IDs use source indices, followed by synthetic basis IDs.
+            ordered_node_ids: darray[usize] = []
+            ordered_parent_indices: darray[i64] = []
+            source_node_ordered_indices: darray[i64] = []
+            cluster_joints: darray[usize] = []
+
+
     private:
         struct SkinTraversalFrame:
             node_index: usize
             parent_world: Affine3x4
+
+
+        struct SkinRigOrderFrame:
+            node_index: usize
+            expanded: bool = false
 
 
         def skin_affine_is_identity(matrix: Affine3x4) bool:
@@ -319,6 +333,7 @@ module EsEngineGltfSkin:
             raise SkinError.InfluenceLimitExceeded if joints.child_count == 0 or joints.child_count > Limits::MAX_JOINTS
 
             joint_nodes: mutable darray[bool] = []
+            joint_source_indices: mutable darray[usize] = []
             mesh_space_ancestors: mutable darray[bool] = []
             animated_nodes: mutable darray[bool] = []
             rig_members: mutable darray[bool] = []
@@ -327,12 +342,13 @@ module EsEngineGltfSkin:
                 mesh_space_ancestors.push(false)
                 animated_nodes.push(false)
                 rig_members.push(false)
-            for joint_ordinal in 0..<joints.child_count |document, joints_index, joints, joint_nodes, rig_members|:
+            for joint_ordinal in 0..<joints.child_count |document, joints_index, joints, joint_nodes, joint_source_indices, rig_members|:
                 joint_node: usize = try skin_array_item(document, joints_index, joint_ordinal)
                 joint_index: i64 = try skin_integer_value(document, joint_node)
                 raise SkinError.InvalidSkinTable if joint_index < 0 or joint_index.usize() >= graph.nodes.count
                 raise SkinError.InvalidSkinTable if joint_nodes[joint_index.usize()]
                 joint_nodes[joint_index.usize()] <- true
+                joint_source_indices.push(joint_index.usize())
                 rig_members[joint_index.usize()] <- true
 
             mesh_root: mutable usize = JSON_INDEX_NONE
@@ -402,6 +418,7 @@ module EsEngineGltfSkin:
                 mesh_root: mesh_root,
                 mesh_space_ancestors: mesh_space_ancestors,
                 animated_nodes: animated_nodes,
+                joint_source_indices: joint_source_indices,
                 rig_nodes: rig_nodes
             }
 
@@ -489,6 +506,112 @@ module EsEngineGltfSkin:
                 source_parent_indices: source_parents,
                 basis_boundary_indices: basis_boundaries,
                 basis_transforms: basis_transforms
+            }
+
+
+        # Produce deterministic parent-before-child order without recursion.
+        # Synthetic basis roots precede the skin's cluster-joint traversal.
+        def skin_rig_topological_order(graph: SkinSourceGraph&, membership: SkinRigMembership&, parent_plan: SkinRigParentPlan&) -> SkinRigOrder error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            node_count: usize = graph.nodes.count
+            raise SkinError.InvalidNodeGraph if node_count == 0 or node_count > Limits::MAX_NODES or parent_plan.source_parent_indices.count != node_count
+            raise SkinError.InvalidNodeGraph if parent_plan.basis_boundary_indices.count != parent_plan.basis_transforms.count
+            raise SkinError.InvalidNodeGraph if membership.joint_source_indices.count == 0 or membership.joint_source_indices.count > Limits::MAX_JOINTS
+            rig_node_count: usize = membership.rig_nodes.count + parent_plan.basis_boundary_indices.count
+            raise SkinError.RigNodeLimitExceeded if rig_node_count > Limits::MAX_NODES
+            id_count: usize = node_count + parent_plan.basis_boundary_indices.count
+
+            rig_members: mutable darray[bool] = []
+            joint_seen: mutable darray[bool] = []
+            visiting: mutable darray[bool] = []
+            visited: mutable darray[bool] = []
+            ordered_indices: mutable darray[i64] = []
+            source_ordered_indices: mutable darray[i64] = []
+            for node_index in 0..<node_count |rig_members, joint_seen, source_ordered_indices|:
+                rig_members.push(false)
+                joint_seen.push(false)
+                source_ordered_indices.push(-1i64)
+            for node_index in 0..<id_count |visiting, visited, ordered_indices|:
+                visiting.push(false)
+                visited.push(false)
+                ordered_indices.push(-1i64)
+            for node_index in membership.rig_nodes |rig_members|:
+                raise SkinError.InvalidNodeGraph if node_index >= node_count or rig_members[node_index]
+                rig_members[node_index] <- true
+                raise SkinError.InvalidNodeGraph if parent_plan.source_parent_indices[node_index] < -1i64
+                raise SkinError.InvalidNodeGraph if parent_plan.source_parent_indices[node_index] >= id_count.i64()
+            for node_index in 0..<node_count |rig_members, parent_plan|:
+                if not rig_members[node_index]:
+                    raise SkinError.InvalidNodeGraph if parent_plan.source_parent_indices[node_index] != -2i64
+            for basis_index in 0..<parent_plan.basis_boundary_indices.count |parent_plan, node_count|:
+                boundary: i64 = parent_plan.basis_boundary_indices[basis_index]
+                raise SkinError.InvalidNodeGraph if boundary < -1i64 or boundary >= node_count.i64()
+
+            for joint_index in membership.joint_source_indices |joint_seen, rig_members|:
+                raise SkinError.InvalidNodeGraph if joint_index >= node_count or joint_seen[joint_index] or not rig_members[joint_index]
+                joint_seen[joint_index] <- true
+
+            pending: mutable darray[SkinRigOrderFrame] = []
+            for ordinal in 0..<membership.joint_source_indices.count |membership, pending|:
+                joint_index: usize = membership.joint_source_indices[membership.joint_source_indices.count - ordinal - 1]
+                pending.push(SkinRigOrderFrame{node_index: joint_index})
+            for ordinal in 0..<parent_plan.basis_boundary_indices.count |parent_plan, pending, node_count|:
+                basis_id: usize = node_count + parent_plan.basis_boundary_indices.count - ordinal - 1
+                pending.push(SkinRigOrderFrame{node_index: basis_id})
+
+            ordered_node_ids: mutable darray[usize] = []
+            while pending.count > 0 |pending, visiting, visited, ordered_node_ids, parent_plan, node_count, id_count|:
+                frame: SkinRigOrderFrame = pending.pop()
+                raise SkinError.InvalidNodeGraph if frame.node_index >= id_count
+                if frame.expanded:
+                    raise SkinError.InvalidNodeGraph if not visiting[frame.node_index]
+                    visiting[frame.node_index] <- false
+                    if not visited[frame.node_index]:
+                        visited[frame.node_index] <- true
+                        ordered_node_ids.push(frame.node_index)
+                else:
+                    raise SkinError.InvalidNodeGraph if visiting[frame.node_index]
+                    if not visited[frame.node_index]:
+                        visiting[frame.node_index] <- true
+                        pending.push(SkinRigOrderFrame{node_index: frame.node_index, expanded: true})
+                        parent_id: mutable i64 = -1i64
+                        if frame.node_index < node_count:
+                            parent_id <- parent_plan.source_parent_indices[frame.node_index]
+                        if parent_id >= 0:
+                            raise SkinError.InvalidNodeGraph if parent_id.usize() >= id_count
+                            pending.push(SkinRigOrderFrame{node_index: parent_id.usize()})
+                        else:
+                            raise SkinError.InvalidNodeGraph if parent_id < -1i64
+            raise SkinError.InvalidNodeGraph if ordered_node_ids.count != rig_node_count
+
+            for order_index in 0..<ordered_node_ids.count |ordered_node_ids, ordered_indices, source_ordered_indices, node_count|:
+                node_id: usize = ordered_node_ids[order_index]
+                raise SkinError.InvalidNodeGraph if ordered_indices[node_id] >= 0
+                ordered_indices[node_id] <- order_index.i64()
+                if node_id < node_count:
+                    source_ordered_indices[node_id] <- order_index.i64()
+
+            ordered_parent_indices: mutable darray[i64] = []
+            for order_index in 0..<ordered_node_ids.count |ordered_node_ids, ordered_indices, parent_plan, ordered_parent_indices, node_count|:
+                node_id: usize = ordered_node_ids[order_index]
+                parent_id: i64 = -1i64
+                if node_id < node_count:
+                    parent_id <- parent_plan.source_parent_indices[node_id]
+                if parent_id < 0:
+                    raise SkinError.InvalidNodeGraph if parent_id < -1i64
+                    ordered_parent_indices.push(-1i64)
+                else:
+                    raise SkinError.InvalidNodeGraph if parent_id.usize() >= ordered_indices.count or ordered_indices[parent_id.usize()] < 0 or ordered_indices[parent_id.usize()] >= order_index.i64()
+                    ordered_parent_indices.push(ordered_indices[parent_id.usize()])
+
+            cluster_joints: mutable darray[usize] = []
+            for joint_index in membership.joint_source_indices |membership, source_ordered_indices, cluster_joints|:
+                raise SkinError.InvalidNodeGraph if joint_index >= source_ordered_indices.count or source_ordered_indices[joint_index] < 0
+                cluster_joints.push(source_ordered_indices[joint_index].usize())
+            return SkinRigOrder{
+                ordered_node_ids: ordered_node_ids,
+                ordered_parent_indices: ordered_parent_indices,
+                source_node_ordered_indices: source_ordered_indices,
+                cluster_joints: cluster_joints
             }
 
 
