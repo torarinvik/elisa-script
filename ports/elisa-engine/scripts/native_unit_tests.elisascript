@@ -1,8 +1,13 @@
 #!/usr/bin/env elisascript
 # Ordered Elisascript counterpart of elisa-engine/scripts/native_unit_tests.py.
 include "./native_unit_tests_plan.elisa"
+include "./temp_directory.elisa"
+include "../../../src/runtime/process_model.elisa"
+include "../../../src/runtime/pkg_config_words_model.elisa"
 
 using EsEngineNativeUnitTestsPlan
+using EsProcess
+using EsPkgConfigWords
 
 
 module EsEngineNativeUnitTests:
@@ -15,6 +20,18 @@ module EsEngineNativeUnitTests:
         const enum RunPhase of u8:
             Next
             Done
+
+
+        const enum NativeBuildPhase of u8:
+            Compile
+            Run
+            Cleanup
+            Done
+
+
+        struct NativeBuildState:
+            phase: NativeBuildPhase
+            status: i64 = 0
 
 
         def diagnostic(message: sview) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
@@ -41,8 +58,92 @@ module EsEngineNativeUnitTests:
             return ChildResult{status: status, started: true}
 
 
+        def executable_file(candidate: Path) -> bool can[File.Read, Directory.Read, Unsafe.PointerCast]:
+            return try is_file(candidate) and is_executable(candidate) else failure:
+                _ = failure
+                false
+
+
+        def executable_on_path(program: sview) -> bool can[Environment.Read, Directory.Read, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return false if program == "" or sview_contains_byte(program, 0u8)
+            return executable_file(path(program)) if sview_contains_byte(program, 47u8)
+
+            search_path: mutable sview = try getenv("PATH", "") else ""
+            search_path <- "/bin:/usr/bin" if search_path == ""
+            length: usize = sview_len(search_path)
+            segment_start: mutable usize = 0
+            cursor: mutable usize = 0
+            while cursor <= length |search_path, program, segment_start, cursor|:
+                if cursor == length or sview_at(search_path, cursor) == 58u8:
+                    directory: sview = string_view_slice(search_path, segment_start.i64(), cursor.i64())
+                    candidate: Path = path(program) if directory == "" else path(directory).joinpath(program)
+                    return true if executable_file(candidate)
+                    segment_start <- cursor + 1
+                cursor <- cursor + 1
+            return false
+
+
+        def word_views(parsed: EsPkgConfigWords::PkgConfigWords) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            words: mutable darray[sview] = []
+            for value in parsed.values |words|:
+                words.push(bytes_view(value))
+            return words
+
+
+        def run_native_gamepad_test(engine_root: Path, compiler_words: darray[sview], include_flags: darray[sview]) -> i64 can[Directory.Read, Environment.Read, File.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            temporary: Path = try EsEngineTempDirectory::create("elisa-gamepad-codes-") else failure:
+                _ = failure
+                diagnostic("unable to create temporary native gamepad test directory")
+                return 1i64
+            plan: Command = try gamepad_compile_command(f"{engine_root}", f"{temporary}", compiler_words, include_flags) else failure:
+                _ = failure
+                _ = try remove_tree(temporary) else false
+                diagnostic("invalid native gamepad compiler plan")
+                return 1i64
+            output_path: sview = plan.arguments[plan.arguments.count - 1]
+            state: mutable NativeBuildState = NativeBuildState{phase: NativeBuildPhase.Compile}
+            machine over state while state.phase != NativeBuildPhase.Done:
+                state NativeBuild
+                start NativeBuild
+
+                NativeBuild, NativeBuildPhase.Compile:
+                    status: i64 = try run_process(executable(plan.program), plan.arguments) else failure:
+                        _ = failure
+                        diagnostic("unable to start C++ compiler: " + plan.program)
+                        state <- NativeBuildState{phase: NativeBuildPhase.Cleanup, status: 127i64}
+                        -> NativeBuild
+                    if status != 0:
+                        diagnostic("Native gamepad mapping test did not compile.")
+                        state <- NativeBuildState{phase: NativeBuildPhase.Cleanup, status: status}
+                    else:
+                        state <- NativeBuildState{phase: NativeBuildPhase.Run}
+                    -> NativeBuild
+
+                NativeBuild, NativeBuildPhase.Run:
+                    status: i64 = try run_process(executable(output_path), []) else failure:
+                        _ = failure
+                        127i64
+                    if status != 0:
+                        diagnostic("Native gamepad mapping test failed.")
+                    state <- NativeBuildState{phase: NativeBuildPhase.Cleanup, status: status}
+                    -> NativeBuild
+
+                NativeBuild, NativeBuildPhase.Cleanup:
+                    cleaned: bool = try remove_tree(temporary) else false
+                    if not cleaned:
+                        diagnostic("unable to clean up temporary native gamepad test directory")
+                        state <- NativeBuildState{phase: NativeBuildPhase.Done, status: 1i64}
+                    else:
+                        state <- NativeBuildState{phase: NativeBuildPhase.Done, status: state.status}
+                    -> NativeBuild
+
+                NativeBuild, NativeBuildPhase.Done:
+                    break
+            return state.status
+
+
     public:
-        def run() -> i64 can[Directory.Read, Environment.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+        def run() -> i64 can[Directory.Read, Environment.Read, File.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
             source: Path = try path_real(Script::source_path()) else failure:
                 _ = failure
                 diagnostic("unable to resolve native unit-test script path")
@@ -71,9 +172,32 @@ module EsEngineNativeUnitTests:
 
                 RunChildren, RunPhase.Done:
                     break
-            return 0i64
+
+            configured_cxx: sview = try getenv("CXX", "clang++") else "clang++"
+            compiler_word_storage: EsPkgConfigWords::PkgConfigWords = try EsPkgConfigWords::pkg_config_parse_words(configured_cxx) else failure:
+                _ = failure
+                diagnostic("unable to parse CXX compiler command")
+                return 1i64
+            compiler_words: darray[sview] = word_views(compiler_word_storage)
+            if compiler_words.count == 0 or not executable_on_path(compiler_words[0]):
+                diagnostic("A C++ compiler is required for the native gamepad mapping test.")
+                return 2i64
+            include_word_storage: mutable EsPkgConfigWords::PkgConfigWords = zeroed
+            include_flags: mutable darray[sview] = []
+            if executable_on_path("pkg-config"):
+                catch subprocess.capture_result(executable("pkg-config"), ["--cflags", "sdl3"], "", 10000000i64, 1048576i64):
+                    ok pkg_config:
+                        if pkg_config.process_exit_status == 0:
+                            include_word_storage <- try EsPkgConfigWords::pkg_config_parse_words(pkg_config.process_stdout) else failure:
+                                _ = failure
+                                diagnostic("unable to parse pkg-config SDL3 compiler flags")
+                                return 1i64
+                            include_flags <- word_views(include_word_storage)
+                    error failure:
+                        _ = failure
+            return run_native_gamepad_test(source.parent().parent().parent().parent().parent(), compiler_words, include_flags)
 
 
-def main(arguments: darray[sview]) -> i64 can[Directory.Read, Environment.Read, File.Read, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Environment.Read, File.Read, File.Write, Process.Run, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
     _ = arguments
     return EsEngineNativeUnitTests::run()
