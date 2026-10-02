@@ -1,0 +1,343 @@
+# POSIX filesystem/process adapter for check_dependency_manifest.py.
+include "./dependency_manifest_json_model.elisa"
+include "./dependency_manifest_cli_model.elisa"
+include "./dependency_manifest_digest_posix.elisa"
+include "../../../src/runtime/bounded_text_posix.elisa"
+include "../../../src/runtime/process_model.elisa"
+
+using EsEngineDependencyManifestJson
+using EsEngineDependencyManifestCli
+using EsEngineDependencyManifestDigestPosix
+using EsBoundedText
+using EsProcess
+
+
+module EsEngineDependencyManifestAuditPosix:
+    private:
+        const module CliText:
+            USAGE: sview = "usage: check_dependency_manifest.py [-h] [--root ROOT] [--manifest MANIFEST]\n"
+            HELP: sview = "usage: check_dependency_manifest.py [-h] [--root ROOT] [--manifest MANIFEST]\n\nValidate native dependency identities and the active SDL3 link boundary.\n\noptions:\n  -h, --help           show this help message and exit\n  --root ROOT\n  --manifest MANIFEST\n"
+            NAME: sview = "check_dependency_manifest.py"
+
+
+        const module Limits:
+            SOURCE_BYTES: usize = 16777216
+            GIT_OUTPUT_BYTES: i64 = 65536
+            GIT_TIMEOUT_MICROS: i64 = 120000000
+            MAX_FAILURES: usize = 4096
+
+
+        struct GitHead:
+            started: bool = false
+            present: bool = false
+            value: sview = ""
+
+
+        def diagnostic(message: sview) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
+            _ = write_stderr("dependency manifest: " + message + "\n")
+
+
+        def append_failure(failures: mutable darray[sview]&, message: sview) -> void can[Memory.Allocate, Abort.Panic]:
+            if failures.count < Limits::MAX_FAILURES - 1:
+                failures.push(message)
+            elif failures.count == Limits::MAX_FAILURES - 1:
+                failures.push("additional audit failures omitted after the configured limit")
+
+
+        def text_contains(source: sview, expected: sview) -> bool:
+            return false if len(expected) > len(source)
+            final_offset: usize = len(source) - len(expected)
+            offset: mutable usize = 0
+            while offset <= final_offset |source, expected, final_offset, offset|:
+                matched: mutable bool = true
+                for index in 0..<len(expected) |source, expected, offset, matched|:
+                    matched <- false if sview_at(source, offset + index) != sview_at(expected, index)
+                    break if not matched
+                return true if matched
+                offset <- offset + 1
+            return false
+
+
+        def quoted(value: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            output: mutable darray[u8] = [39u8]
+            for byte in value |output|:
+                if byte == 39u8 or byte == 92u8:
+                    output.push(92u8)
+                    output.push(byte)
+                elif byte == 10u8:
+                    output.push(92u8)
+                    output.push(110u8)
+                elif byte == 13u8:
+                    output.push(92u8)
+                    output.push(114u8)
+                elif byte == 9u8:
+                    output.push(92u8)
+                    output.push(116u8)
+                else:
+                    output.push(byte)
+            output.push(39u8)
+            return bytes_view(output)
+
+
+        def canonical_or_absolute(candidate: Path) -> Path can[Memory.Allocate, Abort.Panic, Console.Format]:
+            return try path_real(candidate) else failure:
+                _ = failure
+                return try path_absolute(candidate) else absolute_failure:
+                    _ = absolute_failure
+                    return candidate
+
+
+        def default_root() -> Path can[File.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            scripts: Path = Script::source_path().parent()
+            port: Path = scripts.parent()
+            ports: Path = port.parent()
+            workspace: Path = ports.parent()
+            projects: Path = workspace.parent()
+            return canonical_or_absolute(projects.joinpath("elisa-engine"))
+
+
+        def expand_home(value: sview) -> sview can[Environment.Read, Memory.Allocate, Abort.Panic]:
+            return value if value != "~" and not value.startswith("~/")
+            home: sview = try getenv("HOME", "") else failure:
+                _ = failure
+                return value
+            return value if home == ""
+            return home if value == "~"
+            return home + value[1:len(value)]
+
+
+        def resolve_configured_path(root: Path, fallback: sview, environment_key: sview) -> Path can[Environment.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            configured: mutable sview = ""
+            if environment_key != "":
+                configured <- try getenv(environment_key, "") else failure:
+                    _ = failure
+                    ""
+            selected: sview = configured if configured != "" else fallback
+            expanded: sview = expand_home(selected)
+            candidate: Path = path(expanded)
+            if path_is_absolute(candidate):
+                return candidate
+            return canonical_or_absolute(root.joinpath(expanded))
+
+
+        def git_head(base: Path) -> GitHead can[Process.Run, Memory.Allocate, Abort.Panic, Console.Format]:
+            directory: sview = f"{base}"
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable("git"),
+                ["-C", directory, "rev-parse", "HEAD"],
+                "",
+                Limits::GIT_TIMEOUT_MICROS,
+                Limits::GIT_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                return GitHead{}
+            return GitHead{started: true, present: true, value: capture.process_stdout.strip()} if capture.process_exit_status == 0
+            return GitHead{started: true}
+
+
+        def is_file_safe(candidate: Path) -> bool can[File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return try is_file(candidate) else failure:
+                _ = failure
+                false
+
+
+        def is_directory_safe(candidate: Path) -> bool can[Directory.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return try is_directory(candidate) else failure:
+                _ = failure
+                false
+
+
+        def read_utf8_safe(candidate: Path) -> sview error[ReadError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return try EsBoundedText::read_utf8(candidate, Limits::SOURCE_BYTES)
+
+
+        def audit_manifest(root: Path, manifest: Manifest) -> darray[sview] can[Directory.Read, Environment.Read, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            failures: mutable darray[sview] = []
+            names: mutable darray[sview] = []
+
+            for entry in manifest.libraries |root, manifest, failures, names|:
+                duplicate: mutable bool = false
+                for previous in names |entry, duplicate|:
+                    duplicate <- true if previous == entry.name
+                if entry.name == "" or duplicate:
+                    append_failure(failures, "duplicate or empty library name: " + quoted(entry.name))
+                    continue
+                names.push(entry.name)
+
+                base: Path = resolve_configured_path(root, entry.path_default, entry.path_environment)
+                if not is_directory_safe(base):
+                    append_failure(failures, entry.name + ": dependency directory is missing: " + f"{base}")
+                    continue
+
+                if entry.kind == "git":
+                    head: GitHead = git_head(base)
+                    if not head.started:
+                        append_failure(failures, entry.name + ": unable to start git rev-parse")
+                    expected_matches: bool = false
+                    if head.present:
+                        expected_matches <- entry.revision_kind == RevisionKind.Text and head.value == entry.revision
+                    else:
+                        expected_matches <- entry.revision_kind == RevisionKind.MissingOrNull
+                    if not expected_matches:
+                        actual: sview = quoted(head.value) if head.present else "None"
+                        expected: sview = quoted(entry.revision) if entry.revision_kind == RevisionKind.Text else "None" if entry.revision_kind == RevisionKind.MissingOrNull else "<non-string>"
+                        append_failure(failures, entry.name + ": checkout " + actual + ", expected " + expected)
+
+                    if entry.name == "WickedEngine":
+                        cache_path: Path = base.joinpath(manifest.build.wicked_cache_path)
+                        if not is_file_safe(cache_path):
+                            append_failure(failures, entry.name + ": configured CMake cache is missing: " + f"{cache_path}")
+                        else:
+                            cache_text: mutable sview = ""
+                            cache_read: mutable bool = false
+                            catch read_utf8_safe(cache_path):
+                                ok contents:
+                                    cache_text <- contents
+                                    cache_read <- true
+                                error failure:
+                                    _ = failure
+                            if not cache_read:
+                                append_failure(failures, entry.name + ": unable to read configured CMake cache: " + f"{cache_path}")
+                            else:
+                                for expected_cache in manifest.build.wicked_cache_values |failures, cache_text|:
+                                    marker: sview = expected_cache.key + ":BOOL=" + expected_cache.value
+                                    if not text_contains(cache_text, marker):
+                                        append_failure(failures, entry.name + ": CMake cache lacks " + marker)
+
+                for artifact in entry.artifacts |entry, base, failures|:
+                    candidate: Path = base.joinpath(artifact.path)
+                    if not is_file_safe(candidate):
+                        append_failure(failures, entry.name + ": required artifact is missing: " + f"{candidate}")
+                    elif artifact.has_sha256:
+                        actual_hash: mutable darray[u8] = []
+                        digest_read: mutable bool = false
+                        catch digest_file(candidate):
+                            ok digest:
+                                actual_hash <- digest
+                                digest_read <- true
+                            error failure:
+                                _ = failure
+                        if not digest_read:
+                            append_failure(failures, entry.name + ": unable to hash artifact: " + f"{candidate}")
+                        elif bytes_view(actual_hash) != artifact.sha256:
+                            append_failure(failures, entry.name + ": hash drift in " + f"{candidate}")
+
+                if entry.has_include_default:
+                    include_base: Path = resolve_configured_path(root, entry.include_default, entry.include_environment)
+                    for include_artifact in entry.include_artifacts |entry, include_base, failures|:
+                        include_path: Path = include_base.joinpath(include_artifact)
+                        if not is_file_safe(include_path):
+                            append_failure(failures, entry.name + ": include artifact is missing: " + f"{include_path}")
+
+            forbidden: mutable darray[sview] = []
+            for token in manifest.build.forbidden_link_names |manifest, forbidden|:
+                forbidden.push(token.lower())
+            active_paths: darray[Path] = [root.joinpath("native/wicked_probe.cpp"), root.joinpath("scripts/wicked_probe.elisascript")]
+            for active_path in active_paths |forbidden, failures|:
+                active_text: mutable sview = ""
+                active_read: mutable bool = false
+                catch read_utf8_safe(active_path):
+                    ok contents:
+                        active_text <- contents.lower()
+                        active_read <- true
+                    error failure:
+                        _ = failure
+                if not active_read:
+                    append_failure(failures, "unable to read active native target source: " + f"{active_path}")
+                    continue
+                for token in forbidden |active_text, failures|:
+                    if text_contains(active_text, token):
+                        append_failure(failures, "active native target contains forbidden SDL2 token " + quoted(token) + ": " + f"{active_path}")
+
+            driver_path: Path = root.joinpath(manifest.driver)
+            driver_text: mutable sview = ""
+            driver_read: mutable bool = false
+            catch read_utf8_safe(driver_path):
+                ok contents:
+                    driver_text <- contents
+                    driver_read <- true
+                error failure:
+                    _ = failure
+            if not driver_read:
+                append_failure(failures, "unable to read native driver: " + f"{driver_path}")
+            else:
+                seen_flags: mutable darray[sview] = []
+                for flag in manifest.build.required_flags |manifest, failures, driver_text, seen_flags|:
+                    already_seen: mutable bool = false
+                    for prior in seen_flags |flag, already_seen|:
+                        already_seen <- true if prior == flag
+                    continue if already_seen
+                    seen_flags.push(flag)
+                    if not text_contains(driver_text, flag):
+                        append_failure(failures, "native driver is missing required build flag " + quoted(flag))
+
+            return failures
+
+
+        def names_count(libraries: darray[Library]) -> usize can[Memory.Allocate, Abort.Panic]:
+            names: mutable darray[sview] = []
+            for entry in libraries |names|:
+                duplicate: mutable bool = false
+                for name in names |entry, duplicate|:
+                    duplicate <- true if name == entry.name
+                if entry.name != "" and not duplicate:
+                    names.push(entry.name)
+            return names.count
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Environment.Read, File.Read, Blocking.IO, Process.Run, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            parsed: ParseResult = parse_options(arguments)
+            if parsed.failure == Failure.HelpRequested:
+                _ = write_stdout(CliText::HELP)
+                return 0i64
+            if parsed.failure != Failure.None:
+                _ = write_stderr(CliText::USAGE)
+                if parsed.failure == Failure.MissingOptionValue:
+                    _ = write_stderr(CliText::NAME + ": error: argument " + parsed.detail + ": expected one argument\n")
+                elif parsed.failure == Failure.UnknownOption or parsed.failure == Failure.UnexpectedArgument:
+                    _ = write_stderr(CliText::NAME + ": error: unrecognized arguments: " + parsed.detail + "\n")
+                else:
+                    _ = write_stderr(CliText::NAME + ": error: argument list exceeds the supported safety limit\n")
+                return 2i64
+
+            selected_root: Path = default_root()
+            if parsed.options.has_root:
+                selected_root <- canonical_or_absolute(path(parsed.options.root))
+            if not is_directory_safe(selected_root):
+                diagnostic("project root is not a directory: " + f"{selected_root}")
+                return 1i64
+
+            manifest_path: Path = selected_root.joinpath("native/dependency-manifest.json")
+            if parsed.options.has_manifest:
+                manifest_path <- canonical_or_absolute(path(parsed.options.manifest))
+            source: mutable sview = ""
+            source_read: mutable bool = false
+            catch read_utf8_safe(manifest_path):
+                ok contents:
+                    source <- contents
+                    source_read <- true
+                error failure:
+                    _ = failure
+            if not source_read:
+                diagnostic("unable to read manifest: " + f"{manifest_path}")
+                return 1i64
+
+            decoded: mutable DecodedManifest = zeroed
+            catch manifest_from_json(source):
+                ok result:
+                    decoded <- result
+                error failure:
+                    if failure == ManifestJsonError.UnsupportedSchema:
+                        diagnostic("manifest schema is unsupported")
+                    else:
+                        diagnostic("manifest JSON is malformed or has an invalid shape")
+                    return 1i64
+
+            failures: darray[sview] = audit_manifest(selected_root, decoded.manifest)
+            if failures.count != 0:
+                for failure in failures:
+                    diagnostic(failure)
+                return 1i64
+            _ = write_stdout("Native dependency manifest passed: " + format_int(names_count(decoded.manifest.libraries).i64()) + " libraries, SDL3-only active target.\n")
+            return 0i64
