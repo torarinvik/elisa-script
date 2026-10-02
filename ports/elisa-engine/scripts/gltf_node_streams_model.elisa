@@ -1,0 +1,174 @@
+# Packed float3 transforms from cook_gltf_nodes.py.
+include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
+include "gltf_affine_model.elisa"
+
+using EsEngineGltfAffine
+
+
+module EsEngineGltfNodeStreams:
+    public:
+        const module Limits:
+            MAX_STREAM_BYTES: usize = 67108864
+            MAX_INDICES: usize = 15000000
+            FLOAT32_MAXIMUM: f64 = 3.4028234663852886e38
+
+
+        error NodeStreamError:
+            InputLimitExceeded
+            InvalidFloat3ByteCount
+            NonFiniteValue
+            OutsideFloat32Range
+            ZeroTransformedNormal
+
+
+        # Python struct.pack("<3f", ...) boundary: validate in f64 before
+        # rounding, then emit explicit little-endian IEEE-754 binary32 bytes.
+        def packed_float3(values: Vec3) -> darray[u8] error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            output: mutable darray[u8] = []
+            try node_stream_append_float3(output, values)
+            return output
+
+
+        def transform_points(data: darray[u8], matrix: Affine3x4) -> darray[u8] error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return data if node_stream_is_identity(matrix)
+            raise NodeStreamError.InputLimitExceeded if data.count > Limits::MAX_STREAM_BYTES
+            raise NodeStreamError.InvalidFloat3ByteCount if data.count % 12 != 0
+            vertex_count: usize = data.count / 12
+            output: mutable darray[u8] = []
+            for vertex in 0..<vertex_count |data, matrix, output|:
+                offset: usize = vertex * 12
+                x: f64 = node_stream_read_f32(data, offset).f64()
+                y: f64 = node_stream_read_f32(data, offset + 4).f64()
+                z: f64 = node_stream_read_f32(data, offset + 8).f64()
+                transformed: Vec3 = Vec3{
+                    x: matrix.m00 * x + matrix.m01 * y + matrix.m02 * z + matrix.m03,
+                    y: matrix.m10 * x + matrix.m11 * y + matrix.m12 * z + matrix.m13,
+                    z: matrix.m20 * x + matrix.m21 * y + matrix.m22 * z + matrix.m23
+                }
+                try node_stream_append_float3(output, transformed)
+            return output
+
+
+        # Apply only the linear matrix part, for morph position deltas.
+        def transform_vectors(data: darray[u8], matrix: Affine3x4) -> darray[u8] error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return data if node_stream_is_identity(matrix)
+            raise NodeStreamError.InputLimitExceeded if data.count > Limits::MAX_STREAM_BYTES
+            raise NodeStreamError.InvalidFloat3ByteCount if data.count % 12 != 0
+            vertex_count: usize = data.count / 12
+            output: mutable darray[u8] = []
+            for vertex in 0..<vertex_count |data, matrix, output|:
+                offset: usize = vertex * 12
+                x: f64 = node_stream_read_f32(data, offset).f64()
+                y: f64 = node_stream_read_f32(data, offset + 4).f64()
+                z: f64 = node_stream_read_f32(data, offset + 8).f64()
+                transformed: Vec3 = Vec3{
+                    x: matrix.m00 * x + matrix.m01 * y + matrix.m02 * z,
+                    y: matrix.m10 * x + matrix.m11 * y + matrix.m12 * z,
+                    z: matrix.m20 * x + matrix.m21 * y + matrix.m22 * z
+                }
+                try node_stream_append_float3(output, transformed)
+            return output
+
+
+        # Apply det(A) * inverse-transpose(A) without normalizing, for morph
+        # normal deltas. This also preserves source behavior for singular A.
+        def transform_normal_deltas(data: darray[u8], matrix: Affine3x4) -> darray[u8] error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return data if node_stream_is_identity(matrix)
+            raise NodeStreamError.InputLimitExceeded if data.count > Limits::MAX_STREAM_BYTES
+            raise NodeStreamError.InvalidFloat3ByteCount if data.count % 12 != 0
+            cofactors: Cofactors3x3 = cofactors_affine(matrix)
+            determinant_sign: f64 = 1.0 if determinant_affine(matrix) > 0.0 else -1.0
+            vertex_count: usize = data.count / 12
+            output: mutable darray[u8] = []
+            for vertex in 0..<vertex_count |data, cofactors, determinant_sign, output|:
+                offset: usize = vertex * 12
+                x: f64 = node_stream_read_f32(data, offset).f64()
+                y: f64 = node_stream_read_f32(data, offset + 4).f64()
+                z: f64 = node_stream_read_f32(data, offset + 8).f64()
+                transformed: Vec3 = Vec3{
+                    x: determinant_sign * (cofactors.c00 * x + cofactors.c01 * y + cofactors.c02 * z),
+                    y: determinant_sign * (cofactors.c10 * x + cofactors.c11 * y + cofactors.c12 * z),
+                    z: determinant_sign * (cofactors.c20 * x + cofactors.c21 * y + cofactors.c22 * z)
+                }
+                try node_stream_append_float3(output, transformed)
+            return output
+
+
+        # Carry normals by the inverse transpose, correcting mirrored
+        # cofactor orientation and renormalizing each resulting vector.
+        def transform_normals(data: darray[u8], matrix: Affine3x4) -> darray[u8] error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return data if node_stream_is_identity(matrix)
+            raise NodeStreamError.InputLimitExceeded if data.count > Limits::MAX_STREAM_BYTES
+            raise NodeStreamError.InvalidFloat3ByteCount if data.count % 12 != 0
+            cofactors: Cofactors3x3 = cofactors_affine(matrix)
+            determinant_sign: f64 = 1.0 if determinant_affine(matrix) > 0.0 else -1.0
+            vertex_count: usize = data.count / 12
+            output: mutable darray[u8] = []
+            for vertex in 0..<vertex_count |data, cofactors, determinant_sign, output|:
+                offset: usize = vertex * 12
+                x: f64 = node_stream_read_f32(data, offset).f64()
+                y: f64 = node_stream_read_f32(data, offset + 4).f64()
+                z: f64 = node_stream_read_f32(data, offset + 8).f64()
+                transformed_x: f64 = determinant_sign * (cofactors.c00 * x + cofactors.c01 * y + cofactors.c02 * z)
+                transformed_y: f64 = determinant_sign * (cofactors.c10 * x + cofactors.c11 * y + cofactors.c12 * z)
+                transformed_z: f64 = determinant_sign * (cofactors.c20 * x + cofactors.c21 * y + cofactors.c22 * z)
+                length: f64 = sqrt(transformed_x * transformed_x + transformed_y * transformed_y + transformed_z * transformed_z)
+                raise NodeStreamError.ZeroTransformedNormal if not node_stream_finite(length) or length == 0.0
+                output_normal: Vec3 = Vec3{x: transformed_x / length, y: transformed_y / length, z: transformed_z / length}
+                try node_stream_append_float3(output, output_normal)
+            return output
+
+
+        # Input is the already-validated triangle-list stream produced by the
+        # accessor layer. Mirroring swaps each triangle's second and third IDs.
+        def placed_indices(values: darray[u32], matrix: Affine3x4) -> darray[u32] error[NodeStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeStreamError.InputLimitExceeded if values.count > Limits::MAX_INDICES
+            return values if determinant_affine(matrix) > 0.0
+            output: mutable darray[u32] = []
+            for value in values |output|:
+                output.push(value)
+            triangle_count: usize = values.count / 3
+            for triangle in 0..<triangle_count |values, output|:
+                second: usize = triangle * 3 + 1
+                third: usize = triangle * 3 + 2
+                output[second] <- values[third]
+                output[third] <- values[second]
+            return output
+
+
+    private:
+        def node_stream_is_identity(matrix: Affine3x4) -> bool:
+            return matrix.m00 == 1.0 and matrix.m01 == 0.0 and matrix.m02 == 0.0 and matrix.m03 == 0.0 and matrix.m10 == 0.0 and matrix.m11 == 1.0 and matrix.m12 == 0.0 and matrix.m13 == 0.0 and matrix.m20 == 0.0 and matrix.m21 == 0.0 and matrix.m22 == 1.0 and matrix.m23 == 0.0
+
+
+        def node_stream_append_float3(output: mutable darray[u8]&, values: Vec3) void error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try node_stream_append_f32(output, values.x)
+            try node_stream_append_f32(output, values.y)
+            try node_stream_append_f32(output, values.z)
+
+
+        def node_stream_append_f32(output: mutable darray[u8]&, value: f64) void error[NodeStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise NodeStreamError.NonFiniteValue if not node_stream_finite(value)
+            raise NodeStreamError.OutsideFloat32Range if fabs(value) > Limits::FLOAT32_MAXIMUM
+            packed: f32 = value.f32()
+            bits: mutable u32 = 0u32
+            _ = memcpy((&bits).cast[mutable void&], (&packed).cast[void&], 4)
+            output.push((bits & 255u32).u8())
+            output.push(((bits >> 8) & 255u32).u8())
+            output.push(((bits >> 16) & 255u32).u8())
+            output.push((bits >> 24).u8())
+
+
+        def node_stream_read_u32(data: darray[u8]&, offset: usize) u32:
+            return data[offset].u32() | (data[offset + 1].u32() << 8) | (data[offset + 2].u32() << 16) | (data[offset + 3].u32() << 24)
+
+
+        def node_stream_read_f32(data: darray[u8]&, offset: usize) f32 can[Unsafe.PointerCast]:
+            bits: u32 = node_stream_read_u32(data, offset)
+            value: mutable f32 = 0.0f32
+            _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
+            return value
+
+
+        def node_stream_finite(value: f64) -> bool:
+            return value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
