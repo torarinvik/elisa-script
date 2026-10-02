@@ -1,5 +1,5 @@
-# Typed port of cook_gltf_skin.read_influences. Accessor byte layout stays in
-# EsEngineGltfAccessor; this module owns the skin-specific schema and weights.
+# Typed ports of cook_gltf_skin's accessor-level skin helpers. Accessor byte
+# layout stays in EsEngineGltfAccessor; this module owns skin schema and data.
 include "../../../src/runtime/data_model.elisa"
 include "../../../src/runtime/json_model.elisa"
 include "../../../src/runtime/json_lexer_model.elisa"
@@ -17,8 +17,10 @@ module EsEngineGltfSkin:
     public:
         const module Limits:
             MAX_VERTICES: usize = 2000000
+            MAX_JOINTS: usize = 256
             WEIGHTS_PER_VERTEX: usize = 4
             WEIGHT_SUM_TOLERANCE: f64 = 0.005
+            AFFINE_TOLERANCE: f64 = 0.000001
 
 
         error SkinError:
@@ -34,6 +36,12 @@ module EsEngineGltfSkin:
             InvalidJointAccessorData
             InvalidWeightAccessorData
             InvalidInfluenceWeights
+            InvalidInverseBindAccessor
+            InverseBindAccessorMustBeMat4
+            InvalidInverseBindAccessorData
+            NonFiniteInverseBindMatrix
+            NonAffineInverseBindMatrix
+            SingularInverseBindMatrix
             InfluenceLimitExceeded
 
 
@@ -46,6 +54,7 @@ module EsEngineGltfSkin:
 
         def read_influences(document: JsonDocument&, buffer: darray[u8]&, attributes_index: usize, vertex_count: i64) -> SkinInfluences error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise SkinError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
             raise SkinError.InvalidDocument if document.roots[0] >= document.nodes.count or document.nodes[document.roots[0]].kind != JsonNodeKind.Object
             raise SkinError.InvalidAttributes if attributes_index >= document.nodes.count or document.nodes[attributes_index].kind != JsonNodeKind.Object
             raise SkinError.InfluenceLimitExceeded if vertex_count < 0 or vertex_count.usize() > Limits::MAX_VERTICES
@@ -120,6 +129,68 @@ module EsEngineGltfSkin:
                 deviation: f64 = weight_sum - 1.0
                 raise SkinError.InvalidInfluenceWeights if deviation < -Limits::WEIGHT_SUM_TOLERANCE or deviation > Limits::WEIGHT_SUM_TOLERANCE
             return influences
+
+
+        # Port of cook_gltf_skin._read_inverse_bind. The optional accessor
+        # defaults to one explicit identity matrix per joint.
+        def read_inverse_bind_matrices(document: JsonDocument&, buffer: darray[u8]&, skin_index: usize, joint_count: i64) -> darray[f32] error[SkinError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise SkinError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            raise SkinError.InfluenceLimitExceeded if joint_count < 0 or joint_count.usize() > Limits::MAX_JOINTS
+            root_index: usize = document.roots[0]
+            raise SkinError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            skins_index: usize = try skin_member_index(document, root_index, "skins")
+            raise SkinError.InvalidDocument if skins_index == JSON_INDEX_NONE or skins_index >= document.nodes.count
+            skins: JsonNode = document.nodes[skins_index]
+            raise SkinError.InvalidDocument if skins.kind != JsonNodeKind.Array
+            skin_object_index: usize = try skin_array_item(document, skins_index, skin_index)
+            raise SkinError.InvalidDocument if document.nodes[skin_object_index].kind != JsonNodeKind.Object
+
+            reference_index: usize = try skin_member_index(document, skin_object_index, "inverseBindMatrices")
+            output: mutable darray[f32] = []
+            if reference_index == JSON_INDEX_NONE or document.nodes[reference_index].kind == JsonNodeKind.Null:
+                for joint in 0..<joint_count.usize() |output|:
+                    skin_append_identity_matrix(output)
+                return output
+            reference: i64 = try skin_integer_value(document, reference_index) else failure:
+                _ = failure
+                raise SkinError.InvalidInverseBindAccessor
+
+            accessor_index: usize = try skin_accessor_index(document, reference)
+            accessor_is_mat4: bool = try skin_text_field_is(document, accessor_index, "type", "MAT4")
+            raise SkinError.InverseBindAccessorMustBeMat4 if not accessor_is_mat4
+            accessor_count: i64 = try skin_integer_field(document, accessor_index, "count") else failure:
+                _ = failure
+                raise SkinError.InvalidInverseBindAccessor
+            component_type: i64 = try skin_integer_field(document, accessor_index, "componentType") else failure:
+                _ = failure
+                raise SkinError.InvalidInverseBindAccessor
+            raise SkinError.InvalidInverseBindAccessor if component_type != 5126i64 or accessor_count < joint_count
+
+            packed: darray[u8] = try accessor_bytes(document, buffer, reference) else failure:
+                _ = failure
+                raise SkinError.InvalidInverseBindAccessorData
+            count: usize = joint_count.usize()
+            raise SkinError.InvalidInverseBindAccessorData if count > (packed.count / 64)
+            for joint in 0..<count |packed, output|:
+                offset: usize = joint * 64
+                matrix: mutable darray[f64] = []
+                for element in 0..<16 |packed, offset, matrix, output|:
+                    element_offset: usize = offset + element * 4
+                    bits: u32 = skin_read_u32(packed, element_offset)
+                    raise SkinError.NonFiniteInverseBindMatrix if (bits & 2139095040u32) == 2139095040u32
+                    value: f32 = skin_read_f32(packed, element_offset)
+                    matrix.push(value.f64())
+                    output.push(value)
+
+                raise SkinError.NonAffineInverseBindMatrix if matrix[3] < -Limits::AFFINE_TOLERANCE or matrix[3] > Limits::AFFINE_TOLERANCE
+                raise SkinError.NonAffineInverseBindMatrix if matrix[7] < -Limits::AFFINE_TOLERANCE or matrix[7] > Limits::AFFINE_TOLERANCE
+                raise SkinError.NonAffineInverseBindMatrix if matrix[11] < -Limits::AFFINE_TOLERANCE or matrix[11] > Limits::AFFINE_TOLERANCE
+                final_row_deviation: f64 = matrix[15] - 1.0
+                raise SkinError.NonAffineInverseBindMatrix if final_row_deviation < -Limits::AFFINE_TOLERANCE or final_row_deviation > Limits::AFFINE_TOLERANCE
+                determinant: f64 = skin_determinant3x3(matrix)
+                raise SkinError.SingularInverseBindMatrix if determinant == 0.0
+            return output
 
 
     private:
@@ -220,3 +291,35 @@ module EsEngineGltfSkin:
             value: mutable f32 = 0.0f32
             _ = memcpy((&value).cast[mutable void&], (&bits).cast[void&], 4)
             return value
+
+
+        def skin_append_identity_matrix(output: mutable darray[f32]&) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push(1.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(1.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(1.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(0.0f32)
+            output.push(1.0f32)
+
+
+        def skin_determinant3x3(matrix: darray[f64]) -> f64:
+            a: f64 = matrix[0]
+            b: f64 = matrix[4]
+            c: f64 = matrix[8]
+            d: f64 = matrix[1]
+            e: f64 = matrix[5]
+            f: f64 = matrix[9]
+            g: f64 = matrix[2]
+            h: f64 = matrix[6]
+            i: f64 = matrix[10]
+            return a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
