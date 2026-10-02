@@ -14,6 +14,7 @@ module EsEngineRenderQuality:
             MINIMUM_CAPTURE_CONTRAST: f64 = 0.04
             MINIMUM_OCCLUSION_DARKENING: f64 = 0.01
             PIXEL_PATCH_WIDTH_RATIO: usize = 160
+            MAX_PNG_CONTAINER_BYTES: usize = 67108864
             MAX_FILTERED_PNG_BYTES: usize = 268435456
 
 
@@ -56,10 +57,68 @@ module EsEngineRenderQuality:
             UnknownFilter
 
 
+        error PngReadError:
+            InputTooLarge
+            InvalidSignature
+            InvalidChunk
+            MissingHeader
+            UnsupportedFormat
+            MissingImageData
+
+
         def reconstruct_png_zlib_scanlines(width: usize, height: usize, format: RenderPixelFormat, compressed: darray[u8]&) -> RenderFrame error[PngScanlineError, EsZlibInflate::InflateError] can[Memory.Allocate, Abort.Panic]:
             expected_size: usize = try png_filtered_size(width, height, format)
             filtered: darray[u8] = try EsZlibInflate::inflate_zlib(compressed, expected_size)
             return try reconstruct_png_scanlines(width, height, format, filtered)
+
+
+        # Mirrors compare_renders.py's deliberately small PNG reader: CRCs and
+        # ancillary chunks are ignored, IDAT payloads are concatenated, and
+        # decoding stops at IEND. The explicit container limit matches the
+        # interpreter's default whole-file read budget.
+        def decode_png(data: darray[u8]&) -> RenderFrame error[PngReadError, PngScanlineError, EsZlibInflate::InflateError] can[Memory.Allocate, Abort.Panic]:
+            raise PngReadError.InputTooLarge if data.count > Policy::MAX_PNG_CONTAINER_BYTES
+            raise PngReadError.InvalidSignature if data.count < 8
+            signature: darray[u8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8]
+            for index in 0..<signature.count |data, signature|:
+                raise PngReadError.InvalidSignature if data[index] != signature[index]
+
+            offset: mutable usize = 8
+            width: mutable usize = 0
+            height: mutable usize = 0
+            bit_depth: mutable u8 = 0u8
+            color_type: mutable u8 = 0u8
+            has_header: mutable bool = false
+            compressed: mutable darray[u8] = []
+            while offset < data.count |data, offset, width, height, bit_depth, color_type, has_header, compressed|:
+                remaining: usize = data.count - offset
+                raise PngReadError.InvalidChunk if remaining < 12
+                chunk_length: usize = png_read_u32_be(data, offset).usize()
+                raise PngReadError.InvalidChunk if chunk_length > remaining - 12
+                kind_offset: usize = offset + 4
+                payload_offset: usize = offset + 8
+                next_offset: usize = offset + 12 + chunk_length
+
+                if png_chunk_kind_is(data, kind_offset, 73u8, 72u8, 68u8, 82u8):
+                    raise PngReadError.InvalidChunk if chunk_length != 13
+                    width <- png_read_u32_be(data, payload_offset).usize()
+                    height <- png_read_u32_be(data, payload_offset + 4).usize()
+                    bit_depth <- data[payload_offset + 8]
+                    color_type <- data[payload_offset + 9]
+                    has_header <- true
+                elif png_chunk_kind_is(data, kind_offset, 73u8, 68u8, 65u8, 84u8):
+                    raise PngReadError.InputTooLarge if chunk_length > Policy::MAX_PNG_CONTAINER_BYTES - compressed.count
+                    for index in payload_offset..<payload_offset + chunk_length |data, compressed|:
+                        compressed.push(data[index])
+                elif png_chunk_kind_is(data, kind_offset, 73u8, 69u8, 78u8, 68u8):
+                    break
+                offset <- next_offset
+
+            raise PngReadError.MissingHeader if not has_header
+            raise PngReadError.UnsupportedFormat if bit_depth != 8u8 or (color_type != 2u8 and color_type != 6u8)
+            raise PngReadError.MissingImageData if compressed.count == 0
+            format: RenderPixelFormat = RenderPixelFormat.Rgb8 if color_type == 2u8 else RenderPixelFormat.Rgba8
+            return try reconstruct_png_zlib_scanlines(width, height, format, compressed)
 
 
         def reconstruct_png_scanlines(width: usize, height: usize, format: RenderPixelFormat, filtered: darray[u8]&) -> RenderFrame error[PngScanlineError] can[Memory.Allocate, Abort.Panic]:
@@ -155,6 +214,14 @@ module EsEngineRenderQuality:
 
 
     private:
+        def png_read_u32_be(data: darray[u8]&, offset: usize) -> u32:
+            return (data[offset].u32() << 24) | (data[offset + 1].u32() << 16) | (data[offset + 2].u32() << 8) | data[offset + 3].u32()
+
+
+        def png_chunk_kind_is(data: darray[u8]&, offset: usize, first: u8, second: u8, third: u8, fourth: u8) -> bool:
+            return data[offset] == first and data[offset + 1] == second and data[offset + 2] == third and data[offset + 3] == fourth
+
+
         def png_filtered_size(width: usize, height: usize, format: RenderPixelFormat) -> usize error[PngScanlineError]:
             raise PngScanlineError.InvalidDimensions if width == 0 or height == 0
             channels: usize = pixel_channel_count(format)
