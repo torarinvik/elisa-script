@@ -2,6 +2,7 @@
 # Deploy beside the original wrapper; retain it until launcher parity passes.
 include "lint_canonical_invocation.elisa"
 include "process_errors.elisascript"
+include "passwd_home_posix.elisa"
 
 module EsCanonicalLint:
     private:
@@ -62,17 +63,36 @@ module EsCanonicalLint:
             return ZeroDirectoryStackIndex{recognized: true, suffix_start: index}
 
 
-        # Support current-user, PWD/OLDPWD, and current stack-slot tilde forms.
-        # Named users and nonzero stack indexes require external shell state.
-        def expand_cdpath_entry(entry: sview) -> Path can[Directory.Read, Environment.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+        def expand_named_user_cdpath_entry(entry: sview) -> Path can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            length: usize = sview_len(entry)
+            username_end: mutable usize = 1
+            while username_end < length and sview_at(entry, username_end) != 47u8 |entry, username_end|:
+                username_end <- username_end + 1
+            username: sview = string_view_slice(entry, 1, username_end.i64())
+            home: mutable EsPasswdHomePosix::HomeLookup = zeroed
+            catch EsPasswdHomePosix::named_user_home(username):
+                ok result:
+                    home <- result
+                error _:
+                    return path(entry)
+            return path(entry) if home.state != EsPasswdHomePosix::LookupState.HomeFound
+            suffix: sview = string_view_slice(entry, username_end.i64(), length.i64())
+            return path(bytes_view(home.home_directory) + suffix)
+
+
+        # Use bounded passwd lookup for account-home fallback and named-user
+        # prefixes. The wrapper has no inherited directory stack beyond its
+        # current slot.
+        def expand_cdpath_entry(entry: sview) -> Path can[Directory.Read, Environment.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
             length: usize = sview_len(entry)
             return path(entry) if length == 0 or sview_at(entry, 0) != 126
             prefix_kind: mutable u8 = 126u8
             suffix_start: mutable usize = 1
+            owned_home: mutable darray[u8] = []
             if length > 1:
                 prefix_byte: u8 = sview_at(entry, 1)
                 if prefix_byte == 43u8 or prefix_byte == 45u8:
-                    if length > 2 and sview_at(entry, 2) != 47:
+                    if length > 2 and sview_at(entry, 2) != 47u8:
                         stack_index: ZeroDirectoryStackIndex = zero_directory_stack_index(entry, 2)
                         return path(entry) if not stack_index.recognized
                         prefix_kind <- 48u8
@@ -80,18 +100,27 @@ module EsCanonicalLint:
                     else:
                         prefix_kind <- prefix_byte
                         suffix_start <- 2
+                elif prefix_byte >= 48u8 and prefix_byte <= 57u8:
+                    stack_index: ZeroDirectoryStackIndex = zero_directory_stack_index(entry, 1)
+                    return path(entry) if not stack_index.recognized
+                    prefix_kind <- 48u8
+                    suffix_start <- stack_index.suffix_start
                 else:
-                    if prefix_byte >= 48u8 and prefix_byte <= 57u8:
-                        plain_stack_index: ZeroDirectoryStackIndex = zero_directory_stack_index(entry, 1)
-                        return path(entry) if not plain_stack_index.recognized
-                        prefix_kind <- 48u8
-                        suffix_start <- plain_stack_index.suffix_start
-                    else:
-                        return path(entry) if prefix_byte != 47u8
+                    return expand_named_user_cdpath_entry(entry) if prefix_byte != 47u8
+
             base_directory: mutable sview = ""
             if prefix_kind == 126u8:
                 base_directory <- try getenv("HOME", "\0") else "\0"
-                return path(entry) if base_directory == "\0"
+                if base_directory == "\0":
+                    account_home: mutable EsPasswdHomePosix::HomeLookup = zeroed
+                    catch EsPasswdHomePosix::current_user_home():
+                        ok result:
+                            account_home <- result
+                        error _:
+                            return path(entry)
+                    return path(entry) if account_home.state != EsPasswdHomePosix::LookupState.HomeFound
+                    owned_home <- account_home.home_directory
+                    base_directory <- bytes_view(owned_home)
             elif prefix_kind == 43u8 or prefix_kind == 48u8:
                 base_directory <- try getenv("PWD", "") else ""
                 if base_directory == "":
@@ -107,7 +136,7 @@ module EsCanonicalLint:
             return path(expanded)
 
 
-        def select_project_root(project_root: Path) -> SelectedProjectRoot can[Environment.Read, Directory.Read, File.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+        def select_project_root(project_root: Path) -> SelectedProjectRoot can[Environment.Read, Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
             project_root_text: sview = f"{project_root}"
             return SelectedProjectRoot{path: project_root} if not EsCanonicalLintInvocation::cdpath_search_allowed(project_root_text)
             configured_cdpath: sview = try getenv("CDPATH", "") else err:
@@ -195,7 +224,7 @@ module EsCanonicalLint:
             return 0i64
 
 
-        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+        def run_default() -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast, Abort.Panic, Console.Write, Console.Format]:
             script_directory: sview = EsCanonicalLintInvocation::script_directory(Script::invocation_path())
             project_root: Path = path_join(path(script_directory), "..")
             selection: SelectedProjectRoot = select_project_root(project_root)
@@ -205,7 +234,7 @@ module EsCanonicalLint:
             return run_root(selection.path, selection.print_cdpath_directory)
 
 
-def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Memory.Allocate, Abort.Panic, Console.Write, Console.Format]:
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, Environment.Write, File.Read, Process.Replace, Blocking.IO, Memory.Allocate, Memory.Release, Unsafe.PointerCast, Abort.Panic, Console.Write, Console.Format]:
     # The shell reference ignores extra wrapper arguments.
     _ = arguments
     return EsCanonicalLint::run_default()

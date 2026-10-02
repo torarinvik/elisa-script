@@ -4,7 +4,9 @@ Reference: `../neural-computer-agentV2/scripts/lint_canonical.sh` (six lines).
 Its unmodified snapshot is `reference.sh` in this directory, with SHA-256
 `fd013f06d3575ed426f1c464fb8b4fb7378fe71deb982cef4a2ae8b4c353fa35`.
 Candidate: `ports/neural-computer-agentV2/scripts/lint_canonical.elisascript`.
-No original script or caller has been changed.
+The bounded passwd adapter is staged beside it as `scripts/passwd_home_posix.elisa`
+because the candidate is tested in an isolated mirrored project tree. No original
+script or caller has been changed.
 
 The `ports/<project>/` hierarchy mirrors the target project's layout. Before
 testing, copy the candidate to an isolated project's
@@ -121,8 +123,13 @@ component is nonempty. The twenty-fourth repeats that distinction with an
 explicitly empty OLDPWD and a `~-` prefix followed by the same absolute suffix.
 These avoid relying on Bash 3.2's empty-result path-join edge. The candidate
 distinguishes empty OLDPWD from an unset one when expanding `~-`, while
-retaining the raw-entry print rule. Account-home fallback, named-user and
-nonzero indexed directory-stack tilde forms remain open. It also
+retaining the raw-entry print rule. The twenty-first case omits HOME and uses
+`~` as a CDPATH entry, distinguishing passwd-home expansion from treating an
+unset HOME as an empty prefix; it does not assert a successful account-home
+selection. The source candidate now uses the shared bounded passwd adapter
+for account-home fallback and named-user tilde forms, but named-user tilde
+forms and successful account-home selection remain unqualified. Nonzero
+indexed directory-stack forms also remain open. It also
 validates inherited logical `PWD` against
 the physical cwd, preserves it for `OLDPWD`, and computes new logical `PWD`
 lexically before verifying its physical target. Odd `//`, path-race and
