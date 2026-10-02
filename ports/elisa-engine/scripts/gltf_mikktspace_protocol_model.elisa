@@ -1,0 +1,105 @@
+# Bounded decoder for the pinned native glTF MikkTSpace helper response.
+# The result feeds EsEngineGltfGeometryFlatten without shell text conversion.
+include "gltf_geometry_flatten_model.elisa"
+
+using EsEngineGltfGeometryFlatten
+
+
+module EsEngineGltfMikkProtocol:
+    public:
+        const module Limits:
+            HEADER_BYTES: usize = 16
+            MAX_VERTICES: usize = 2000000
+            MAX_INDICES: usize = 15000000
+            MAX_RESPONSE_BYTES: usize = 164000016
+
+
+        error MikkProtocolError:
+            InvalidInputBounds
+            ResponseTooLarge
+            TruncatedHeader
+            WrongMagic
+            InvalidVertexCount
+            InvalidIndexCount
+            InvalidResponseLayout
+            InvalidIndex
+            InvalidSourceVertex
+
+
+        # Wire layout from native/gltf_mikktspace_cooker.cpp:
+        # ELISAMR1, output vertex/index counts, then float3 positions,
+        # float3 normals, float2 UVs, float4 tangents, u32 indices, and
+        # u32 source-vertex remaps, all little-endian.
+        def decode_response(data: darray[u8]&, placement_index: usize, block_index: usize, input_vertex_count: usize, input_index_count: usize) MikkBlockResult error[MikkProtocolError] can[Memory.Allocate, Abort.Panic]:
+            raise MikkProtocolError.InvalidInputBounds if input_vertex_count == 0 or input_vertex_count > Limits::MAX_VERTICES
+            raise MikkProtocolError.InvalidInputBounds if input_index_count == 0 or input_index_count > Limits::MAX_INDICES or input_index_count % 3 != 0
+            raise MikkProtocolError.ResponseTooLarge if data.count > Limits::MAX_RESPONSE_BYTES
+            raise MikkProtocolError.TruncatedHeader if data.count < Limits::HEADER_BYTES
+            raise MikkProtocolError.WrongMagic if not mikk_protocol_has_output_magic(data)
+
+            output_vertex_count: usize = mikk_protocol_read_u32(data, 8).usize()
+            output_index_count: usize = mikk_protocol_read_u32(data, 12).usize()
+            raise MikkProtocolError.InvalidVertexCount if output_vertex_count == 0 or output_vertex_count > Limits::MAX_VERTICES
+            raise MikkProtocolError.InvalidIndexCount if output_index_count != input_index_count
+
+            index_bytes: usize = output_index_count * 4
+            raise MikkProtocolError.InvalidResponseLayout if index_bytes > Limits::MAX_RESPONSE_BYTES - Limits::HEADER_BYTES
+            remaining_bytes: usize = Limits::MAX_RESPONSE_BYTES - Limits::HEADER_BYTES - index_bytes
+            raise MikkProtocolError.InvalidResponseLayout if output_vertex_count > remaining_bytes / 52
+            expected_bytes: usize = Limits::HEADER_BYTES + output_vertex_count * 52 + index_bytes
+            raise MikkProtocolError.InvalidResponseLayout if data.count != expected_bytes
+
+            positions_bytes: usize = output_vertex_count * 12
+            normals_bytes: usize = output_vertex_count * 12
+            uvs_bytes: usize = output_vertex_count * 8
+            tangents_bytes: usize = output_vertex_count * 16
+            cursor: mutable usize = Limits::HEADER_BYTES
+            positions: darray[u8] = try mikk_protocol_copy(data, cursor, positions_bytes)
+            cursor <- cursor + positions_bytes
+            normals: darray[u8] = try mikk_protocol_copy(data, cursor, normals_bytes)
+            cursor <- cursor + normals_bytes
+            uvs: darray[u8] = try mikk_protocol_copy(data, cursor, uvs_bytes)
+            cursor <- cursor + uvs_bytes
+            tangents: darray[u8] = try mikk_protocol_copy(data, cursor, tangents_bytes)
+            cursor <- cursor + tangents_bytes
+
+            indices: mutable darray[u32] = []
+            for ordinal in 0..<output_index_count |data, cursor, output_vertex_count, indices|:
+                index: u32 = mikk_protocol_read_u32(data, cursor + ordinal * 4)
+                raise MikkProtocolError.InvalidIndex if index.usize() >= output_vertex_count
+                indices.push(index)
+            cursor <- cursor + index_bytes
+
+            source_vertices: mutable darray[u32] = []
+            for ordinal in 0..<output_vertex_count |data, cursor, input_vertex_count, source_vertices|:
+                source_vertex: u32 = mikk_protocol_read_u32(data, cursor + ordinal * 4)
+                raise MikkProtocolError.InvalidSourceVertex if source_vertex.usize() >= input_vertex_count
+                source_vertices.push(source_vertex)
+
+            return MikkBlockResult{
+                placement_index: placement_index,
+                block_index: block_index,
+                positions: positions,
+                normals: normals,
+                uvs: uvs,
+                tangents: tangents,
+                indices: indices,
+                source_vertices: source_vertices
+            }
+
+
+    private:
+        def mikk_protocol_has_output_magic(data: darray[u8]&) bool:
+            return data[0] == 69u8 and data[1] == 76u8 and data[2] == 73u8 and data[3] == 83u8 and data[4] == 65u8 and data[5] == 77u8 and data[6] == 82u8 and data[7] == 49u8
+
+
+        def mikk_protocol_read_u32(data: darray[u8]&, offset: usize) u32:
+            return data[offset].u32() | (data[offset + 1].u32() << 8) | (data[offset + 2].u32() << 16) | (data[offset + 3].u32() << 24)
+
+
+        def mikk_protocol_copy(data: darray[u8]&, offset: usize, count: usize) darray[u8] error[MikkProtocolError] can[Memory.Allocate, Abort.Panic]:
+            raise MikkProtocolError.InvalidResponseLayout if offset > data.count or count > data.count - offset
+            result: mutable darray[u8] = []
+            for position in 0..<count |data, offset, result|:
+                result.push(data[offset + position])
+            return result
