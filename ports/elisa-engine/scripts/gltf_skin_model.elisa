@@ -64,10 +64,21 @@ module EsEngineGltfSkin:
             world_transforms: darray[Affine3x4] = []
 
 
+        struct SkinRigMembership:
+            mesh_root: usize = 0
+            mesh_space_ancestors: darray[bool] = []
+            animated_nodes: darray[bool] = []
+            rig_nodes: darray[usize] = []
+
+
     private:
         struct SkinTraversalFrame:
             node_index: usize
             parent_world: Affine3x4
+
+
+        def skin_affine_is_identity(matrix: Affine3x4) bool:
+            return matrix.m00 == 1.0 and matrix.m01 == 0.0 and matrix.m02 == 0.0 and matrix.m03 == 0.0 and matrix.m10 == 0.0 and matrix.m11 == 1.0 and matrix.m12 == 0.0 and matrix.m13 == 0.0 and matrix.m20 == 0.0 and matrix.m21 == 0.0 and matrix.m22 == 1.0 and matrix.m23 == 0.0
 
 
     public:
@@ -264,6 +275,120 @@ module EsEngineGltfSkin:
                 roots: scene.roots,
                 parent_indices: parents,
                 world_transforms: worlds
+            }
+
+
+        # Select joints plus transformed or animated ancestors below the
+        # first mesh-space root, matching the Python single-skin normalizer.
+        def skin_rig_membership(document: JsonDocument&, graph: SkinSourceGraph&, skin_index: usize) -> SkinRigMembership error[SkinError] can[Memory.Allocate, Abort.Panic]:
+            raise SkinError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise SkinError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            raise SkinError.InvalidNodeGraph if graph.nodes.count == 0 or graph.nodes.count > Limits::MAX_NODES or graph.parent_indices.count != graph.nodes.count or graph.world_transforms.count != graph.nodes.count
+            for node_index in 0..<graph.parent_indices.count |graph|:
+                parent_index: i64 = graph.parent_indices[node_index]
+                raise SkinError.InvalidNodeGraph if parent_index < -1i64 or parent_index >= graph.nodes.count.i64()
+            root_index: usize = document.roots[0]
+            raise SkinError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            nodes_index: usize = try skin_member_index(document, root_index, "nodes")
+            raise SkinError.InvalidSkinPlacement if nodes_index == JSON_INDEX_NONE or nodes_index >= document.nodes.count or document.nodes[nodes_index].kind != JsonNodeKind.Array
+            source_nodes: JsonNode = document.nodes[nodes_index]
+            raise SkinError.InvalidNodeGraph if source_nodes.child_count != graph.nodes.count
+            skins_index: usize = try skin_member_index(document, root_index, "skins")
+            raise SkinError.InvalidSkinTable if skins_index == JSON_INDEX_NONE or skins_index >= document.nodes.count or document.nodes[skins_index].kind != JsonNodeKind.Array
+            skins: JsonNode = document.nodes[skins_index]
+            raise SkinError.InvalidSkinTable if skin_index >= skins.child_count
+            skin_node: usize = try skin_array_item(document, skins_index, skin_index)
+            raise SkinError.InvalidSkinTable if document.nodes[skin_node].kind != JsonNodeKind.Object
+            joints_index: usize = try skin_member_index(document, skin_node, "joints")
+            raise SkinError.InvalidSkinTable if joints_index == JSON_INDEX_NONE or document.nodes[joints_index].kind != JsonNodeKind.Array
+            joints: JsonNode = document.nodes[joints_index]
+            raise SkinError.InfluenceLimitExceeded if joints.child_count == 0 or joints.child_count > Limits::MAX_JOINTS
+
+            joint_nodes: mutable darray[bool] = []
+            mesh_space_ancestors: mutable darray[bool] = []
+            animated_nodes: mutable darray[bool] = []
+            rig_members: mutable darray[bool] = []
+            for _ in 0..<graph.nodes.count |joint_nodes, mesh_space_ancestors, animated_nodes, rig_members|:
+                joint_nodes.push(false)
+                mesh_space_ancestors.push(false)
+                animated_nodes.push(false)
+                rig_members.push(false)
+            for joint_ordinal in 0..<joints.child_count |document, joints_index, joints, joint_nodes, rig_members|:
+                joint_node: usize = try skin_array_item(document, joints_index, joint_ordinal)
+                joint_index: i64 = try skin_integer_value(document, joint_node)
+                raise SkinError.InvalidSkinTable if joint_index < 0 or joint_index.usize() >= graph.nodes.count
+                raise SkinError.InvalidSkinTable if joint_nodes[joint_index.usize()]
+                joint_nodes[joint_index.usize()] <- true
+                rig_members[joint_index.usize()] <- true
+
+            mesh_root: mutable usize = JSON_INDEX_NONE
+            for node_ordinal in 0..<source_nodes.child_count |document, nodes_index, source_nodes, mesh_root|:
+                node_index: usize = try skin_array_item(document, nodes_index, node_ordinal)
+                raise SkinError.InvalidSkinPlacement if document.nodes[node_index].kind != JsonNodeKind.Object
+                mesh_field: usize = try skin_member_index(document, node_index, "mesh")
+                node_skin_field: usize = try skin_member_index(document, node_index, "skin")
+                raise SkinError.InvalidSkinPlacement if node_skin_field != JSON_INDEX_NONE and mesh_field == JSON_INDEX_NONE
+                if node_skin_field != JSON_INDEX_NONE and mesh_field != JSON_INDEX_NONE:
+                    node_skin: i64 = try skin_integer_value(document, node_skin_field)
+                    if node_skin >= 0 and node_skin.usize() == skin_index and mesh_root == JSON_INDEX_NONE:
+                        mesh_root <- node_ordinal
+            raise SkinError.SkinNotReferenced if mesh_root == JSON_INDEX_NONE
+
+            ancestor: mutable i64 = mesh_root.i64()
+            ancestor_steps: mutable usize = 0
+            while ancestor >= 0 |graph, mesh_space_ancestors, ancestor, ancestor_steps|:
+                raise SkinError.InvalidNodeGraph if ancestor.usize() >= graph.nodes.count or ancestor_steps >= graph.nodes.count
+                mesh_space_ancestors[ancestor.usize()] <- true
+                ancestor_steps <- ancestor_steps + 1
+                ancestor <- graph.parent_indices[ancestor.usize()]
+            raise SkinError.InvalidNodeGraph if ancestor < -1i64
+
+            animations_index: usize = try skin_member_index(document, root_index, "animations")
+            if animations_index != JSON_INDEX_NONE and animations_index < document.nodes.count and document.nodes[animations_index].kind == JsonNodeKind.Array:
+                animations: JsonNode = document.nodes[animations_index]
+                for animation_ordinal in 0..<animations.child_count |document, animations_index, animations, animated_nodes|:
+                    animation_index: usize = try skin_array_item(document, animations_index, animation_ordinal)
+                    if document.nodes[animation_index].kind == JsonNodeKind.Object:
+                        channels_index: usize = try skin_member_index(document, animation_index, "channels")
+                        if channels_index != JSON_INDEX_NONE and channels_index < document.nodes.count and document.nodes[channels_index].kind == JsonNodeKind.Array:
+                            channels: JsonNode = document.nodes[channels_index]
+                            for channel_ordinal in 0..<channels.child_count |document, channels_index, channels, animated_nodes|:
+                                channel_index: usize = try skin_array_item(document, channels_index, channel_ordinal)
+                                if document.nodes[channel_index].kind == JsonNodeKind.Object:
+                                    target_index: usize = try skin_member_index(document, channel_index, "target")
+                                    if target_index != JSON_INDEX_NONE and target_index < document.nodes.count and document.nodes[target_index].kind == JsonNodeKind.Object:
+                                        target_node_index: usize = try skin_member_index(document, target_index, "node")
+                                        if target_node_index != JSON_INDEX_NONE and target_node_index < document.nodes.count and document.nodes[target_node_index].kind == JsonNodeKind.Number:
+                                            catch skin_integer_value(document, target_node_index):
+                                                ok animated_node_index:
+                                                    if animated_node_index >= 0 and animated_node_index.usize() < animated_nodes.count:
+                                                        animated_nodes[animated_node_index.usize()] <- true
+                                                error failure:
+                                                    _ = failure
+
+            for node_index in 0..<graph.nodes.count |graph, joint_nodes, mesh_space_ancestors, animated_nodes, rig_members, ancestor, ancestor_steps|:
+                if joint_nodes[node_index]:
+                    ancestor <- graph.parent_indices[node_index]
+                    ancestor_steps <- 0
+                    while ancestor >= 0 |graph, joint_nodes, mesh_space_ancestors, animated_nodes, rig_members, ancestor, ancestor_steps|:
+                        raise SkinError.InvalidNodeGraph if ancestor.usize() >= graph.nodes.count or ancestor_steps >= graph.nodes.count
+                        ancestor_index: usize = ancestor.usize()
+                        if not joint_nodes[ancestor_index] and not mesh_space_ancestors[ancestor_index]:
+                            if not skin_affine_is_identity(graph.nodes[ancestor_index].local_transform) or animated_nodes[ancestor_index]:
+                                rig_members[ancestor_index] <- true
+                        ancestor_steps <- ancestor_steps + 1
+                        ancestor <- graph.parent_indices[ancestor_index]
+                    raise SkinError.InvalidNodeGraph if ancestor < -1i64
+
+            rig_nodes: mutable darray[usize] = []
+            for node_index in 0..<rig_members.count |rig_members, rig_nodes|:
+                if rig_members[node_index]:
+                    rig_nodes.push(node_index)
+            return SkinRigMembership{
+                mesh_root: mesh_root,
+                mesh_space_ancestors: mesh_space_ancestors,
+                animated_nodes: animated_nodes,
+                rig_nodes: rig_nodes
             }
 
 
