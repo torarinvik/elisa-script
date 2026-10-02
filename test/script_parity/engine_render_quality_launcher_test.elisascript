@@ -1,0 +1,234 @@
+# Bounded process parity for the two engine render-quality script ports.
+# Run only through the bounded validation wrapper after explicit reauthorization.
+include "../../src/testing/differential.elisa"
+
+using EsDifferential
+
+
+module EsEngineRenderQualityLauncherParity:
+    private:
+        const module Commands:
+            PYTHON: sview = "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/bin/python3.14"
+            MIRRORED_REFERENCE: sview = "../elisa-engine/scripts/compare_mirrored_normal.py"
+            OCCLUSION_REFERENCE: sview = "../elisa-engine/scripts/compare_occlusion_strength.py"
+            MIRRORED_CANDIDATE: sview = "ports/elisa-engine/scripts/compare_mirrored_normal.elisascript"
+            OCCLUSION_CANDIDATE: sview = "ports/elisa-engine/scripts/compare_occlusion_strength.elisascript"
+            PINNED_COMPILER: sview = "/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
+            CONTROLLED_PATH: sview = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            PNG_WIDTH: usize = 64
+            PNG_HEIGHT: usize = 16
+            MAX_PROCESS_OUTPUT_BYTES: u64 = 16384
+            TIMEOUT_STEPS: u64 = 120000
+
+
+        def append_png_u32_be(output: mutable darray[u8]&, value: u32) -> void can[Memory.Allocate, Abort.Panic]:
+            output.push((value >> 24).u8())
+            output.push((value >> 16).u8())
+            output.push((value >> 8).u8())
+            output.push(value.u8())
+
+
+        def append_png_chunk(output: mutable darray[u8]&, first: u8, second: u8, third: u8, fourth: u8, payload: darray[u8]&) -> void can[Memory.Allocate, Abort.Panic]:
+            append_png_u32_be(output, payload.count.u32())
+            output.push(first)
+            output.push(second)
+            output.push(third)
+            output.push(fourth)
+            for byte in payload |output|:
+                output.push(byte)
+            # The production reader intentionally matches compare_renders.py
+            # by skipping, rather than validating, each chunk CRC.
+            output.push(0u8)
+            output.push(0u8)
+            output.push(0u8)
+            output.push(0u8)
+
+
+        def grayscale_png(left: u8, right: u8, split_x: usize) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            filtered: mutable darray[u8] = []
+            for _ in 0..<Commands::PNG_HEIGHT |filtered|:
+                filtered.push(0u8)
+                for x in 0..<Commands::PNG_WIDTH |x, left, right, split_x, filtered|:
+                    pixel: u8 = left if x < split_x else right
+                    filtered.push(pixel)
+                    filtered.push(pixel)
+                    filtered.push(pixel)
+
+            adler_a: mutable u32 = 1u32
+            adler_b: mutable u32 = 0u32
+            for byte in filtered |adler_a, adler_b|:
+                adler_a <- (adler_a + byte.u32()) % 65521u32
+                adler_b <- (adler_b + adler_a) % 65521u32
+            adler: u32 = (adler_b << 16) | adler_a
+
+            block_length: u32 = filtered.count.u32()
+            inverse_length: u32 = block_length ^ 65535u32
+            compressed: mutable darray[u8] = [120u8, 1u8, 1u8]
+            compressed.push(block_length.u8())
+            compressed.push((block_length >> 8).u8())
+            compressed.push(inverse_length.u8())
+            compressed.push((inverse_length >> 8).u8())
+            for byte in filtered |compressed|:
+                compressed.push(byte)
+            append_png_u32_be(compressed, adler)
+
+            header: darray[u8] = [0u8, 0u8, 0u8, 64u8, 0u8, 0u8, 0u8, 16u8, 8u8, 2u8, 0u8, 0u8, 0u8]
+            empty: darray[u8] = []
+            png: mutable darray[u8] = [137u8, 80u8, 78u8, 71u8, 13u8, 10u8, 26u8, 10u8]
+            append_png_chunk(png, 73u8, 72u8, 68u8, 82u8, header)
+            append_png_chunk(png, 73u8, 68u8, 65u8, 84u8, compressed)
+            append_png_chunk(png, 73u8, 69u8, 78u8, 68u8, empty)
+            return png
+
+
+        def write_png(target: Path, contents: darray[u8]) -> bool can[File.Write, Memory.Allocate, Abort.Panic]:
+            written: usize = try write_bytes(target, contents) else failure:
+                _ = failure
+                return false
+            return written == contents.count
+
+
+        def controlled_environment() -> darray[DifferentialEnvironmentEntry] can[Memory.Allocate, Abort.Panic]:
+            return [
+                DifferentialEnvironmentEntry{name: "PATH", value: Commands::CONTROLLED_PATH},
+                DifferentialEnvironmentEntry{name: "LC_ALL", value: "C"},
+                DifferentialEnvironmentEntry{name: "LANG", value: "C"},
+                DifferentialEnvironmentEntry{name: "ELISA_LOCAL_COMPILER", value: Commands::PINNED_COMPILER},
+                DifferentialEnvironmentEntry{name: "ELISACORE_BIN", value: Commands::PINNED_COMPILER}
+            ]
+
+
+        def run_bounded_process(target: sview, arguments: darray[sview], name: sview, environment: darray[DifferentialEnvironmentEntry]&) -> DifferentialRun error[DifferentialRunnerError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            runner: DifferentialRunner = DifferentialRunner{
+                kind: DifferentialRunnerKind.NativeProcess,
+                name: name,
+                target: target,
+                arguments: arguments,
+                working_directory: "/",
+                environment: environment,
+                environment_mode: EsProcess::ProcessEnvironmentMode.Replace,
+                timeout_steps: Commands::TIMEOUT_STEPS,
+                max_output_bytes: Commands::MAX_PROCESS_OUTPUT_BYTES
+            }
+            return try run_differential_process(runner)
+
+
+        def process_pair_matches(launcher: sview, python: sview, reference_script: sview, candidate_script: sview, arguments: darray[sview], expected_status: i64, expected_stdout: sview, expected_stderr: sview) -> bool can[Memory.Allocate, Abort.Panic, Console.Write, Unsafe.PointerCast]:
+            environment: darray[DifferentialEnvironmentEntry] = controlled_environment()
+            reference_arguments: mutable darray[sview] = [reference_script]
+            candidate_arguments: mutable darray[sview] = [candidate_script]
+            for argument in arguments |reference_arguments, candidate_arguments|:
+                reference_arguments.push(argument)
+                candidate_arguments.push(argument)
+
+            reference: mutable DifferentialRun = DifferentialRun{observations: []}
+            candidate: mutable DifferentialRun = DifferentialRun{observations: []}
+            catch run_bounded_process(python, reference_arguments, "python-engine-render-quality-reference", environment):
+                ok value:
+                    reference <- value
+                error failure:
+                    _ = failure
+                    print("engine render-quality parity: Python reference exceeded process bounds")
+                    return false
+            catch run_bounded_process(launcher, candidate_arguments, "elisascript-engine-render-quality-candidate", environment):
+                ok value:
+                    candidate <- value
+                error failure:
+                    _ = failure
+                    print("engine render-quality parity: Elisascript candidate exceeded process bounds")
+                    return false
+
+            comparison: DifferentialComparison = compare_differential_runs(reference, candidate)
+            return false if reference.outcome != DifferentialRunOutcome.Completed or candidate.outcome != DifferentialRunOutcome.Completed
+            return false if not comparison.equal
+            return false if reference.exit_status != expected_status or reference.stdout != expected_stdout or reference.stderr != expected_stderr
+            return false if candidate.exit_status != expected_status or candidate.stdout != expected_stdout or candidate.stderr != expected_stderr
+            return true
+
+
+        def remove_temporary(root: Path) -> bool can[Memory.Allocate, Abort.Panic, File.Write]:
+            return try remove_tree(root) else false
+
+
+    public:
+        def pinned_compiler_path() -> sview:
+            return Commands::PINNED_COMPILER
+
+
+        def bounded_python_parity(launcher: sview) -> bool can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast]:
+            reference_mirrored: Path = try path_real(path(Commands::MIRRORED_REFERENCE)) else failure:
+                _ = failure
+                return false
+            reference_occlusion: Path = try path_real(path(Commands::OCCLUSION_REFERENCE)) else failure:
+                _ = failure
+                return false
+            candidate_mirrored: Path = try path_real(path(Commands::MIRRORED_CANDIDATE)) else failure:
+                _ = failure
+                return false
+            candidate_occlusion: Path = try path_real(path(Commands::OCCLUSION_CANDIDATE)) else failure:
+                _ = failure
+                return false
+            return false if not is_file(path(Commands::PYTHON)) or launcher == "" or not launcher.startswith("/")
+
+            temporary: Path = try temp_directory("elisascript-engine-render-quality-parity") else failure:
+                _ = failure
+                return false
+            mirror_capture: Path = temporary.joinpath("mirrored-normal.png")
+            occluded_capture: Path = temporary.joinpath("occluded.png")
+            zero_capture: Path = temporary.joinpath("strength-zero.png")
+            mirrored_png: darray[u8] = grayscale_png(20u8, 240u8, 32)
+            occluded_png: darray[u8] = grayscale_png(100u8, 100u8, 0)
+            zero_png: darray[u8] = grayscale_png(120u8, 120u8, 0)
+            fixtures_ready: bool = write_png(mirror_capture, mirrored_png) and write_png(occluded_capture, occluded_png) and write_png(zero_capture, zero_png)
+            if not fixtures_ready:
+                _ = remove_temporary(temporary)
+                return false
+
+            mirror_path: sview = f"{mirror_capture}"
+            occluded_path: sview = f"{occluded_capture}"
+            zero_path: sview = f"{zero_capture}"
+            mirrored_ok: bool = process_pair_matches(
+                launcher,
+                Commands::PYTHON,
+                f"{reference_mirrored}",
+                f"{candidate_mirrored}",
+                [mirror_path],
+                0i64,
+                "mirrored normal map: left=0.0784 right=0.9412 contrast=0.8627\n",
+                ""
+            )
+            if not mirrored_ok:
+                _ = remove_temporary(temporary)
+                return false
+            occlusion_ok: bool = process_pair_matches(
+                launcher,
+                Commands::PYTHON,
+                f"{reference_occlusion}",
+                f"{candidate_occlusion}",
+                [occluded_path, zero_path],
+                0i64,
+                "occlusion strength: strength=0.65 luminance=0.3922, strength=0 luminance=0.4706, darkening=0.0784\n",
+                ""
+            )
+            removed: bool = remove_temporary(temporary)
+            return mirrored_ok and occlusion_ok and removed
+
+
+@test
+def engine_render_quality_scripts_match_python_on_bounded_png_captures() -> void:
+    can Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Console.Write, Environment.Read, File.Read, File.Write, Directory.Read, Directory.Write, Unsafe.PointerCast:
+        reauthorized: sview = try getenv("ELISASCRIPT_VALIDATION_REAUTHORIZED", "") else failure:
+            ""
+        rss_guard: sview = try getenv("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD", "") else failure:
+            ""
+        compiler: sview = try getenv("ELISA_LOCAL_COMPILER", "") else failure:
+            ""
+        elisacore_bin: sview = try getenv("ELISACORE_BIN", "") else failure:
+            ""
+        launcher: sview = try getenv("ELISASCRIPT_PUBLIC_LAUNCHER", "") else failure:
+            ""
+        assert reauthorized == "1"
+        assert rss_guard == "active"
+        assert compiler == EsEngineRenderQualityLauncherParity::pinned_compiler_path()
+        assert elisacore_bin == EsEngineRenderQualityLauncherParity::pinned_compiler_path()
+        assert EsEngineRenderQualityLauncherParity::bounded_python_parity(launcher)
