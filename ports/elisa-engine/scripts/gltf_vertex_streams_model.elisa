@@ -13,7 +13,9 @@ module EsEngineGltfVertexStreams:
         const module Limits:
             MAX_VERTICES: usize = 2000000
             MAX_MORPH_TARGETS: usize = 32
-            MAX_TOTAL_STREAM_BYTES: usize = 536870912
+            # Derived from source limits: at most 2M vertices, all base
+            # streams plus four-lane skin data, and 32 position/normal morphs.
+            MAX_TOTAL_STREAM_BYTES: usize = 2147483648
 
 
         struct MorphTargetStreams:
@@ -35,6 +37,11 @@ module EsEngineGltfVertexStreams:
             skin: EsEngineGltfSkin::SkinInfluences = EsEngineGltfSkin::SkinInfluences{}
             morph_targets: darray[MorphTargetStreams] = []
             count: usize = 0
+            triangles: darray[u32] = []
+
+
+        struct TrianglePrimitive:
+            vertices: VertexStreams
             triangles: darray[u32] = []
 
 
@@ -60,27 +67,38 @@ module EsEngineGltfVertexStreams:
             MorphPositionStreamInvalid
             MorphNormalStreamInvalid
             OutputLimitExceeded
+            UnsupportedPrimitiveMode
+            MissingIndices
+            InvalidIndexReference
+            InvalidIndexFormat
+            InvalidIndexCount
+            IndexOutOfRange
+            IndexDataInvalid
 
 
         # Decode one primitive's compact little-endian streams. Mesh/primitive
         # ordinals keep callers independent of JsonDocument node numbering;
         # optional streams are represented explicitly in the result type.
         def read_mesh_primitive_vertex_streams(document: JsonDocument&, buffer: darray[u8]&, mesh_index: usize, primitive_ordinal: usize = 0u) -> VertexStreams error[VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
-            raise VertexStreamError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
-            root_index: usize = document.roots[0]
-            raise VertexStreamError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
-            meshes_index: usize = try vertex_member_index(document, root_index, "meshes")
-            raise VertexStreamError.InvalidPrimitive if meshes_index == JSON_INDEX_NONE or meshes_index >= document.nodes.count or document.nodes[meshes_index].kind != JsonNodeKind.Array
-            meshes: JsonNode = document.nodes[meshes_index]
-            raise VertexStreamError.InvalidPrimitive if mesh_index >= meshes.child_count
-            mesh_node_index: usize = try vertex_array_item(document, meshes_index, mesh_index)
-            raise VertexStreamError.InvalidPrimitive if document.nodes[mesh_node_index].kind != JsonNodeKind.Object
-            primitives_index: usize = try vertex_member_index(document, mesh_node_index, "primitives")
-            raise VertexStreamError.InvalidPrimitive if primitives_index == JSON_INDEX_NONE or primitives_index >= document.nodes.count or document.nodes[primitives_index].kind != JsonNodeKind.Array
-            primitives: JsonNode = document.nodes[primitives_index]
-            raise VertexStreamError.InvalidPrimitive if primitive_ordinal >= primitives.child_count
-            primitive_index: usize = try vertex_array_item(document, primitives_index, primitive_ordinal)
+            primitive_index: usize = try vertex_mesh_primitive_index(document, mesh_index, primitive_ordinal)
             return try read_primitive_vertex_streams_at(document, buffer, primitive_index)
+
+
+        # Compose the vertex helper with cook_gltf_geometry.read_indices. This
+        # is the smallest unit that represents an actual triangle primitive.
+        def read_triangle_primitive(document: JsonDocument&, buffer: darray[u8]&, mesh_index: usize, primitive_ordinal: usize = 0u) TrianglePrimitive error[VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            primitive_index: usize = try vertex_mesh_primitive_index(document, mesh_index, primitive_ordinal)
+            mode_index: usize = try vertex_member_index(document, primitive_index, "mode")
+            if mode_index != JSON_INDEX_NONE:
+                mode: f64 = try vertex_number_value(document, mode_index) else failure:
+                    _ = failure
+                    raise VertexStreamError.UnsupportedPrimitiveMode
+                raise VertexStreamError.UnsupportedPrimitiveMode if mode != 4.0
+
+            vertices: VertexStreams = try read_primitive_vertex_streams_at(document, buffer, primitive_index)
+            triangles: darray[u32] = try EsEngineGltfAccessor::index_stream(document, buffer, primitive_index, vertices.count.i64()) else failure:
+                raise vertex_index_error(failure)
+            return TrianglePrimitive{vertices: vertices, triangles: triangles}
 
 
         def read_primitive_vertex_streams_at(document: JsonDocument&, buffer: darray[u8]&, primitive_index: usize) -> VertexStreams error[VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
@@ -92,6 +110,15 @@ module EsEngineGltfVertexStreams:
             attributes_index: usize = try vertex_member_index(document, primitive_index, "attributes")
             raise VertexStreamError.MissingAttributes if attributes_index == JSON_INDEX_NONE or attributes_index >= document.nodes.count or document.nodes[attributes_index].kind != JsonNodeKind.Object
             try vertex_validate_attributes(document, attributes_index)
+
+            targets_index: usize = try vertex_member_index(document, primitive_index, "targets")
+            if targets_index != JSON_INDEX_NONE:
+                raise VertexStreamError.InvalidMorphTargets if targets_index >= document.nodes.count or document.nodes[targets_index].kind != JsonNodeKind.Array or document.nodes[targets_index].child_count > Limits::MAX_MORPH_TARGETS
+                targets: JsonNode = document.nodes[targets_index]
+                for target_ordinal in 0..<targets.child_count |document, targets_index, targets|:
+                    target_index: usize = try vertex_array_item(document, targets_index, target_ordinal)
+                    raise VertexStreamError.InvalidMorphTargets if document.nodes[target_index].kind != JsonNodeKind.Object
+                    try vertex_validate_morph_target(document, target_index)
 
             position_reference: i64 = try vertex_required_attribute_reference(document, attributes_index, "POSITION", VertexStreamError.MissingPositions)
             position_count: i64 = try vertex_accessor_count(document, position_reference) else failure:
@@ -107,7 +134,6 @@ module EsEngineGltfVertexStreams:
             has_normals: bool = try vertex_has_attribute(document, attributes_index, "NORMAL")
             tangents: darray[u8] = try vertex_optional_float_stream(document, buffer, attributes_index, "TANGENT", "VEC4", count.i64(), VertexStreamError.TangentStreamInvalid)
             has_tangents: bool = try vertex_has_attribute(document, attributes_index, "TANGENT")
-            raise VertexStreamError.TangentStreamInvalid if has_tangents and not has_normals
             uvs: darray[u8] = try vertex_optional_float_stream(document, buffer, attributes_index, "TEXCOORD_0", "VEC2", count.i64(), VertexStreamError.UvStreamInvalid)
             if not try vertex_has_attribute(document, attributes_index, "TEXCOORD_0"):
                 uvs <- vertex_zero_bytes(count * 8)
@@ -115,8 +141,6 @@ module EsEngineGltfVertexStreams:
             has_uv1s: bool = try vertex_has_attribute(document, attributes_index, "TEXCOORD_1")
 
             has_joints: bool = try vertex_has_attribute(document, attributes_index, "JOINTS_0")
-            has_weights: bool = try vertex_has_attribute(document, attributes_index, "WEIGHTS_0")
-            raise VertexStreamError.InvalidSkinAttributes if has_joints != has_weights
             skin: mutable EsEngineGltfSkin::SkinInfluences = EsEngineGltfSkin::SkinInfluences{}
             if has_joints:
                 skin <- try EsEngineGltfSkin::read_influences(document, buffer, attributes_index, count.i64()) else failure:
@@ -127,15 +151,11 @@ module EsEngineGltfVertexStreams:
             total_stream_bytes <- total_stream_bytes + skin.joints.count * 4 + skin.weights.count * 4
             raise VertexStreamError.OutputLimitExceeded if total_stream_bytes > Limits::MAX_TOTAL_STREAM_BYTES
 
-            targets_index: usize = try vertex_member_index(document, primitive_index, "targets")
             morph_targets: mutable darray[MorphTargetStreams] = []
             if targets_index != JSON_INDEX_NONE:
-                raise VertexStreamError.InvalidMorphTargets if targets_index >= document.nodes.count or document.nodes[targets_index].kind != JsonNodeKind.Array or document.nodes[targets_index].child_count > Limits::MAX_MORPH_TARGETS
                 targets: JsonNode = document.nodes[targets_index]
                 for target_ordinal in 0..<targets.child_count |document, targets_index, targets, morph_targets, buffer, count|:
                     target_index: usize = try vertex_array_item(document, targets_index, target_ordinal)
-                    raise VertexStreamError.InvalidMorphTargets if document.nodes[target_index].kind != JsonNodeKind.Object
-                    try vertex_validate_morph_target(document, target_index)
                     position_field: usize = try vertex_member_index(document, target_index, "POSITION")
                     raise VertexStreamError.MissingMorphPositions if position_field == JSON_INDEX_NONE
                     morph_position_reference: i64 = try vertex_integer_value(document, position_field) else failure:
@@ -175,6 +195,33 @@ module EsEngineGltfVertexStreams:
 
 
     private:
+        def vertex_mesh_primitive_index(document: JsonDocument&, mesh_index: usize, primitive_ordinal: usize) usize error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise VertexStreamError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise VertexStreamError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            root_index: usize = document.roots[0]
+            raise VertexStreamError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            meshes_index: usize = try vertex_member_index(document, root_index, "meshes")
+            raise VertexStreamError.InvalidPrimitive if meshes_index == JSON_INDEX_NONE or meshes_index >= document.nodes.count or document.nodes[meshes_index].kind != JsonNodeKind.Array
+            meshes: JsonNode = document.nodes[meshes_index]
+            raise VertexStreamError.InvalidPrimitive if mesh_index >= meshes.child_count
+            mesh_node_index: usize = try vertex_array_item(document, meshes_index, mesh_index)
+            raise VertexStreamError.InvalidPrimitive if document.nodes[mesh_node_index].kind != JsonNodeKind.Object
+            primitives_index: usize = try vertex_member_index(document, mesh_node_index, "primitives")
+            raise VertexStreamError.InvalidPrimitive if primitives_index == JSON_INDEX_NONE or primitives_index >= document.nodes.count or document.nodes[primitives_index].kind != JsonNodeKind.Array
+            primitives: JsonNode = document.nodes[primitives_index]
+            raise VertexStreamError.InvalidPrimitive if primitive_ordinal >= primitives.child_count
+            return try vertex_array_item(document, primitives_index, primitive_ordinal)
+
+
+        def vertex_index_error(failure: EsEngineGltfAccessor::AccessorError) VertexStreamError:
+            return VertexStreamError.MissingIndices if failure == EsEngineGltfAccessor::AccessorError.MissingIndexStream
+            return VertexStreamError.InvalidIndexReference if failure == EsEngineGltfAccessor::AccessorError.AccessorIndexOutOfRange or failure == EsEngineGltfAccessor::AccessorError.IndexAccessorOutOfRange
+            return VertexStreamError.InvalidIndexFormat if failure == EsEngineGltfAccessor::AccessorError.InvalidIndexAccessor or failure == EsEngineGltfAccessor::AccessorError.InvalidIndexFormat
+            return VertexStreamError.InvalidIndexCount if failure == EsEngineGltfAccessor::AccessorError.InvalidTriangleIndexCount
+            return VertexStreamError.IndexOutOfRange if failure == EsEngineGltfAccessor::AccessorError.IndexReferencesMissingVertex
+            return VertexStreamError.IndexDataInvalid
+
+
         def vertex_optional_float_stream(document: JsonDocument&, buffer: darray[u8]&, attributes_index: usize, key: sview, type_name: sview, expected_count: i64, failure: VertexStreamError) darray[u8] error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
             field_index: usize = try vertex_member_index(document, attributes_index, key)
             return [] if field_index == JSON_INDEX_NONE
@@ -225,6 +272,12 @@ module EsEngineGltfVertexStreams:
                 _ = try vertex_integer_value(document, member.value_index) else failure:
                     _ = failure
                     raise VertexStreamError.InvalidAttributeReference
+            has_tangent: bool = try vertex_member_index(document, attributes_index, "TANGENT") != JSON_INDEX_NONE
+            has_normal: bool = try vertex_member_index(document, attributes_index, "NORMAL") != JSON_INDEX_NONE
+            raise VertexStreamError.TangentStreamInvalid if has_tangent and not has_normal
+            has_joints: bool = try vertex_member_index(document, attributes_index, "JOINTS_0") != JSON_INDEX_NONE
+            has_weights: bool = try vertex_member_index(document, attributes_index, "WEIGHTS_0") != JSON_INDEX_NONE
+            raise VertexStreamError.InvalidSkinAttributes if has_joints != has_weights
 
 
         def vertex_attribute_key_allowed(document: JsonDocument&, member: JsonMember) bool error[VertexStreamError]:
@@ -247,13 +300,19 @@ module EsEngineGltfVertexStreams:
             target: JsonNode = document.nodes[target_index]
             if target.member_count == 0:
                 raise VertexStreamError.InvalidMorphTargets if target.member_start != JSON_INDEX_NONE
-                return
+                raise VertexStreamError.MissingMorphPositions
             raise VertexStreamError.InvalidMorphTargets if target.member_start > document.members.count or target.member_count > document.members.count - target.member_start
             for ordinal in 0..<target.member_count |document, target, target_index|:
                 member: JsonMember = document.members[target.member_start + ordinal]
                 allowed: mutable bool = try vertex_key_is(document, member, "POSITION")
                 allowed <- try vertex_key_is(document, member, "NORMAL") if not allowed
                 raise VertexStreamError.UnsupportedMorphAttribute if not allowed
+                raise VertexStreamError.InvalidMorphTargets if member.value_index >= document.nodes.count or document.nodes[member.value_index].kind != JsonNodeKind.Number
+                _ = try vertex_integer_value(document, member.value_index) else failure:
+                    _ = failure
+                    raise VertexStreamError.InvalidMorphTargets
+            position_index: usize = try vertex_member_index(document, target_index, "POSITION")
+            raise VertexStreamError.MissingMorphPositions if position_index == JSON_INDEX_NONE
 
 
         def vertex_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[VertexStreamError]:
@@ -286,6 +345,21 @@ module EsEngineGltfVertexStreams:
             field_index: usize = try vertex_member_index(document, object_index, key)
             raise VertexStreamError.InvalidDocument if field_index == JSON_INDEX_NONE
             return try vertex_integer_value(document, field_index)
+
+
+        def vertex_number_value(document: JsonDocument&, node_index: usize) f64 error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
+            raise VertexStreamError.InvalidDocument if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise VertexStreamError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable f64 = 0.0
+            catch parse_float(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise VertexStreamError.InvalidDocument
+            return parsed
 
 
         def vertex_integer_value(document: JsonDocument&, node_index: usize) i64 error[VertexStreamError] can[Memory.Allocate, Abort.Panic]:
