@@ -1,0 +1,224 @@
+# Normalize core glTF material factors into the fixed runtime slot record.
+# Texture references and image payloads are intentionally handled by the
+# texture-resolution layer, not by this factor-only adapter.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "cook_gltf_material_factors_model.elisa"
+
+using EsData
+using EsEngineGltfMaterialFactors
+using EsJson
+
+
+module EsEngineGltfMaterialRecords:
+    public:
+        const module Limits:
+            MAX_MATERIAL_SLOTS: usize = 16
+            CORE_FACTOR_COUNT: usize = 10
+            SLOT_MATERIAL_STRIDE: usize = 48
+
+
+        const module Flags:
+            DOUBLE_SIDED: u32 = 1u32
+            OCCLUSION: u32 = 2u32
+
+
+        const module AlphaMode:
+            OPAQUE: u32 = 0u32
+            MASK: u32 = 1u32
+            BLEND: u32 = 2u32
+
+
+        struct CoreMaterialRecord:
+            source_material_index: usize
+            factors: darray[f32] = []
+            alpha_mode: u32 = AlphaMode::OPAQUE
+            flags: u32 = 0u32
+            has_base_color_texture: bool = false
+
+
+        struct MaterialRecordSet:
+            slot_count: usize = 1
+            records: darray[CoreMaterialRecord] = []
+
+
+        error MaterialRecordError:
+            InvalidDocument
+            InvalidMaterials
+            MaterialCountOutOfRange
+            InvalidMaterial
+            InvalidPbr
+            UnsupportedMaterialProperty
+            UnsupportedPbrProperty
+            InvalidAlphaMode
+            InvalidDoubleSided
+            MaskMaterialNeedsBaseColorTexture
+
+
+        # Match the core factor/tag payload emitted by cook_gltf_geometry.py:
+        # four base-color, metallic, roughness, three emissive, alpha cutoff,
+        # then alpha-mode and flags are retained as typed fields for packing.
+        # This does not resolve texture indices, validate samplers/images, or
+        # prove that a masked base-color texture is a valid image.
+        def document_material_records(document: JsonDocument&) MaterialRecordSet error[MaterialRecordError, MaterialFactorError, JsonContractError] can[Memory.Allocate, Abort.Panic]:
+            try validate_json_document(document)
+            raise MaterialRecordError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise MaterialRecordError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            raise MaterialRecordError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+
+            materials_member: usize = record_member_index(document, root_index, "materials")
+            if materials_member == JSON_INDEX_NONE:
+                return MaterialRecordSet{}
+            materials_index: usize = document.members[materials_member].value_index
+            raise MaterialRecordError.InvalidMaterials if materials_index >= document.nodes.count or document.nodes[materials_index].kind != JsonNodeKind.Array
+            materials: JsonNode = document.nodes[materials_index]
+            raise MaterialRecordError.MaterialCountOutOfRange if materials.child_count > Limits::MAX_MATERIAL_SLOTS
+
+            records: mutable darray[CoreMaterialRecord] = []
+            for ordinal in 0..<materials.child_count |document, materials_index, materials, records|:
+                material_index: usize = try record_array_item(document, materials_index, ordinal)
+                raise MaterialRecordError.InvalidMaterial if document.nodes[material_index].kind != JsonNodeKind.Object
+                records.push(try record_material(document, material_index))
+            return MaterialRecordSet{slot_count: 1 if records.count == 0 else records.count, records: records}
+
+
+        # Factor counts and ordering match the downstream 48-byte material
+        # record. Alpha mode/flags remain separate uint32 fields in that
+        # record, so callers do not have to reverse-engineer packed bytes.
+        def record_material(document: JsonDocument&, material_index: usize) CoreMaterialRecord error[MaterialRecordError, MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialRecordError.InvalidMaterial if material_index >= document.nodes.count or document.nodes[material_index].kind != JsonNodeKind.Object
+            try validate_clearcoat(document, material_index)
+
+            try record_supported_keys(document, material_index, false)
+            pbr_index: usize = record_member_index(document, material_index, "pbrMetallicRoughness")
+            if pbr_index != JSON_INDEX_NONE:
+                raise MaterialRecordError.InvalidPbr if pbr_index >= document.nodes.count or document.nodes[pbr_index].kind != JsonNodeKind.Object
+                try record_supported_keys(document, pbr_index, true)
+
+            factors: mutable darray[f32] = []
+            base_color_index: usize = record_member_index(document, pbr_index, "baseColorFactor") if pbr_index != JSON_INDEX_NONE else JSON_INDEX_NONE
+            base_color: mutable darray[f64] = [1.0, 1.0, 1.0, 1.0]
+            if base_color_index != JSON_INDEX_NONE:
+                base_color <- try unit_factors(document, base_color_index, 4, "baseColorFactor")
+            for factor in base_color |factors|:
+                factors.push(factor.f32())
+
+            metallic_index: usize = record_member_index(document, pbr_index, "metallicFactor") if pbr_index != JSON_INDEX_NONE else JSON_INDEX_NONE
+            metallic: mutable f64 = 1.0
+            if metallic_index != JSON_INDEX_NONE:
+                metallic <- try unit_factor(document, metallic_index, "metallicFactor")
+            factors.push(metallic.f32())
+
+            roughness_index: usize = record_member_index(document, pbr_index, "roughnessFactor") if pbr_index != JSON_INDEX_NONE else JSON_INDEX_NONE
+            roughness: mutable f64 = 1.0
+            if roughness_index != JSON_INDEX_NONE:
+                roughness <- try unit_factor(document, roughness_index, "roughnessFactor")
+            factors.push(roughness.f32())
+
+            emissive_index: usize = record_member_index(document, material_index, "emissiveFactor")
+            emissive: mutable darray[f64] = [0.0, 0.0, 0.0]
+            if emissive_index != JSON_INDEX_NONE:
+                emissive <- try unit_factors(document, emissive_index, 3, "emissiveFactor")
+            for factor in emissive |factors|:
+                factors.push(factor.f32())
+
+            alpha_cutoff_index: usize = record_member_index(document, material_index, "alphaCutoff")
+            alpha_cutoff: mutable f64 = 0.5
+            if alpha_cutoff_index != JSON_INDEX_NONE:
+                alpha_cutoff <- try unit_factor(document, alpha_cutoff_index, "alphaCutoff")
+            factors.push(alpha_cutoff.f32())
+
+            alpha_mode_index: usize = record_member_index(document, material_index, "alphaMode")
+            alpha_mode: u32 = try record_alpha_mode(document, alpha_mode_index)
+            double_sided_index: usize = record_member_index(document, material_index, "doubleSided")
+            double_sided: bool = false
+            if double_sided_index != JSON_INDEX_NONE:
+                raise MaterialRecordError.InvalidDoubleSided if double_sided_index >= document.nodes.count or document.nodes[double_sided_index].kind != JsonNodeKind.Bool
+                double_sided <- document.nodes[double_sided_index].bool_value
+
+            base_color_texture_index: usize = record_member_index(document, pbr_index, "baseColorTexture") if pbr_index != JSON_INDEX_NONE else JSON_INDEX_NONE
+            raise MaterialRecordError.MaskMaterialNeedsBaseColorTexture if alpha_mode == AlphaMode::MASK and base_color_texture_index == JSON_INDEX_NONE
+            occlusion_index: usize = record_member_index(document, material_index, "occlusionTexture")
+            flags: u32 = (Flags::DOUBLE_SIDED if double_sided else 0u32) | (Flags::OCCLUSION if occlusion_index != JSON_INDEX_NONE else 0u32)
+            return CoreMaterialRecord{source_material_index: material_index, factors: factors, alpha_mode: alpha_mode, flags: flags, has_base_color_texture: base_color_texture_index != JSON_INDEX_NONE}
+
+
+    private:
+        def record_supported_keys(document: JsonDocument&, object_index: usize, pbr: bool) void error[MaterialRecordError]:
+            raise MaterialRecordError.InvalidDocument if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            raise MaterialRecordError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            for ordinal in 0..<owner.member_count |document, owner, pbr|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                allowed: bool = try record_key_allowed(document, member, pbr)
+                if not allowed:
+                    raise MaterialRecordError.UnsupportedPbrProperty if pbr
+                    raise MaterialRecordError.UnsupportedMaterialProperty
+
+
+        def record_key_allowed(document: JsonDocument&, member: JsonMember, pbr: bool) bool error[MaterialRecordError]:
+            if pbr:
+                return true if try record_key_is(document, member, "baseColorFactor")
+                return true if try record_key_is(document, member, "metallicFactor")
+                return true if try record_key_is(document, member, "roughnessFactor")
+                return true if try record_key_is(document, member, "baseColorTexture")
+                return try record_key_is(document, member, "metallicRoughnessTexture")
+            return true if try record_key_is(document, member, "name")
+            return true if try record_key_is(document, member, "pbrMetallicRoughness")
+            return true if try record_key_is(document, member, "emissiveFactor")
+            return true if try record_key_is(document, member, "alphaMode")
+            return true if try record_key_is(document, member, "alphaCutoff")
+            return true if try record_key_is(document, member, "doubleSided")
+            return true if try record_key_is(document, member, "normalTexture")
+            return true if try record_key_is(document, member, "occlusionTexture")
+            return true if try record_key_is(document, member, "emissiveTexture")
+            return try record_key_is(document, member, "extensions")
+
+
+        def record_alpha_mode(document: JsonDocument&, node_index: usize) u32 error[MaterialRecordError]:
+            return AlphaMode::OPAQUE if node_index == JSON_INDEX_NONE
+            return AlphaMode::OPAQUE if try record_text_is(document, node_index, "OPAQUE")
+            return AlphaMode::MASK if try record_text_is(document, node_index, "MASK")
+            return AlphaMode::BLEND if try record_text_is(document, node_index, "BLEND")
+            raise MaterialRecordError.InvalidAlphaMode
+
+
+        def record_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[MaterialRecordError]:
+            return JSON_INDEX_NONE if object_index == JSON_INDEX_NONE
+            raise MaterialRecordError.InvalidDocument if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            raise MaterialRecordError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, key, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                selected <- member.value_index if try record_key_is(document, member, key)
+            return selected
+
+
+        def record_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) usize error[MaterialRecordError]:
+            raise MaterialRecordError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise MaterialRecordError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise MaterialRecordError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise MaterialRecordError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def record_key_is(document: JsonDocument&, member: JsonMember, expected: sview) bool error[MaterialRecordError]:
+            raise MaterialRecordError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def record_text_is(document: JsonDocument&, node_index: usize, expected: sview) bool error[MaterialRecordError]:
+            return false if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Text
+            node: JsonNode = document.nodes[node_index]
+            raise MaterialRecordError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return false if node.scalar_bytes != len(expected)
+            for offset in 0..<node.scalar_bytes |document, node, expected|:
+                return false if document.scalar_data[node.scalar_start + offset] != sview_at(expected, offset.i64())
+            return true
