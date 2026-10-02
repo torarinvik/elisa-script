@@ -1,0 +1,123 @@
+# Typed depth-first flattening of a validated glTF node graph.
+include "gltf_affine_model.elisa"
+
+using EsEngineGltfAffine
+
+
+module EsEngineGltfNodeGraph:
+    public:
+        const module Limits:
+            MAX_NODES: usize = 256
+
+
+        struct GltfNode:
+            has_mesh: bool = false
+            mesh_index: usize = 0
+            children: darray[usize] = []
+            local_transform: Affine3x4 = Affine3x4{}
+
+
+        struct MeshPlacement:
+            mesh_index: usize
+            node_index: usize
+            world_transform: Affine3x4
+
+
+        error NodeGraphError:
+            NodeCountOutOfRange
+            ChildIndexOutOfRange
+            NodeHasMultipleParents
+            MeshIndexOutOfRange
+            InvalidRoot
+            RootHasParent
+            NodeReachedMoreThanOnce
+            NodeTransformNonFinite
+            NodeTransformNotInvertible
+            NodeUnreachable
+            MeshNotPlaced
+
+
+    private:
+        struct TraversalFrame:
+            node_index: usize
+            parent_world: Affine3x4
+
+
+    public:
+        # Mirrors cook_gltf_nodes.mesh_placement_records after node-local
+        # transforms have been decoded. Stack push order preserves source
+        # root/child ordering while traversal remains iterative and bounded.
+        def mesh_placement_records(nodes: darray[GltfNode], roots: darray[usize], mesh_count: usize, allow_singular_mesh_transforms: bool = false) -> darray[MeshPlacement] error[NodeGraphError] can[Memory.Allocate, Abort.Panic]:
+            raise NodeGraphError.NodeCountOutOfRange if nodes.count == 0 or nodes.count > Limits::MAX_NODES
+
+            parents: mutable darray[bool] = []
+            visited: mutable darray[bool] = []
+            for index in 0..<nodes.count |parents, visited|:
+                parents.push(false)
+                visited.push(false)
+
+            for parent_index in 0..<nodes.count |nodes, parents|:
+                node: GltfNode = nodes[parent_index]
+                if node.has_mesh:
+                    raise NodeGraphError.MeshIndexOutOfRange if node.mesh_index >= mesh_count
+                for child_ordinal in 0..<node.children.count |node, parents|:
+                    child_index: usize = node.children[child_ordinal]
+                    raise NodeGraphError.ChildIndexOutOfRange if child_index >= nodes.count
+                    raise NodeGraphError.NodeHasMultipleParents if child_index == parent_index or parents[child_index]
+                    parents[child_index] <- true
+
+            raise NodeGraphError.InvalidRoot if roots.count == 0
+            roots_seen: mutable darray[bool] = []
+            for index in 0..<nodes.count |roots_seen|:
+                roots_seen.push(false)
+            for root_ordinal in 0..<roots.count |roots, roots_seen, parents|:
+                root_index: usize = roots[root_ordinal]
+                raise NodeGraphError.InvalidRoot if root_index >= nodes.count
+                raise NodeGraphError.InvalidRoot if roots_seen[root_index]
+                roots_seen[root_index] <- true
+            for root_ordinal in 0..<roots.count |roots, parents|:
+                root_index: usize = roots[root_ordinal]
+                raise NodeGraphError.RootHasParent if parents[root_index]
+
+            tracked_mesh_count: usize = nodes.count if mesh_count > nodes.count else mesh_count
+            placed_meshes: mutable darray[bool] = []
+            for mesh_index in 0..<tracked_mesh_count |placed_meshes|:
+                placed_meshes.push(false)
+
+            identity: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0}
+            pending: mutable darray[TraversalFrame] = []
+            for ordinal in 0..<roots.count |roots, pending, identity|:
+                root_index: usize = roots[roots.count - ordinal - 1]
+                pending.push(TraversalFrame{node_index: root_index, parent_world: identity})
+
+            placements: mutable darray[MeshPlacement] = []
+            while pending.count > 0 |nodes, pending, visited, placements, placed_meshes, allow_singular_mesh_transforms|:
+                frame: TraversalFrame = pending.pop()
+                raise NodeGraphError.NodeReachedMoreThanOnce if visited[frame.node_index]
+                visited[frame.node_index] <- true
+                node: GltfNode = nodes[frame.node_index]
+                world: Affine3x4 = multiply_affine(frame.parent_world, node.local_transform)
+
+                if node.has_mesh:
+                    raise NodeGraphError.NodeTransformNonFinite if not affine_is_finite(world)
+                    determinant: f64 = determinant_affine(world)
+                    raise NodeGraphError.NodeTransformNotInvertible if not node_finite_f64(determinant) or (determinant == 0.0 and not allow_singular_mesh_transforms)
+                    placements.push(MeshPlacement{mesh_index: node.mesh_index, node_index: frame.node_index, world_transform: world})
+                    if node.mesh_index < placed_meshes.count:
+                        placed_meshes[node.mesh_index] <- true
+
+                for ordinal in 0..<node.children.count |node, pending, world|:
+                    child_index: usize = node.children[node.children.count - ordinal - 1]
+                    pending.push(TraversalFrame{node_index: child_index, parent_world: world})
+
+            for node_index in 0..<visited.count |visited|:
+                raise NodeGraphError.NodeUnreachable if not visited[node_index]
+            raise NodeGraphError.MeshNotPlaced if tracked_mesh_count != mesh_count
+            for mesh_index in 0..<placed_meshes.count |placed_meshes|:
+                raise NodeGraphError.MeshNotPlaced if not placed_meshes[mesh_index]
+            return placements
+
+
+    private:
+        def node_finite_f64(value: f64) -> bool:
+            return value <= 1.7976931348623157e308 and value >= -1.7976931348623157e308
