@@ -1,0 +1,225 @@
+#!/usr/bin/env elisascript
+# Bounded Elisascript counterpart of elisa-engine/scripts/fetch_recast.py.
+include "./fetch_recast_plan.elisa"
+include "../../../src/runtime/process_model.elisa"
+
+using EsEngineFetchRecastPlan
+using EsProcess
+
+
+module EsEngineFetchRecast:
+    private:
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 600000000i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+
+
+        const enum FetchPhase of u8:
+            ResolveRoot
+            CheckCheckout
+            Clone
+            VerifyRevision
+            CheckLibraries
+            Configure
+            Build
+            ValidateLibraries
+            ReportReady
+            Done
+
+
+        struct CommandCapture:
+            started: bool = false
+            status: i64 = 127i64
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct FetchState:
+            phase: FetchPhase
+            engine_root: Path
+            checkout: Path
+            build_directory: Path
+            command: EsEngineFetchRecastPlan::Command
+            capture: CommandCapture
+            exit_status: i64
+
+
+        def capture_command(command: EsEngineFetchRecastPlan::Command) -> CommandCapture can[Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format]:
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable(command.program), command.arguments, "", Limits::PROCESS_TIMEOUT_MICROS, Limits::PROCESS_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                return CommandCapture{}
+            return CommandCapture{
+                started: true,
+                status: capture.process_exit_status,
+                stdout: capture.process_stdout,
+                stderr: capture.process_stderr
+            }
+
+
+        def report_command_failure(command: EsEngineFetchRecastPlan::Command, capture: CommandCapture) -> void can[Console.Write, Memory.Allocate, Abort.Panic, Console.Format]:
+            if not capture.started:
+                _ = write_stderr("command failed (" + EsEngineFetchRecastPlan::command_text(command) + "): unable to start command or capture bounded output\n")
+                return
+            detail: sview = capture.stderr.strip()
+            detail <- capture.stdout.strip() if detail == ""
+            _ = write_stderr("command failed (" + EsEngineFetchRecastPlan::command_text(command) + "): " + detail + "\n")
+
+
+        def library_paths(engine_root: Path) -> darray[Path] can[Memory.Allocate, Abort.Panic, Console.Format]:
+            return [
+                engine_root.joinpath(EsEngineFetchRecastPlan::Dependency::RECAST_LIBRARY),
+                engine_root.joinpath(EsEngineFetchRecastPlan::Dependency::DETOUR_LIBRARY)
+            ]
+
+
+        def all_libraries_exist(engine_root: Path) -> bool can[File.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            for library in library_paths(engine_root):
+                present: bool = try is_file(library) else false
+                return false if not present
+            return true
+
+
+        def missing_library_message(engine_root: Path) -> sview can[File.Read, Memory.Allocate, Abort.Panic, Console.Format]:
+            message: mutable sview = "recast build did not produce: "
+            missing_count: mutable usize = 0
+            for library in library_paths(engine_root) |message, missing_count|:
+                present: bool = try is_file(library) else false
+                if not present:
+                    message <- message + ", " if missing_count > 0
+                    message <- message + f"{library}"
+                    missing_count <- missing_count + 1
+            return message
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # The Python fetcher ignores argv; preserve that entry-point behavior.
+            _ = arguments
+            state: mutable FetchState = FetchState{
+                phase: FetchPhase.ResolveRoot,
+                engine_root: path("."),
+                checkout: path("."),
+                build_directory: path("."),
+                command: EsEngineFetchRecastPlan::Command{program: "", arguments: []},
+                capture: CommandCapture{},
+                exit_status: 1i64
+            }
+
+            machine over state while state.phase != FetchPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, FetchPhase.ResolveRoot:
+                    source: Path = try path_real(Script::source_path()) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve Recast fetcher source path\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    engine_candidate: Path = source.parent().parent().parent().parent().parent().joinpath("elisa-engine")
+                    engine_root: Path = try path_real(engine_candidate) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve elisa-engine project root\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    state.engine_root <- engine_root
+                    state.checkout <- engine_root.joinpath("dependencies").joinpath("recast")
+                    state.build_directory <- state.checkout.joinpath("build")
+                    state.phase <- FetchPhase.CheckCheckout
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckCheckout:
+                    metadata: Path = state.checkout.joinpath(".git")
+                    checkout_exists: bool = try is_directory(metadata) else false
+                    if checkout_exists:
+                        state.phase <- FetchPhase.VerifyRevision
+                    else:
+                        dependencies: Path = state.checkout.parent()
+                        created: bool = try create_directories(dependencies) else false
+                        if not created:
+                            _ = write_stderr("unable to create Recast dependency directory: " + f"{dependencies}" + "\n")
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.command <- EsEngineFetchRecastPlan::clone_command(state.checkout)
+                            state.phase <- FetchPhase.Clone
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Clone:
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.VerifyRevision
+                    -> Dispatch
+
+                Dispatch, FetchPhase.VerifyRevision:
+                    state.command <- EsEngineFetchRecastPlan::revision_command(state.checkout)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        head: sview = state.capture.stdout.strip()
+                        if head != EsEngineFetchRecastPlan::Dependency::COMMIT:
+                            _ = write_stderr(
+                                "recast checkout is " + head + ", expected " + EsEngineFetchRecastPlan::Dependency::COMMIT + "; remove " + f"{state.checkout}" + " and re-run to reset\n"
+                            )
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.phase <- FetchPhase.CheckLibraries
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckLibraries:
+                    if all_libraries_exist(state.engine_root):
+                        state.phase <- FetchPhase.ReportReady
+                    else:
+                        state.phase <- FetchPhase.Configure
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Configure:
+                    state.command <- EsEngineFetchRecastPlan::configure_command(state.checkout, state.build_directory)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.Build
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Build:
+                    state.command <- EsEngineFetchRecastPlan::build_command(state.build_directory)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.ValidateLibraries
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ValidateLibraries:
+                    if all_libraries_exist(state.engine_root):
+                        state.phase <- FetchPhase.ReportReady
+                    else:
+                        _ = write_stderr(missing_library_message(state.engine_root) + "\n")
+                        state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ReportReady:
+                    short_commit: sview = string_view_slice(EsEngineFetchRecastPlan::Dependency::COMMIT, 0i64, 12i64)
+                    print("recastnavigation " + EsEngineFetchRecastPlan::Dependency::TAG + " (" + short_commit + ") ready:")
+                    print("  " + EsEngineFetchRecastPlan::Dependency::RECAST_LIBRARY)
+                    print("  " + EsEngineFetchRecastPlan::Dependency::DETOUR_LIBRARY)
+                    state.exit_status <- 0i64
+                    state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Done:
+                    break
+
+            return state.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineFetchRecast::run(arguments)
