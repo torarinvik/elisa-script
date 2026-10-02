@@ -1,0 +1,223 @@
+# Bounded, typed counterpart of cook_assets.accessor_bytes from the glTF
+# cooker. Sparse accessors are not consumed by this source helper.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "../../../src/runtime/json_lexer_model.elisa"
+include "../../../src/runtime/json_parse_model.elisa"
+
+using EsData
+using EsJson
+using EsJsonLex
+using EsJsonParse
+
+
+module EsEngineGltfAccessor:
+    public:
+        const module Limits:
+            DOCUMENT_BYTES: usize = 67108864
+            BUFFER_BYTES: usize = 67108864
+            ACCESSORS: usize = 4096
+            BUFFER_VIEWS: usize = 4096
+
+
+        error AccessorError:
+            InputTooLarge
+            BufferTooLarge
+            InvalidJson
+            InvalidDocument
+            InvalidField
+            MissingField
+            AccessorIndexOutOfRange
+            BufferViewIndexOutOfRange
+            NegativeAccessorCount
+            UnsupportedComponentType
+            UnsupportedAccessorShape
+            InvalidStride
+            AccessorRangeExceedsBuffer
+            OutputLimitExceeded
+
+
+        def parse_document(source: sview) -> JsonDocument error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            raise AccessorError.InputTooLarge if len(source) > Limits::DOCUMENT_BYTES
+            limits: DataDecodeLimits = DataDecodeLimits{input_bytes: Limits::DOCUMENT_BYTES}
+            policy: JsonPolicy = JsonPolicy{duplicate_keys: JsonDuplicateKeyPolicy.KeepLast, numbers: DataNumberPolicy.Decimal}
+            lexed: JsonLexedSource = try lex_json(source, limits, policy) else failure:
+                _ = failure
+                raise AccessorError.InvalidJson
+            return try parse_json_document(lexed) else failure:
+                _ = failure
+                raise AccessorError.InvalidJson
+
+
+        # Return one tightly packed byte stream. Interleaved source elements
+        # are copied in order; padding bytes between them are discarded.
+        def accessor_bytes(document: JsonDocument&, buffer: darray[u8]&, accessor_index: i64) -> darray[u8] error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            raise AccessorError.BufferTooLarge if buffer.count > Limits::BUFFER_BYTES
+            raise AccessorError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise AccessorError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            root_index: usize = document.roots[0]
+            raise AccessorError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+
+            accessors_index: usize = try accessor_member_index(document, root_index, "accessors")
+            raise AccessorError.MissingField if accessors_index == JSON_INDEX_NONE
+            raise AccessorError.InvalidField if accessors_index >= document.nodes.count
+            accessors_node: JsonNode = document.nodes[accessors_index]
+            raise AccessorError.InvalidField if accessors_node.kind != JsonNodeKind.Array
+            raise AccessorError.InvalidField if accessors_node.child_count > Limits::ACCESSORS
+            raise AccessorError.AccessorIndexOutOfRange if accessor_index < 0
+            raise AccessorError.AccessorIndexOutOfRange if accessor_index.usize() >= accessors_node.child_count
+            accessor_object_index: usize = try accessor_array_item(document, accessors_index, accessor_index.usize())
+            raise AccessorError.InvalidField if document.nodes[accessor_object_index].kind != JsonNodeKind.Object
+
+            views_index: usize = try accessor_member_index(document, root_index, "bufferViews")
+            raise AccessorError.MissingField if views_index == JSON_INDEX_NONE
+            raise AccessorError.InvalidField if views_index >= document.nodes.count
+            views_node: JsonNode = document.nodes[views_index]
+            raise AccessorError.InvalidField if views_node.kind != JsonNodeKind.Array or views_node.child_count > Limits::BUFFER_VIEWS
+            view_index: i64 = try accessor_required_integer(document, accessor_object_index, "bufferView")
+            raise AccessorError.BufferViewIndexOutOfRange if view_index < 0
+            raise AccessorError.BufferViewIndexOutOfRange if view_index.usize() >= views_node.child_count
+            view_object_index: usize = try accessor_array_item(document, views_index, view_index.usize())
+            raise AccessorError.InvalidField if document.nodes[view_object_index].kind != JsonNodeKind.Object
+
+            component_type: i64 = try accessor_required_integer(document, accessor_object_index, "componentType")
+            component_bytes: usize = try accessor_component_size(component_type)
+            shape: sview = try accessor_required_text(document, accessor_object_index, "type")
+            component_count: usize = try accessor_shape_components(shape)
+            element_bytes: usize = component_bytes * component_count
+
+            stride_value: i64 = try accessor_optional_integer(document, view_object_index, "byteStride", element_bytes.i64())
+            view_offset_value: i64 = try accessor_optional_integer(document, view_object_index, "byteOffset", 0i64)
+            accessor_offset_value: i64 = try accessor_optional_integer(document, accessor_object_index, "byteOffset", 0i64)
+            count_value: i64 = try accessor_required_integer(document, accessor_object_index, "count")
+            raise AccessorError.NegativeAccessorCount if count_value < 0
+            raise AccessorError.InvalidStride if stride_value < 0 or view_offset_value < 0 or accessor_offset_value < 0
+
+            count: usize = count_value.usize()
+            stride: usize = stride_value.usize()
+            view_offset: usize = view_offset_value.usize()
+            accessor_offset: usize = accessor_offset_value.usize()
+            raise AccessorError.AccessorRangeExceedsBuffer if view_offset > buffer.count
+            raise AccessorError.AccessorRangeExceedsBuffer if accessor_offset > buffer.count - view_offset
+            start: usize = view_offset + accessor_offset
+            raise AccessorError.OutputLimitExceeded if element_bytes != 0 and count > Limits::BUFFER_BYTES / element_bytes
+            output_bytes: usize = element_bytes * count
+            raise AccessorError.AccessorRangeExceedsBuffer if start > buffer.count
+
+            if count == 0:
+                return []
+            raise AccessorError.AccessorRangeExceedsBuffer if element_bytes > buffer.count - start
+            if stride > 0:
+                last_index: usize = count - 1
+                raise AccessorError.AccessorRangeExceedsBuffer if last_index > (buffer.count - start - element_bytes) / stride
+
+            packed: mutable darray[u8] = []
+            if stride == element_bytes:
+                for offset in 0..<output_bytes |buffer, packed, start|:
+                    packed.push(buffer[start + offset])
+            else:
+                for ordinal in 0..<count |buffer, packed, start, stride, element_bytes|:
+                    source_start: usize = start + ordinal * stride
+                    for offset in 0..<element_bytes |buffer, packed, source_start|:
+                        packed.push(buffer[source_start + offset])
+            return packed
+
+
+    private:
+        def accessor_member_index(document: JsonDocument&, object_index: usize, key: sview) -> usize error[AccessorError]:
+            raise AccessorError.InvalidDocument if document.state != JsonDocumentState.Sealed or object_index >= document.nodes.count
+            owner: JsonNode = document.nodes[object_index]
+            raise AccessorError.InvalidDocument if owner.kind != JsonNodeKind.Object
+            raise AccessorError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                matches: bool = try accessor_key_is(document, member, key)
+                selected <- member.value_index if matches
+            return selected
+
+
+        def accessor_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) -> usize error[AccessorError]:
+            raise AccessorError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise AccessorError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise AccessorError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise AccessorError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def accessor_required_integer(document: JsonDocument&, object_index: usize, key: sview) -> i64 error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            field_index: usize = try accessor_member_index(document, object_index, key)
+            raise AccessorError.MissingField if field_index == JSON_INDEX_NONE
+            return try accessor_integer_value(document, field_index)
+
+
+        def accessor_optional_integer(document: JsonDocument&, object_index: usize, key: sview, fallback: i64) -> i64 error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            field_index: usize = try accessor_member_index(document, object_index, key)
+            return fallback if field_index == JSON_INDEX_NONE
+            return try accessor_integer_value(document, field_index)
+
+
+        def accessor_integer_value(document: JsonDocument&, node_index: usize) -> i64 error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            raise AccessorError.InvalidDocument if node_index >= document.nodes.count
+            node: JsonNode = document.nodes[node_index]
+            raise AccessorError.InvalidField if node.kind != JsonNodeKind.Number
+            raise AccessorError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise AccessorError.InvalidField
+            return parsed
+
+
+        def accessor_required_text(document: JsonDocument&, object_index: usize, key: sview) -> sview error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            field_index: usize = try accessor_member_index(document, object_index, key)
+            raise AccessorError.MissingField if field_index == JSON_INDEX_NONE
+            raise AccessorError.InvalidDocument if field_index >= document.nodes.count
+            node: JsonNode = document.nodes[field_index]
+            raise AccessorError.InvalidField if node.kind != JsonNodeKind.Text
+            raise AccessorError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            return string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+
+
+        def accessor_component_size(component_type: i64) -> usize error[AccessorError]:
+            if component_type == 5120i64 or component_type == 5121i64:
+                return 1
+            elif component_type == 5122i64 or component_type == 5123i64:
+                return 2
+            elif component_type == 5125i64 or component_type == 5126i64:
+                return 4
+            else:
+                raise AccessorError.UnsupportedComponentType
+
+
+        def accessor_shape_components(shape: sview) -> usize error[AccessorError]:
+            if shape == "SCALAR":
+                return 1
+            elif shape == "VEC2":
+                return 2
+            elif shape == "VEC3":
+                return 3
+            elif shape == "VEC4":
+                return 4
+            elif shape == "MAT2":
+                return 4
+            elif shape == "MAT3":
+                return 9
+            elif shape == "MAT4":
+                return 16
+            else:
+                raise AccessorError.UnsupportedAccessorShape
+
+
+        def accessor_key_is(document: JsonDocument&, member: JsonMember, expected: sview) -> bool error[AccessorError]:
+            raise AccessorError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
