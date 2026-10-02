@@ -1,0 +1,188 @@
+#!/usr/bin/env elisascript
+# Elisascript companion for elisa-engine/scripts/test_bundled_notices.py.
+include "./bundled_notices_audit_posix.elisa"
+
+using EsEngineBundledNoticesAudit
+using EsEngineBundledNoticesAuditPosix
+using EsEngineBundledNoticesJson
+using EsJson
+
+
+module EsEngineBundledNoticesTest:
+    private:
+        const enum Phase of u8:
+            CreateFixture
+            CheckMissingNotice
+            WriteMatchingNotice
+            CheckMatchingNotice
+            WriteTamperedNotice
+            CheckTamperedNotice
+            RestoreNotice
+            WriteUnmappedLibrary
+            CheckUnmappedLibrary
+            Cleanup
+            Done
+
+
+        struct State:
+            phase: Phase
+            temporary: Path
+            app: Path
+            frameworks: Path
+            notices: Path
+            catalog: Path
+            notice: Path
+            passed: bool = true
+
+
+        def audit_matches(app: Path, catalog_path: Path, verified: bool, first_problem: sview) -> bool can[Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            bundle: mutable AuditedBundle = AuditedBundle{report: Report{}, catalog_owner: DecodedCatalog{catalog: Catalog{}, document: JsonDocument{}}}
+            succeeded: mutable bool = false
+            catch audit_bundle(app, catalog_path):
+                ok value:
+                    bundle <- value
+                    succeeded <- true
+                error failure:
+                    _ = failure
+            return false if not succeeded
+            report: Report = bundle.report
+            return false if report.catalog_complete or report.dylib_notice_files_verified != verified or report.libraries.count != 1
+            library: LibraryReport = report.libraries[0]
+            return false if library.library != "libexample.dylib" or library.notices != ["Example"]
+            return false if first_problem == "" and library.problems.count != 0
+            return false if first_problem != "" and (library.problems.count != 1 or library.problems[0] != first_problem)
+            return bundle.catalog_owner.document.state == JsonDocumentState.Sealed
+
+
+        def unmapped_library_matches(app: Path, catalog_path: Path) -> bool can[Directory.Read, File.Read, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            bundle: mutable AuditedBundle = AuditedBundle{report: Report{}, catalog_owner: DecodedCatalog{catalog: Catalog{}, document: JsonDocument{}}}
+            succeeded: mutable bool = false
+            catch audit_bundle(app, catalog_path):
+                ok value:
+                    bundle <- value
+                    succeeded <- true
+                error failure:
+                    _ = failure
+            return false if not succeeded
+            report: Report = bundle.report
+            return false if report.catalog_complete or report.dylib_notice_files_verified or report.libraries.count != 2
+            known: LibraryReport = report.libraries[0]
+            unknown: LibraryReport = report.libraries[1]
+            return false if known.library != "libexample.dylib" or known.notices != ["Example"] or known.problems.count != 0
+            return false if unknown.library != "libunknown.dylib" or unknown.notices.count != 0
+            return false if unknown.problems != ["library has no notice mapping"]
+            return bundle.catalog_owner.document.state == JsonDocumentState.Sealed
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            _ = arguments
+            temporary: Path = try temp_directory("elisascript-bundled-notices") else failure:
+                _ = failure
+                _ = write_stderr("bundled notices test: unable to create fixture directory\n")
+                return 1i64
+
+            app: Path = temporary.joinpath("Example.app")
+            state: mutable State = State{
+                phase: Phase::CreateFixture,
+                temporary: temporary,
+                app: app,
+                frameworks: app.joinpath("Contents/Frameworks"),
+                notices: app.joinpath("Contents/Resources/Notices"),
+                catalog: temporary.joinpath("notice-sources.json"),
+                notice: app.joinpath("Contents/Resources/Notices/Example.txt")
+            }
+            notice_contents: mutable darray[u8] = [110u8, 111u8, 116u8, 105u8, 99u8, 101u8]
+            digest: mutable darray[u8] = []
+            catch digest_hex(notice_contents):
+                ok value:
+                    digest <- value
+                error failure:
+                    _ = failure
+                    state.passed <- false
+                    state.phase <- Phase::Cleanup
+            catalog_text: sview = "{\"sources\":[{\"name\":\"Example\",\"sha256\":\"" + bytes_view(digest) + "\"}],\"complete\":false,\"bundled_libraries\":{\"libexample.dylib\":{\"notices\":[\"Example\"]}}}"
+
+            machine over state while state.phase != Phase::Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, Phase::CreateFixture:
+                    frameworks_created: bool = try create_directories(state.frameworks) else false
+                    notices_created: bool = try create_directories(state.notices) else false
+                    library_written: usize = try write_bytes(state.frameworks.joinpath("libexample.dylib"), [102u8]) else 0usize
+                    catalog_written: usize = try write_text(state.catalog, catalog_text) else 0usize
+                    state.passed <- false if not frameworks_created or not notices_created or library_written != 1 or catalog_written != sview_len(catalog_text)
+                    state.phase <- Phase::CheckMissingNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::CheckMissingNotice:
+                    state.passed <- audit_matches(state.app, state.catalog, false, "notice Example is missing or ambiguous")
+                    state.phase <- Phase::WriteMatchingNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::WriteMatchingNotice:
+                    written: usize = try write_bytes(state.notice, notice_contents) else 0usize
+                    state.passed <- written == notice_contents.count
+                    state.phase <- Phase::CheckMatchingNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::CheckMatchingNotice:
+                    state.passed <- audit_matches(state.app, state.catalog, true, "")
+                    state.phase <- Phase::WriteTamperedNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::WriteTamperedNotice:
+                    tampered: mutable darray[u8] = [109u8, 111u8, 100u8, 105u8, 102u8, 105u8, 101u8, 100u8]
+                    written: usize = try write_bytes(state.notice, tampered) else 0usize
+                    state.passed <- written == tampered.count
+                    state.phase <- Phase::CheckTamperedNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::CheckTamperedNotice:
+                    state.passed <- audit_matches(state.app, state.catalog, false, "notice Example differs from the catalog")
+                    state.phase <- Phase::RestoreNotice if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::RestoreNotice:
+                    written: usize = try write_bytes(state.notice, notice_contents) else 0usize
+                    state.passed <- written == notice_contents.count
+                    state.phase <- Phase::WriteUnmappedLibrary if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::WriteUnmappedLibrary:
+                    written: usize = try write_bytes(state.frameworks.joinpath("libunknown.dylib"), [110u8]) else 0usize
+                    state.passed <- written == 1
+                    state.phase <- Phase::CheckUnmappedLibrary if state.passed
+                    state.phase <- Phase::Cleanup if not state.passed
+                    -> Dispatch
+
+                Dispatch, Phase::CheckUnmappedLibrary:
+                    state.passed <- unmapped_library_matches(state.app, state.catalog)
+                    state.phase <- Phase::Cleanup
+                    -> Dispatch
+
+                Dispatch, Phase::Cleanup:
+                    removed: bool = try remove_tree(state.temporary) else false
+                    state.passed <- state.passed and removed
+                    state.phase <- Phase::Done
+                    -> Dispatch
+
+                Dispatch, Phase::Done:
+                    break
+
+            if not state.passed:
+                _ = write_stderr("bundled notices test: fixture behavior did not match the Elisa audit\n")
+                return 1i64
+            return 0i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, File.Write, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineBundledNoticesTest::run(arguments)
