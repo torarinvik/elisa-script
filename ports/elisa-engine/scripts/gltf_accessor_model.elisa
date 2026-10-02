@@ -18,6 +18,7 @@ module EsEngineGltfAccessor:
             BUFFER_BYTES: usize = 67108864
             ACCESSORS: usize = 4096
             BUFFER_VIEWS: usize = 4096
+            MAX_INDICES: usize = 15000000
 
 
         error AccessorError:
@@ -35,6 +36,12 @@ module EsEngineGltfAccessor:
             FloatStreamTypeMismatch
             FloatStreamCountMismatch
             NonFiniteFloatStream
+            MissingIndexStream
+            InvalidIndexAccessor
+            IndexAccessorOutOfRange
+            InvalidIndexFormat
+            InvalidTriangleIndexCount
+            IndexReferencesMissingVertex
             InvalidStride
             AccessorRangeExceedsBuffer
             OutputLimitExceeded
@@ -156,6 +163,61 @@ module EsEngineGltfAccessor:
                 bits: u32 = accessor_read_u32(packed, offset)
                 raise AccessorError.NonFiniteFloatStream if (bits & 2139095040u32) == 2139095040u32
             return packed
+
+
+        # Typed port of cook_gltf_geometry.read_indices for triangle-list
+        # primitives. Indices stay unsigned through decoding and are checked
+        # against the caller's position count before being returned.
+        def index_stream(document: JsonDocument&, buffer: darray[u8]&, primitive_index: usize, vertex_count: i64) -> darray[u32] error[AccessorError] can[Memory.Allocate, Abort.Panic]:
+            raise AccessorError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            raise AccessorError.InvalidDocument if document.policy.duplicate_keys != JsonDuplicateKeyPolicy.KeepLast
+            root_index: usize = document.roots[0]
+            raise AccessorError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            raise AccessorError.InvalidDocument if primitive_index >= document.nodes.count or document.nodes[primitive_index].kind != JsonNodeKind.Object
+            reference_node: usize = try accessor_member_index(document, primitive_index, "indices")
+            raise AccessorError.MissingIndexStream if reference_node == JSON_INDEX_NONE
+            raise AccessorError.InvalidDocument if reference_node >= document.nodes.count
+            raise AccessorError.MissingIndexStream if document.nodes[reference_node].kind == JsonNodeKind.Null
+            reference: i64 = try accessor_integer_value(document, reference_node) else failure:
+                _ = failure
+                raise AccessorError.IndexAccessorOutOfRange
+            raise AccessorError.IndexAccessorOutOfRange if reference < 0
+
+            accessors_index: usize = try accessor_member_index(document, root_index, "accessors")
+            raise AccessorError.InvalidIndexAccessor if accessors_index == JSON_INDEX_NONE
+            raise AccessorError.InvalidIndexAccessor if accessors_index >= document.nodes.count
+            accessors_node: JsonNode = document.nodes[accessors_index]
+            raise AccessorError.InvalidIndexAccessor if accessors_node.kind != JsonNodeKind.Array or accessors_node.child_count > Limits::ACCESSORS
+            raise AccessorError.IndexAccessorOutOfRange if reference.usize() >= accessors_node.child_count
+            accessor_index: usize = try accessor_array_item(document, accessors_index, reference.usize())
+            raise AccessorError.InvalidIndexAccessor if document.nodes[accessor_index].kind != JsonNodeKind.Object
+
+            shape: sview = try accessor_required_text(document, accessor_index, "type")
+            raise AccessorError.InvalidIndexFormat if shape != "SCALAR"
+            component_type: i64 = try accessor_required_integer(document, accessor_index, "componentType")
+            raise AccessorError.InvalidIndexFormat if component_type != 5121i64 and component_type != 5123i64 and component_type != 5125i64
+            index_count: i64 = try accessor_required_integer(document, accessor_index, "count")
+            raise AccessorError.InvalidTriangleIndexCount if index_count < 3
+            raise AccessorError.InvalidTriangleIndexCount if index_count % 3 != 0
+            raise AccessorError.InvalidTriangleIndexCount if index_count > Limits::MAX_INDICES.i64()
+
+            packed: darray[u8] = try accessor_bytes(document, buffer, reference)
+            component_bytes: mutable usize = 4
+            component_bytes <- 1 if component_type == 5121i64
+            component_bytes <- 2 if component_type == 5123i64
+            count: usize = index_count.usize()
+            raise AccessorError.InvalidDocument if packed.count != count * component_bytes
+            indices: mutable darray[u32] = []
+            for index in 0..<count |packed, indices, component_bytes, vertex_count|:
+                offset: usize = index * component_bytes
+                value: u32 = packed[offset].u32()
+                if component_bytes >= 2:
+                    value <- value | (packed[offset + 1].u32() << 8)
+                if component_bytes == 4:
+                    value <- value | (packed[offset + 2].u32() << 16) | (packed[offset + 3].u32() << 24)
+                raise AccessorError.IndexReferencesMissingVertex if value.i64() >= vertex_count
+                indices.push(value)
+            return indices
 
 
     private:
