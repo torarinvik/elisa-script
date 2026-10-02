@@ -77,6 +77,10 @@ if [ ! -x /usr/bin/awk ] || [ ! -x /usr/bin/head ]; then
     echo "run_bounded_test: refusing to launch without pinned process-snapshot tools" >&2
     exit 125
 fi
+if [ ! -x /usr/bin/shasum ]; then
+    echo "run_bounded_test: refusing to launch without the pinned source-hash tool" >&2
+    exit 125
+fi
 
 if [ "$#" -ne 1 ]; then
     echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript" >&2
@@ -550,6 +554,20 @@ for source_file in "$@"; do
         echo "run_bounded_test: captured source is $source_bytes bytes, above the $source_limit_bytes-byte fixture limit: $source_file" >&2
         exit 2
     fi
+    if ! source_sha256="$(/usr/bin/shasum -a 256 "$source_snapshot" | /usr/bin/awk 'NR == 1 { print $1 }')"; then
+        echo "run_bounded_test: unable to hash captured source bytes; refusing to launch" >&2
+        exit 125
+    fi
+    case "$source_sha256" in
+        *[!0-9a-f]*|'')
+            echo "run_bounded_test: captured source hash is malformed; refusing to launch" >&2
+            exit 125
+            ;;
+    esac
+    if [ "${#source_sha256}" -ne 64 ]; then
+        echo "run_bounded_test: captured source hash has the wrong length; refusing to launch" >&2
+        exit 125
+    fi
     retained_log_bytes="$(validation_log_bytes_used)" || {
         echo "run_bounded_test: unable to measure retained validation evidence; refusing to launch" >&2
         exit 125
@@ -583,7 +601,7 @@ for source_file in "$@"; do
         printf 'wrapper=run_bounded_test\nsource_path_hex=%s\n' "$source_path_hex"
         printf 'snapshot_path_hex=%s\n' "$snapshot_path_hex"
         printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
-        printf 'source_bytes=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\nrss_poll_interval_seconds=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_limit_bytes" "$rss_limit_kb" "$rss_poll_interval_seconds" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
+        printf 'source_bytes=%s\nsource_sha256=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\nrss_poll_interval_seconds=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_sha256" "$source_limit_bytes" "$rss_limit_kb" "$rss_poll_interval_seconds" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
         printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=test\nargv4_hex=%s\n' "$compiler_path" "$snapshot_path_hex"
     } >"$metadata_file") 2>/dev/null; then
         echo "run_bounded_test: unable to create run metadata; refusing to launch" >&2
