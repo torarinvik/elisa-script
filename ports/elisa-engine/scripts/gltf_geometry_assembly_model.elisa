@@ -1,0 +1,181 @@
+# Placement-local source-block sharing and primitive-index aggregation for
+# cook_gltf_geometry.normalized_geometry.
+include "gltf_primitive_placement_model.elisa"
+
+using EsEngineGltfAffine
+using EsEngineGltfNodeStreams
+using EsEngineGltfPrimitivePlacement
+using EsEngineGltfVertexStreams
+
+
+module EsEngineGltfGeometryAssembly:
+    public:
+        const module Limits:
+            MAX_PRIMITIVES: usize = 16
+            MAX_VERTICES: usize = EsEngineGltfVertexStreams::Limits::MAX_VERTICES
+            MAX_INDICES: usize = EsEngineGltfNodeStreams::Limits::MAX_INDICES
+            MAX_MORPH_TARGETS: usize = EsEngineGltfVertexStreams::Limits::MAX_MORPH_TARGETS
+
+
+        struct PlacedPrimitive:
+            block_index: usize
+            indices: darray[u32] = []
+            material_index: usize = 0
+
+
+        # One instance per mesh placement. The caller passes the remaining
+        # model-wide budgets so sequential placements share Python's global
+        # vertex and index limits rather than resetting them per mesh.
+        struct PlacementAssembly:
+            matrix: Affine3x4
+            vertex_budget: usize
+            index_budget: usize
+            blocks: darray[GeometryBlock] = []
+            primitives: darray[PlacedPrimitive] = []
+            source_vertex_count: usize = 0
+            index_count: usize = 0
+            has_morph_shape: bool = false
+            morph_target_count: usize = 0
+            morph_normals_present: bool = false
+
+
+        error GeometryAssemblyError:
+            InvalidBudget
+            PrimitiveCountOutOfRange
+            InvalidPrimitive
+            InvalidSourceKey
+            SourceIdentityCountMismatch
+            SharedPositionAttributesDiffer
+            MorphTargetCountMismatch
+            InconsistentMorphNormalStreams
+            VertexBudgetExceeded
+            IndexBudgetExceeded
+            PlacementTransformFailed
+            IndexPlacementFailed
+
+
+        def new_placement_assembly(matrix: Affine3x4, vertex_budget: usize, index_budget: usize) PlacementAssembly error[GeometryAssemblyError]:
+            raise GeometryAssemblyError.InvalidBudget if vertex_budget > Limits::MAX_VERTICES or index_budget > Limits::MAX_INDICES
+            return PlacementAssembly{
+                matrix: matrix,
+                vertex_budget: vertex_budget,
+                index_budget: index_budget
+            }
+
+
+        # Append one decoded primitive in source order. The first primitive
+        # for a key creates/transforms its block; later primitives sharing
+        # that key append only their placed indices. This keeps one vertex
+        # block per key and preserves one draw record per material binding.
+        # All primitives supplied to an instance must belong to the same
+        # mesh placement and source document. Material binding validation is
+        # performed by the document-level caller before this boundary.
+        def append_placement_primitive(assembly: mutable PlacementAssembly&, primitive: TrianglePrimitive, material_index: usize) void error[GeometryAssemblyError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeometryAssemblyError.InvalidBudget if assembly.vertex_budget > Limits::MAX_VERTICES or assembly.index_budget > Limits::MAX_INDICES
+            raise GeometryAssemblyError.InvalidBudget if assembly.source_vertex_count > assembly.vertex_budget or assembly.index_count > assembly.index_budget
+            raise GeometryAssemblyError.PrimitiveCountOutOfRange if assembly.primitives.count >= Limits::MAX_PRIMITIVES
+            try geometry_assembly_validate_primitive(primitive)
+
+            has_morph_normals: bool = geometry_assembly_morph_normals_present(primitive.vertices.morph_targets)
+            if assembly.has_morph_shape:
+                raise GeometryAssemblyError.MorphTargetCountMismatch if assembly.morph_target_count != primitive.vertices.morph_targets.count
+                raise GeometryAssemblyError.InconsistentMorphNormalStreams if assembly.morph_normals_present != has_morph_normals
+
+            raise GeometryAssemblyError.IndexBudgetExceeded if assembly.index_count > assembly.index_budget
+            raise GeometryAssemblyError.IndexBudgetExceeded if primitive.triangles.count > assembly.index_budget - assembly.index_count
+
+            block_index: mutable usize = assembly.blocks.count
+            for ordinal in 0..<assembly.blocks.count |assembly, primitive, block_index|:
+                prior: GeometryBlock = assembly.blocks[ordinal]
+                if prior.source_key.position_accessor == primitive.source_key.position_accessor:
+                    raise GeometryAssemblyError.SharedPositionAttributesDiffer if not vertex_source_keys_equal(prior.source_key, primitive.source_key)
+                    raise GeometryAssemblyError.SourceIdentityCountMismatch if prior.vertices.count != primitive.vertices.count
+                    block_index <- ordinal
+
+            indices: mutable darray[u32] = []
+            if block_index == assembly.blocks.count:
+                raise GeometryAssemblyError.VertexBudgetExceeded if assembly.source_vertex_count > assembly.vertex_budget
+                raise GeometryAssemblyError.VertexBudgetExceeded if primitive.vertices.count > assembly.vertex_budget - assembly.source_vertex_count
+                placed: TrianglePrimitive = try transform_triangle_primitive(primitive, assembly.matrix) else failure:
+                    _ = failure
+                    raise GeometryAssemblyError.PlacementTransformFailed
+                indices <- placed.triangles
+                assembly.blocks.push(GeometryBlock{
+                    vertices: placed.vertices,
+                    triangles: [],
+                    source_key: primitive.source_key
+                })
+                block_index <- assembly.blocks.count - 1
+                assembly.source_vertex_count <- assembly.source_vertex_count + primitive.vertices.count
+            else:
+                indices <- try placed_indices(primitive.triangles, assembly.matrix) else failure:
+                    _ = failure
+                    raise GeometryAssemblyError.IndexPlacementFailed
+
+            for index in indices |assembly, block_index|:
+                assembly.blocks[block_index].triangles.push(index)
+            assembly.primitives.push(PlacedPrimitive{
+                block_index: block_index,
+                indices: indices,
+                material_index: material_index
+            })
+            assembly.index_count <- assembly.index_count + primitive.triangles.count
+            if not assembly.has_morph_shape:
+                assembly.has_morph_shape <- true
+                assembly.morph_target_count <- primitive.vertices.morph_targets.count
+                assembly.morph_normals_present <- has_morph_normals
+
+
+    private:
+        def geometry_assembly_validate_primitive(primitive: TrianglePrimitive) void error[GeometryAssemblyError]:
+            vertices: VertexStreams = primitive.vertices
+            count: usize = vertices.count
+            raise GeometryAssemblyError.InvalidPrimitive if count == 0 or count > Limits::MAX_VERTICES
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.positions.count != count * 12
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.uvs.count != count * 8
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.has_normals and vertices.normals.count != count * 12
+            raise GeometryAssemblyError.InvalidPrimitive if not vertices.has_normals and vertices.normals.count != 0
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.has_tangents and vertices.tangents.count != count * 16
+            raise GeometryAssemblyError.InvalidPrimitive if not vertices.has_tangents and vertices.tangents.count != 0
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.has_uv1s and vertices.uv1s.count != count * 8
+            raise GeometryAssemblyError.InvalidPrimitive if not vertices.has_uv1s and vertices.uv1s.count != 0
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.has_tangents and not vertices.has_normals
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.has_skin and (vertices.skin.joints.count != count * 4 or vertices.skin.weights.count != count * 4)
+            raise GeometryAssemblyError.InvalidPrimitive if not vertices.has_skin and (vertices.skin.joints.count != 0 or vertices.skin.weights.count != 0)
+            raise GeometryAssemblyError.InvalidPrimitive if vertices.morph_targets.count > Limits::MAX_MORPH_TARGETS
+            raise GeometryAssemblyError.InvalidPrimitive if primitive.triangles.count < 3 or primitive.triangles.count % 3 != 0 or primitive.triangles.count > Limits::MAX_INDICES
+            raise GeometryAssemblyError.InvalidSourceKey if not geometry_assembly_valid_source_key(primitive.source_key)
+            raise GeometryAssemblyError.InvalidSourceKey if (primitive.source_key.normal_accessor >= 0) != vertices.has_normals
+            raise GeometryAssemblyError.InvalidSourceKey if (primitive.source_key.tangent_accessor >= 0) != vertices.has_tangents
+            raise GeometryAssemblyError.InvalidSourceKey if (primitive.source_key.uv1_accessor >= 0) != vertices.has_uv1s
+            raise GeometryAssemblyError.InvalidSourceKey if (primitive.source_key.joints0_accessor >= 0) != vertices.has_skin
+            raise GeometryAssemblyError.InvalidSourceKey if (primitive.source_key.weights0_accessor >= 0) != vertices.has_skin
+            raise GeometryAssemblyError.InvalidSourceKey if primitive.source_key.morph_targets.count != vertices.morph_targets.count
+            has_morph_normals: mutable bool = false
+            if vertices.morph_targets.count > 0:
+                has_morph_normals <- vertices.morph_targets[0].has_normals
+            for ordinal in 0..<vertices.morph_targets.count |vertices, primitive|:
+                target: MorphTargetStreams = vertices.morph_targets[ordinal]
+                target_key: MorphSourceKey = primitive.source_key.morph_targets[ordinal]
+                raise GeometryAssemblyError.InconsistentMorphNormalStreams if target.has_normals != has_morph_normals
+                raise GeometryAssemblyError.InvalidPrimitive if target.positions.count != count * 12
+                raise GeometryAssemblyError.InvalidPrimitive if target.has_normals and target.normals.count != count * 12
+                raise GeometryAssemblyError.InvalidPrimitive if not target.has_normals and target.normals.count != 0
+                raise GeometryAssemblyError.InvalidSourceKey if (target_key.normal_accessor >= 0) != target.has_normals
+            for index in primitive.triangles |primitive, count|:
+                raise GeometryAssemblyError.InvalidPrimitive if index.usize() >= count
+
+
+        def geometry_assembly_valid_source_key(key: VertexSourceKey) bool:
+            return false if key.position_accessor < 0
+            return false if key.normal_accessor < -1 or key.tangent_accessor < -1
+            return false if key.uv0_accessor < -1 or key.uv1_accessor < -1
+            return false if key.joints0_accessor < -1 or key.weights0_accessor < -1
+            for target in key.morph_targets:
+                return false if target.position_accessor < 0 or target.normal_accessor < -1
+            return true
+
+
+        def geometry_assembly_morph_normals_present(targets: darray[MorphTargetStreams]) bool:
+            return false if targets.count == 0 or not targets[0].has_normals
+            return true
