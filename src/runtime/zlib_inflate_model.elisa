@@ -1,0 +1,291 @@
+# Bounded RFC 1950 zlib wrapper and RFC 1951 DEFLATE inflater.
+# This is a pure typed model; callers provide the complete zlib member and an
+# explicit output ceiling. No host compressor or decompressor is invoked.
+module EsZlibInflate:
+    public:
+        const module Limits:
+            MAX_INPUT_BYTES: usize = 268435456
+            MAX_OUTPUT_BYTES: usize = 268435456
+            MAX_HUFFMAN_BITS: usize = 15
+
+
+        error InflateError:
+            InvalidLimit
+            InputTooLarge
+            OutputTooLarge
+            InvalidHeader
+            PresetDictionaryUnsupported
+            InputTruncated
+            InvalidBlockType
+            InvalidStoredBlock
+            InvalidCodeLength
+            OversubscribedTree
+            EmptyTree
+            InvalidHuffmanCode
+            MissingEndOfBlock
+            InvalidLengthCode
+            InvalidDistanceCode
+            InvalidDistance
+            ChecksumMismatch
+            TrailingInput
+
+
+        def inflate_zlib(data: darray[u8]&, max_output_bytes: usize = Limits::MAX_OUTPUT_BYTES) -> darray[u8] error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            raise InflateError.InvalidLimit if max_output_bytes > Limits::MAX_OUTPUT_BYTES
+            raise InflateError.InputTooLarge if data.count > Limits::MAX_INPUT_BYTES
+            raise InflateError.InputTruncated if data.count < 6
+            cmf: u32 = data[0].u32()
+            flg: u32 = data[1].u32()
+            raise InflateError.InvalidHeader if (cmf & 15u32) != 8u32 or (cmf >> 4) > 7u32
+            raise InflateError.InvalidHeader if ((cmf << 8) | flg) % 31u32 != 0
+            raise InflateError.PresetDictionaryUnsupported if (flg & 32u32) != 0
+            window_limit: usize = 1usize << ((cmf >> 4).usize() + 8)
+            payload_end: usize = data.count - 4
+            cursor: mutable BitCursor = BitCursor{byte_offset: 2}
+            output: mutable darray[u8] = []
+            final_block: mutable bool = false
+            while not final_block |data, payload_end, cursor, output, max_output_bytes, final_block|:
+                final_flag: u32 = try read_bits(data, payload_end, cursor, 1)
+                final_block <- final_flag != 0
+                block_type: u32 = try read_bits(data, payload_end, cursor, 2)
+                match block_type:
+                    0:
+                        try inflate_stored_block(data, payload_end, cursor, output, max_output_bytes)
+                    1:
+                        fixed: DeflateTrees = try fixed_trees()
+                        try inflate_compressed_block(data, payload_end, cursor, output, max_output_bytes, window_limit, fixed)
+                    2:
+                        dynamic: DeflateTrees = try dynamic_trees(data, payload_end, cursor)
+                        try inflate_compressed_block(data, payload_end, cursor, output, max_output_bytes, window_limit, dynamic)
+                    _:
+                        raise InflateError.InvalidBlockType
+            align_cursor(cursor)
+            raise InflateError.TrailingInput if cursor.byte_offset != payload_end
+            expected_adler: u32 = (data[payload_end].u32() << 24) | (data[payload_end + 1].u32() << 16) | (data[payload_end + 2].u32() << 8) | data[payload_end + 3].u32()
+            raise InflateError.ChecksumMismatch if adler32(output) != expected_adler
+            return output
+
+
+    private:
+        struct BitCursor:
+            byte_offset: mutable usize = 0
+            bit_offset: mutable usize = 0
+
+
+        struct Huffman:
+            counts: darray[u16]
+            symbols: darray[u16]
+            max_bits: usize
+
+
+        struct DeflateTrees:
+            literal_length: Huffman
+            distance: Huffman
+
+
+        def read_bits(data: darray[u8]&, payload_end: usize, cursor: mutable BitCursor&, count: usize) -> u32 error[InflateError]:
+            raise InflateError.InvalidHeader if count > 16
+            bits: mutable u32 = 0
+            for index in 0..<count |data, payload_end, cursor, bits|:
+                raise InflateError.InputTruncated if cursor.byte_offset >= payload_end
+                bit: u32 = (data[cursor.byte_offset].u32() >> cursor.bit_offset) & 1u32
+                bits <- bits | (bit << index)
+                cursor.bit_offset <- cursor.bit_offset + 1
+                if cursor.bit_offset == 8:
+                    cursor.byte_offset <- cursor.byte_offset + 1
+                    cursor.bit_offset <- 0
+            return bits
+
+
+        def align_cursor(cursor: mutable BitCursor&) -> void:
+            if cursor.bit_offset != 0:
+                cursor.byte_offset <- cursor.byte_offset + 1
+                cursor.bit_offset <- 0
+
+
+        def build_huffman(lengths: darray[u8]&, max_bits: usize, allow_empty: bool = false) -> Huffman error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            raise InflateError.InvalidCodeLength if max_bits == 0 or max_bits > Limits::MAX_HUFFMAN_BITS
+            counts: mutable darray[u16] = []
+            for _ in 0..<(max_bits + 1) |counts|:
+                counts.push(0u16)
+            symbol_count: mutable usize = 0
+            for length in lengths |counts, symbol_count, max_bits|:
+                raise InflateError.InvalidCodeLength if length.usize() > max_bits
+                if length != 0:
+                    counts[length.usize()] <- counts[length.usize()] + 1u16
+                    symbol_count <- symbol_count + 1
+            if symbol_count == 0:
+                raise InflateError.EmptyTree if not allow_empty
+                return Huffman{counts: counts, symbols: [], max_bits: max_bits}
+
+            remaining_codes: mutable u32 = 1
+            for bits in 1..<(max_bits + 1) |counts, remaining_codes|:
+                remaining_codes <- remaining_codes << 1
+                raise InflateError.OversubscribedTree if counts[bits].u32() > remaining_codes
+                remaining_codes <- remaining_codes - counts[bits].u32()
+
+            symbols: mutable darray[u16] = []
+            for bits in 1..<(max_bits + 1) |lengths, symbols|:
+                for symbol in 0..<lengths.count |lengths, bits, symbols|:
+                    symbols.push(symbol.u16()) if lengths[symbol].usize() == bits
+            return Huffman{counts: counts, symbols: symbols, max_bits: max_bits}
+
+
+        def decode_huffman_symbol(data: darray[u8]&, payload_end: usize, cursor: mutable BitCursor&, tree: Huffman&) -> u16 error[InflateError]:
+            code: mutable u32 = 0
+            first: mutable u32 = 0
+            index: mutable usize = 0
+            for bits in 1..<(tree.max_bits + 1) |data, payload_end, cursor, tree, code, first, index|:
+                next_bit: u32 = try read_bits(data, payload_end, cursor, 1)
+                code <- code | next_bit
+                count: u32 = tree.counts[bits].u32()
+                if code >= first and code - first < count:
+                    symbol_index: usize = index + (code - first).usize()
+                    raise InflateError.InvalidHuffmanCode if symbol_index >= tree.symbols.count
+                    return tree.symbols[symbol_index]
+                index <- index + count.usize()
+                first <- (first + count) << 1
+                code <- code << 1
+            raise InflateError.InvalidHuffmanCode
+
+
+        def fixed_trees() -> DeflateTrees error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            literal_lengths: mutable darray[u8] = []
+            for symbol in 0..<288 |literal_lengths|:
+                length: u8 = 8u8
+                length <- 9u8 if symbol >= 144 and symbol <= 255
+                length <- 7u8 if symbol >= 256 and symbol <= 279
+                length <- 8u8 if symbol >= 280
+                literal_lengths.push(length)
+            distance_lengths: mutable darray[u8] = []
+            for _ in 0..<32:
+                distance_lengths.push(5u8)
+            return DeflateTrees{
+                literal_length: try build_huffman(literal_lengths, 15),
+                distance: try build_huffman(distance_lengths, 15)
+            }
+
+
+        def dynamic_trees(data: darray[u8]&, payload_end: usize, cursor: mutable BitCursor&) -> DeflateTrees error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            literal_count_bits: u32 = try read_bits(data, payload_end, cursor, 5)
+            distance_count_bits: u32 = try read_bits(data, payload_end, cursor, 5)
+            code_length_count_bits: u32 = try read_bits(data, payload_end, cursor, 4)
+            literal_count: usize = literal_count_bits.usize() + 257
+            distance_count: usize = distance_count_bits.usize() + 1
+            code_length_count: usize = code_length_count_bits.usize() + 4
+            raise InflateError.InvalidCodeLength if literal_count > 286
+            order: darray[u8] = [16u8, 17u8, 18u8, 0u8, 8u8, 7u8, 9u8, 6u8, 10u8, 5u8, 11u8, 4u8, 12u8, 3u8, 13u8, 2u8, 14u8, 1u8, 15u8]
+            code_length_lengths: mutable darray[u8] = []
+            for _ in 0..<19 |code_length_lengths|:
+                code_length_lengths.push(0u8)
+            for index in 0..<code_length_count |data, payload_end, cursor, code_length_lengths, order|:
+                length_bits: u32 = try read_bits(data, payload_end, cursor, 3)
+                code_length_lengths[order[index].usize()] <- length_bits.u8()
+            code_length_tree: Huffman = try build_huffman(code_length_lengths, 7)
+            needed: usize = literal_count + distance_count
+            combined_lengths: mutable darray[u8] = []
+            while combined_lengths.count < needed |data, payload_end, cursor, code_length_tree, needed, combined_lengths|:
+                symbol: u16 = try decode_huffman_symbol(data, payload_end, cursor, code_length_tree)
+                if symbol <= 15:
+                    combined_lengths.push(symbol.u8())
+                elif symbol == 16:
+                    raise InflateError.InvalidCodeLength if combined_lengths.count == 0
+                    repeat_bits: u32 = try read_bits(data, payload_end, cursor, 2)
+                    repeat: usize = repeat_bits.usize() + 3
+                    raise InflateError.InvalidCodeLength if repeat > needed - combined_lengths.count
+                    previous: u8 = combined_lengths[combined_lengths.count - 1]
+                    for _ in 0..<repeat |previous, combined_lengths|:
+                        combined_lengths.push(previous)
+                elif symbol == 17:
+                    repeat_bits: u32 = try read_bits(data, payload_end, cursor, 3)
+                    repeat: usize = repeat_bits.usize() + 3
+                    raise InflateError.InvalidCodeLength if repeat > needed - combined_lengths.count
+                    for _ in 0..<repeat |combined_lengths|:
+                        combined_lengths.push(0u8)
+                elif symbol == 18:
+                    repeat_bits: u32 = try read_bits(data, payload_end, cursor, 7)
+                    repeat: usize = repeat_bits.usize() + 11
+                    raise InflateError.InvalidCodeLength if repeat > needed - combined_lengths.count
+                    for _ in 0..<repeat |combined_lengths|:
+                        combined_lengths.push(0u8)
+                else:
+                    raise InflateError.InvalidCodeLength
+
+            literal_lengths: mutable darray[u8] = []
+            distance_lengths: mutable darray[u8] = []
+            for index in 0..<literal_count |combined_lengths, literal_lengths|:
+                literal_lengths.push(combined_lengths[index])
+            for index in literal_count..<needed |combined_lengths, distance_lengths|:
+                distance_lengths.push(combined_lengths[index])
+            raise InflateError.MissingEndOfBlock if literal_lengths.count <= 256 or literal_lengths[256] == 0
+            return DeflateTrees{
+                literal_length: try build_huffman(literal_lengths, 15),
+                distance: try build_huffman(distance_lengths, 15, true)
+            }
+
+
+        def inflate_stored_block(data: darray[u8]&, payload_end: usize, cursor: mutable BitCursor&, output: mutable darray[u8]&, max_output_bytes: usize) -> void error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            align_cursor(cursor)
+            length_bits: u32 = try read_bits(data, payload_end, cursor, 16)
+            inverse_length: u32 = try read_bits(data, payload_end, cursor, 16)
+            length: usize = length_bits.usize()
+            raise InflateError.InvalidStoredBlock if (length.u32() ^ inverse_length) != 65535u32
+            raise InflateError.OutputTooLarge if length > max_output_bytes - output.count
+            for _ in 0..<length |data, payload_end, cursor, output|:
+                byte: u32 = try read_bits(data, payload_end, cursor, 8)
+                output.push(byte.u8())
+
+
+        def length_base(code: u16) -> u32:
+            return code.u32() - 254u32 if code <= 264u16
+            return 258u32 if code == 285u16
+            group: u32 = (code.u32() - 265u32) / 4u32
+            position: u32 = (code.u32() - 265u32) % 4u32
+            return (8u32 << group) + 3u32 + ((2u32 << group) * position)
+
+
+        def length_extra_bits(code: u16) -> usize:
+            return ((code.u32() - 265u32) / 4u32 + 1u32).usize() if code >= 265u16 and code <= 284u16 else 0
+
+
+        def distance_base(code: u16) -> u32:
+            return code.u32() + 1u32 if code < 4u16
+            exponent: u32 = code.u32() / 2u32 - 1u32
+            return (1u32 << (exponent + 1u32)) + 1u32 + ((code.u32() & 1u32) * (1u32 << exponent))
+
+
+        def distance_extra_bits(code: u16) -> usize:
+            return (code.u32() / 2u32 - 1u32).usize() if code >= 4u16 else 0
+
+
+        def inflate_compressed_block(data: darray[u8]&, payload_end: usize, cursor: mutable BitCursor&, output: mutable darray[u8]&, max_output_bytes: usize, window_limit: usize, trees: DeflateTrees&) -> void error[InflateError] can[Memory.Allocate, Abort.Panic]:
+            finished: mutable bool = false
+            while not finished |data, payload_end, cursor, output, max_output_bytes, trees, finished|:
+                symbol: u16 = try decode_huffman_symbol(data, payload_end, cursor, trees.literal_length)
+                if symbol < 256u16:
+                    raise InflateError.OutputTooLarge if output.count >= max_output_bytes
+                    output.push(symbol.u8())
+                elif symbol == 256u16:
+                    finished <- true
+                else:
+                    raise InflateError.InvalidLengthCode if symbol > 285u16
+                    length_extra: u32 = try read_bits(data, payload_end, cursor, length_extra_bits(symbol))
+                    match_length: u32 = length_base(symbol) + length_extra
+                    distance_symbol: u16 = try decode_huffman_symbol(data, payload_end, cursor, trees.distance)
+                    raise InflateError.InvalidDistanceCode if distance_symbol > 29u16
+                    distance_extra: u32 = try read_bits(data, payload_end, cursor, distance_extra_bits(distance_symbol))
+                    distance: usize = (distance_base(distance_symbol) + distance_extra).usize()
+                    raise InflateError.InvalidDistance if distance == 0 or distance > output.count or distance > window_limit
+                    raise InflateError.OutputTooLarge if match_length.usize() > max_output_bytes - output.count
+                    for _ in 0..<match_length.usize() |output, distance|:
+                        value: u8 = output[output.count - distance]
+                        output.push(value)
+
+
+        def adler32(bytes: darray[u8]&) -> u32:
+            first: mutable u32 = 1
+            second: mutable u32 = 0
+            for byte in bytes |first, second|:
+                first <- (first + byte.u32()) % 65521u32
+                second <- (second + first) % 65521u32
+            return (second << 16) | first
