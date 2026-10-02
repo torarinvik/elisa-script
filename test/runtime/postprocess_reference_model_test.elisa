@@ -1,0 +1,121 @@
+include "../../ports/elisa-engine/scripts/postprocess_reference_model.elisa"
+
+using EsEngineRenderQuality
+using EsEnginePostprocessReferences
+
+
+def postprocess_test_rgb_frame(width: usize, height: usize, values: darray[u8]) -> RenderFrame:
+    return RenderFrame{width: width, height: height, format: RenderPixelFormat.Rgb8, pixels: values}
+
+
+def postprocess_test_rejects_cli(arguments: darray[sview], expected: CliError) -> bool can[Memory.Allocate, Abort.Panic]:
+    rejected: mutable bool = false
+    catch EsEnginePostprocessReferences::parse_arguments(arguments, "/engine"):
+        ok options:
+            _ = options
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+def postprocess_test_rejects_image(first: RenderFrame, second: RenderFrame, expected: ImageError) -> bool can[Abort.Panic]:
+    rejected: mutable bool = false
+    catch EsEnginePostprocessReferences::compare_frames(first, second):
+        ok metrics:
+            _ = metrics
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+def postprocess_test_rejects_reference_update(frame: RenderFrame&, expected: ImageError) -> bool can[Memory.Allocate, Abort.Panic]:
+    rejected: mutable bool = false
+    catch EsEnginePostprocessReferences::reference_rgba_frame(frame):
+        ok converted:
+            _ = converted
+        error failure:
+            rejected <- failure == expected
+    return rejected
+
+
+@test
+def postprocess_cli_keeps_python_option_values_and_last_occurrence() -> void can[Memory.Allocate, Abort.Panic]:
+    options: CliOptions = EsEnginePostprocessReferences::parse_arguments([
+        "--capture-dir", "capture images", "--reference-dir=refs=revision",
+        "--capture-dir=final captures", "--update"
+    ], "/engine checkout")
+    assert options.capture_directory == "final captures"
+    assert options.reference_directory == "refs=revision"
+    assert options.update and not options.help
+    assert EsEnginePostprocessReferences::parse_arguments(["--help"], "/engine").help
+    assert postprocess_test_rejects_cli(["--capture-dir", "--update"], CliError.MissingOptionValue("--capture-dir"))
+    assert postprocess_test_rejects_cli(["--unknown"], CliError.UnknownOption("--unknown"))
+    assert postprocess_test_rejects_cli(["capture.png"], CliError.UnexpectedArgument("capture.png"))
+
+
+@test
+def postprocess_nearest_resampling_uses_integer_floor_coordinates() -> void can[Memory.Allocate, Abort.Panic]:
+    source: RenderFrame = postprocess_test_rgb_frame(2, 1, [10u8, 11u8, 12u8, 20u8, 21u8, 22u8])
+    resized: RenderFrame = EsEnginePostprocessReferences::resample_nearest(source, 4, 1)
+    expected: darray[u8] = [10u8, 11u8, 12u8, 10u8, 11u8, 12u8, 20u8, 21u8, 22u8, 20u8, 21u8, 22u8]
+    assert resized.width == 4 and resized.height == 1
+    assert resized.pixels.count == expected.count
+    for index in 0..<expected.count |resized, expected|:
+        assert resized.pixels[index] == expected[index]
+
+
+@test
+def postprocess_temporal_edge_filter_clamps_edges_rounds_and_preserves_alpha() -> void can[Memory.Allocate, Abort.Panic]:
+    source: RenderFrame = RenderFrame{
+        width: 3, height: 1, format: RenderPixelFormat.Rgba8,
+        pixels: [0u8, 0u8, 0u8, 7u8, 0u8, 0u8, 0u8, 8u8, 255u8, 255u8, 255u8, 9u8]
+    }
+    filtered: RenderFrame = EsEnginePostprocessReferences::filter_temporal_edges(source)
+    assert filtered.pixels[0] == 0u8
+    assert filtered.pixels[4] == 64u8
+    assert filtered.pixels[8] == 191u8
+    assert filtered.pixels[3] == 7u8 and filtered.pixels[7] == 8u8 and filtered.pixels[11] == 9u8
+
+
+@test
+def postprocess_compare_ignores_alpha_and_uses_peak_and_mean_rgb_error() -> void can[Memory.Allocate, Abort.Panic]:
+    first: RenderFrame = postprocess_test_rgb_frame(2, 1, [10u8, 20u8, 30u8, 255u8, 255u8, 255u8])
+    second: RenderFrame = RenderFrame{
+        width: 1, height: 2, format: RenderPixelFormat.Rgba8,
+        pixels: [0u8, 20u8, 30u8, 0u8, 250u8, 255u8, 255u8, 99u8]
+    }
+    metrics: ImageMetrics = EsEnginePostprocessReferences::compare_frames(first, second)
+    assert metrics.peak == 10.0 / 255.0
+    assert fabs(metrics.mean - 7.5 / 255.0) < 0.000000001
+    assert metrics.passes
+    assert postprocess_test_rejects_image(first, postprocess_test_rgb_frame(1, 1, [0u8, 0u8, 0u8]), ImageError.PixelCountMismatch)
+
+
+@test
+def postprocess_reference_update_resamples_aspect_checked_rgba_with_opaque_rgb_alpha() -> void can[Memory.Allocate, Abort.Panic]:
+    values: mutable darray[u8] = []
+    for pixel in 0..<(16 * 10) |values|:
+        values.push(pixel.u8())
+        values.push(20u8)
+        values.push(30u8)
+    source: RenderFrame = postprocess_test_rgb_frame(16, 10, values)
+    reference: RenderFrame = EsEnginePostprocessReferences::reference_rgba_frame(source)
+    assert reference.width == 160 and reference.height == 100
+    assert reference.format == RenderPixelFormat.Rgba8
+    assert reference.pixels.count == 160 * 100 * 4
+    assert reference.pixels[3] == 255u8 and reference.pixels[reference.pixels.count - 1] == 255u8
+    assert postprocess_test_rejects_image(source, postprocess_test_rgb_frame(15, 10, [1u8]), ImageError.InvalidFrame)
+    invalid_aspect_pixels: mutable darray[u8] = []
+    for _ in 0..<(15 * 10 * 3) |invalid_aspect_pixels|:
+        invalid_aspect_pixels.push(0u8)
+    invalid_aspect: RenderFrame = postprocess_test_rgb_frame(15, 10, invalid_aspect_pixels)
+    assert postprocess_test_rejects_reference_update(invalid_aspect, ImageError.InvalidAspectRatio)
+
+
+@test
+def postprocess_capture_order_is_high_then_low() -> void can[Memory.Allocate, Abort.Panic]:
+    captures: darray[CaptureSpec] = EsEnginePostprocessReferences::capture_specs()
+    assert captures.count == 2
+    assert captures[0].name == "high" and captures[1].name == "low"
+    assert captures[0].filename == "render-scene-postprocess-high.png"
+    assert captures[1].filename == "render-scene-postprocess-low.png"

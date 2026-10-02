@@ -1,0 +1,214 @@
+# Typed image and CLI model for elisa-engine/scripts/compare_postprocess_references.py.
+include "./render_quality_model.elisa"
+
+using EsEngineRenderQuality
+
+
+module EsEnginePostprocessReferences:
+    public:
+        const module Policy:
+            REFERENCE_WIDTH: usize = 160
+            REFERENCE_HEIGHT: usize = 100
+            PEAK_TOLERANCE: f64 = 0.35
+            MEAN_TOLERANCE: f64 = 0.025
+            MAX_IMAGE_DIMENSION: usize = 16384
+            MAX_FRAME_BYTES: usize = 268435456
+
+
+        struct CliOptions:
+            capture_directory: sview
+            reference_directory: sview
+            update: bool = false
+            help: bool = false
+
+
+        struct CaptureSpec:
+            name: sview
+            filename: sview
+
+
+        struct ImageMetrics:
+            peak: f64
+            mean: f64
+            passes: bool
+
+
+        error CliError:
+            MissingOptionValue(sview)
+            UnknownOption(sview)
+            UnexpectedArgument(sview)
+
+
+        error ImageError:
+            InvalidFrame
+            InvalidTargetDimensions
+            PixelCountMismatch
+            InvalidAspectRatio
+
+
+        def capture_specs() -> darray[CaptureSpec] can[Memory.Allocate, Abort.Panic]:
+            return [
+                CaptureSpec{name: "high", filename: "render-scene-postprocess-high.png"},
+                CaptureSpec{name: "low", filename: "render-scene-postprocess-low.png"}
+            ]
+
+
+        def parse_arguments(arguments: darray[sview], project_root: sview) -> CliOptions error[CliError] can[Memory.Allocate, Abort.Panic]:
+            capture_directory: mutable sview = project_path(project_root, "build")
+            reference_directory: mutable sview = project_path(project_root, "docs/validation/references/postprocess")
+            update: mutable bool = false
+            help: mutable bool = false
+            index: mutable usize = 0
+            machine over index while index < arguments.count:
+                state Scan
+                start Scan
+
+                Scan:
+                    argument: sview = arguments[index]
+                    if argument == "--update":
+                        update <- true
+                    elif argument == "--help" or argument == "-h":
+                        help <- true
+                        break
+                    elif argument == "--capture-dir":
+                        raise CliError.MissingOptionValue(argument) if index + 1 >= arguments.count or arguments[index + 1].startswith("-")
+                        index <- index + 1
+                        capture_directory <- arguments[index]
+                    elif argument == "--reference-dir":
+                        raise CliError.MissingOptionValue(argument) if index + 1 >= arguments.count or arguments[index + 1].startswith("-")
+                        index <- index + 1
+                        reference_directory <- arguments[index]
+                    elif argument.startswith("--capture-dir="):
+                        pieces: darray[sview] = argument.partition("=")
+                        capture_directory <- pieces[2]
+                    elif argument.startswith("--reference-dir="):
+                        pieces: darray[sview] = argument.partition("=")
+                        reference_directory <- pieces[2]
+                    elif argument.startswith("-"):
+                        raise CliError.UnknownOption(argument)
+                    else:
+                        raise CliError.UnexpectedArgument(argument)
+                    index <- index + 1
+                    -> Scan
+            return CliOptions{
+                capture_directory: capture_directory,
+                reference_directory: reference_directory,
+                update: update,
+                help: help
+            }
+
+
+        def resample_nearest(frame: RenderFrame&, target_width: usize, target_height: usize) -> RenderFrame error[ImageError] can[Memory.Allocate, Abort.Panic]:
+            validate_postprocess_frame(frame)
+            raise ImageError.InvalidTargetDimensions if target_width == 0 or target_height == 0 or target_width > Policy::MAX_IMAGE_DIMENSION or target_height > Policy::MAX_IMAGE_DIMENSION
+            channels: usize = postprocess_channel_count(frame.format)
+            raise ImageError.InvalidFrame if target_width > Policy::MAX_FRAME_BYTES / channels
+            row_bytes: usize = target_width * channels
+            raise ImageError.InvalidFrame if target_height > Policy::MAX_FRAME_BYTES / row_bytes
+            output: mutable darray[u8] = []
+            output.reserve(row_bytes * target_height)
+            for y in 0..<target_height |frame, target_width, target_height, channels, output|:
+                source_y: usize = y * frame.height / target_height
+                for x in 0..<target_width |frame, target_width, channels, source_y, output|:
+                    source_x: usize = x * frame.width / target_width
+                    source_offset: usize = (source_y * frame.width + source_x) * channels
+                    for channel in 0..<channels |frame, source_offset, output|:
+                        output.push(frame.pixels[source_offset + channel])
+            return RenderFrame{width: target_width, height: target_height, format: frame.format, pixels: output}
+
+
+        def filter_temporal_edges(frame: RenderFrame&) -> RenderFrame error[ImageError] can[Memory.Allocate, Abort.Panic]:
+            validate_postprocess_frame(frame)
+            channels: usize = postprocess_channel_count(frame.format)
+            output: mutable darray[u8] = []
+            output.reserve(frame.pixels.count)
+            for y in 0..<frame.height |frame, channels, output|:
+                for x in 0..<frame.width |frame, channels, y, output|:
+                    target: usize = (y * frame.width + x) * channels
+                    for channel in 0..<3 |frame, channels, x, y, target, output|:
+                        weighted: mutable u32 = 0
+                        for kernel_y in 0..<3 |frame, channels, x, y, target, channel, weighted|:
+                            source_y: usize = clamp_kernel_coordinate(y, kernel_y, frame.height)
+                            weight_y: u32 = 2 if kernel_y == 1 else 1
+                            for kernel_x in 0..<3 |frame, channels, x, y, target, channel, weighted, source_y, weight_y|:
+                                source_x: usize = clamp_kernel_coordinate(x, kernel_x, frame.width)
+                                weight_x: u32 = 2 if kernel_x == 1 else 1
+                                source: usize = (source_y * frame.width + source_x) * channels + channel
+                                weighted <- weighted + frame.pixels[source].u32() * weight_x * weight_y
+                        output.push(((weighted + 8u32) / 16u32).u8())
+                    if frame.format == RenderPixelFormat.Rgba8:
+                        output.push(frame.pixels[target + 3])
+            return RenderFrame{width: frame.width, height: frame.height, format: frame.format, pixels: output}
+
+
+        def compare_frames(first: RenderFrame&, second: RenderFrame&) -> ImageMetrics error[ImageError] can[Abort.Panic]:
+            validate_postprocess_frame(first)
+            validate_postprocess_frame(second)
+            first_channels: usize = postprocess_channel_count(first.format)
+            second_channels: usize = postprocess_channel_count(second.format)
+            first_count: usize = first.pixels.count / first_channels
+            second_count: usize = second.pixels.count / second_channels
+            raise ImageError.PixelCountMismatch if first_count != second_count
+            raise ImageError.InvalidFrame if first_count == 0
+            peak: mutable f64 = 0.0
+            total: mutable f64 = 0.0
+            for pixel in 0..<first_count |first, second, first_channels, second_channels, peak, total|:
+                worst: mutable f64 = 0.0
+                for channel in 0..<3 |first, second, first_channels, second_channels, pixel, worst|:
+                    first_value: i32 = first.pixels[pixel * first_channels + channel].i32()
+                    second_value: i32 = second.pixels[pixel * second_channels + channel].i32()
+                    delta: i32 = first_value - second_value if first_value >= second_value else second_value - first_value
+                    error: f64 = delta.f64() / 255.0
+                    worst <- error if error > worst
+                peak <- worst if worst > peak
+                total <- total + worst
+            mean: f64 = total / first_count.f64()
+            return ImageMetrics{
+                peak: peak,
+                mean: mean,
+                passes: peak <= Policy::PEAK_TOLERANCE and mean <= Policy::MEAN_TOLERANCE
+            }
+
+
+        def reference_rgba_frame(frame: RenderFrame&) -> RenderFrame error[ImageError] can[Memory.Allocate, Abort.Panic]:
+            validate_postprocess_frame(frame)
+            raise ImageError.InvalidAspectRatio if frame.width * Policy::REFERENCE_HEIGHT != frame.height * Policy::REFERENCE_WIDTH
+            reduced: RenderFrame = try resample_nearest(frame, Policy::REFERENCE_WIDTH, Policy::REFERENCE_HEIGHT)
+            source_channels: usize = postprocess_channel_count(reduced.format)
+            rgba: mutable darray[u8] = []
+            rgba.reserve(Policy::REFERENCE_WIDTH * Policy::REFERENCE_HEIGHT * 4)
+            for pixel in 0..<(Policy::REFERENCE_WIDTH * Policy::REFERENCE_HEIGHT) |reduced, source_channels, rgba|:
+                source: usize = pixel * source_channels
+                rgba.push(reduced.pixels[source])
+                rgba.push(reduced.pixels[source + 1])
+                rgba.push(reduced.pixels[source + 2])
+                rgba.push(reduced.pixels[source + 3] if source_channels == 4 else 255u8)
+            return RenderFrame{width: Policy::REFERENCE_WIDTH, height: Policy::REFERENCE_HEIGHT, format: RenderPixelFormat.Rgba8, pixels: rgba}
+
+
+    private:
+        def project_path(root: sview, relative: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            return "/" + relative if root == "/"
+            return root + "/" + relative
+
+
+        def postprocess_channel_count(format: RenderPixelFormat) -> usize:
+            return 3 if format == RenderPixelFormat.Rgb8 else 4
+
+
+        def validate_postprocess_frame(frame: RenderFrame&) -> void error[ImageError]:
+            channels: usize = postprocess_channel_count(frame.format)
+            raise ImageError.InvalidFrame if frame.width == 0 or frame.height == 0
+            raise ImageError.InvalidFrame if frame.width > Policy::MAX_IMAGE_DIMENSION or frame.height > Policy::MAX_IMAGE_DIMENSION
+            raise ImageError.InvalidFrame if frame.width > Policy::MAX_FRAME_BYTES / channels
+            row_bytes: usize = frame.width * channels
+            raise ImageError.InvalidFrame if frame.height > Policy::MAX_FRAME_BYTES / row_bytes
+            raise ImageError.InvalidFrame if row_bytes * frame.height != frame.pixels.count
+
+
+        def clamp_kernel_coordinate(center: usize, kernel_offset: usize, limit: usize) -> usize:
+            return center - 1 if kernel_offset == 0 and center > 0
+            return center + 1 if kernel_offset == 2 and center + 1 < limit
+            return 0 if kernel_offset == 0
+            return limit - 1 if kernel_offset == 2
+            return center
