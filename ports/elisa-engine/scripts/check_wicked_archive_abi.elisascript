@@ -1,0 +1,469 @@
+#!/usr/bin/env elisascript
+# Bounded Elisascript counterpart of elisa-engine/scripts/check_wicked_archive_abi.py.
+include "./wicked_archive_abi_model.elisa"
+include "./temp_directory.elisa"
+include "../../../src/runtime/process_model.elisa"
+
+using EsEngineWickedArchiveAbi
+using EsEngineTempDirectory
+using EsProcess
+
+
+module EsEngineWickedArchiveAbiCommand:
+    private:
+        const module CliText:
+            NAME: sview = "check_wicked_archive_abi.py"
+            USAGE: sview = "usage: check_wicked_archive_abi.py [-h] [--compiler COMPILER] archives [archives ...]\n"
+            HELP: sview = "usage: check_wicked_archive_abi.py [-h] [--compiler COMPILER] archives [archives ...]\n\nReject Wicked static libraries assembled from mixed libc++ ABI builds.\n\npositional arguments:\n  archives\n\noptions:\n  -h, --help            show this help message and exit\n  --compiler COMPILER   C++ compiler used to link the Elisa native bridge\n"
+            PROBE_SOURCE: sview = "#include <string>\n#include <vector>\nstd::string elisa_abi_probe(const std::string& value) {\n    std::vector<std::string> values{value};\n    return values.front();\n}\n"
+
+
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 120000000i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+            UNAME_OUTPUT_BYTES: i64 = 4096i64
+
+
+        const enum ParseFailure of u8:
+            None
+            HelpRequested
+            MissingCompiler
+            UnknownArgument
+            MissingArchives
+
+
+        const enum ParsePhase of u8:
+            Scan
+            CompilerValue
+            Done
+
+
+        struct Options:
+            compiler: sview = ""
+            has_compiler: bool = false
+            archives: darray[sview] = []
+
+
+        struct ParseState:
+            phase: ParsePhase = ParsePhase.Scan
+            options: Options = Options{}
+            failure: ParseFailure = ParseFailure.None
+            detail: sview = ""
+            index: usize = 0
+            after_separator: bool = false
+
+
+        struct ParsedArguments:
+            options: Options
+            failure: ParseFailure
+            detail: sview
+
+
+        struct CommandOutput:
+            started: bool = false
+            status: i64 = 127i64
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct Inspection:
+            succeeded: bool = false
+            versions: darray[sview] = []
+            error: sview = ""
+
+
+        struct InspectCommand:
+            program: sview
+            arguments: darray[sview]
+
+
+        const enum CompilerPhase of u8:
+            WriteProbe
+            CompileProbe
+            InspectObject
+            Cleanup
+            Done
+
+
+        struct ArchiveInspection:
+            archive: Path
+            versions: darray[sview]
+
+
+        struct CompilerState:
+            phase: CompilerPhase
+            temporary: Path
+            source: Path
+            object_file: Path
+            result: Inspection
+
+
+        const enum RunPhase of u8:
+            InspectArchives
+            ReportArchiveErrors
+            EvaluateArchives
+            InspectCompiler
+            ReportResult
+            Done
+
+
+        struct RunState:
+            phase: RunPhase
+            status: i64
+
+
+        def parse_arguments(arguments: darray[sview]) -> ParsedArguments can[Memory.Allocate, Abort.Panic]:
+            state: mutable ParseState = ParseState{}
+            machine over state while state.phase != ParsePhase.Done:
+                state Parse
+                start Parse
+
+                Parse, ParsePhase.Scan:
+                    if state.index >= arguments.count:
+                        state.phase <- ParsePhase.Done
+                    else:
+                        argument: sview = arguments[state.index]
+                        if not state.after_separator and (argument == "-h" or argument == "--help"):
+                            state.failure <- ParseFailure.HelpRequested
+                            state.phase <- ParsePhase.Done
+                        elif not state.after_separator and argument == "--":
+                            state.after_separator <- true
+                            state.index <- state.index + 1
+                        elif not state.after_separator and argument == "--compiler":
+                            state.index <- state.index + 1
+                            state.phase <- ParsePhase.CompilerValue
+                        elif not state.after_separator and argument.startswith("--compiler="):
+                            state.options.compiler <- string_view_slice(argument, 11i64, sview_len(argument).i64())
+                            state.options.has_compiler <- true
+                            state.index <- state.index + 1
+                        elif not state.after_separator and argument.startswith("-") and argument != "-":
+                            state.failure <- ParseFailure.UnknownArgument
+                            state.detail <- argument
+                            state.phase <- ParsePhase.Done
+                        else:
+                            state.options.archives.push(argument)
+                            state.index <- state.index + 1
+                    -> Parse
+
+                Parse, ParsePhase.CompilerValue:
+                    if state.index >= arguments.count or (arguments[state.index] != "-" and arguments[state.index].startswith("-")):
+                        state.failure <- ParseFailure.MissingCompiler
+                        state.detail <- "--compiler"
+                        state.phase <- ParsePhase.Done
+                    else:
+                        state.options.compiler <- arguments[state.index]
+                        state.options.has_compiler <- true
+                        state.index <- state.index + 1
+                        state.phase <- ParsePhase.Scan
+                    -> Parse
+
+                Parse, ParsePhase.Done:
+                    break
+
+            if state.failure == ParseFailure.None and state.options.archives.count == 0:
+                state.failure <- ParseFailure.MissingArchives
+            return ParsedArguments{options: state.options, failure: state.failure, detail: state.detail}
+
+
+        def executable_file(candidate: Path) -> bool can[File.Read, Directory.Read, Unsafe.PointerCast]:
+            return try is_file(candidate) and is_executable(candidate) else failure:
+                _ = failure
+                false
+
+
+        # shutil.which-compatible path selection for the POSIX toolchain used by this checker.
+        def which(program: sview) -> sview can[Environment.Read, Directory.Read, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return "" if program == "" or sview_contains_byte(program, 0u8)
+            if sview_contains_byte(program, 47u8):
+                candidate: Path = path(program)
+                return f"{candidate}" if executable_file(candidate)
+                return ""
+
+            selected_path: sview = try getenv("PATH", "\0") else "\0"
+            selected_path <- "/bin:/usr/bin" if selected_path == "\0"
+            length: usize = sview_len(selected_path)
+            segment_start: mutable usize = 0
+            cursor: mutable usize = 0
+            while cursor <= length |selected_path, program, segment_start, cursor|:
+                if cursor == length or sview_at(selected_path, cursor) == 58u8:
+                    directory: sview = string_view_slice(selected_path, segment_start.i64(), cursor.i64())
+                    candidate: Path = path(program) if directory == "" else path(directory).joinpath(program)
+                    return f"{candidate}" if executable_file(candidate)
+                    segment_start <- cursor + 1
+                cursor <- cursor + 1
+            return ""
+
+
+        def capture_command(program: sview, arguments: darray[sview], output_limit: i64 = Limits::PROCESS_OUTPUT_BYTES) -> CommandOutput can[Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format]:
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable(program), arguments, "", Limits::PROCESS_TIMEOUT_MICROS, output_limit
+            ) else failure:
+                _ = failure
+                return CommandOutput{}
+            return CommandOutput{
+                started: true,
+                status: capture.process_exit_status,
+                stdout: capture.process_stdout,
+                stderr: capture.process_stderr
+            }
+
+
+        def host_is_darwin() -> bool can[Environment.Read, Directory.Read, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            uname: sview = which("uname")
+            return false if uname == ""
+            result: CommandOutput = capture_command(uname, ["-s"], Limits::UNAME_OUTPUT_BYTES)
+            return result.started and result.status == 0i64 and result.stdout.strip() == "Darwin"
+
+
+        def join_versions(versions: darray[sview]) -> sview can[Memory.Allocate, Abort.Panic]:
+            joined: mutable sview = ""
+            for version in versions |joined|:
+                joined <- joined + ", " if joined != ""
+                joined <- joined + version
+            return joined
+
+
+        def first_nonempty(values: darray[sview]) -> sview can[Memory.Allocate, Abort.Panic]:
+            for value in values:
+                return value if value != ""
+            return ""
+
+
+        def inspect_symbols(target: Path, darwin: bool) -> Inspection can[Environment.Read, Directory.Read, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            target_text: sview = f"{target}"
+            commands: mutable darray[InspectCommand] = []
+            xcrun: sview = which("xcrun") if darwin else ""
+            if xcrun != "":
+                commands.push(InspectCommand{program: xcrun, arguments: ["llvm-nm", "-A", "--demangle", target_text]})
+            llvm_nm: sview = which("llvm-nm")
+            if llvm_nm != "":
+                commands.push(InspectCommand{program: llvm_nm, arguments: ["-A", "--demangle", target_text]})
+            nm: sview = which("nm")
+            if nm != "":
+                commands.push(InspectCommand{program: nm, arguments: ["-A", "-C", target_text]})
+            if commands.count == 0:
+                return Inspection{error: "could not find llvm-nm or nm to inspect static archives"}
+
+            errors: mutable darray[sview] = []
+            for command in commands:
+                captured: CommandOutput = capture_command(command.program, command.arguments)
+                if captured.started and captured.status == 0i64:
+                    return Inspection{succeeded: true, versions: EsEngineWickedArchiveAbi::abi_versions(captured.stdout)}
+                error_text: sview = captured.stderr.strip()
+                error_text <- captured.stdout.strip() if error_text == ""
+                errors.push(error_text)
+            details: sview = first_nonempty(errors)
+            details <- "nm failed" if details == ""
+            return Inspection{error: "could not inspect " + target_text + ": " + details}
+
+
+        def inspect_archive(archive: Path, darwin: bool) -> Inspection can[Environment.Read, Directory.Read, File.Read, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            exists: bool = try is_file(archive) else false
+            if not exists:
+                return Inspection{error: "archive does not exist: " + f"{archive}"}
+            return inspect_symbols(archive, darwin)
+
+
+        def resolve_compiler(compiler: sview) -> Inspection can[Environment.Read, Directory.Read, File.Read, Memory.Allocate, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            found: sview = which(compiler)
+            return Inspection{succeeded: true, versions: [found]} if found != ""
+            candidate: Path = path(compiler)
+            exists: bool = try is_file(candidate) else false
+            if exists:
+                resolved: Path = try path_real(candidate) else failure:
+                    _ = failure
+                    return Inspection{error: "C++ compiler was not found: " + compiler}
+                return Inspection{succeeded: true, versions: [f"{resolved}"]}
+            return Inspection{error: "C++ compiler was not found: " + compiler}
+
+
+        def compiler_probe(compiler: sview, darwin: bool) -> Inspection can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Format]:
+            resolved: Inspection = resolve_compiler(compiler)
+            if not resolved.succeeded:
+                return resolved
+            compiler_path: sview = resolved.versions[0]
+            temporary: Path = try EsEngineTempDirectory::create("elisa-cxx-abi-") else failure:
+                _ = failure
+                return Inspection{error: "could not create a temporary directory for the C++ ABI probe"}
+
+            source: Path = temporary.joinpath("abi_probe.cpp")
+            object_file: Path = temporary.joinpath("abi_probe.o")
+            state: mutable CompilerState = CompilerState{
+                phase: CompilerPhase.WriteProbe,
+                temporary: temporary,
+                source: source,
+                object_file: object_file,
+                result: Inspection{}
+            }
+            machine over state while state.phase != CompilerPhase.Done:
+                state Compiler
+                start Compiler
+
+                Compiler, CompilerPhase.WriteProbe:
+                    written: usize = try write_text(state.source, CliText::PROBE_SOURCE) else failure:
+                        _ = failure
+                        0usize
+                    if written != sview_len(CliText::PROBE_SOURCE):
+                        state.result.error <- "could not write the C++ ABI probe source"
+                        state.phase <- CompilerPhase.Cleanup
+                    else:
+                        state.phase <- CompilerPhase.CompileProbe
+                    -> Compiler
+
+                Compiler, CompilerPhase.CompileProbe:
+                    arguments: darray[sview] = ["-std=c++17", "-c", f"{state.source}", "-o", f"{state.object_file}"]
+                    captured: CommandOutput = capture_command(compiler_path, arguments)
+                    if not captured.started:
+                        state.result.error <- "could not compile the C++ ABI probe with " + compiler_path + ": unable to start compiler"
+                        state.phase <- CompilerPhase.Cleanup
+                    elif captured.status != 0i64:
+                        details: sview = captured.stderr.strip()
+                        details <- captured.stdout.strip() if details == ""
+                        details <- "exit status " + f"{captured.status}" if details == ""
+                        state.result.error <- "could not compile the C++ ABI probe with " + compiler_path + ": " + details
+                        state.phase <- CompilerPhase.Cleanup
+                    else:
+                        state.phase <- CompilerPhase.InspectObject
+                    -> Compiler
+
+                Compiler, CompilerPhase.InspectObject:
+                    inspected: Inspection = inspect_symbols(state.object_file, darwin)
+                    state.result <- inspected
+                    if state.result.error == "" and state.result.versions.count == 0:
+                        state.result.error <- "C++ ABI tags were not found in compiler output: " + compiler_path
+                    state.phase <- CompilerPhase.Cleanup
+                    -> Compiler
+
+                Compiler, CompilerPhase.Cleanup:
+                    cleaned: bool = try remove_tree(state.temporary) else false
+                    if not cleaned and state.result.error == "":
+                        state.result.error <- "unable to clean up the temporary C++ ABI probe directory"
+                    state.result.succeeded <- state.result.error == ""
+                    state.phase <- CompilerPhase.Done
+                    -> Compiler
+
+                Compiler, CompilerPhase.Done:
+                    break
+            return state.result
+
+
+        def append_unique(target: mutable darray[sview]&, values: darray[sview]) -> void can[Memory.Allocate, Abort.Panic]:
+            for value in values:
+                found: mutable bool = false
+                for present in target:
+                    found <- true if present == value
+                if not found:
+                    target.push(value)
+
+
+        def store_archive(results: mutable darray[ArchiveInspection]&, archive: Path, versions: darray[sview]) -> void can[Memory.Allocate, Abort.Panic]:
+            archive_text: sview = f"{archive}"
+            for index in 0..<results.count:
+                if f"{results[index].archive}" == archive_text:
+                    results[index] <- ArchiveInspection{archive: archive, versions: versions}
+                    return
+            results.push(ArchiveInspection{archive: archive, versions: versions})
+
+
+        def cli_error(parsed: ParsedArguments) -> sview:
+            if parsed.failure == ParseFailure.MissingCompiler:
+                return "argument " + parsed.detail + ": expected one argument"
+            elif parsed.failure == ParseFailure.UnknownArgument:
+                return "unrecognized arguments: " + parsed.detail
+            return "the following arguments are required: archives"
+
+
+        def emit_archive_errors(errors: darray[sview]) -> void can[Console.Write, Memory.Allocate, Abort.Panic]:
+            for error in errors:
+                _ = write_stderr("Wicked ABI check: " + error + "\n")
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            parsed: ParsedArguments = parse_arguments(arguments)
+            if parsed.failure == ParseFailure.HelpRequested:
+                _ = write_stdout(CliText::HELP)
+                return 0i64
+            if parsed.failure != ParseFailure.None:
+                _ = write_stderr(CliText::USAGE)
+                _ = write_stderr(CliText::NAME + ": error: " + cli_error(parsed) + "\n")
+                return 2i64
+
+            darwin: bool = host_is_darwin()
+            archive_results: mutable darray[ArchiveInspection] = []
+            archive_errors: mutable darray[sview] = []
+            all_versions: mutable darray[sview] = []
+            archive_index: mutable usize = 0
+
+            state: mutable RunState = RunState{phase: RunPhase.InspectArchives, status: 0i64}
+            machine over state while state.phase != RunPhase.Done:
+                state Main
+                start Main
+
+                Main, RunPhase.InspectArchives:
+                    if archive_index >= parsed.options.archives.count:
+                        state.phase <- RunPhase.ReportArchiveErrors if archive_errors.count > 0 else RunPhase.EvaluateArchives
+                    else:
+                        archive: Path = path(parsed.options.archives[archive_index])
+                        inspected: Inspection = inspect_archive(archive, darwin)
+                        if inspected.error != "":
+                            archive_errors.push(inspected.error)
+                        else:
+                            store_archive(archive_results, archive, inspected.versions)
+                        archive_index <- archive_index + 1
+                    -> Main
+
+                Main, RunPhase.ReportArchiveErrors:
+                    emit_archive_errors(archive_errors)
+                    state <- RunState{phase: RunPhase.Done, status: 2i64}
+                    -> Main
+
+                Main, RunPhase.EvaluateArchives:
+                    for archive in archive_results:
+                        append_unique(all_versions, archive.versions)
+                    if all_versions.count > 1:
+                        _ = write_stderr("Wicked ABI check: linked archives contain mixed libc++ ABI tags:\n")
+                        for archive in archive_results:
+                            printable: sview = join_versions(archive.versions)
+                            printable <- "no tagged libc++ symbols" if printable == ""
+                            _ = write_stderr("  " + f"{archive.archive}" + ": " + printable + "\n")
+                        _ = write_stderr("Rebuild every C++ archive and the Elisa native bridge with one toolchain.\n")
+                        state <- RunState{phase: RunPhase.Done, status: 1i64}
+                    elif all_versions.count == 0:
+                        _ = write_stderr("Wicked ABI check: no libc++ ABI tags found; compatibility could not be verified\n")
+                        state <- RunState{phase: RunPhase.Done, status: 2i64}
+                    elif parsed.options.has_compiler:
+                        state.phase <- RunPhase.InspectCompiler
+                    else:
+                        state.phase <- RunPhase.ReportResult
+                    -> Main
+
+                Main, RunPhase.InspectCompiler:
+                    inspected: Inspection = compiler_probe(parsed.options.compiler, darwin)
+                    if not inspected.succeeded:
+                        _ = write_stderr("Wicked ABI check: " + inspected.error + "\n")
+                        state <- RunState{phase: RunPhase.Done, status: 2i64}
+                    else:
+                        mismatch: sview = EsEngineWickedArchiveAbi::compiler_abi_mismatch(all_versions, inspected.versions)
+                        if mismatch != "":
+                            _ = write_stderr("Wicked ABI check: " + mismatch + "\n")
+                            state <- RunState{phase: RunPhase.Done, status: 1i64}
+                        else:
+                            state.phase <- RunPhase.ReportResult
+                    -> Main
+
+                Main, RunPhase.ReportResult:
+                    if parsed.options.has_compiler:
+                        print("Wicked ABI check: compiler and all tagged archives use libc++ ABI " + all_versions[0])
+                    else:
+                        print("Wicked ABI check: all tagged archives use libc++ ABI " + all_versions[0])
+                    state <- RunState{phase: RunPhase.Done, status: 0i64}
+                    -> Main
+
+                Main, RunPhase.Done:
+                    break
+            return state.status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, Environment.Read, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineWickedArchiveAbiCommand::run(arguments)
