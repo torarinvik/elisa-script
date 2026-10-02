@@ -1,8 +1,10 @@
 # Placement-local source-block sharing and primitive-index aggregation for
 # cook_gltf_geometry.normalized_geometry.
 include "gltf_primitive_placement_model.elisa"
+include "gltf_node_graph_model.elisa"
 
 using EsEngineGltfAffine
+using EsEngineGltfNodeGraph
 using EsEngineGltfNodeStreams
 using EsEngineGltfPrimitivePlacement
 using EsEngineGltfVertexStreams
@@ -13,6 +15,7 @@ module EsEngineGltfGeometryAssembly:
     public:
         const module Limits:
             MAX_PRIMITIVES: usize = 16
+            MAX_PLACEMENTS: usize = EsEngineGltfNodeGraph::Limits::MAX_NODES
             MAX_VERTICES: usize = EsEngineGltfVertexStreams::Limits::MAX_VERTICES
             MAX_INDICES: usize = EsEngineGltfNodeStreams::Limits::MAX_INDICES
             MAX_MORPH_TARGETS: usize = EsEngineGltfVertexStreams::Limits::MAX_MORPH_TARGETS
@@ -40,9 +43,31 @@ module EsEngineGltfGeometryAssembly:
             morph_normals_present: bool = false
 
 
+        struct GeometryPlacementInput:
+            placement: MeshPlacement
+            material_indices: darray[usize] = []
+
+
+        struct AssembledMeshPlacement:
+            placement: MeshPlacement
+            effective_transform: Affine3x4
+            geometry: PlacementAssembly
+
+
+        struct GeometryPlacementSet:
+            placements: darray[AssembledMeshPlacement] = []
+            source_vertex_count: usize = 0
+            index_count: usize = 0
+            has_morph_shape: bool = false
+            morph_target_count: usize = 0
+            morph_normals_present: bool = false
+
+
         error GeometryAssemblyError:
             InvalidBudget
             PrimitiveCountOutOfRange
+            PlacementCountOutOfRange
+            EmptyPlacementList
             InvalidPrimitive
             InvalidSourceKey
             InvalidCacheReference
@@ -79,6 +104,53 @@ module EsEngineGltfGeometryAssembly:
                 primitive: CachedTrianglePrimitive = try read_triangle_primitive_cached(document, buffer, mesh_index, ordinal, cache)
                 try append_cached_placement_primitive(assembly, cache, primitive, material_indices[ordinal])
             return assembly
+
+
+        # Compose placements in node-graph order while sharing one decoded
+        # source cache and the Python cooker's model-wide vertex/index budgets.
+        # The node decoder carries skin presence into each placement so the
+        # authored node transform cannot accidentally be baked for a skinned
+        # mesh by a caller-provided boolean override.
+        def assemble_geometry_placements(document: JsonDocument&, buffer: darray[u8]&, inputs: darray[GeometryPlacementInput]&, cache: mutable VertexSourceCache&) GeometryPlacementSet error[GeometryAssemblyError, VertexStreamError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            raise GeometryAssemblyError.EmptyPlacementList if inputs.count == 0
+            raise GeometryAssemblyError.PlacementCountOutOfRange if inputs.count > Limits::MAX_PLACEMENTS
+
+            identity: Affine3x4 = Affine3x4{m00: 1.0, m11: 1.0, m22: 1.0}
+            remaining_vertices: mutable usize = Limits::MAX_VERTICES
+            remaining_indices: mutable usize = Limits::MAX_INDICES
+            result: mutable GeometryPlacementSet = GeometryPlacementSet{}
+            for ordinal in 0..<inputs.count |document, buffer, inputs, cache, identity, remaining_vertices, remaining_indices, result|:
+                input: GeometryPlacementInput = inputs[ordinal]
+                effective_transform: Affine3x4 = identity if input.placement.has_skin else input.placement.world_transform
+                geometry: PlacementAssembly = try assemble_mesh_placement(
+                    document,
+                    buffer,
+                    input.placement.mesh_index,
+                    effective_transform,
+                    input.material_indices,
+                    cache,
+                    remaining_vertices,
+                    remaining_indices
+                )
+                raise GeometryAssemblyError.VertexBudgetExceeded if geometry.source_vertex_count > remaining_vertices
+                raise GeometryAssemblyError.IndexBudgetExceeded if geometry.index_count > remaining_indices
+                if result.has_morph_shape:
+                    raise GeometryAssemblyError.MorphTargetCountMismatch if result.morph_target_count != geometry.morph_target_count
+                    raise GeometryAssemblyError.InconsistentMorphNormalStreams if result.morph_normals_present != geometry.morph_normals_present
+                else:
+                    result.has_morph_shape <- true
+                    result.morph_target_count <- geometry.morph_target_count
+                    result.morph_normals_present <- geometry.morph_normals_present
+                remaining_vertices <- remaining_vertices - geometry.source_vertex_count
+                remaining_indices <- remaining_indices - geometry.index_count
+                result.source_vertex_count <- result.source_vertex_count + geometry.source_vertex_count
+                result.index_count <- result.index_count + geometry.index_count
+                result.placements.push(AssembledMeshPlacement{
+                    placement: input.placement,
+                    effective_transform: effective_transform,
+                    geometry: geometry
+                })
+            return result
 
 
         # Append one decoded primitive in source order. The first primitive
