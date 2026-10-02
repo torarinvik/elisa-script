@@ -1,0 +1,117 @@
+# Pure pixel-quality policy shared by compare_mirrored_normal.py and
+# compare_occlusion_strength.py. The caller supplies an already decoded RGB8
+# or RGBA8 frame; PNG loading and CLI behavior remain adapter responsibilities.
+include "../../../vendor/elisa-compiler/elisacore_std/elisacore_math.elisa"
+
+
+module EsEngineRenderQuality:
+    public:
+        const module Policy:
+            LEFT_PATCH_X_PERMILLE: usize = 350
+            RIGHT_PATCH_X_PERMILLE: usize = 650
+            PATCH_Y_PERMILLE: usize = 500
+            MINIMUM_CAPTURE_CONTRAST: f64 = 0.04
+            MINIMUM_OCCLUSION_DARKENING: f64 = 0.01
+            PIXEL_PATCH_WIDTH_RATIO: usize = 160
+
+
+        const enum RenderPixelFormat of u8:
+            Rgb8
+            Rgba8
+
+
+        struct RenderFrame:
+            width: usize
+            height: usize
+            format: RenderPixelFormat
+            pixels: darray[u8]
+
+
+        struct MirroredNormalMetrics:
+            left_luminance: f64
+            right_luminance: f64
+            contrast: f64
+            passes: bool
+
+
+        struct OcclusionStrengthMetrics:
+            occluded_luminance: f64
+            strength_zero_luminance: f64
+            darkening: f64
+            passes: bool
+
+
+        error RenderQualityError:
+            InvalidFrame
+            IncompatibleFrames
+            CoordinateOutOfRange
+
+
+        def patch_luminance(frame: RenderFrame&, x_permille: usize, y_permille: usize) -> f64 error[RenderQualityError] can[Abort.Panic]:
+            validate_frame(frame)
+            raise RenderQualityError.CoordinateOutOfRange if x_permille > 1000 or y_permille > 1000
+            radius_by_width: usize = frame.width / Policy::PIXEL_PATCH_WIDTH_RATIO
+            radius: usize = 2 if radius_by_width < 2 else radius_by_width
+            raise RenderQualityError.InvalidFrame if frame.width <= 2 * radius or frame.height <= 2 * radius
+            center_x: mutable usize = scaled_coordinate_permille(frame.width - 1, x_permille)
+            center_y: mutable usize = scaled_coordinate_permille(frame.height - 1, y_permille)
+            center_x <- radius if center_x < radius
+            center_y <- radius if center_y < radius
+            center_x <- frame.width - radius - 1 if center_x > frame.width - radius - 1
+            center_y <- frame.height - radius - 1 if center_y > frame.height - radius - 1
+            first_x: usize = center_x - radius
+            end_x: usize = center_x + radius + 1
+            first_y: usize = center_y - radius
+            end_y: usize = center_y + radius + 1
+            sample_width: usize = 2 * radius + 1
+            sample_pixels: usize = sample_width * sample_width
+            total: mutable f64 = 0.0
+            for y in first_y..<end_y |frame, first_x, end_x, total|:
+                for x in first_x..<end_x |frame, y, total|:
+                    offset: usize = (y * frame.width + x) * pixel_channel_count(frame.format)
+                    red: f64 = frame.pixels[offset].f64()
+                    green: f64 = frame.pixels[offset + 1].f64()
+                    blue: f64 = frame.pixels[offset + 2].f64()
+                    pixel_luminance: f64 = 0.2126 * red / 255.0 + 0.7152 * green / 255.0 + 0.0722 * blue / 255.0
+                    total <- total + pixel_luminance
+            return total / sample_pixels.f64()
+
+
+        def mirrored_normal_metrics(frame: RenderFrame&) -> MirroredNormalMetrics error[RenderQualityError] can[Abort.Panic]:
+            left: f64 = try patch_luminance(frame, Policy::LEFT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            right: f64 = try patch_luminance(frame, Policy::RIGHT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            contrast: f64 = fabs(left - right)
+            return MirroredNormalMetrics{left_luminance: left, right_luminance: right, contrast: contrast, passes: contrast >= Policy::MINIMUM_CAPTURE_CONTRAST}
+
+
+        def occlusion_strength_metrics(occluded: RenderFrame&, strength_zero: RenderFrame&) -> OcclusionStrengthMetrics error[RenderQualityError] can[Abort.Panic]:
+            validate_frame(occluded)
+            validate_frame(strength_zero)
+            raise RenderQualityError.IncompatibleFrames if occluded.width != strength_zero.width or occluded.height != strength_zero.height or occluded.format != strength_zero.format
+            left_occluded: f64 = try patch_luminance(occluded, Policy::LEFT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            right_occluded: f64 = try patch_luminance(occluded, Policy::RIGHT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            left_unoccluded: f64 = try patch_luminance(strength_zero, Policy::LEFT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            right_unoccluded: f64 = try patch_luminance(strength_zero, Policy::RIGHT_PATCH_X_PERMILLE, Policy::PATCH_Y_PERMILLE)
+            with_ao: f64 = (left_occluded + right_occluded) / 2.0
+            without_ao: f64 = (left_unoccluded + right_unoccluded) / 2.0
+            darkening: f64 = without_ao - with_ao
+            return OcclusionStrengthMetrics{occluded_luminance: with_ao, strength_zero_luminance: without_ao, darkening: darkening, passes: darkening >= Policy::MINIMUM_OCCLUSION_DARKENING}
+
+
+    private:
+        def pixel_channel_count(format: RenderPixelFormat) -> usize:
+            return 3 if format == RenderPixelFormat.Rgb8 else 4
+
+
+        def validate_frame(frame: RenderFrame&) -> void error[RenderQualityError]:
+            raise RenderQualityError.InvalidFrame if frame.width == 0 or frame.height == 0
+            channels: usize = pixel_channel_count(frame.format)
+            raise RenderQualityError.InvalidFrame if frame.width > frame.pixels.count / channels
+            row_bytes: usize = frame.width * channels
+            raise RenderQualityError.InvalidFrame if row_bytes == 0 or frame.pixels.count % row_bytes != 0 or frame.pixels.count / row_bytes != frame.height
+
+
+        def scaled_coordinate_permille(last_coordinate: usize, coordinate_permille: usize) -> usize:
+            whole_thousands: usize = last_coordinate / 1000
+            remainder: usize = last_coordinate % 1000
+            return whole_thousands * coordinate_permille + remainder * coordinate_permille / 1000
