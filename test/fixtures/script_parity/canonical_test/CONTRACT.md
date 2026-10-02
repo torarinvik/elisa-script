@@ -162,14 +162,18 @@ agreement. Campaign may not be implemented by calling its original shell
 wrapper or by routing the candidate to the reference.
 
 The default `CampaignOnly` wave checks three ordinary forced-mode/argument-
-forwarding cases plus an independent missing-Python exec-failure case. It stages
-both unchanged shell scripts because the reference campaign shim execs its
-sibling canonical wrapper, but stages only the campaign Elisascript entry point
-and shared implementation. It does not run lint ordinary or signal cases. The
-`CanonicalOnly` wave likewise adds one exact missing-Python failure case to its
-seven ordinary cases. The broader `WrapperFamily` wave runs both wrapper
-failure cases and remains explicit for the canonical invalid-mode diagnostics
-described above.
+forwarding cases, an independent missing-Python exec-failure case, and a
+self-terminating SIGTERM probe. It stages both unchanged shell scripts because
+the reference campaign shim execs its sibling canonical wrapper, but stages
+only the campaign Elisascript entry point, shared implementation, and isolated
+signal probe. It does not run lint ordinary or lint signal cases. The
+`CanonicalOnly` wave likewise adds one exact missing-Python failure case and
+one signal case to its seven ordinary cases. For each signal case, the reference
+must first be observed as a signal-terminated process with status 143, empty
+streams, and no harness error before the candidate is launched. The broader
+`WrapperFamily` wave runs both wrapper failure and signal cases, plus the
+canonical invalid-mode diagnostics described above. All remain authored and
+unrun under the validation hold.
 
 The seven ordinary-case `CanonicalOnly` wave separately exercises the mode
 parser, forwarded pytest argv, and Python selection for the shared runner. It
