@@ -1,0 +1,254 @@
+#!/usr/bin/env elisascript
+# Bounded Elisascript counterpart of the historical elisa-engine/scripts/fetch_sdl2.py.
+include "./fetch_sdl2_plan.elisa"
+include "../../../src/runtime/process_model.elisa"
+include "../../../src/runtime/macos_app_copy_posix.elisa"
+
+using EsEngineFetchSdl2Plan
+using EsProcess
+using EsMacosAppCopyPosix
+
+
+module EsEngineFetchSdl2:
+    private:
+        const module Limits:
+            PROCESS_TIMEOUT_MICROS: i64 = 600000000i64
+            PROCESS_OUTPUT_BYTES: i64 = EsProcess::PROCESS_COMMAND_MAX_CAPTURE_OUTPUT_BYTES.i64()
+
+
+        const enum FetchPhase of u8:
+            ResolveRoot
+            CheckCheckout
+            Clone
+            VerifyRevision
+            CheckLibrary
+            Configure
+            Build
+            ValidateLibrary
+            CheckLink
+            CreateLink
+            CreateStageDirectory
+            StageLibrary
+            ReportReady
+            Done
+
+
+        struct CommandCapture:
+            started: bool = false
+            status: i64 = 127i64
+            stdout: sview = ""
+            stderr: sview = ""
+
+
+        struct FetchState:
+            phase: FetchPhase
+            engine_root: Path
+            checkout: Path
+            build_directory: Path
+            library: Path
+            link_name: Path
+            staged_library: Path
+            command: EsEngineFetchSdl2Plan::Command
+            capture: CommandCapture
+            exit_status: i64
+
+
+        def capture_command(command: EsEngineFetchSdl2Plan::Command) -> CommandCapture can[Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format]:
+            capture: ProcessCapture = try subprocess.capture_result(
+                executable(command.program), command.arguments, "", Limits::PROCESS_TIMEOUT_MICROS, Limits::PROCESS_OUTPUT_BYTES
+            ) else failure:
+                _ = failure
+                return CommandCapture{}
+            return CommandCapture{
+                started: true,
+                status: capture.process_exit_status,
+                stdout: capture.process_stdout,
+                stderr: capture.process_stderr
+            }
+
+
+        def report_command_failure(command: EsEngineFetchSdl2Plan::Command, capture: CommandCapture) -> void can[Console.Write, Memory.Allocate, Abort.Panic, Console.Format]:
+            if not capture.started:
+                _ = write_stderr("command failed (" + EsEngineFetchSdl2Plan::command_text(command) + "): unable to start command or capture bounded output\n")
+                return
+            detail: sview = capture.stderr.strip()
+            detail <- capture.stdout.strip() if detail == ""
+            _ = write_stderr("command failed (" + EsEngineFetchSdl2Plan::command_text(command) + "): " + detail + "\n")
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+            # The Python fetcher ignores argv; preserve that entry-point behavior.
+            _ = arguments
+            state: mutable FetchState = FetchState{
+                phase: FetchPhase.ResolveRoot,
+                engine_root: path("."),
+                checkout: path("."),
+                build_directory: path("."),
+                library: path("."),
+                link_name: path("."),
+                staged_library: path("."),
+                command: EsEngineFetchSdl2Plan::Command{program: "", arguments: []},
+                capture: CommandCapture{},
+                exit_status: 1i64
+            }
+
+            machine over state while state.phase != FetchPhase.Done:
+                state Dispatch
+                start Dispatch
+
+                Dispatch, FetchPhase.ResolveRoot:
+                    source: Path = try path_real(Script::source_path()) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve SDL2 fetcher source path\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    engine_candidate: Path = source.parent().parent().parent().parent().parent().joinpath("elisa-engine")
+                    engine_root: Path = try path_real(engine_candidate) else failure:
+                        _ = failure
+                        _ = write_stderr("unable to resolve elisa-engine project root\n")
+                        state.phase <- FetchPhase.Done
+                        -> Dispatch
+                    state.engine_root <- engine_root
+                    state.checkout <- engine_root.joinpath(EsEngineFetchSdl2Plan::Dependency::CHECKOUT_RELATIVE_PATH)
+                    state.build_directory <- engine_root.joinpath(EsEngineFetchSdl2Plan::Dependency::BUILD_RELATIVE_PATH)
+                    state.library <- engine_root.joinpath(EsEngineFetchSdl2Plan::Dependency::LIBRARY_RELATIVE_PATH)
+                    state.link_name <- engine_root.joinpath(EsEngineFetchSdl2Plan::Dependency::LINK_RELATIVE_PATH)
+                    state.staged_library <- engine_root.joinpath(EsEngineFetchSdl2Plan::Dependency::STAGED_RELATIVE_PATH)
+                    state.phase <- FetchPhase.CheckCheckout
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckCheckout:
+                    metadata: Path = state.checkout.joinpath(".git")
+                    checkout_exists: bool = try is_directory(metadata) else false
+                    if checkout_exists:
+                        state.phase <- FetchPhase.VerifyRevision
+                    else:
+                        dependencies: Path = state.checkout.parent()
+                        created: bool = try create_directories(dependencies) else false
+                        if not created:
+                            _ = write_stderr("unable to create SDL2 dependency directory: " + f"{dependencies}" + "\n")
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.command <- EsEngineFetchSdl2Plan::clone_command(state.checkout)
+                            state.phase <- FetchPhase.Clone
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Clone:
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.VerifyRevision
+                    -> Dispatch
+
+                Dispatch, FetchPhase.VerifyRevision:
+                    state.command <- EsEngineFetchSdl2Plan::revision_command(state.checkout)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        head: sview = state.capture.stdout.strip()
+                        if head != EsEngineFetchSdl2Plan::Dependency::COMMIT:
+                            _ = write_stderr(
+                                "SDL2 checkout is " + head + ", expected " + EsEngineFetchSdl2Plan::Dependency::COMMIT + "; remove " + f"{state.checkout}" + " and re-run to reset\n"
+                            )
+                            state.phase <- FetchPhase.Done
+                        else:
+                            state.phase <- FetchPhase.CheckLibrary
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckLibrary:
+                    library_exists: bool = try is_file(state.library) else false
+                    if library_exists:
+                        state.phase <- FetchPhase.CheckLink
+                    else:
+                        state.phase <- FetchPhase.Configure
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Configure:
+                    state.command <- EsEngineFetchSdl2Plan::configure_command(state.checkout, state.build_directory)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.Build
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Build:
+                    state.command <- EsEngineFetchSdl2Plan::build_command(state.build_directory)
+                    state.capture <- capture_command(state.command)
+                    if not state.capture.started or state.capture.status != 0i64:
+                        report_command_failure(state.command, state.capture)
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.ValidateLibrary
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ValidateLibrary:
+                    library_exists: bool = try is_file(state.library) else false
+                    if library_exists:
+                        state.phase <- FetchPhase.CheckLink
+                    else:
+                        _ = write_stderr("SDL2 build did not produce " + f"{state.library}" + "\n")
+                        state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CheckLink:
+                    link_exists: bool = try state.link_name.exists() else false
+                    state.phase <- FetchPhase.CreateLink if not link_exists
+                    state.phase <- FetchPhase.CreateStageDirectory if link_exists
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CreateLink:
+                    linked: bool = try state.link_name.symlink_to(path("libSDL2-2.0.0.dylib")) else false
+                    if not linked:
+                        _ = write_stderr("unable to create SDL2 linker symlink: " + f"{state.link_name}" + "\n")
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.CreateStageDirectory
+                    -> Dispatch
+
+                Dispatch, FetchPhase.CreateStageDirectory:
+                    created: bool = try create_directories(state.staged_library.parent()) else false
+                    if not created:
+                        _ = write_stderr("unable to create SDL2 staging directory: " + f"{state.staged_library.parent()}" + "\n")
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.StageLibrary
+                    -> Dispatch
+
+                Dispatch, FetchPhase.StageLibrary:
+                    copied: bool = false
+                    catch copy_macos_app_file(state.library, state.staged_library):
+                        ok result:
+                            copied <- result
+                        error failure:
+                            _ = failure
+                    if not copied:
+                        _ = write_stderr("unable to stage SDL2 library: " + f"{state.staged_library}" + "\n")
+                        state.phase <- FetchPhase.Done
+                    else:
+                        state.phase <- FetchPhase.ReportReady
+                    -> Dispatch
+
+                Dispatch, FetchPhase.ReportReady:
+                    short_commit: sview = string_view_slice(EsEngineFetchSdl2Plan::Dependency::COMMIT, 0i64, 12i64)
+                    print("SDL2 " + EsEngineFetchSdl2Plan::Dependency::TAG + " (" + short_commit + ") ready:")
+                    print("  " + EsEngineFetchSdl2Plan::Dependency::LIBRARY_RELATIVE_PATH)
+                    print("  " + EsEngineFetchSdl2Plan::Dependency::STAGED_RELATIVE_PATH)
+                    state.exit_status <- 0i64
+                    state.phase <- FetchPhase.Done
+                    -> Dispatch
+
+                Dispatch, FetchPhase.Done:
+                    break
+
+            return state.exit_status
+
+
+def main(arguments: darray[sview]) -> i64 can[Directory.Read, Directory.Write, File.Read, File.Write, Process.Run, Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Unsafe.PointerCast, Console.Write, Console.Format]:
+    return EsEngineFetchSdl2::run(arguments)
