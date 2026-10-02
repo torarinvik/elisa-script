@@ -1,0 +1,378 @@
+# Resolve glTF material texture metadata to runtime image slots.
+# This ports texture/image/sampler references and factor sidecars; it does not
+# decode image bytes or emit the final package texture table.
+include "../../../src/runtime/data_model.elisa"
+include "../../../src/runtime/json_model.elisa"
+include "cook_gltf_material_factors_model.elisa"
+include "gltf_material_records_model.elisa"
+
+using EsData
+using EsEngineGltfMaterialFactors
+using EsEngineGltfMaterialRecords
+using EsJson
+
+
+module EsEngineGltfMaterialTextures:
+    public:
+        const module Limits:
+            SLOT_COUNT: usize = 8
+            WICKED_NORMAL_SCALE_LIMIT: f64 = 65504.0
+
+
+        const module Slot:
+            BASE_COLOR: usize = 0
+            NORMAL: usize = 1
+            METALLIC_ROUGHNESS: usize = 2
+            EMISSIVE: usize = 3
+            OCCLUSION: usize = 4
+            CLEARCOAT: usize = 5
+            CLEARCOAT_ROUGHNESS: usize = 6
+            CLEARCOAT_NORMAL: usize = 7
+
+
+        const module Sampler:
+            LINEAR: i64 = 9729
+            LINEAR_MIPMAP_LINEAR: i64 = 9987
+            REPEAT: i64 = 10497
+
+
+        struct MaterialTextureRecord:
+            image_indices: darray[usize] = []
+            has_any_texture: bool = false
+            occlusion_enabled: bool = false
+            factors: MaterialSlotFactors = MaterialSlotFactors{}
+
+
+        struct MaterialTexturePlan:
+            materials: darray[MaterialTextureRecord] = []
+            sidecars: FactorSidecars = FactorSidecars{}
+
+
+        error MaterialTextureError:
+            InvalidDocument
+            InvalidTextureInfo
+            UnsupportedTextureInfoProperty
+            UnsupportedTextureProperty
+            UnsupportedTextureExtension
+            InvalidBasisuSource
+            InvalidTextureReference
+            InvalidTexCoord
+            InvalidTextureFactor
+            MissingTextureTable
+            MissingImageTable
+            MissingSamplerTable
+            InvalidTextureTable
+            InvalidImageTable
+            InvalidSamplerTable
+            InvalidSampler
+            MaskMaterialHasNoBaseColorImage
+
+
+        # Return eight optional image indices in the engine's fixed slot
+        # order. Every present texture reference is resolved through its
+        # texture, optional KHR_texture_basisu source, image table, and
+        # sampler. The selected image's bufferView/data URI bytes are a later
+        # layer.
+        def document_material_textures(document: JsonDocument&) MaterialTexturePlan error[MaterialTextureError, MaterialRecordError, MaterialFactorError, JsonContractError] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            try validate_json_document(document)
+            raise MaterialTextureError.InvalidDocument if document.state != JsonDocumentState.Sealed or document.roots.count != 1
+            root_index: usize = document.roots[0]
+            raise MaterialTextureError.InvalidDocument if root_index >= document.nodes.count or document.nodes[root_index].kind != JsonNodeKind.Object
+            records: MaterialRecordSet = try document_material_records(document)
+
+            resolved_materials: mutable darray[MaterialTextureRecord] = []
+            factor_slots: mutable darray[MaterialSlotFactors] = []
+            for core_record in records.records |document, resolved_materials, factor_slots|:
+                material_index: usize = core_record.source_material_index
+                pbr_index: usize = texture_member_index(document, material_index, "pbrMetallicRoughness")
+                extensions_index: usize = texture_member_index(document, material_index, "extensions")
+                clearcoat_index: usize = texture_member_index(document, extensions_index, "KHR_materials_clearcoat")
+                images: mutable darray[usize] = []
+                factors: mutable MaterialSlotFactors = MaterialSlotFactors{}
+                clearcoat_factor_index: usize = texture_member_index(document, clearcoat_index, "clearcoatFactor")
+                if clearcoat_factor_index != JSON_INDEX_NONE:
+                    factors.clearcoat_factor <- try unit_factor(document, clearcoat_factor_index, "clearcoatFactor")
+                clearcoat_roughness_index: usize = texture_member_index(document, clearcoat_index, "clearcoatRoughnessFactor")
+                if clearcoat_roughness_index != JSON_INDEX_NONE:
+                    factors.clearcoat_roughness <- try unit_factor(document, clearcoat_roughness_index, "clearcoatRoughnessFactor")
+                has_any_texture: mutable bool = false
+                occlusion_enabled: mutable bool = false
+
+                for slot_index in 0..<Limits::SLOT_COUNT |document, material_index, pbr_index, clearcoat_index, core_record, images, factors, has_any_texture, occlusion_enabled|:
+                    owner_index: usize = texture_slot_owner(slot_index, material_index, pbr_index, clearcoat_index)
+                    key: sview = texture_slot_key(slot_index)
+                    info_index: usize = texture_member_index(document, owner_index, key)
+                    if info_index == JSON_INDEX_NONE:
+                        images.push(JSON_INDEX_NONE)
+                    else:
+                        resolved: TextureInfoResolution = try resolve_texture_info(document, info_index, slot_index)
+                        images.push(resolved.image_index)
+                        has_any_texture <- true
+                        occlusion_enabled <- true if slot_index == Slot::OCCLUSION
+                        factors.normal_scale <- resolved.factor if slot_index == Slot::NORMAL
+                        factors.occlusion_strength <- resolved.factor if slot_index == Slot::OCCLUSION
+                        factors.clearcoat_normal_scale <- resolved.factor if slot_index == Slot::CLEARCOAT_NORMAL
+
+                raise MaterialTextureError.MaskMaterialHasNoBaseColorImage if core_record.alpha_mode == AlphaMode::MASK and images[Slot::BASE_COLOR] == JSON_INDEX_NONE
+                resolved_materials.push(MaterialTextureRecord{image_indices: images, has_any_texture: has_any_texture, occlusion_enabled: occlusion_enabled, factors: factors})
+                factor_slots.push(factors)
+
+            sidecars: FactorSidecars = try factor_sidecars(factor_slots)
+            return MaterialTexturePlan{materials: resolved_materials, sidecars: sidecars}
+
+
+    private:
+        const enum TextureFactorKind of u8:
+            None
+            NormalScale
+            OcclusionStrength
+
+
+        struct TextureInfoResolution:
+            image_index: usize
+            factor: f64 = 1.0
+
+
+        def texture_slot_key(slot_index: usize) sview error[MaterialTextureError]:
+            return "baseColorTexture" if slot_index == Slot::BASE_COLOR
+            return "normalTexture" if slot_index == Slot::NORMAL
+            return "metallicRoughnessTexture" if slot_index == Slot::METALLIC_ROUGHNESS
+            return "emissiveTexture" if slot_index == Slot::EMISSIVE
+            return "occlusionTexture" if slot_index == Slot::OCCLUSION
+            return "clearcoatTexture" if slot_index == Slot::CLEARCOAT
+            return "clearcoatRoughnessTexture" if slot_index == Slot::CLEARCOAT_ROUGHNESS
+            return "clearcoatNormalTexture" if slot_index == Slot::CLEARCOAT_NORMAL
+            raise MaterialTextureError.InvalidDocument
+
+
+        def texture_slot_owner(slot_index: usize, material_index: usize, pbr_index: usize, clearcoat_index: usize) usize:
+            return pbr_index if slot_index == Slot::BASE_COLOR or slot_index == Slot::METALLIC_ROUGHNESS
+            return clearcoat_index if slot_index >= Slot::CLEARCOAT
+            return material_index
+
+
+        def resolve_texture_info(document: JsonDocument&, info_index: usize, slot_index: usize) TextureInfoResolution error[MaterialTextureError, MaterialFactorError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialTextureError.InvalidTextureInfo if info_index >= document.nodes.count or document.nodes[info_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[info_index]
+            try texture_object_range_valid(document, owner)
+            factor_kind: TextureFactorKind = texture_factor_kind(slot_index)
+            factor_key: sview = "scale" if factor_kind == TextureFactorKind.NormalScale else "strength" if factor_kind == TextureFactorKind.OcclusionStrength else ""
+            for ordinal in 0..<owner.member_count |document, owner, factor_kind, factor_key|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                allowed: bool = try texture_info_key_allowed(document, member, factor_kind, factor_key)
+                raise MaterialTextureError.UnsupportedTextureInfoProperty if not allowed
+
+            texcoord_index: usize = texture_member_index(document, info_index, "texCoord")
+            if texcoord_index != JSON_INDEX_NONE:
+                texcoord: i64 = try texture_integer(document, texcoord_index)
+                raise MaterialTextureError.InvalidTexCoord if texcoord != 0
+
+            factor: mutable f64 = 1.0
+            if factor_key != "":
+                factor_index: usize = texture_member_index(document, info_index, factor_key)
+                if factor_index != JSON_INDEX_NONE:
+                    if factor_kind == TextureFactorKind.OcclusionStrength:
+                        factor <- try unit_factor(document, factor_index, "occlusionTexture.strength")
+                    else:
+                        factor <- try texture_finite_number(document, factor_index)
+                        raise MaterialTextureError.InvalidTextureFactor if not (factor >= -Limits::WICKED_NORMAL_SCALE_LIMIT and factor <= Limits::WICKED_NORMAL_SCALE_LIMIT)
+
+            texture_index_field: usize = texture_member_index(document, info_index, "index")
+            raise MaterialTextureError.InvalidTextureReference if texture_index_field == JSON_INDEX_NONE
+            texture_ordinal: i64 = try texture_integer(document, texture_index_field)
+            textures_index: usize = texture_member_index(document, document.roots[0], "textures")
+            raise MaterialTextureError.MissingTextureTable if textures_index == JSON_INDEX_NONE
+            raise MaterialTextureError.InvalidTextureTable if textures_index >= document.nodes.count or document.nodes[textures_index].kind != JsonNodeKind.Array
+            textures: JsonNode = document.nodes[textures_index]
+            raise MaterialTextureError.InvalidTextureReference if texture_ordinal < 0 or texture_ordinal.usize() >= textures.child_count
+            texture_record_index: usize = try texture_array_item(document, textures_index, texture_ordinal.usize())
+            raise MaterialTextureError.UnsupportedTextureProperty if document.nodes[texture_record_index].kind != JsonNodeKind.Object
+            try validate_texture_record_keys(document, texture_record_index)
+
+            source_index: usize = try texture_record_image_source(document, texture_record_index)
+            images_index: usize = texture_member_index(document, document.roots[0], "images")
+            raise MaterialTextureError.MissingImageTable if images_index == JSON_INDEX_NONE
+            raise MaterialTextureError.InvalidImageTable if images_index >= document.nodes.count or document.nodes[images_index].kind != JsonNodeKind.Array
+            image_array: JsonNode = document.nodes[images_index]
+            raise MaterialTextureError.InvalidTextureReference if source_index >= image_array.child_count
+            sampler_index: usize = texture_member_index(document, texture_record_index, "sampler")
+            if sampler_index != JSON_INDEX_NONE:
+                try validate_sampler_reference(document, texture_record_index)
+            return TextureInfoResolution{image_index: source_index, factor: factor}
+
+
+        def texture_factor_kind(slot_index: usize) TextureFactorKind:
+            return TextureFactorKind::NormalScale if slot_index == Slot::NORMAL or slot_index == Slot::CLEARCOAT_NORMAL
+            return TextureFactorKind::OcclusionStrength if slot_index == Slot::OCCLUSION
+            return TextureFactorKind::None
+
+
+        def texture_info_key_allowed(document: JsonDocument&, member: JsonMember, factor_kind: TextureFactorKind, factor_key: sview) bool error[MaterialTextureError]:
+            return true if try texture_key_is(document, member, "index")
+            return true if try texture_key_is(document, member, "texCoord")
+            return false if factor_kind == TextureFactorKind::None
+            return try texture_key_is(document, member, factor_key)
+
+
+        def validate_texture_record_keys(document: JsonDocument&, texture_index: usize) void error[MaterialTextureError]:
+            texture: JsonNode = document.nodes[texture_index]
+            try texture_object_range_valid(document, texture)
+            for ordinal in 0..<texture.member_count |document, texture|:
+                member: JsonMember = document.members[texture.member_start + ordinal]
+                allowed: bool = try texture_record_key_allowed(document, member)
+                raise MaterialTextureError.UnsupportedTextureProperty if not allowed
+
+
+        def texture_record_key_allowed(document: JsonDocument&, member: JsonMember) bool error[MaterialTextureError]:
+            return true if try texture_key_is(document, member, "source")
+            return true if try texture_key_is(document, member, "sampler")
+            return true if try texture_key_is(document, member, "name")
+            return try texture_key_is(document, member, "extensions")
+
+
+        def texture_record_image_source(document: JsonDocument&, texture_index: usize) usize error[MaterialTextureError] can[Memory.Allocate, Abort.Panic]:
+            extensions_index: usize = texture_member_index(document, texture_index, "extensions")
+            basis_index: usize = texture_member_index(document, extensions_index, "KHR_texture_basisu")
+            has_basis: bool = basis_index != JSON_INDEX_NONE
+            if extensions_index != JSON_INDEX_NONE:
+                raise MaterialTextureError.UnsupportedTextureExtension if extensions_index >= document.nodes.count or document.nodes[extensions_index].kind != JsonNodeKind.Object
+                extensions: JsonNode = document.nodes[extensions_index]
+                try texture_object_range_valid(document, extensions)
+                for ordinal in 0..<extensions.member_count |document, extensions|:
+                    member: JsonMember = document.members[extensions.member_start + ordinal]
+                    is_basis: bool = try texture_key_is(document, member, "KHR_texture_basisu")
+                    raise MaterialTextureError.UnsupportedTextureExtension if not is_basis
+
+            if has_basis:
+                raise MaterialTextureError.InvalidBasisuSource if basis_index >= document.nodes.count or document.nodes[basis_index].kind != JsonNodeKind.Object
+                basis: JsonNode = document.nodes[basis_index]
+                try texture_object_range_valid(document, basis)
+                for ordinal in 0..<basis.member_count |document, basis|:
+                    member: JsonMember = document.members[basis.member_start + ordinal]
+                    is_source: bool = try texture_key_is(document, member, "source")
+                    raise MaterialTextureError.InvalidBasisuSource if not is_source
+                basis_source: usize = texture_member_index(document, basis_index, "source")
+                raise MaterialTextureError.InvalidBasisuSource if basis_source == JSON_INDEX_NONE
+                source: i64 = try texture_integer(document, basis_source)
+                raise MaterialTextureError.InvalidTextureReference if source < 0
+
+                fallback_index: usize = texture_member_index(document, texture_index, "source")
+                if fallback_index != JSON_INDEX_NONE and document.nodes[fallback_index].kind != JsonNodeKind.Null:
+                    fallback: i64 = try texture_integer(document, fallback_index)
+                    images_index: usize = texture_member_index(document, document.roots[0], "images")
+                    raise MaterialTextureError.MissingImageTable if images_index == JSON_INDEX_NONE
+                    raise MaterialTextureError.InvalidImageTable if images_index >= document.nodes.count or document.nodes[images_index].kind != JsonNodeKind.Array
+                    raise MaterialTextureError.InvalidTextureReference if fallback < 0 or fallback.usize() >= document.nodes[images_index].child_count
+                return source.usize()
+
+            source_index: usize = texture_member_index(document, texture_index, "source")
+            raise MaterialTextureError.InvalidTextureReference if source_index == JSON_INDEX_NONE
+            source: i64 = try texture_integer(document, source_index)
+            raise MaterialTextureError.InvalidTextureReference if source < 0
+            return source.usize()
+
+
+        def validate_sampler_reference(document: JsonDocument&, texture_index: usize) void error[MaterialTextureError] can[Memory.Allocate, Abort.Panic]:
+            sampler_field: usize = texture_member_index(document, texture_index, "sampler")
+            sampler_ordinal: i64 = try texture_integer(document, sampler_field)
+            samplers_index: usize = texture_member_index(document, document.roots[0], "samplers")
+            raise MaterialTextureError.MissingSamplerTable if samplers_index == JSON_INDEX_NONE
+            raise MaterialTextureError.InvalidSamplerTable if samplers_index >= document.nodes.count or document.nodes[samplers_index].kind != JsonNodeKind.Array
+            samplers: JsonNode = document.nodes[samplers_index]
+            raise MaterialTextureError.InvalidSampler if sampler_ordinal < 0 or sampler_ordinal.usize() >= samplers.child_count
+            sampler_index: usize = try texture_array_item(document, samplers_index, sampler_ordinal.usize())
+            raise MaterialTextureError.InvalidSampler if document.nodes[sampler_index].kind != JsonNodeKind.Object
+            sampler: JsonNode = document.nodes[sampler_index]
+            try texture_object_range_valid(document, sampler)
+            for ordinal in 0..<sampler.member_count |document, sampler|:
+                member: JsonMember = document.members[sampler.member_start + ordinal]
+                allowed: bool = try sampler_key_allowed(document, member)
+                raise MaterialTextureError.InvalidSampler if not allowed
+            try sampler_value(document, sampler_index, "magFilter", Sampler::LINEAR)
+            try sampler_value(document, sampler_index, "minFilter", Sampler::LINEAR_MIPMAP_LINEAR)
+            try sampler_value(document, sampler_index, "wrapS", Sampler::REPEAT)
+            try sampler_value(document, sampler_index, "wrapT", Sampler::REPEAT)
+
+
+        def sampler_key_allowed(document: JsonDocument&, member: JsonMember) bool error[MaterialTextureError]:
+            return true if try texture_key_is(document, member, "magFilter")
+            return true if try texture_key_is(document, member, "minFilter")
+            return true if try texture_key_is(document, member, "wrapS")
+            return true if try texture_key_is(document, member, "wrapT")
+            return try texture_key_is(document, member, "name")
+
+
+        def sampler_value(document: JsonDocument&, sampler_index: usize, key: sview, expected: i64) void error[MaterialTextureError] can[Memory.Allocate, Abort.Panic]:
+            value_index: usize = texture_member_index(document, sampler_index, key)
+            return if value_index == JSON_INDEX_NONE
+            value: i64 = try texture_integer(document, value_index)
+            raise MaterialTextureError.InvalidSampler if value != expected
+
+
+        def texture_finite_number(document: JsonDocument&, node_index: usize) f64 error[MaterialTextureError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialTextureError.InvalidTextureFactor if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise MaterialTextureError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable f64 = 0.0
+            catch parse_float(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise MaterialTextureError.InvalidTextureFactor
+            return parsed
+
+
+        def texture_integer(document: JsonDocument&, node_index: usize) i64 error[MaterialTextureError] can[Memory.Allocate, Abort.Panic]:
+            raise MaterialTextureError.InvalidTextureReference if node_index >= document.nodes.count or document.nodes[node_index].kind != JsonNodeKind.Number
+            node: JsonNode = document.nodes[node_index]
+            raise MaterialTextureError.InvalidDocument if node.scalar_start > document.scalar_data.count or node.scalar_bytes > document.scalar_data.count - node.scalar_start
+            source: sview = string_view_slice(bytes_view(document.scalar_data), node.scalar_start.i64(), (node.scalar_start + node.scalar_bytes).i64())
+            parsed: mutable i64 = 0i64
+            catch parse_int(source):
+                ok value:
+                    parsed <- value
+                error failure:
+                    _ = failure
+                    raise MaterialTextureError.InvalidTextureReference
+            return parsed
+
+
+        def texture_array_item(document: JsonDocument&, array_index: usize, ordinal: usize) usize error[MaterialTextureError]:
+            raise MaterialTextureError.InvalidDocument if array_index >= document.nodes.count
+            array: JsonNode = document.nodes[array_index]
+            raise MaterialTextureError.InvalidDocument if array.kind != JsonNodeKind.Array or ordinal >= array.child_count
+            raise MaterialTextureError.InvalidDocument if array.child_start > document.children.count or array.child_count > document.children.count - array.child_start
+            child: JsonArrayChild = document.children[array.child_start + ordinal]
+            raise MaterialTextureError.InvalidDocument if child.owner_index != array_index or child.ordinal != ordinal or child.value_index >= document.nodes.count
+            return child.value_index
+
+
+        def texture_member_index(document: JsonDocument&, object_index: usize, key: sview) usize error[MaterialTextureError]:
+            return JSON_INDEX_NONE if object_index == JSON_INDEX_NONE
+            raise MaterialTextureError.InvalidDocument if object_index >= document.nodes.count or document.nodes[object_index].kind != JsonNodeKind.Object
+            owner: JsonNode = document.nodes[object_index]
+            try texture_object_range_valid(document, owner)
+            return JSON_INDEX_NONE if owner.member_count == 0
+            selected: mutable usize = JSON_INDEX_NONE
+            for ordinal in 0..<owner.member_count |document, owner, key, selected|:
+                member: JsonMember = document.members[owner.member_start + ordinal]
+                selected <- member.value_index if try texture_key_is(document, member, key)
+            return selected
+
+
+        def texture_key_is(document: JsonDocument&, member: JsonMember, expected: sview) bool error[MaterialTextureError]:
+            raise MaterialTextureError.InvalidDocument if member.key_start > document.key_bytes.count or member.key_bytes > document.key_bytes.count - member.key_start
+            return false if member.key_bytes != len(expected)
+            for offset in 0..<member.key_bytes |document, member, expected|:
+                return false if document.key_bytes[member.key_start + offset] != sview_at(expected, offset.i64())
+            return true
+
+
+        def texture_object_range_valid(document: JsonDocument&, owner: JsonNode) -> void error[MaterialTextureError]:
+            if owner.member_count == 0:
+                raise MaterialTextureError.InvalidDocument if owner.member_start != JSON_INDEX_NONE or owner.member_key_order_start != JSON_INDEX_NONE
+                return
+            raise MaterialTextureError.InvalidDocument if owner.member_start > document.members.count or owner.member_count > document.members.count - owner.member_start
+            raise MaterialTextureError.InvalidDocument if owner.member_key_order_start > document.member_key_order.count or owner.member_count > document.member_key_order.count - owner.member_key_order_start
