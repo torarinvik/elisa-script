@@ -99,3 +99,24 @@ python3 test/check_workflow.py build/script-validation/elisascript
 The watchdog and snapshot in that command are retained local validation artifacts,
 not portable build dependencies. Rebuilding elsewhere requires the corresponding
 compiler fixes and a matching runtime/toolchain.
+
+## Block expression update — 2026-09-17
+
+The engine check now keeps temporary process inputs and path candidates inside
+value blocks and returns final function expressions implicitly. ElisaScript's
+semantic pass no longer mistakes a value block with local statements for a
+`submit` wrapper, and the IR lowerer returns a non-void function's final
+expression. A focused semantic regression and a driver fixture cover these cases.
+
+The installed launcher is the validated build at
+`elisa-script/.validation/native/elisascript` (SHA-256
+`80fe9f28cd0d36434e0bae68267b8652c833447c1b6bd01c0e4eaf7a8eca94bf`).
+It was built from the earlier buildable `a2d1393c` source with these changes
+backported, using `Elisa-compiler/build/self_host_gen2/elisac-stage1-gen2` from
+the compiler working directory. The previous launcher is preserved as
+`elisascript.before-block-expressions-20260917`. The exact engine script passed
+`--check`, the runtime tests, all 15 proof obligations and certificate replays,
+and all 10 workflow parity cases. The focused semantic test passed. The current
+ElisaScript checkout still has unrelated native build errors in newer output and
+test-runner modules; this validation does not establish a clean build of that
+checkout.

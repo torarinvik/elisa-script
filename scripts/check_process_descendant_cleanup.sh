@@ -8,11 +8,12 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 interpreter="$repo_root/src/ir/interpret.elisa"
 differential="$repo_root/src/testing/differential.elisa"
 runtime="$repo_root/src/runtime/runtime.elisa"
+posix_runtime="$repo_root/src/runtime/directory_posix.elisa"
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 tests="$repo_root/test/differential/elisascript_differential_test.elisa"
 
-for required_file in "$interpreter" "$differential" "$runtime" "$docs" "$ledger" "$tests"; do
+for required_file in "$interpreter" "$differential" "$runtime" "$posix_runtime" "$docs" "$ledger" "$tests"; do
     if [[ ! -f "$required_file" ]]; then
         printf 'process descendant audit: missing %s\n' "$required_file" >&2
         exit 1
@@ -48,8 +49,10 @@ assert_group_cleanup_after_reap() {
 assert_group_cleanup_after_reap "$interpreter" process_wait_terminate
 assert_group_cleanup_after_reap "$differential" differential_terminate_process
 
-rg -q 'EACCES: int = 13' "$runtime"
-rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$interpreter"
+rg -q 'EACCES: i32 = 13' "$runtime"
+rg -q 'elisascript_darwin_errno_impl\(\) -> mutable i32&' "$posix_runtime"
+! rg -q 'errno: mutable int& = .*elisascript_posix_errno\(\)' "$interpreter" "$differential"
+rg -q 'return true if errno\[0\] == EsRuntime::DarwinErrno::EACCES' "$interpreter"
 rg -q 'return true if errno\[0\] == DarwinErrno::EACCES' "$differential"
 rg -q 'differential_process_group_quiescent' "$differential"
 rg -q 'differential_process_group_has_members' "$differential"
