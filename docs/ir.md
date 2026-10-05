@@ -3310,7 +3310,9 @@ exact `-1` bridge result; the legacy child path catches those errors only to
 project the historical 126/127 status. This is not a parent-side launch receipt
 and does not implement terminal process replacement.
 The interpreter's bounded wait state machine preserves timeout as the typed
-`InterpretFailure.Time` outcome: exhausting the poll budget terminates and
+`InterpretFailure.Time` outcome: the poll budget scales with the requested
+monotonic deadline while retaining a finite guard for commands without a
+deadline. Exhausting that budget terminates and
 reaps the private process group, then reports `Time` after giving
 `OutputLimit` precedence for capture operations. Other wait, close, seek, and
 reap failures remain `InterpretFailure.Process`, so callers can distinguish a
