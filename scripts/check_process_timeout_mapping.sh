@@ -25,22 +25,28 @@ wait_block="$(awk '
     active { print }
     active && /^        def / && !/^        def process_wait_next\(/ { exit }
 ' "$interpreter")"
-[[ "$wait_block" == *'if waiter.polls >= ProcessWait::MAX_POLLS:'* ]]
+[[ "$wait_block" == *'EsProcessSpawnWait::take_poll(waiter.polls, ProcessWait::poll_limit(waiter.timeout_micros))'* ]]
 [[ "$wait_block" == *'waiter.timed_out <- true'* ]]
 [[ "$wait_block" == *'process_wait_terminate(waiter)'* ]]
 [[ "$wait_block" == *'waiter.failed <- true'* ]]
 [[ "$wait_block" == *'elisascript_posix_waitpid(waiter.pid, waiter.status, ProcessWait::NOHANG)'* ]]
-[[ "$wait_block" == *'if process_wait_output_exceeded(waiter):'* ]]
+[[ "$wait_block" == *'process_wait_pending_failed(waiter)'* ]]
 [[ "$wait_block" == *'if not process_wait_sleep():'* ]]
-output_check_count="$(printf '%s\n' "$wait_block" | rg -c 'if process_wait_output_exceeded\(waiter\):')"
-[[ "$output_check_count" -ge 2 ]]
-# The second sample is the live-child path; it must run before timeout and
-# sleep so output overflow is detected and terminated while the child runs.
-output_check_line="$(printf '%s\n' "$wait_block" | rg -n 'if process_wait_output_exceeded\(waiter\):' | tail -n1 | cut -d: -f1)"
-timeout_check_line="$(printf '%s\n' "$wait_block" | rg -n -m1 'if waiter\.polls >= ProcessWait::MAX_POLLS:' | cut -d: -f1)"
+poll_budget_line="$(printf '%s\n' "$wait_block" | rg -n -m1 'take_poll\(waiter\.polls, ProcessWait::poll_limit\(waiter\.timeout_micros\)\)' | cut -d: -f1)"
+waitpid_line="$(printf '%s\n' "$wait_block" | rg -n -m1 'elisascript_posix_waitpid\(waiter\.pid, waiter\.status, ProcessWait::NOHANG\)' | cut -d: -f1)"
 poll_sleep_line="$(printf '%s\n' "$wait_block" | rg -n -m1 'if not process_wait_sleep\(\):' | cut -d: -f1)"
-[[ -n "$output_check_line" && -n "$timeout_check_line" && -n "$poll_sleep_line" ]]
-(( output_check_line < timeout_check_line && timeout_check_line < poll_sleep_line ))
+[[ -n "$poll_budget_line" && -n "$waitpid_line" && -n "$poll_sleep_line" ]]
+(( poll_budget_line < waitpid_line && waitpid_line < poll_sleep_line ))
+
+poll_limit_block="$(awk '
+    /^            def poll_limit\(/ { active = 1 }
+    active { print }
+    active && /^            def / && !/^            def poll_limit\(/ { exit }
+' "$interpreter")"
+[[ "$poll_limit_block" == *'return MAX_POLLS if timeout_micros == 0u64'* ]]
+[[ "$poll_limit_block" == *'requested_polls: u64 = timeout_micros / POLL_MICROSECONDS.u64()'* ]]
+[[ "$poll_limit_block" == *'return maximum if requested_polls > maximum - MAX_POLLS'* ]]
+[[ "$poll_limit_block" == *'requested_polls + MAX_POLLS'* ]]
 
 function_block() {
     local function_name="$1"
