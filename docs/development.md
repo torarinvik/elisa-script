@@ -287,3 +287,13 @@ functions. Other string-view carrier and source compatibility errors remain.
 It exits 1 normally in 7.23 seconds, sampled peak RSS 726,944 KiB. Artifact:
 engine `build/validation/elisascript-ddbc803d-concat-slice-build.log` and JSON.
 These operations have not executed on the selected compiler.
+
+The C-string view, view-slice and byte-array view constructors now use the
+current upstream runtime's local carrier grants and extent checks. C-string
+inputs retain `cstr`; invalid signed extents and malformed byte-array storage
+return empty views before pointer arithmetic/indexing. The bounded build
+clears all four runtime-string-fragment diagnostics, including three internal
+carrier errors, while other launcher errors remain. It exits 1 normally in
+8.59 seconds, sampled peak RSS 727,056 KiB. Engine artifact:
+`build/validation/elisascript-ddbc803d-view-carrier-build.log` and JSON.
+View behavior/lifetimes have not been runtime-qualified on this compiler.
