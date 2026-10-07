@@ -23,6 +23,14 @@ vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
 Logs are in the engine checkout under
 `build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
 JSON reports beside them. The historical wrapper validation hold remains.
+Character formatting likewise now returns `cstr` through all three helpers.
+The existing one-byte value plus NUL is copied by `intern_small_string`;
+conversion occurs only after that permanent-storage copy. Both character
+wrapper type errors clear with no changed-prelude diagnostics. The bounded
+build still exits 1 on other errors (5.23 seconds; sampled peak RSS
+724,688 KiB); artifact: engine
+`build/validation/elisascript-ddbc803d-char-cstr-build.log` and adjacent JSON.
+Character formatting has not executed on this compiler.
 Integer formatting now returns `cstr` through its three helpers. Both the
 interned short-string and arena paths check that the writing `snprintf`
 returns its previously measured length before publishing a terminated string;
