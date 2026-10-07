@@ -242,3 +242,13 @@ Elisascript source files use the `.elisascript` extension. The canonical source
 loader and runner tests should be the first checks after a compiler rebuild because
 they exercise parsing, semantic checking, lowering, verification, and execution
 through the same local compiler path.
+
+The view-to-string copy helper now preserves `cstr` through empty, short and
+long NUL-producing copy paths; its three callers no longer cast the result
+back to `u8&`. This boundary matches the actual terminated output. The bounded
+compile reports no diagnostics on the changed helper/callers, but the runtime
+entrypoint still has the same 31 diagnostics: this change establishes no
+reduction in the remaining compiler failures. The build exits 1 normally in
+11.53 seconds, sampled peak RSS 725,872 KiB. Engine artifact:
+`build/validation/elisascript-ddbc803d-view-copy-build.log` and watchdog JSON.
+Copy behavior remains unexecuted on the selected compiler.
