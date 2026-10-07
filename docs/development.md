@@ -23,6 +23,14 @@ vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
 Logs are in the engine checkout under
 `build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
 JSON reports beside them. The historical wrapper validation hold remains.
+The vendored float formatter's marker scan now yields its exponent/decimal
+indices as a loop-result tuple, retaining `source_length` for absent markers
+and the last encountered index for repeated markers. This repairs two illegal
+assignments to immutable locals using the Stage1 loop-expression form. The
+bounded build has no diagnostics on the marker loop, but still exits 1 on
+other compatibility errors (5.98 seconds; sampled peak RSS 726,896 KiB).
+Artifact: engine `build/validation/elisascript-ddbc803d-marker-loop-build.log`
+and adjacent watchdog JSON. Formatting behavior remains unexecuted.
 The subsequent bounded build restores the missing `text_ascii_whitespace`
 helper used by ASCII predicates and splitting (space or bytes 9–13).
 All four undefined-helper diagnostics clear; the build still exits 1 after
