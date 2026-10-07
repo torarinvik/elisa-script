@@ -5,6 +5,25 @@
 > for compiler fixes, installation, and test evidence. The historical pinned wrappers
 > and their broader validation hold described below were not reopened.
 
+## Engine launcher compatibility repair — 2026-10-08
+
+The engine's bounded integration attempt with immutable Stage1 `ddbc803d`
+identified argument-view invalidation in all five process paths in
+`src/ir/interpret.elisa`. Each path now validates and builds `owned_arguments`
+completely before collecting element pointers into `argv`. Argument order,
+text/NUL validation, executable pointer and final NULL slot are preserved;
+the owning storage remains in the enclosing scope through the foreign call.
+
+The engine watchdog's before/after builds both completed with status 1.
+The repair removes all 25 `argv` storage-dependency invalidation diagnostics.
+The after build took 3.61 seconds with sampled peak RSS 725,792 KiB under a
+1,572,864 KiB / 180-second bound. This is partial compiler compatibility
+evidence, not a runnable launcher or process-behavior validation. Other
+vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
+Logs are in the engine checkout under
+`build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
+JSON reports beside them. The historical wrapper validation hold remains.
+
 The current pinned identity and host/bootstrap metadata are recorded in
 [`docs/validation-baseline.md`](validation-baseline.md). Refresh that record
 before changing the compiler pin or treating any validation result as
