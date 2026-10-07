@@ -23,6 +23,13 @@ vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
 Logs are in the engine checkout under
 `build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
 JSON reports beside them. The historical wrapper validation hold remains.
+The three boolean string helpers now return `cstr`, matching upstream's
+static-literal implementation and retaining the NUL-terminated type across
+the forwarding wrappers. No casts or allocation changes were added. The two
+boolean wrapper return mismatches clear in the bounded build; unrelated errors
+still produce status 1 (6.24 seconds; sampled peak RSS 726,896 KiB).
+Artifact: engine `build/validation/elisascript-ddbc803d-bool-cstr-build.log`
+and adjacent JSON. No runtime execution is established by this result.
 The vendored float formatter's marker scan now yields its exponent/decimal
 indices as a loop-result tuple, retaining `source_length` for absent markers
 and the last encountered index for repeated markers. This repairs two illegal
