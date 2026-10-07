@@ -23,6 +23,15 @@ vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
 Logs are in the engine checkout under
 `build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
 JSON reports beside them. The historical wrapper validation hold remains.
+Integer formatting now returns `cstr` through its three helpers. Both the
+interned short-string and arena paths check that the writing `snprintf`
+returns its previously measured length before publishing a terminated string;
+the cast is confined to that NUL-producing boundary, matching upstream's
+return type. The bounded build clears both integer forwarding-wrapper errors
+and reports no diagnostics in the changed prelude helper. It still exits 1
+on unrelated errors (3.93 seconds; sampled peak RSS 726,880 KiB). Artifact:
+engine `build/validation/elisascript-ddbc803d-int-cstr-build.log` and JSON.
+Integer formatting execution remains unverified on this compiler.
 The three boolean string helpers now return `cstr`, matching upstream's
 static-literal implementation and retaining the NUL-terminated type across
 the forwarding wrappers. No casts or allocation changes were added. The two
