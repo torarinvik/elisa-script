@@ -23,6 +23,11 @@ vendored-runtime, pointer-effect and allocation-lifetime diagnostics remain.
 Logs are in the engine checkout under
 `build/validation/elisascript-ddbc803d-argv{,-fixed}-build.log`, with watchdog
 JSON reports beside them. The historical wrapper validation hold remains.
+The subsequent bounded build restores the missing `text_ascii_whitespace`
+helper used by ASCII predicates and splitting (space or bytes 9–13).
+All four undefined-helper diagnostics clear; the build still exits 1 after
+8.65 seconds with sampled peak RSS 726,880 KiB. Its engine artifact is
+`build/validation/elisascript-ddbc803d-text-helper-build.log` and adjacent JSON.
 
 The current pinned identity and host/bootstrap metadata are recorded in
 [`docs/validation-baseline.md`](validation-baseline.md). Refresh that record
