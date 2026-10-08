@@ -55,3 +55,16 @@ named selected_names argument occupying RuntimeResourcePolicy's position;
 no executable is produced. Artifact:
 `build/validation/elisascript-1e64bb73-kill-abi-build.log` and JSON.
 Crash re-raise behavior remains runtime-unverified.
+
+## Source verifier diagnostics
+
+The source loader now preserves the first IR verification message and its
+function name using the existing bounded diagnostic text adapter. The launcher
+renders that copied context for VerificationFailed instead of discarding it.
+No verifier check is relaxed. The diagnostic build succeeds; the engine gate
+reports missing caller effect coverage in run_visible. Adding Console.Write
+coverage advances it to a callee-error-row finding in the same function.
+Artifacts: `build/validation/elisascript-verifier-diagnostic-build.log`,
+`elisascript-verifier-diagnostic-native-quick.log`, and
+`elisascript-verifier-diagnostic-native-console.log`, with JSON reports.
+No native gate stage executes; recovered helper error-row handling remains open.
