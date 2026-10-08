@@ -522,3 +522,11 @@ The three diagnostics clear in the bounded build, which exits 1 elsewhere in
 5.80 seconds with peak sampled RSS 726,928 KiB. Artifact:
 `build/validation/elisascript-2ad7a165-runtime-boundaries-build.log` and JSON.
 POSIX output, file reading and signal-handler behavior remain runtime-unverified.
+
+Three source/file runner helpers now name caller storage's region @r and append
+argv RuntimeValues inside in r, while temporary lowering remains in its bounded
+source region. Signature annotations alone retained the errors; explicitly
+selecting r clears all three, with no runner diagnostics in the final bounded
+compile. It exits 1 elsewhere in 6.51 seconds, peak sampled RSS 726,832 KiB.
+Artifact: `build/validation/elisascript-2ad7a165-runner-region-owned-build.log`
+and JSON. Runner storage survival remains runtime-unverified on this compiler.
