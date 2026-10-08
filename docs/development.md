@@ -591,3 +591,5 @@ exits 2 with 13 declined functions; no linkable object/executable is produced.
 Artifact: `build/validation/elisascript-2ad7a165-return-copies-build.log` and JSON.
 These copies add allocation/work for longer strings. Launcher runtime behavior
 and backend compatibility remain unverified.
+
+Further backend repairs are recorded in [the 2ad7a165 launcher record](engine-launcher-2ad7a165.md).
