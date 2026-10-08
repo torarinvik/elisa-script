@@ -538,3 +538,11 @@ raw bytes. Three prior pointer-conversion diagnostic rows clear in the bounded
 compile, which exits 1 elsewhere in 9.05 seconds, peak sampled RSS 726,768 KiB.
 Artifact: `build/validation/elisascript-2ad7a165-symlink-cstr-build.log` and JSON.
 Symlink behavior and escaping readlink-result lifetime remain runtime-unverified.
+
+Removal, same-file-safe copying and recursive removal now bind validated,
+NUL-terminated host paths as cstr with local conversion grants. Buffer lifetimes,
+identity checks and traversal/depth checks remain. Six prior conversion
+rows clear in the bounded compile, which exits 1 elsewhere in 3.72 seconds,
+peak sampled RSS 726,880 KiB. Artifact:
+`build/validation/elisascript-2ad7a165-remove-copy-cstr-build.log` and JSON.
+Removal and copy behavior remain runtime-unverified on this compiler.
