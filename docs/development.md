@@ -583,3 +583,11 @@ peak sampled RSS 726,896 KiB. Artifact:
 `build/validation/elisascript-2ad7a165-permanent-copy-build.log` and JSON.
 This introduces an additional copy for longer strings; launcher behavior remains
 runtime-unverified, and no escape-check suppression is used.
+
+Ten remaining text/path returns now copy validated counted views into permanent
+backing, preserving exact length and embedded NULs through permanent_text_copy.
+All semantic diagnostics clear. The bounded build reaches backend emission but
+exits 2 with 13 declined functions; no linkable object/executable is produced.
+Artifact: `build/validation/elisascript-2ad7a165-return-copies-build.log` and JSON.
+These copies add allocation/work for longer strings. Launcher runtime behavior
+and backend compatibility remain unverified.
