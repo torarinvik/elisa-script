@@ -563,3 +563,12 @@ clearing 20 rows. Bounded build exits 1 elsewhere in 3.46 seconds, peak sampled
 RSS 726,688 KiB. Artifact:
 `build/validation/elisascript-2ad7a165-process-argv-cstr-build.log` and JSON.
 Process launch/replace/capture behavior remains runtime-unverified.
+
+Environment access/mutation and directory operations bind validated terminated
+names, values and paths as cstr. The child-process working-directory conversion
+is local to its checked non-null branch, backed by the existing owned buffer.
+All 15 remaining pointer-conversion diagnostics clear. Bounded build exits 1
+with only 11 interpreter return-lifetime diagnostics in 4.93 seconds, peak
+sampled RSS 727,504 KiB. Artifact:
+`build/validation/elisascript-2ad7a165-env-directory-cstr-build.log` and JSON.
+Environment/directory behavior remains runtime-unverified on this compiler.
