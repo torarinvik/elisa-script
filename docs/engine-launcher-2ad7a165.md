@@ -20,3 +20,14 @@ The bounded build exits 2 in 3.85 seconds, peak sampled RSS 808,192 KiB,
 with seven remaining declines and no object or executable produced. Artifact:
 `build/validation/elisascript-2ad7a165-waitpid-build.log` and JSON.
 Wait and timeout behavior remain runtime-unverified.
+
+## Void success arm
+
+The classify_returned_exec success type is void. Its legacy status catch now
+leaves the success binder unread, removing the invalid `_ = returned` discard;
+the unreachable success fallback still returns fatal_status. With the
+catch-arm repair product (source d67efe6e), this clears returned_exec_status.
+The bounded build exits 2 in 4.03 seconds, peak RSS 831,488 KiB, with six
+remaining declines and no executable. Artifact:
+`build/validation/elisascript-d67efe6e-void-success-build.log` and JSON.
+Legacy status and parent-side launch receipt behavior remain runtime-unverified.
