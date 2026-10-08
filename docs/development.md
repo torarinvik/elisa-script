@@ -514,3 +514,11 @@ The bounded build exits 1 elsewhere in 12.78 seconds, sampled peak RSS 726,736
 KiB. Artifact: `build/validation/elisascript-ddbc803d-document-copy-build.log`
 and JSON. Document snapshot and transport behavior remain runtime-unverified
 on the selected compiler.
+
+On immutable compiler 2ad7a165, the POSIX writer qualifies EsRuntime's EINTR
+constant, the file reader grants a local cstr conversion after appending NUL,
+and the debug signal handler grants its integer-to-pointer context recovery.
+The three diagnostics clear in the bounded build, which exits 1 elsewhere in
+5.80 seconds with peak sampled RSS 726,928 KiB. Artifact:
+`build/validation/elisascript-2ad7a165-runtime-boundaries-build.log` and JSON.
+POSIX output, file reading and signal-handler behavior remain runtime-unverified.
