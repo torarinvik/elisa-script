@@ -574,6 +574,16 @@ extend EsIr:
                 handler_incoming_counts.push(0)
                 handler_incoming_known.push(false)
             verify_handler_stack_flow(fn, issues, handler_incoming_starts, handler_incoming_counts, handler_incoming_known, handler_incoming_storage)
+            guard_stack: mutable darray[u32] = []
+            guard_starts: mutable darray[u32] = []
+            guard_counts: mutable darray[u32] = []
+            guard_known: mutable darray[bool] = []
+            guard_storage: mutable darray[u32] = []
+            for block in fn.blocks |guard_starts, guard_counts, guard_known|:
+                guard_starts.push(0)
+                guard_counts.push(0)
+                guard_known.push(false)
+            verify_error_guard_stack_flow(fn, issues, guard_starts, guard_counts, guard_known, guard_storage)
             for parameter in fn.parameters |defined, definition_blocks, definition_types, issues|:
                 issues.push(issue(IssueKind.InvalidTypeTable, fn.name, fn.entry, parameter.value, 0, "function parameter cannot have void type")) if parameter.type.kind == TypeKind.Void
                 issues.push(issue(IssueKind.DuplicateValue, fn.name, fn.entry, parameter.value, 0, "parameter SSA value is duplicated or zero")) if parameter.value == 0 or has_u32(defined, parameter.value)
@@ -581,8 +591,13 @@ extend EsIr:
                 definition_blocks.push(fn.entry) if parameter.value != 0 and definition_blocks.count < defined.count
                 definition_types.push(parameter.type) if parameter.value != 0 and definition_types.count < defined.count
             verification_order: darray[u32] = verification_block_order(fn)
-            for verification_index in verification_order |defined, definition_blocks, definition_types, traces, block_ids, issues|:
+            for verification_index in verification_order |defined, definition_blocks, definition_types, traces, block_ids, issues, guard_stack|:
                 block: Block = fn.blocks[verification_index.usize()]
+                guard_stack <- []
+                guard_block: usize = block_index(fn, block.id)
+                if guard_block < guard_known.count and guard_known[guard_block]:
+                    for offset in 0..<guard_counts[guard_block].usize() |guard_stack|:
+                        guard_stack.push(guard_storage[guard_starts[guard_block].usize() + offset])
                 handler_stack <- []
                 current_handler_block: usize = block_index(fn, block.id)
                 if current_handler_block < handler_incoming_known.count and handler_incoming_known[current_handler_block]:
@@ -608,8 +623,11 @@ extend EsIr:
                 issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, 0, "block instruction slice is outside the function pool")) if not instruction_end_valid
                 safe_instruction_start: usize = block.instruction_start.usize() if block.instruction_start.usize() <= fn.instruction_pool.count else fn.instruction_pool.count
                 safe_instruction_end: usize = instruction_end if instruction_end <= fn.instruction_pool.count else fn.instruction_pool.count
-                for instruction_index in safe_instruction_start..<safe_instruction_end |defined, traces, issues, block, fn, block_ids|:
+                for instruction_index in safe_instruction_start..<safe_instruction_end |defined, traces, issues, block, fn, block_ids, guard_stack|:
                     instruction: Instruction = fn.instruction_pool[instruction_index]
+                    guard_stack.push(instruction_index.u32()) if instruction.opcode == Opcode.ErrorGuardPush
+                    if instruction.opcode == Opcode.ErrorGuardPop and guard_stack.count > 0:
+                        _ = guard_stack.pop()
                     operand_end_valid: mutable bool = false
                     operand_end: usize = bounded_slice_end(instruction.operand_start.usize(), instruction.operand_count.usize(), fn.operand_pool.count, operand_end_valid)
                     issues.push(issue(IssueKind.UndefinedValue, fn.name, block.id, 0, instruction.trace.id, "instruction operand slice is outside the function pool")) if not operand_end_valid
@@ -664,11 +682,11 @@ extend EsIr:
                     if instruction.opcode == Opcode.Assert and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         condition_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "assert operand must be boolean")) if condition_type.kind != TypeKind.Bool
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "assert requires AssertionError in the function error row")) if not has_text(fn.errors, "AssertionError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "assert requires AssertionError in the function error row")) if not has_text(fn.errors, "AssertionError") and not error_guard_covers(fn, guard_stack, "AssertionError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "panic requires zero or one operand, a void result, and Abort.Panic metadata")) if instruction.opcode == Opcode.Panic and (instruction.operand_count > 1 or instruction.result != 0 or instruction.result_type.kind != TypeKind.Void or instruction.effect_family != "Abort" or instruction.effect_operation != "Panic")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "raise operands must produce no result and carry a family/tag")) if instruction.opcode == Opcode.Raise and (instruction.result != 0 or instruction.result_type.kind != TypeKind.Void or instruction.effect_family == "" or instruction.effect_operation == "")
                     if instruction.opcode == Opcode.Raise and instruction.effect_family != "" and instruction.effect_operation != "":
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "raised error family is absent from the function error row")) if not has_text(fn.errors, instruction.effect_family)
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "raised error family is absent from the function error row")) if not has_text(fn.errors, instruction.effect_family) and not error_guard_covers(fn, guard_stack, instruction.effect_family, instruction.effect_operation)
                     unsupported_error_payload_nominal: bool = instruction.result_type.kind == TypeKind.Named and not text_backed_named_type(instruction.result_type) and instruction.result_type.name != "ProcessCapture"
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "error payload extraction must have no operands, a runtime-supported value type, and a non-negative payload index")) if instruction.opcode == Opcode.ErrorPayload and (instruction.operand_count != 0 or instruction.result == 0 or instruction.result_type.kind == TypeKind.Void or instruction.integer < 0 or instruction.integer > 4294967295 or unsupported_error_payload_nominal)
                     if instruction.opcode == Opcode.Copy and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
@@ -722,7 +740,7 @@ extend EsIr:
                         step_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 2])
                         valid_range_types: bool = current_type.kind == TypeKind.Int and same_type(current_type, high_type) and same_type(current_type, step_type) and instruction.result_type.kind == TypeKind.Bool and instruction.integer >= 0 and instruction.integer <= 2
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic range condition requires matching integer operands, boolean result, and a valid endpoint mode")) if not valid_range_types
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic range condition requires RangeStepZero in the function error row")) if not has_text(fn.errors, "RangeStepZero")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic range condition requires RangeStepZero in the function error row")) if not has_text(fn.errors, "RangeStepZero") and not error_guard_covers(fn, guard_stack, "RangeStepZero")
                     if instruction.opcode == Opcode.Concat and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         left_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         right_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
@@ -798,7 +816,7 @@ extend EsIr:
                         element_type: Type = array_element_type(collection_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array unpack requires a positive expected arity")) if instruction.integer <= 0
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array unpack requires an array, integer index, and matching element result")) if collection_type.kind != TypeKind.Array or index_type.kind != TypeKind.Int or not same_type(instruction.result_type, element_type)
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "array unpack requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "array unpack requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds") and not error_guard_covers(fn, guard_stack, "IndexOutOfBounds")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "length requires exactly one collection operand")) if instruction.opcode == Opcode.Length and instruction.operand_count != 1
                     if instruction.opcode == Opcode.Length and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         collection_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -911,7 +929,7 @@ extend EsIr:
                         needle_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text index requires text operands and a signed i64 result")) if haystack_type.kind != TypeKind.Text or needle_type.kind != TypeKind.Text or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text index requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text index requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds") and not error_guard_covers(fn, guard_stack, "IndexOutOfBounds")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array find requires exactly two operands")) if instruction.opcode == Opcode.ArrayFind and instruction.operand_count != 2
                     if instruction.opcode == Opcode.ArrayFind and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         array_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -930,7 +948,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         valid_needle: bool = array_type.kind == TypeKind.Array and same_type(needle_type, element_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array index requires an array, a matching element operand, and a signed i64 result")) if array_type.kind != TypeKind.Array or not valid_needle or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "array index requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "array index requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds") and not error_guard_covers(fn, guard_stack, "IndexOutOfBounds")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "array remove requires exactly two operands")) if instruction.opcode == Opcode.RemoveArray and instruction.operand_count != 2
                     if instruction.opcode == Opcode.RemoveArray and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         array_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -958,7 +976,7 @@ extend EsIr:
                         needle_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text rindex requires text operands and a signed i64 result")) if haystack_type.kind != TypeKind.Text or needle_type.kind != TypeKind.Text or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text rindex requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text rindex requires IndexOutOfBounds in the function error row")) if not has_text(fn.errors, "IndexOutOfBounds") and not error_guard_covers(fn, guard_stack, "IndexOutOfBounds")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text partition requires exactly two text operands")) if instruction.opcode == Opcode.TextPartition and instruction.operand_count != 2
                     if instruction.opcode == Opcode.TextPartition and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         haystack_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1071,7 +1089,7 @@ extend EsIr:
                         text_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "integer parsing requires an sview operand and signed i64 result")) if text_type.kind != TypeKind.Text or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "integer parsing requires ParseError in the function error row")) if not has_text(fn.errors, "ParseError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "integer parsing requires ParseError in the function error row")) if not has_text(fn.errors, "ParseError") and not error_guard_covers(fn, guard_stack, "ParseError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "integer formatting requires one operand")) if instruction.opcode == Opcode.FormatInt and instruction.operand_count != 1
                     if instruction.opcode == Opcode.FormatInt and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         integer_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1082,7 +1100,7 @@ extend EsIr:
                         text_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_result: bool = instruction.result_type.kind == TypeKind.Float and instruction.result_type.bits == 64
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "float parsing requires an sview operand and f64 result")) if text_type.kind != TypeKind.Text or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "float parsing requires ParseError in the function error row")) if not has_text(fn.errors, "ParseError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "float parsing requires ParseError in the function error row")) if not has_text(fn.errors, "ParseError") and not error_guard_covers(fn, guard_stack, "ParseError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "float formatting requires one operand")) if instruction.opcode == Opcode.FormatFloat and instruction.operand_count != 1
                     if instruction.opcode == Opcode.FormatFloat and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         float_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1107,7 +1125,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Array and instruction.result_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path glob requires a Path and sview pattern with darray[sview] result")) if not valid_base or pattern_type.kind != TypeKind.Text or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "path glob requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path glob requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path glob requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path iterdir requires one operand")) if instruction.opcode == Opcode.PathIterDir and instruction.operand_count != 1
                     if instruction.opcode == Opcode.PathIterDir and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1115,7 +1133,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Array and instruction.result_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path iterdir requires a nominal Path operand and darray[sview] result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "path iterdir requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path iterdir requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path iterdir requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path parent requires one operand")) if instruction.opcode == Opcode.PathParent and instruction.operand_count != 1
                     if instruction.opcode == Opcode.PathParent and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1148,7 +1166,7 @@ extend EsIr:
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "absolute-path construction requires a Path operand and Path result")) if not valid_path or instruction.result_type.kind != TypeKind.Named or instruction.result_type.name != "Path"
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "absolute-path construction requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "absolute-path construction requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "absolute-path construction requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "relative-path construction requires two operands")) if instruction.opcode == Opcode.PathRelative and instruction.operand_count != 2
                     if instruction.opcode == Opcode.PathRelative and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         target_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1162,7 +1180,7 @@ extend EsIr:
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "real-path construction requires a Path operand and Path result")) if not valid_path or instruction.result_type.kind != TypeKind.Named or instruction.result_type.name != "Path"
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "real-path construction requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "real-path construction requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "real-path construction requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "temporary path creation requires a prefix and optional parent operand")) if instruction.opcode == Opcode.CreateTemporary and instruction.operand_count != 1 and instruction.operand_count != 2
                     if instruction.opcode == Opcode.CreateTemporary and (instruction.operand_count == 1 or instruction.operand_count == 2) and operand_end <= fn.operand_pool.count:
                         prefix_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1173,7 +1191,7 @@ extend EsIr:
                             parent_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
                             issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "temporary parent requires a Path operand")) if parent_type.kind != TypeKind.Named or parent_type.name != "Path"
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "temporary path creation requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "temporary path creation requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "temporary path creation requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "sleep requires one duration operand")) if instruction.opcode == Opcode.Sleep and instruction.operand_count != 1
                     if instruction.opcode == Opcode.Sleep and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         duration_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1181,7 +1199,7 @@ extend EsIr:
                         valid_duration: bool = (instruction.integer == 0 and ((duration_type.kind == TypeKind.Float and duration_type.bits == 64) or (duration_type.kind == TypeKind.Int and duration_type.bits == 64))) or (instruction.integer == 1 and duration_type.kind == TypeKind.Int and duration_type.bits == 64)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "sleep requires a seconds f64/i64 or milliseconds i64 duration, a known unit, and void result")) if not valid_duration or not valid_unit or instruction.result_type.kind != TypeKind.Void
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "sleep requires Time.Sleep in the function effect row")) if not effect_granted(fn.effects, "Time.Sleep")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "sleep requires TimeError in the function error row")) if not has_text(fn.errors, "TimeError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "sleep requires TimeError in the function error row")) if not has_text(fn.errors, "TimeError") and not error_guard_covers(fn, guard_stack, "TimeError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path existence requires one operand")) if instruction.opcode == Opcode.PathExists and instruction.operand_count != 1
                     if instruction.opcode == Opcode.PathExists and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1211,7 +1229,7 @@ extend EsIr:
                             valid_exist_ok <- exist_ok_type.kind == TypeKind.Bool
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "touch requires a nominal Path operand, an optional bool exist_ok control, and boolean result")) if not valid_path or not valid_exist_ok or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "touch requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "touch requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "touch requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "chmod requires path and mode operands")) if instruction.opcode == Opcode.ChmodPath and instruction.operand_count != 2
                     if instruction.opcode == Opcode.ChmodPath and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1220,7 +1238,7 @@ extend EsIr:
                         valid_mode: bool = mode_type.kind == TypeKind.Int and mode_type.bits == 64 and not mode_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "chmod requires a nominal Path and u64 mode operands with boolean result")) if not valid_path or not valid_mode or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "chmod requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "chmod requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "chmod requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file size requires one operand")) if instruction.opcode == Opcode.FileSize and instruction.operand_count != 1
                     if instruction.opcode == Opcode.FileSize and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1228,7 +1246,7 @@ extend EsIr:
                         valid_result: bool = exact_usize(instruction.result_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file size requires a nominal Path operand and usize result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "file size requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file size requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file size requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file mode requires one operand")) if instruction.opcode == Opcode.FileMode and instruction.operand_count != 1
                     if instruction.opcode == Opcode.FileMode and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1236,7 +1254,7 @@ extend EsIr:
                         valid_result: bool = exact_usize(instruction.result_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file mode requires a nominal Path operand and u64 result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "file mode requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file mode requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file mode requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     file_timestamp: bool = instruction.opcode == Opcode.FileMTime or instruction.opcode == Opcode.FileATime or instruction.opcode == Opcode.FileCTime
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file timestamp requires one operand")) if file_timestamp and instruction.operand_count != 1
                     if file_timestamp and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
@@ -1245,7 +1263,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "file timestamp requires a nominal Path operand and i64 result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "file timestamp requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file timestamp requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "file timestamp requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "symlink predicate requires one operand")) if instruction.opcode == Opcode.IsSymlink and instruction.operand_count != 1
                     if instruction.opcode == Opcode.IsSymlink and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1259,7 +1277,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "readlink requires a nominal Path operand and Path result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "readlink requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "readlink requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "readlink requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "symlink requires target and link operands")) if instruction.opcode == Opcode.SymlinkPath and instruction.operand_count != 2
                     if instruction.opcode == Opcode.SymlinkPath and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         target_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1267,14 +1285,14 @@ extend EsIr:
                         valid_paths: bool = target_type.kind == TypeKind.Named and target_type.name == "Path" and link_type.kind == TypeKind.Named and link_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "symlink requires nominal Path operands and boolean result")) if not valid_paths or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "symlink requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "symlink requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "symlink requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "tree removal requires one operand")) if instruction.opcode == Opcode.RemoveTree and instruction.operand_count != 1
                     if instruction.opcode == Opcode.RemoveTree and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "tree removal requires a nominal Path operand and boolean result")) if not valid_path or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "tree removal requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "tree removal requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "tree removal requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires source and destination operands")) if instruction.opcode == Opcode.CopyTree and instruction.operand_count != 2
                     if instruction.opcode == Opcode.CopyTree and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         source_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1283,14 +1301,14 @@ extend EsIr:
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires nominal Path operands and boolean result")) if not valid_paths or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "tree copy requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text read requires one operand")) if instruction.opcode == Opcode.ReadText and instruction.operand_count != 1
                     if instruction.opcode == Opcode.ReadText and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text read requires a nominal Path operand and sview result")) if not valid_path or instruction.result_type.kind != TypeKind.Text
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "text read requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text read requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text read requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     text_write: bool = instruction.opcode == Opcode.WriteText or instruction.opcode == Opcode.AppendText
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text write requires path and text operands")) if text_write and instruction.operand_count != 2
                     if text_write and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
@@ -1300,7 +1318,7 @@ extend EsIr:
                         valid_result: bool = exact_usize(instruction.result_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "text write requires nominal Path and sview operands with usize result")) if not valid_path or text_type.kind != TypeKind.Text or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "text write requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text write requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "text write requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "byte read requires one operand")) if instruction.opcode == Opcode.ReadBytes and instruction.operand_count != 1
                     if instruction.opcode == Opcode.ReadBytes and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1308,7 +1326,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Array and instruction.result_type.element_kind == TypeKind.Int and instruction.result_type.element_bits == 8 and not instruction.result_type.element_signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "byte read requires a nominal Path operand and darray[u8] result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "byte read requires File.Read in the function effect row")) if not effect_granted(fn.effects, "File.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "byte read requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "byte read requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     byte_write: bool = instruction.opcode == Opcode.WriteBytes or instruction.opcode == Opcode.AppendBytes
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "byte write requires path and byte-array operands")) if byte_write and instruction.operand_count != 2
                     if byte_write and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
@@ -1319,7 +1337,7 @@ extend EsIr:
                         valid_result: bool = exact_usize(instruction.result_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "byte write requires nominal Path and darray[u8] operands with usize result")) if not valid_path or not valid_bytes or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "byte write requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "byte write requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "byte write requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path removal requires one operand")) if instruction.opcode == Opcode.RemovePath and instruction.operand_count != 1
                     if instruction.opcode == Opcode.RemovePath and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1335,13 +1353,13 @@ extend EsIr:
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "path copy or move requires nominal Path operands and boolean result")) if not valid_paths or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "path copy requires File.Read in the function effect row")) if instruction.opcode == Opcode.CopyPath and not effect_granted(fn.effects, "File.Read")
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "path copy or move requires File.Write in the function effect row")) if not effect_granted(fn.effects, "File.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path copy or move requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "path copy or move requires FileIoError in the function error row")) if not has_text(fn.errors, "FileIoError") and not error_guard_covers(fn, guard_stack, "FileIoError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "executable construction requires one text operand")) if instruction.opcode == Opcode.MakeExecutable and instruction.operand_count != 1
                     if instruction.opcode == Opcode.MakeExecutable and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         text_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "Executable"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "executable construction requires text input and nominal Executable result")) if text_type.kind != TypeKind.Text or not valid_result
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "executable construction requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "executable construction requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process replacement requires executable and argument operands")) if instruction.opcode == Opcode.ReplaceProcess and instruction.operand_count != 2
                     if instruction.opcode == Opcode.ReplaceProcess and instruction.operand_count == 2 and operand_end <= fn.operand_pool.count:
                         executable_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1353,7 +1371,7 @@ extend EsIr:
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process replacement must carry canonical Process.Replace effect metadata")) if not valid_replace_effect
                         replace_covered: bool = valid_replace_effect and active_handler_covers(handler_stack, module.handlers, "Process", "Replace", instruction.operation_id)
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process replacement is neither dynamically handled nor present in the function effect row")) if valid_replace_effect and not replace_covered and not effect_granted(fn.effects, "Process.Replace")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "unhandled process replacement requires ProcessError in the function error row")) if not replace_covered and not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "unhandled process replacement requires ProcessError in the function error row")) if not replace_covered and not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                         selected_replace_handler: mutable bool = false
                         replace_handler_stack_index: mutable usize = handler_stack.count
                         while replace_handler_stack_index > 0 and not selected_replace_handler |replace_handler_stack_index, handler_stack, module, instruction|:
@@ -1378,7 +1396,7 @@ extend EsIr:
                                                     callback_effect_covered: bool = active_handler_covers(handler_stack, module.handlers, effect_reference_family(callback_effect), effect_reference_operation(callback_effect))
                                                     issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "Process.Replace handler effect is neither dynamically handled nor present in the enclosing function effect row")) if not callback_effect_covered and not effect_granted(fn.effects, callback_effect)
                                                 for callback_error in replace_callback.errors |fn, block, instruction, issues|:
-                                                    issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "Process.Replace handler error set is absent from the enclosing function error row")) if not has_text(fn.errors, callback_error)
+                                                    issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "Process.Replace handler error set is absent from the enclosing function error row")) if not has_text(fn.errors, callback_error) and not error_guard_covers(fn, guard_stack, callback_error)
                     dynamic_typed_constructor: bool = instruction.opcode == Opcode.MakePath or instruction.opcode == Opcode.MakeGlob or instruction.opcode == Opcode.MakeRegex or instruction.opcode == Opcode.MakeUrl
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "typed constructor requires one text operand")) if dynamic_typed_constructor and instruction.operand_count != 1
                     if dynamic_typed_constructor and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
@@ -1399,7 +1417,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Int and instruction.result_type.bits == 64 and instruction.result_type.signed
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process run requires Executable, darray[sview], optional i64 timeout, and i64 result")) if not valid_executable or not valid_arguments or not valid_timeout or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process run requires Process.Run in the function effect row")) if not effect_granted(fn.effects, "Process.Run")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process run requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process run requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     process_stream_capture: bool = instruction.opcode == Opcode.CaptureProcessStdout or instruction.opcode == Opcode.CaptureProcessStderr
                     valid_process_stream_arity: bool = instruction.operand_count == 2 or instruction.operand_count == 3
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture requires executable, argument, and optional timeout operands")) if process_stream_capture and not valid_process_stream_arity
@@ -1414,7 +1432,7 @@ extend EsIr:
                         valid_arguments: bool = arguments_type.kind == TypeKind.Array and arguments_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture requires Executable, darray[sview], optional i64 timeout, and sview result")) if not valid_executable or not valid_arguments or not valid_timeout or instruction.result_type.kind != TypeKind.Text
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture requires Process.Run in the function effect row")) if not effect_granted(fn.effects, "Process.Run")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     process_stream_capture_with_stdin: bool = instruction.opcode == Opcode.CaptureProcessStdoutWithStdin or instruction.opcode == Opcode.CaptureProcessStderrWithStdin
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture with stdin requires executable, argument, and input operands")) if process_stream_capture_with_stdin and instruction.operand_count != 3
                     if process_stream_capture_with_stdin and instruction.operand_count == 3 and operand_end <= fn.operand_pool.count:
@@ -1425,7 +1443,7 @@ extend EsIr:
                         valid_arguments: bool = arguments_type.kind == TypeKind.Array and arguments_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture with stdin requires Executable, darray[sview], and sview operands with sview result")) if not valid_executable or not valid_arguments or input_type.kind != TypeKind.Text or instruction.result_type.kind != TypeKind.Text
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture with stdin requires Process.Run in the function effect row")) if not effect_granted(fn.effects, "Process.Run")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture with stdin requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process stream capture with stdin requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     process_result_capture: bool = instruction.opcode == Opcode.CaptureProcessResult or instruction.opcode == Opcode.CaptureProcessResultInDirectory or instruction.opcode == Opcode.CaptureProcessResultWithEnvironment or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment
                     has_process_result_directory: bool = instruction.opcode == Opcode.CaptureProcessResultInDirectory or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment
                     has_process_result_environment: bool = instruction.opcode == Opcode.CaptureProcessResultWithEnvironment or instruction.opcode == Opcode.CaptureProcessResultInDirectoryWithEnvironment
@@ -1462,7 +1480,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "ProcessCapture"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process result capture requires Executable, darray[sview], sview, optional Path, text dictionary, i64 timeout/output limit, and ProcessCapture result")) if not valid_executable or not valid_arguments or input_type.kind != TypeKind.Text or not valid_directory or not valid_environment or not valid_timeout or not valid_output_limit or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process result capture requires Process.Run in the function effect row")) if not effect_granted(fn.effects, "Process.Run")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process result capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process result capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     process_pipeline_capture: bool = instruction.opcode == Opcode.CaptureProcessPipeline or instruction.opcode == Opcode.CaptureProcessPipelinePipefail
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process pipeline capture requires executable, stage-argument, and input operands")) if process_pipeline_capture and instruction.operand_count != 3
                     if process_pipeline_capture and instruction.operand_count == 3 and operand_end <= fn.operand_pool.count:
@@ -1474,7 +1492,7 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "ProcessCapture"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process pipeline capture requires darray[Executable], darray[darray[sview]], and sview operands with ProcessCapture result")) if not valid_executables or not valid_arguments or input_type.kind != TypeKind.Text or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "process pipeline capture requires Process.Run in the function effect row")) if not effect_granted(fn.effects, "Process.Run")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process pipeline capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "process pipeline capture requires ProcessError in the function error row")) if not has_text(fn.errors, "ProcessError") and not error_guard_covers(fn, guard_stack, "ProcessError")
                     process_result_accessor: bool = instruction.opcode == Opcode.ProcessResultExitStatus or instruction.opcode == Opcode.ProcessResultStdout or instruction.opcode == Opcode.ProcessResultStderr
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "process result accessor requires one ProcessCapture operand")) if process_result_accessor and instruction.operand_count != 1
                     if process_result_accessor and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
@@ -1494,7 +1512,7 @@ extend EsIr:
                             valid_limit: bool = limit_type.kind == TypeKind.Int and limit_type.bits == 64 and limit_type.signed
                             issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "bounded environment read requires a signed i64 payload-byte limit")) if not valid_limit
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "environment read requires Environment.Read in the function effect row")) if not effect_granted(fn.effects, "Environment.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "environment read requires EnvironmentError in the function error row")) if not has_text(fn.errors, "EnvironmentError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "environment read requires EnvironmentError in the function error row")) if not has_text(fn.errors, "EnvironmentError") and not error_guard_covers(fn, guard_stack, "EnvironmentError")
                     expected_environment_operands: u32 = 2 if instruction.opcode == Opcode.SetEnvironment else 1
                     environment_mutation: bool = instruction.opcode == Opcode.SetEnvironment or instruction.opcode == Opcode.UnsetEnvironment
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "environment mutation has invalid operand count")) if environment_mutation and instruction.operand_count != expected_environment_operands
@@ -1506,13 +1524,13 @@ extend EsIr:
                             valid_operands <- valid_operands and value_type.kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "environment mutation requires sview operands and boolean result")) if not valid_operands or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "environment mutation requires Environment.Write in the function effect row")) if not effect_granted(fn.effects, "Environment.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "environment mutation requires EnvironmentError in the function error row")) if not has_text(fn.errors, "EnvironmentError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "environment mutation requires EnvironmentError in the function error row")) if not has_text(fn.errors, "EnvironmentError") and not error_guard_covers(fn, guard_stack, "EnvironmentError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "current directory takes no operands")) if instruction.opcode == Opcode.CurrentDirectory and instruction.operand_count != 0
                     if instruction.opcode == Opcode.CurrentDirectory and instruction.operand_count == 0:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "current directory requires nominal Path result")) if not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "current directory requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "current directory requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "current directory requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "script source path takes no operands")) if instruction.opcode == Opcode.ScriptSourcePath and instruction.operand_count != 0
                     if instruction.opcode == Opcode.ScriptSourcePath and instruction.operand_count == 0:
                         valid_script_path_result: bool = instruction.result_type.kind == TypeKind.Named and instruction.result_type.name == "Path"
@@ -1528,14 +1546,14 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Array and instruction.result_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "directory listing requires nominal Path operand and darray[sview] result")) if not valid_path or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "directory listing requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory listing requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory listing requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "directory predicate requires one path operand")) if instruction.opcode == Opcode.IsDirectory and instruction.operand_count != 1
                     if instruction.opcode == Opcode.IsDirectory and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         path_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "directory predicate requires nominal Path operand and boolean result")) if not valid_path or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "directory predicate requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory predicate requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory predicate requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "glob expansion requires one pattern operand")) if instruction.opcode == Opcode.ExpandGlob and instruction.operand_count != 1
                     if instruction.opcode == Opcode.ExpandGlob and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
                         pattern_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize()])
@@ -1543,17 +1561,17 @@ extend EsIr:
                         valid_result: bool = instruction.result_type.kind == TypeKind.Array and instruction.result_type.element_kind == TypeKind.Text
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "glob expansion requires nominal Glob operand and darray[sview] result")) if not valid_pattern or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "glob expansion requires Directory.Read in the function effect row")) if not effect_granted(fn.effects, "Directory.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "glob expansion requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "glob expansion requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "stdin read takes no operands")) if instruction.opcode == Opcode.ReadStdin and instruction.operand_count != 0
                     if instruction.opcode == Opcode.ReadStdin and instruction.operand_count == 0:
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "stdin read requires an sview result")) if instruction.result_type.kind != TypeKind.Text
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "stdin read requires Console.Read in the function effect row")) if not effect_granted(fn.effects, "Console.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "stdin read requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "stdin read requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError") and not error_guard_covers(fn, guard_stack, "ConsoleError")
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "stdin line read takes no operands")) if instruction.opcode == Opcode.ReadStdinLine and instruction.operand_count != 0
                     if instruction.opcode == Opcode.ReadStdinLine and instruction.operand_count == 0:
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "stdin line read requires an sview result")) if instruction.result_type.kind != TypeKind.Text
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "stdin line read requires Console.Read in the function effect row")) if not effect_granted(fn.effects, "Console.Read")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "stdin line read requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "stdin line read requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError") and not error_guard_covers(fn, guard_stack, "ConsoleError")
                     standard_stream_write: bool = instruction.opcode == Opcode.WriteStdout or instruction.opcode == Opcode.WriteStderr
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "standard-stream write requires one operand")) if standard_stream_write and instruction.operand_count != 1
                     if standard_stream_write and instruction.operand_count == 1 and operand_end <= fn.operand_pool.count:
@@ -1561,7 +1579,7 @@ extend EsIr:
                         valid_result: bool = exact_usize(instruction.result_type)
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "standard-stream write requires an sview operand and usize result")) if text_type.kind != TypeKind.Text or not valid_result
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "standard-stream write requires Console.Write in the function effect row")) if not effect_granted(fn.effects, "Console.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "standard-stream write requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "standard-stream write requires ConsoleError in the function error row")) if not has_text(fn.errors, "ConsoleError") and not error_guard_covers(fn, guard_stack, "ConsoleError")
                     directory_mutation: bool = instruction.opcode == Opcode.CreateDirectory or instruction.opcode == Opcode.CreateDirectories or instruction.opcode == Opcode.RemoveDirectory or instruction.opcode == Opcode.ChangeDirectory
                     directory_mutation_shape: bool = (instruction.opcode == Opcode.CreateDirectory and (instruction.operand_count == 1 or instruction.operand_count == 3 or instruction.operand_count == 4)) or (instruction.opcode != Opcode.CreateDirectory and instruction.operand_count == 1)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "directory mutation requires one path operand, or Path.mkdir's mode and bool controls")) if directory_mutation and not directory_mutation_shape
@@ -1570,7 +1588,7 @@ extend EsIr:
                         valid_path: bool = path_type.kind == TypeKind.Named and path_type.name == "Path"
                         issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "directory mutation requires nominal Path operand and boolean result")) if not valid_path or instruction.result_type.kind != TypeKind.Bool
                         issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "directory mutation requires Directory.Write in the function effect row")) if not effect_granted(fn.effects, "Directory.Write")
-                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory mutation requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError")
+                        issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "directory mutation requires DirectoryError in the function error row")) if not has_text(fn.errors, "DirectoryError") and not error_guard_covers(fn, guard_stack, "DirectoryError")
                         if instruction.opcode == Opcode.CreateDirectory and instruction.operand_count == 3:
                             parents_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 1])
                             exist_ok_type: Type = definition_type(defined, definition_types, fn.operand_pool[instruction.operand_start.usize() + 2])
@@ -1598,7 +1616,7 @@ extend EsIr:
                                 covered: bool = active_handler_covers(handler_stack, module.handlers, effect_reference_family(required_effect), effect_reference_operation(required_effect))
                                 issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "callee effect is neither dynamically handled nor present in the caller effect row")) if not covered and not effect_granted(fn.effects, required_effect)
                             for required_error in callee.errors |fn, block, instruction, issues|:
-                                issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "callee error set is absent from the caller error row")) if not has_text(fn.errors, required_error)
+                                issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "callee error set is absent from the caller error row")) if not has_text(fn.errors, required_error) and not error_guard_covers(fn, guard_stack, required_error)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "handler stack instruction must have no operands, no SSA result, and a void result type")) if instruction.opcode in {Opcode.HandlerPush, Opcode.HandlerPop} and (instruction.operand_count != 0 or instruction.result != 0 or instruction.result_type.kind != TypeKind.Void)
                     issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, instruction.result, instruction.trace.id, "operation id does not match the instruction effect family and operation")) if instruction.effect_family != "" and instruction.effect_operation != "" and not operation_identity_matches(instruction.effect_family, instruction.effect_operation, instruction.operation_id)
                     if instruction.result != 0:
@@ -1637,7 +1655,7 @@ extend EsIr:
                                                     covered: bool = active_handler_covers(handler_stack, module.handlers, effect_reference_family(required_effect), effect_reference_operation(required_effect))
                                                     issues.push(issue(IssueKind.MissingEffect, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback effect is neither dynamically handled nor present in the enclosing function effect row")) if not covered and not effect_granted(fn.effects, required_effect)
                                                 for required_error in callback.errors |fn, block, instruction, issues|:
-                                                    issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback error set is absent from the enclosing function error row")) if not has_text(fn.errors, required_error)
+                                                    issues.push(issue(IssueKind.MissingError, fn.name, block.id, instruction.result, instruction.trace.id, "handler callback error set is absent from the enclosing function error row")) if not has_text(fn.errors, required_error) and not error_guard_covers(fn, guard_stack, required_error)
                     if instruction.opcode == Opcode.HandlerPush:
                         pushed_index: usize = handler_index(module.handlers, instruction.symbol)
                         issues.push(issue(IssueKind.UnknownHandler, fn.name, block.id, instruction.result, instruction.trace.id, "dynamic handler is not declared in the IR module")) if pushed_index == module.handlers.count

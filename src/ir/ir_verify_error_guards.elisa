@@ -1,0 +1,73 @@
+extend EsIr:
+    private:
+        # Whole-family requirements are covered only by an unfiltered guard.
+        # A variant guard can cover an explicitly raised matching operation.
+        def error_guard_covers(fn: Function&, installed: darray[u32]&, family: sview, operation: sview = "") -> bool:
+            for index in installed:
+                if index.usize() < fn.instruction_pool.count:
+                    guard: Instruction = fn.instruction_pool[index.usize()]
+                    return true if guard.effect_family == "" and guard.effect_operation == ""
+                    return true if operation != "" and guard.effect_family == family and guard.effect_operation == operation and guard.operation_id == 0
+            return false
+
+
+        def propagate_error_guard_flow(fn: Function&, source: Block&, target: u32, outgoing: darray[u32]&, storage: mutable darray[u32]&, incoming_starts: mutable darray[u32]&, incoming_counts: mutable darray[u32]&, incoming_known: mutable darray[bool]&, worklist: mutable darray[u32]&, issues: mutable darray[Issue]&) -> void can[Memory.Allocate, Abort.Panic]:
+            target_index: usize = block_index(fn, target)
+            return if target_index == fn.blocks.count
+            outgoing_count: u32 = outgoing.count.u32()
+            if not incoming_known[target_index]:
+                incoming_known[target_index] <- true
+                incoming_starts[target_index] <- storage.count.u32()
+                incoming_counts[target_index] <- outgoing_count
+                for installed in outgoing |storage|:
+                    storage.push(installed)
+                worklist.push(target_index.u32())
+                return
+            same: mutable bool = incoming_counts[target_index] == outgoing_count
+            existing_start: usize = incoming_starts[target_index].usize()
+            if same:
+                if existing_start > storage.count or outgoing.count > storage.count - existing_start:
+                    same <- false
+                else:
+                    for offset in 0..<outgoing.count |outgoing, storage, existing_start, same|:
+                        same <- false if storage[existing_start + offset] != outgoing[offset]
+            issues.push(issue(IssueKind.UnbalancedHandler, fn.name, source.id, 0, 0, "CFG join has incompatible error guard stacks")) if not same
+
+
+        # Track guards on normal edges and recovery edges. Recovery arrives with
+        # the matched guard removed. Require identical stacks at each join so
+        # physical block order cannot grant coverage to an unrelated branch.
+        def verify_error_guard_stack_flow(fn: Function&, issues: mutable darray[Issue]&, incoming_starts: mutable darray[u32]&, incoming_counts: mutable darray[u32]&, incoming_known: mutable darray[bool]&, storage: mutable darray[u32]&) -> void can[Memory.Allocate, Abort.Panic]:
+            worklist: mutable darray[u32] = []
+            entry_index: usize = block_index(fn, fn.entry)
+            return if entry_index == fn.blocks.count
+            incoming_known[entry_index] <- true
+            worklist.push(entry_index.u32())
+            while worklist.count > 0 |worklist, fn, incoming_starts, incoming_counts, incoming_known, storage, issues|:
+                current_index: usize = worklist.pop().usize()
+                continue if current_index >= fn.blocks.count
+                block: Block = fn.blocks[current_index]
+                outgoing: mutable darray[u32] = []
+                incoming_start: usize = incoming_starts[current_index].usize()
+                incoming_count: usize = incoming_counts[current_index].usize()
+                if incoming_start <= storage.count and incoming_count <= storage.count - incoming_start:
+                    for offset in 0..<incoming_count |storage, incoming_start, outgoing|:
+                        outgoing.push(storage[incoming_start + offset])
+                instruction_end_valid: mutable bool = false
+                instruction_end: usize = bounded_slice_end(block.instruction_start.usize(), block.instruction_count.usize(), fn.instruction_pool.count, instruction_end_valid)
+                safe_instruction_start: usize = block.instruction_start.usize() if block.instruction_start.usize() <= fn.instruction_pool.count else fn.instruction_pool.count
+                safe_instruction_end: usize = instruction_end if instruction_end <= fn.instruction_pool.count else fn.instruction_pool.count
+                for instruction_index in safe_instruction_start..<safe_instruction_end |fn, outgoing|:
+                    instruction: Instruction = fn.instruction_pool[instruction_index]
+                    if instruction.opcode == Opcode.ErrorGuardPush:
+                        # Recovery removes this guard and every inner guard.
+                        propagate_error_guard_flow(fn, block, instruction.integer.u32(), outgoing, storage, incoming_starts, incoming_counts, incoming_known, worklist, issues) if instruction.integer >= 0 and instruction.integer <= 4294967295
+                        outgoing.push(instruction_index.u32())
+                    if instruction.opcode == Opcode.ErrorGuardPop:
+                        issues.push(issue(IssueKind.InvalidInstruction, fn.name, block.id, 0, instruction.trace.id, "error guard pop has no active guard")) if outgoing.count == 0
+                        if outgoing.count > 0:
+                            _ = outgoing.pop()
+                if block.terminator.kind == TerminatorKind.Jump or block.terminator.kind == TerminatorKind.Branch:
+                    propagate_error_guard_flow(fn, block, block.terminator.target0, outgoing, storage, incoming_starts, incoming_counts, incoming_known, worklist, issues) if block.terminator.target_count >= 1
+                    propagate_error_guard_flow(fn, block, block.terminator.target1, outgoing, storage, incoming_starts, incoming_counts, incoming_known, worklist, issues) if block.terminator.target_count >= 2
+
