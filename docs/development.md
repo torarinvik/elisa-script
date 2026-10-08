@@ -572,3 +572,14 @@ with only 11 interpreter return-lifetime diagnostics in 4.93 seconds, peak
 sampled RSS 727,504 KiB. Artifact:
 `build/validation/elisascript-2ad7a165-env-directory-cstr-build.log` and JSON.
 Environment/directory behavior remains runtime-unverified on this compiler.
+
+Decoded text now returns through permanent_text_copy: string_view_copy provides
+permanent backing, and a locally audited counted-view construction preserves
+embedded NUL bytes. The earlier append control discrepancy resolves by retaining
+length before the by-value bytes_view call; implicit and explicit append calls
+both pass, as does the returned three-byte x/NUL/y control. The bounded launcher
+compile clears one lifetime error (11 to 10), exits 1 elsewhere in 3.02 seconds,
+peak sampled RSS 726,896 KiB. Artifact:
+`build/validation/elisascript-2ad7a165-permanent-copy-build.log` and JSON.
+This introduces an additional copy for longer strings; launcher behavior remains
+runtime-unverified, and no escape-check suppression is used.
