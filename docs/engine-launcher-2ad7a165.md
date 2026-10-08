@@ -31,3 +31,16 @@ The bounded build exits 2 in 4.03 seconds, peak RSS 831,488 KiB, with six
 remaining declines and no executable. Artifact:
 `build/validation/elisascript-d67efe6e-void-success-build.log` and JSON.
 Legacy status and parent-side launch receipt behavior remain runtime-unverified.
+
+## Acknowledgement success binding
+
+The transport writer's acknowledgement catch now uses `state:` instead of
+`ok state:`. Its state update, failure transition and error handling are
+unchanged. The previous trace declined Ident(state) in the success arm;
+the corrected binder clears write_output_transport_fd. With the fieldless
+rethrow repair product, the bounded build exits 2 in 6.07 seconds, peak RSS
+804,720 KiB, with one decline: report_test_setup_failure_machine reads a
+generic payload-error binder that the backend does not declare. No executable
+is produced. Artifact:
+`build/validation/elisascript-ddd62fd5-ack-binding-build.log` and JSON.
+Transport and report behavior remain runtime-unverified.
