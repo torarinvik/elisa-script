@@ -44,3 +44,14 @@ generic payload-error binder that the backend does not declare. No executable
 is produced. Artifact:
 `build/validation/elisascript-ddd62fd5-ack-binding-build.log` and JSON.
 Transport and report behavior remain runtime-unverified.
+
+## Canonical kill signature
+
+The vendored crash reporter now declares getpid and kill with i32 C scalar
+types, matching the current upstream standard library and EsRuntime process
+bridge. Its signal argument is converted to i32 at the kill call. This clears
+the conflicting kill LLVM signature. The bounded build still exits 2 on the
+named selected_names argument occupying RuntimeResourcePolicy's position;
+no executable is produced. Artifact:
+`build/validation/elisascript-1e64bb73-kill-abi-build.log` and JSON.
+Crash re-raise behavior remains runtime-unverified.
