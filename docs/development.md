@@ -546,3 +546,11 @@ rows clear in the bounded compile, which exits 1 elsewhere in 3.72 seconds,
 peak sampled RSS 726,880 KiB. Artifact:
 `build/validation/elisascript-2ad7a165-remove-copy-cstr-build.log` and JSON.
 Removal and copy behavior remain runtime-unverified on this compiler.
+
+Recursive copying and canonical-path resolution now bind validated terminated
+paths as cstr before host calls. Copy traversal bounds, symlink handling and
+realpath result validation/freeing remain. Three prior conversion diagnostic
+rows clear; bounded build exits 1 elsewhere in 5.13 seconds, peak sampled RSS
+726,800 KiB. Artifact:
+`build/validation/elisascript-2ad7a165-copytree-realpath-build.log` and JSON.
+Recursive copy and canonical-path behavior remain runtime-unverified.
