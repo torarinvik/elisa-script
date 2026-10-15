@@ -5,12 +5,37 @@
 > for compiler fixes, installation, and test evidence. The historical pinned wrappers
 > and their broader validation hold described below were not reopened.
 
-This is a read-only identity record for the development/validation boundary.
-It is intentionally separate from execution evidence: compiler and test
-execution remain disabled until the explicit reauthorization gate is opened.
+This records the pinned compiler identity and validation evidence. Compiler and
+test execution require explicit reauthorization; the active task’s bounded
+authorization is recorded below and does not grant standing approval.
 
 Initial baseline captured: 2026-09-14
 Latest metadata recheck: 2026-09-25
+
+## Current-task validation identity recheck (2026-10-15)
+
+The active Elisa-Proof migration request explicitly authorizes incremental
+compiler verification of its small script ports. The checked-in bounded
+wrappers and their process, RSS, time, and output guards remain required. This
+authorization is scoped to that active task.
+
+Before the first port check, `scripts/validation_identity.sh` verified the
+canonical compiler against its clean source checkout without launching it:
+
+- Compiler source checkout: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree`
+- Compiler source revision: `5241b2aed51641a217ca44ac4ee116ee66ac96e6` (clean, detached worktree)
+- Compiler executable: `/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac`
+- Compiler executable SHA-256: `8623ee8dabd773976e370f553cd91457703c4098d135a3d1648cc72609b1b915`
+- Embedded binary revision: `5241b2aed51641a217ca44ac4ee116ee66ac96e6`
+- Embedded `vcs.modified`: `false`
+- Validation configuration: `O0`, `native`, `lowered`
+
+After that identity check, the compiler was freshly rebuilt from this clean
+checkout with `GOMAXPROCS=2 make build` in its `compiler` directory. The new
+binary retained the same SHA-256 and matching clean VCS stamp shown above. The
+wrapper pin already names this canonical worktree path, so no wrapper path
+change was needed. The bounded port result is recorded separately after its
+guarded compiler run completes.
 
 ## Elisascript worktree
 

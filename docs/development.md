@@ -5,10 +5,17 @@
 The wrapper audit now accepts the wrapper's current reparented-process limitation wording and
 checks the canonical-wrapper and shared Skia launcher-gate forms without requiring every parity
 fixture to inline the compiler pin. Both forms still require explicit reauthorization, the bounded
-RSS guard, and the exact StructPy compiler identity. The resource-policy audit now follows the
+RSS guard, and the exact pinned Elisa Core compiler identity. The resource-policy audit now follows the
 shared `EsStdinReadBudget::read_capacity` helper used by both chunked and line-oriented stdin
 reads, and verifies the shared output ledger parameter in direct bytecode execution. Both audits
-are compiler-free and pass; this change does not lift the compiler/test-wrapper validation hold.
+are compiler-free and pass; their result does not itself authorize compiler execution.
+
+## Current bounded validation authorization — 2026-10-15
+
+The user explicitly reauthorized bounded compiler and test validation in the active task. The
+authorization is scoped to this task; use the clean, pinned Core compiler identity in
+[`validation-baseline.md`](validation-baseline.md), and keep the wrapper’s source snapshot,
+process-tree, RSS, timeout, and log limits enabled. Do not treat this as standing approval.
 
 > **2026-09-15 native launcher update:** The engine task authorized bounded native
 > integration work, and its check now passes. See [the validation record](engine-check-validation.md)
@@ -83,10 +90,8 @@ sets `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`. Do not set that override without a
 small, bounded repro and an explicit decision to resume validation. When validation
 is authorized, use the local compiler path and watchdog:
 
-The current validation state remains suspended. The examples below are reference
-commands, not authorization to run them; the environment variable is a manual gate,
-not standing approval. Do not launch a compiler or test wrapper unless the user
-explicitly reauthorizes validation in the active task.
+The environment variable below is a manual gate, not standing approval. It must be
+set only when the user has explicitly reauthorized validation in the active task.
 
 The latest Elisa-compiler remote head was read-only verified on 2026-09-24 as
 `ec4c7b93e6b0ef849dc5001df964f860c485018b` (`Protect shared arena cache across
@@ -192,7 +197,12 @@ RSS samples, exit status, and guard results. Old evidence is never pruned
 automatically; review it before removing it to make room. The wrapper installs
 signal/exit cleanup for its owned compiler tree and
 clears the child PID after `wait` so cleanup cannot act on a reused PID. Each
-compiler is launched by an absolute `setsid` helper in a private process group.
+compiler is launched by an absolute private-session helper in a private process
+group. When the host lacks a `setsid` executable, the wrappers use the checked-in
+`scripts/private_session_exec.py`, which creates the session before replacing
+itself with the compiler. It waits for the wrapper to confirm the session ID
+and process-group ID before starting the compiler; this fallback requires
+`/usr/bin/python3`.
 The watchdog samples RSS for processes in that group and the currently
 discoverable descendants, refuses to continue if the compiler inherits the
 wrapper's group, and sends group `TERM` then `KILL` plus a snapshotted descendant

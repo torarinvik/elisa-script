@@ -8,6 +8,8 @@ lowering="$script_dir/run_bounded_lowering.sh"
 test_wrapper="$script_dir/run_bounded_test.sh"
 stopper="$script_dir/stop_bounded_validation.sh"
 snapshot_library="$script_dir/validation_process_snapshot.sh"
+session_helper="$script_dir/private_session_exec.py"
+session_helper_test="$(CDPATH= cd -- "$script_dir/.." && pwd)/test/validation/private_session_exec_test.sh"
 
 for wrapper in "$lowering" "$test_wrapper" "$stopper"; do
     if [[ ! -f "$wrapper" || ! -x "$wrapper" ]]; then
@@ -19,6 +21,19 @@ if [[ ! -f "$snapshot_library" ]]; then
     printf 'validation wrapper audit: missing process snapshot library %s\n' "$snapshot_library" >&2
     exit 1
 fi
+if [[ ! -f "$session_helper" || ! -x "$session_helper" ]]; then
+    printf 'validation wrapper audit: missing or non-executable private session helper %s\n' "$session_helper" >&2
+    exit 1
+fi
+if [[ ! -f "$session_helper_test" || ! -x "$session_helper_test" ]]; then
+    printf 'validation wrapper audit: missing or non-executable private session test %s\n' "$session_helper_test" >&2
+    exit 1
+fi
+rg -Fq 'os.setsid()' "$session_helper"
+rg -Fq 'os.getsid(0) != process_id or os.getpgid(0) != process_id' "$session_helper"
+rg -Fq 'ELISASCRIPT_SESSION_READY_FILE' "$session_helper"
+rg -Fq 'ELISASCRIPT_SESSION_RELEASE_FILE' "$session_helper"
+rg -Fq 'PID=SID=PGID' "$session_helper_test"
 
 sh -n "$lowering" "$test_wrapper" "$stopper" "$snapshot_library"
 
@@ -92,12 +107,17 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Uq '(?s)kill_process_tree_immediately\(\).*?signal_process_tree_identities "\$process_tree_snapshot" KILL' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
+    rg -Fq 'if [ -z "$setsid_path" ] && [ -x /usr/bin/python3 ] && [ -x "$script_dir/private_session_exec.py" ]; then' "$wrapper"
+    rg -Fq 'setsid_path="$script_dir/private_session_exec.py"' "$wrapper"
+    rg -Fq 'session_ready_pid="$(cat "$session_ready_file" 2>/dev/null || true)"' "$wrapper"
+    rg -Fq 'if [ "$compiler_pgid" = "$compiler_pid" ]; then' "$wrapper"
+    rg -Fq 'session_handshake_complete=1' "$wrapper"
     case "$wrapper" in
         "$lowering")
-            rg -Fq 'PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
             ;;
         "$test_wrapper")
-            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
             ;;
     esac
     rg -q 'compiler_pgid' "$wrapper"
@@ -311,4 +331,5 @@ if rg -Fq 'pgrep -P' "$stopper"; then
     exit 1
 fi
 rg -Fq 'refusing stale PID escalation' "$stopper"
+"$session_helper_test"
 printf 'validation wrapper audit: disabled gate, StructPy pin, bounded snapshots, sampled guards, evidence retention, lease, parity-fixture attestation, and owned stop path present\n'

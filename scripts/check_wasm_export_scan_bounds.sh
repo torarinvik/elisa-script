@@ -105,7 +105,7 @@ rg -Fq 'capacity: usize = probe_capacity if probe_capacity < chunk.count else ch
 rg -Fq 'source.reserve(initial_source_capacity)' "$candidate"
 rg -Fq 'elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)' "$candidate"
 rg -Fq 'if read_count > remaining:' "$candidate"
-rg -Fq 'elisascript_posix_fstat(descriptor, opened_stat)' "$candidate"
+rg -Fq 'elisascript_posix_fstat(descriptor, result)' "$candidate"
 rg -Fq 'source_file_identity_matches(named_before_open, opened_stat)' "$candidate"
 rg -Fq 'source_file_identity_matches(opened_stat, named_after_open)' "$candidate"
 rg -Fq 'elisascript_posix_close(descriptor)' "$candidate"
@@ -274,7 +274,7 @@ rg -Fq 'parse_implicit_main(line, line_number, main_seen, header_work, component
 rg -Fq 'export_name_scan_charge(name_work, compared_bytes)' "$candidate"
 rg -Fq 'parse_export_line(line, line_number, pending_link_name, has_pending_link_name, seen_names, header_work, name_work, component)' "$candidate"
 rg -Fq 'Every scanned identifier is nonempty' "$candidate"
-rg -Fq 'U+070F SYRIAC ABBREVIATION MARK' "$candidate"
+rg -Fq '1807u32' "$unicode_data"
 rg -Fq 'U+070F SYRIAC ABBREVIATION MARK' "$fixture"
 if rg -Fq 'seen_names.contains("main")' "$candidate"; then
     printf 'W09 bounds audit: main presence must not rescan the export-name vector\n' >&2
@@ -311,7 +311,7 @@ rg -Fq 'def wasm_export_scan_flatten_payload_preserves_include_order()' "$fixtur
 rg -Fq 'FLATTEN_PAYLOAD_OPTION: sview = "--flatten-payload"' "$launcher_fixture"
 rg -Fq 'launcher_flatten_payload_pair_matches' "$launcher_fixture"
 rg -Fq 'FLATTEN_PAYLOAD_OPTION = "--flatten-payload"' "$reference"
-rg -Fq 'if not build_payload and not flatten_payload and len(arguments) == 2:' "$reference"
+rg -Fq 'if not build_payload and not flatten_payload and expected_json_argument is not None:' "$reference"
 rg -Fq 'for index in 0..<4097 |source_bytes, index|' "$fixture"
 rg -Fq 'WASM export parameter count exceeds Elisascript scan limit' "$fixture"
 rg -Fq 'def include_depth_is_bounded()' "$fixture"

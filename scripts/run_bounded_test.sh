@@ -53,6 +53,7 @@ if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" 
 fi
 
 setsid_path="${ELISASCRIPT_SETSID:-}"
+private_session_helper=0
 if [ -z "$setsid_path" ]; then
     for setsid_candidate in /usr/bin/setsid /bin/setsid; do
         if [ -x "$setsid_candidate" ]; then
@@ -61,12 +62,16 @@ if [ -z "$setsid_path" ]; then
         fi
     done
 fi
+if [ -z "$setsid_path" ] && [ -x /usr/bin/python3 ] && [ -x "$script_dir/private_session_exec.py" ]; then
+    setsid_path="$script_dir/private_session_exec.py"
+    private_session_helper=1
+fi
 case "$setsid_path" in
     /*) [ -x "$setsid_path" ] || setsid_path="" ;;
     *) setsid_path="" ;;
 esac
 if [ -z "$setsid_path" ]; then
-    echo "run_bounded_test: refusing to launch without an absolute executable setsid helper" >&2
+    echo "run_bounded_test: refusing to launch without an absolute executable private-session helper" >&2
     exit 125
 fi
 if [ ! -x /bin/ps ]; then
@@ -316,6 +321,10 @@ kill_process_tree_immediately() {
 compiler_pid=""
 compiler_pgid=""
 source_snapshot=""
+session_dir=""
+session_ready_file=""
+session_release_file=""
+session_handshake_complete=0
 validation_wrapper_pgid="$(process_group_for_pid "$$")"
 case "$validation_wrapper_pgid" in
     ''|*[!0-9]*)
@@ -421,11 +430,30 @@ release_validation_lease() {
 cleanup_bounded_test() {
     cleanup_release_lease=1
     if [ -n "$compiler_pid" ] || [ -n "$compiler_pgid" ]; then
-        if { [ -n "$compiler_pid" ] && kill -0 "$compiler_pid" 2>/dev/null; } || { [ -n "$compiler_pgid" ] && process_group_has_processes "$compiler_pgid"; }; then
+        if [ "$private_session_helper" -eq 1 ] && [ "$session_handshake_complete" -eq 0 ] && [ -n "$compiler_pid" ]; then
+            # Before release, the helper has not exec'd the compiler and owns
+            # no descendants, so signal only our unreaped direct child by PID.
+            kill -KILL "$compiler_pid" 2>/dev/null || true
+            wait "$compiler_pid" 2>/dev/null || true
+            compiler_pid=""
+            compiler_pgid=""
+        elif { [ -n "$compiler_pid" ] && kill -0 "$compiler_pid" 2>/dev/null; } || { [ -n "$compiler_pgid" ] && process_group_has_processes "$compiler_pgid"; }; then
             if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
                 cleanup_release_lease=0
             fi
         fi
+    fi
+    if [ -n "$session_ready_file" ]; then
+        rm -f "$session_ready_file" 2>/dev/null || true
+        session_ready_file=""
+    fi
+    if [ -n "$session_release_file" ]; then
+        rm -f "$session_release_file" 2>/dev/null || true
+        session_release_file=""
+    fi
+    if [ -n "$session_dir" ]; then
+        rmdir "$session_dir" 2>/dev/null || true
+        session_dir=""
     fi
     if [ -n "$source_snapshot" ]; then
         rm -f "$source_snapshot" 2>/dev/null || true
@@ -612,9 +640,47 @@ for source_file in "$@"; do
     # direct compiler invocation. This is an attestation hint, not a security
     # boundary: callers can reproduce the variable, so the wrapper gate and RSS
     # monitor remain the actual safety controls.
-    ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
+    if [ "$private_session_helper" -eq 1 ]; then
+        session_dir="$(mktemp -d "$validation_log_dir/session.XXXXXXXX")" || {
+            echo "run_bounded_test: unable to create a private session-handshake directory" >&2
+            exit 125
+        }
+        session_ready_file="$session_dir/ready"
+        session_release_file="$session_dir/release"
+    fi
+    ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
     compiler_pid=$!
-    compiler_pgid="$(process_group_for_pid "$compiler_pid")"
+    compiler_pgid=""
+    if [ "$private_session_helper" -eq 1 ]; then
+        session_ready=0
+        session_wait_attempt=0
+        while [ "$session_wait_attempt" -lt 100 ]; do
+            if [ -f "$session_ready_file" ]; then
+                session_ready_pid="$(cat "$session_ready_file" 2>/dev/null || true)"
+                if [ "$session_ready_pid" = "$compiler_pid" ]; then
+                    compiler_pgid="$(process_group_for_pid "$compiler_pid")"
+                    if [ "$compiler_pgid" = "$compiler_pid" ]; then
+                        session_ready=1
+                    fi
+                fi
+                break
+            fi
+            session_state="$(compiler_process_state "$compiler_pid" 2>/dev/null || printf 'unknown\n')"
+            case "$session_state" in absent|zombie) break ;; esac
+            sleep "$rss_poll_interval_seconds"
+            session_wait_attempt=$((session_wait_attempt + 1))
+        done
+        if [ "$session_ready" -ne 1 ]; then
+            echo "run_bounded_test: session helper did not establish a verified private process group" >&2
+            kill -KILL "$compiler_pid" 2>/dev/null || true
+            wait "$compiler_pid" 2>/dev/null || true
+            compiler_pid=""
+            compiler_pgid=""
+            exit 125
+        fi
+    else
+        compiler_pgid="$(process_group_for_pid "$compiler_pid")"
+    fi
     if ! {
         printf 'compiler_pid=%s\ncompiler_pgid=%s\n' "$compiler_pid" "$compiler_pgid"
     } >>"$metadata_file"; then
@@ -626,6 +692,16 @@ for source_file in "$@"; do
         compiler_pid=""
         compiler_pgid=""
         exit 125
+    fi
+    if [ "$private_session_helper" -eq 1 ]; then
+        session_handshake_complete=1
+        if ! printf '%s\n' "$compiler_pid" >"$session_release_file"; then
+            echo "run_bounded_test: unable to release the verified private session" >&2
+            if ! kill_process_tree "$compiler_pid" "$compiler_pgid"; then
+                exit 125
+            fi
+            exit 125
+        fi
     fi
     case "$compiler_pgid" in
         ''|0|*[!0-9]*|"$validation_wrapper_pgid")

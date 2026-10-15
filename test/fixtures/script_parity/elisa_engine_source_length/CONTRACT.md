@@ -1,6 +1,9 @@
 # Elisa Engine source-length audit
 
 Reference: `../elisa-engine/scripts/check_source_length.py`.
+The colocated `reference.elisascript` path is a relative symlink to
+`scripts/check_elisa_engine_source_length.elisascript`, so the Python snapshot
+and its single Elisascript implementation are discoverable together.
 Candidate: `scripts/check_elisa_engine_source_length.elisascript`.
 The original Python script and its callers are unchanged.
 

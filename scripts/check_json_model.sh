@@ -267,7 +267,7 @@ for fixture_pattern in \
     'missing_separator_rejected' \
     'typed_json_encoder_is_bounded_and_preserves_values' \
     'encode_json_root(document, 0)' \
-    'encode_json_root_replacing_member(document, 0, root_index, "duplicate", replacement_document, 0)' \
+    'updated_object: darray[u8] = encode_json_root_replacing_member(object_document, 0, 1, "a\"", replacement_document, 0)' \
     'encoded_values: darray[u8] = encode_json_root(document, 0)' \
     'encoded_object: darray[u8] = encode_json_root(object_document, 0)' \
     'encode_json_root_replacing_member(object_document' \

@@ -247,7 +247,7 @@ for file_reader_pattern in \
     'FILE_STREAM_DEFAULT_MAX_BYTES - 1' \
     'if reader.source_bytes_read == input_limit:' \
     'return 1' \
-    'input_limit + 1' \
+    'reader.file.byte_budget != reader.framer.limits.input_bytes + 1' \
     'file_stream_read_chunk(reader.file, buffer, capacity)' \
     'reader.pending_records <- try finish_csv_record_framer(reader.framer)' \
     'InputLimitExceeded'; do

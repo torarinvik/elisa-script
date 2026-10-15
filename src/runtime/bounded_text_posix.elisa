@@ -2,6 +2,7 @@
 # It follows symlinks like ordinary text-file APIs, but only reads a verified
 # regular file through a nonblocking descriptor and a caller-owned byte budget.
 
+include "runtime.elisa"
 include "encoding.elisa"
 include "file_posix.elisa"
 include "directory_posix.elisa"
@@ -21,6 +22,10 @@ module EsBoundedText:
             InvalidUtf8
 
 
+        # The returned view owns permanent backing storage so it can outlive this reader frame.
+        # Callers should budget one retained copy up to `maximum_bytes`, plus transient read
+        # and scratch storage. Dynamic-array capacity growth can make peak usage exceed twice the
+        # input limit, so the limit is not a peak-memory ceiling.
         def read_utf8(input_path: Path, maximum_bytes: usize) -> sview error[ReadError] can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
             raise ReadError.LimitExceeded if maximum_bytes > Limits::MAX_BYTES
             path_text: sview = f"{input_path}"
@@ -36,7 +41,7 @@ module EsBoundedText:
             descriptor: int = open_path(path_pointer)
             raise ReadError.ReadFailed if descriptor < 0
             opened: mutable ElisascriptStat = zeroed
-            if not fstat_descriptor(descriptor, opened) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not same_file(named_before_open, opened):
+            if not fstat_descriptor(descriptor, opened) or (opened.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or opened.size < 0 or not same_file(named_before_open, opened):
                 _ = elisascript_posix_close(descriptor)
                 raise ReadError.ReadFailed
             named_after_open: mutable ElisascriptStat = zeroed
@@ -45,51 +50,58 @@ module EsBoundedText:
                 raise ReadError.Changed
 
             chunk: mutable darray[u8] = []
-            chunk.reserve(Limits::READ_CHUNK_BYTES)
-            for _ in 0..<Limits::READ_CHUNK_BYTES |chunk|:
+            # Size scratch storage from the verified file size when it is below the
+            # caller's limit; leave room for an overflow probe and cap the chunk.
+            chunk_capacity: mutable usize = maximum_bytes + 1
+            chunk_capacity <- opened.size.usize() + 1 if opened.size.usize() < maximum_bytes
+            chunk_capacity <- Limits::READ_CHUNK_BYTES if chunk_capacity > Limits::READ_CHUNK_BYTES
+            chunk.reserve(chunk_capacity)
+            for _ in 0..<chunk_capacity |chunk|:
                 chunk.push(0u8)
             bytes: mutable darray[u8] = []
-            initial_capacity: usize = maximum_bytes if maximum_bytes < Limits::READ_CHUNK_BYTES else Limits::READ_CHUNK_BYTES
+            initial_capacity: mutable usize = maximum_bytes if maximum_bytes < Limits::READ_CHUNK_BYTES else Limits::READ_CHUNK_BYTES
+            initial_capacity <- opened.size.usize() if opened.size.usize() < maximum_bytes
             bytes.reserve(initial_capacity)
-            phase: mutable ReadPhase = ReadPhase.ReadChunk
             interrupted: mutable usize = 0
-            machine over phase while phase != ReadPhase.Done:
-                state ReadChunk
-                start ReadChunk
-
-                ReadChunk, ReadPhase.ReadChunk:
-                    remaining: usize = maximum_bytes - bytes.count
-                    probe_capacity: usize = remaining + 1
-                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
-                    chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
-                    amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
-                    if amount < 0:
-                        if not errno_shape(amount.i64()):
-                            _ = elisascript_posix_close(descriptor)
-                            raise ReadError.ReadFailed
-                        errno: mutable i32& = elisascript_posix_errno()
-                        if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
-                            interrupted <- interrupted + 1
-                            -> ReadChunk
+            while true:
+                remaining: usize = maximum_bytes - bytes.count
+                probe_capacity: usize = remaining + 1
+                capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
+                amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
+                if amount < 0:
+                    if not errno_shape(amount.i64()):
                         _ = elisascript_posix_close(descriptor)
                         raise ReadError.ReadFailed
-                    if amount == 0:
-                        phase <- ReadPhase.Done
+                    errno: mutable i32& = elisascript_posix_errno()
+                    if errno[0] == DarwinErrno::EINTR and interrupted < Limits::READ_EINTR_RETRIES:
+                        interrupted <- interrupted + 1
                         continue
-                    read_count: usize = amount.usize()
-                    if read_count > capacity:
+                    _ = elisascript_posix_close(descriptor)
+                    raise ReadError.ReadFailed
+                if amount == 0:
+                    break
+                read_count: usize = amount.usize()
+                if read_count > capacity:
+                    _ = elisascript_posix_close(descriptor)
+                    raise ReadError.ReadFailed
+                if read_count > remaining:
+                    _ = elisascript_posix_close(descriptor)
+                    raise ReadError.LimitExceeded
+                for offset in 0..<read_count |bytes, chunk|:
+                    bytes.push(chunk[offset])
+                # Small-file scratch buffers keep transient storage low. If the
+                # opened file changes after sizing, stop promptly instead of
+                # issuing one small read per byte until the final stability check.
+                if capacity < Limits::READ_CHUNK_BYTES:
+                    current_opened: mutable ElisascriptStat = zeroed
+                    if not fstat_descriptor(descriptor, current_opened):
                         _ = elisascript_posix_close(descriptor)
                         raise ReadError.ReadFailed
-                    if read_count > remaining:
+                    if not stable_file(opened, current_opened):
                         _ = elisascript_posix_close(descriptor)
-                        raise ReadError.LimitExceeded
-                    for offset in 0..<read_count |bytes, chunk|:
-                        bytes.push(chunk[offset])
-                    interrupted <- 0
-                    -> ReadChunk
-
-                ReadChunk, ReadPhase.Done:
-                    break
+                        raise ReadError.Changed
+                interrupted <- 0
 
             final_opened: mutable ElisascriptStat = zeroed
             final_named: mutable ElisascriptStat = zeroed
@@ -102,7 +114,11 @@ module EsBoundedText:
             raise ReadError.Changed if not stable
             contents: sview = bytes_view(bytes)
             raise ReadError.InvalidUtf8 if not text_is_valid_utf8(contents)
-            return contents
+            # `bytes_view` borrows the local byte array. Copy only after validation so the
+            # returned view remains backed by permanent string storage after this frame exits.
+            owned_text: cstr = string_view_copy(contents)
+            owned_bytes: u8& = owned_text.cast[u8&]
+            return sview(owned_bytes, 0, len(contents).i64())
 
 
     private:
@@ -113,11 +129,6 @@ module EsBoundedText:
             READ_EINTR_RETRIES: usize = 4
             # Selected Darwin C-int descriptor carrier, not an ownership proof.
             MAX_DESCRIPTOR: int = 2147483647
-
-
-        const enum ReadPhase of u8:
-            ReadChunk
-            Done
 
 
         def descriptor_shape(value: int) -> bool:
@@ -173,7 +184,7 @@ module EsBoundedText:
 
 
         def stable_file(left: ElisascriptStat, right: ElisascriptStat) -> bool:
-            return same_file(left, right) and left.size == right.size and left.modify_time == right.modify_time and left.change_time == right.change_time
+            return same_file(left, right) and left.size == right.size and left.modify_time.seconds == right.modify_time.seconds and left.modify_time.nanoseconds == right.modify_time.nanoseconds and left.change_time.seconds == right.change_time.seconds and left.change_time.nanoseconds == right.change_time.nanoseconds
 
 
         def text_is_valid_utf8(contents: sview) -> bool:

@@ -34,6 +34,10 @@ connect the model to a live recipe or process capture. The typed invalid-UTF-8
 classification is not yet Python's exact `UnicodeDecodeError` text or recipe
 framework exception propagation.
 
+The colocated `reference.elisascript` path is a relative symlink to
+`scripts/get_skia_environment_interpreted.elisascript`, keeping one interpreted
+implementation beside the Python reference without duplicating its source.
+
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and
 private libc ABI, not Python, a shell, a subprocess or the original script.

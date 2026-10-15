@@ -529,7 +529,7 @@ output cap is checked before every byte append. Source fixtures cover parser and
 schema round trips, custom escapes, blank/empty rows, CRLF, and output limits;
 they have not been executed under the compiler safety hold.
 
-`EsCsvRecordFramer` accepts bounded byte chunks and returns completed raw
+`EsCsvRecordFramer::feed_csv_record_framer` accepts bounded byte chunks and returns completed raw
 record buffers, retaining only the unfinished record between calls. It feeds
 each byte through `EsCsv`, so quoted newlines stay inside a record and a CRLF
 split across chunks is recognized only after its LF arrives. The final call
@@ -556,7 +556,8 @@ reader with `EsSchemaCsv`. It prepares a checked header/position projection
 once, then parses and materializes one owned typed row per call while keeping
 global data-row ordinals. Header names and source aliases are validated even
 for a header-only file; empty input remains an empty stream. The reusable
-`SchemaCsvProjection` is checked for shape and reversible mappings before a
+`EsSchemaCsv::prepare_csv_schema_projection` operation creates a reusable
+`SchemaCsvProjection`, which is checked for shape and reversible mappings before a
 row uses it. Source fixtures cover header alias reordering, exact integer
 conversion, and an unterminated final row; these changes have not been run.
 

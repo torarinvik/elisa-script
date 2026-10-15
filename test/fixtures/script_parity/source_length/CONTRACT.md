@@ -6,6 +6,10 @@ snapshot in `reference.py` has SHA-256
 The public launcher checks that the live neighboring reference has this exact
 hash both before and after its matrix, so local fixture drift cannot silently
 turn the test into parity against a stale Python snapshot.
+The colocated `reference.elisascript` path is a relative symlink to
+`scripts/check_wasmbrowser_source_length.elisascript`, so the Python snapshot
+and its single Elisascript implementation are discoverable together.
+
 Candidate: `scripts/check_wasmbrowser_source_length.elisascript`, with a pure
 counter in `src/runtime/source_length_model.elisa` and a descriptor-verified
 streaming UTF-8 reader in `src/runtime/source_length_stream_posix.elisa`.

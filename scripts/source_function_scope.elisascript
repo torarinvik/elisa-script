@@ -24,6 +24,7 @@ module EsSourceFunctionScope:
         const enum ScanPhase of u8:
             FindFunction
             CollectFunction
+            VerifyUnique
             Done
 
 
@@ -55,17 +56,58 @@ module EsSourceFunctionScope:
             source_length: usize = sview_len(source)
             while cursor <= source_length - needle_length:
                 suffix: sview = string_view_suffix(source, cursor.i64())
-                relative: i64 = suffix.index(needle)
+                relative: i64 = suffix.find(needle)
                 break if relative < 0
                 matches <- matches + 1
                 cursor <- cursor + relative.usize() + needle_length
             return matches
 
 
+        def leading_indent_width(line: sview) -> usize:
+            cursor: mutable usize = 0
+            line_length: usize = sview_len(line)
+            while cursor < line_length |cursor, line, line_length|:
+                byte: u8 = sview_at(line, cursor)
+                break if byte != 32u8 and byte != 9u8
+                cursor <- cursor + 1
+            cursor
+
+
         def starts_function_declaration(line: sview) -> bool:
-            declaration_prefix: sview = "        def "
-            return false if sview_len(line) < sview_len(declaration_prefix)
-            return string_view_prefix(line, sview_len(declaration_prefix).i64()) == declaration_prefix
+            indent: usize = leading_indent_width(line)
+            return false if indent + 4 > sview_len(line)
+            declaration: sview = string_view_suffix(line, indent.i64())
+            string_view_prefix(declaration, 4i64) == "def "
+
+
+        def function_identifier_byte(byte: u8) -> bool:
+            byte >= 128u8 or byte == 95u8 or (byte >= 48u8 and byte <= 57u8) or (byte >= 65u8 and byte <= 90u8) or (byte >= 97u8 and byte <= 122u8)
+
+
+        def function_declaration_matches(line: sview, requested: sview) -> bool:
+            indent: usize = leading_indent_width(line)
+            requested_indent: usize = leading_indent_width(requested)
+            requested_text: sview = string_view_suffix(requested, requested_indent.i64())
+            return false if not starts_function_declaration(line) or requested_text == ""
+            # An indented declaration pattern identifies that lexical indentation level;
+            # accepting a deeper prefix can select a nested function as its sibling.
+            return false if requested_indent > 0 and indent != requested_indent
+            requested_whitespace: sview = string_view_prefix(requested, requested_indent.i64())
+            source_whitespace: sview = string_view_prefix(line, requested_indent.i64())
+            return false if source_whitespace != requested_whitespace
+            declaration: sview = string_view_suffix(line, indent.i64())
+            requested_length: usize = sview_len(requested_text)
+            declaration_length: usize = sview_len(declaration)
+            return false if requested_length > declaration_length
+            return false if string_view_prefix(declaration, requested_length.i64()) != requested_text
+            return true if requested_length == declaration_length
+            previous: u8 = sview_at(requested_text, requested_length - 1)
+            return true if not function_identifier_byte(previous)
+            next: u8 = sview_at(declaration, requested_length)
+            # UTF-8 continuation or leading bytes also continue an identifier; rejecting
+            # them avoids a byte-prefix match when names contain non-ASCII characters.
+            return false if function_identifier_byte(next)
+            return true
 
 
     public:
@@ -82,6 +124,9 @@ module EsSourceFunctionScope:
             text: sview
 
 
+        # The declaration must identify exactly one function in the file. Because callers do
+        # not pass a lexical owner, a second matching declaration makes `found` false rather
+        # than silently returning whichever body appeared first.
         def read_function_body(input_path: Path, declaration: sview) -> FunctionBody error[Error] can[Blocking.IO, Memory.Allocate, Memory.Release, Abort.Panic, Console.Format, Unsafe.PointerCast]:
             path_text: sview = f"{input_path}"
             path_length: usize = sview_len(path_text)
@@ -98,20 +143,23 @@ module EsSourceFunctionScope:
             line: mutable darray[u8] = []
             body: mutable darray[u8] = []
             found: mutable bool = false
+            duplicate: mutable bool = false
+            function_indent: mutable usize = 0
             machine over phase while phase != ScanPhase.Done:
                 state Scan
                 start Scan
 
                 Scan, ScanPhase.FindFunction:
-                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                    record: FileStreamRead = try file_stream_read_line_mode(stream, line, Limits::LINE_BYTES, FileStreamLineMode::Universal) else err:
                         _ = try file_stream_close(stream) else false
                         raise Error.ReadFailed
                     if record.eof and record.count == 0:
                         phase <- ScanPhase.Done
                         -> Scan
                     line_text: sview = bytes_view(line)
-                    if line_text.index(declaration) >= 0:
+                    if function_declaration_matches(line_text, declaration):
                         found <- true
+                        function_indent <- leading_indent_width(line_text)
                         phase <- ScanPhase.CollectFunction
                         if not append_line(body, line):
                             _ = try file_stream_close(stream) else false
@@ -119,22 +167,34 @@ module EsSourceFunctionScope:
                     -> Scan
 
                 Scan, ScanPhase.CollectFunction:
-                    record: FileStreamRead = try file_stream_read_line(stream, line, Limits::LINE_BYTES) else err:
+                    record: FileStreamRead = try file_stream_read_line_mode(stream, line, Limits::LINE_BYTES, FileStreamLineMode::Universal) else err:
                         _ = try file_stream_close(stream) else false
                         raise Error.ReadFailed
                     if record.eof and record.count == 0:
                         phase <- ScanPhase.Done
                         -> Scan
                     line_text: sview = bytes_view(line)
-                    if starts_function_declaration(line_text) and line_text.index(declaration) < 0:
-                        if not append_line(body, line):
-                            _ = try file_stream_close(stream) else false
-                            raise Error.FunctionTooLarge
-                        phase <- ScanPhase.Done
+                    indent: usize = leading_indent_width(line_text)
+                    nonblank: bool = indent < sview_len(line_text)
+                    if nonblank and indent <= function_indent:
+                        duplicate <- true if function_declaration_matches(line_text, declaration)
+                        phase <- ScanPhase.VerifyUnique
                         -> Scan
+                    duplicate <- true if function_declaration_matches(line_text, declaration)
                     if not append_line(body, line):
                         _ = try file_stream_close(stream) else false
                         raise Error.FunctionTooLarge
+                    -> Scan
+
+                Scan, ScanPhase.VerifyUnique:
+                    record: FileStreamRead = try file_stream_read_line_mode(stream, line, Limits::LINE_BYTES, FileStreamLineMode::Universal) else err:
+                        _ = try file_stream_close(stream) else false
+                        raise Error.ReadFailed
+                    if record.eof and record.count == 0:
+                        phase <- ScanPhase.Done
+                        -> Scan
+                    line_text: sview = bytes_view(line)
+                    duplicate <- true if function_declaration_matches(line_text, declaration)
                     -> Scan
 
                 Scan, ScanPhase.Done:
@@ -143,7 +203,7 @@ module EsSourceFunctionScope:
             closed: bool = try file_stream_close(stream) else err:
                 false
             raise Error.CloseFailed if not closed
-            return FunctionBody{found: found, text: bytes_view(body)}
+            return FunctionBody{found: found and not duplicate, text: bytes_view(body)}
 
 
         # Search one physical source line at a time. Optional second and third
@@ -180,17 +240,17 @@ module EsSourceFunctionScope:
                     if line_prefix:
                         first_match <- 0 if line_text.startswith(first)
                     else:
-                        first_match <- line_text.index(first)
+                        first_match <- line_text.find(first)
                     if first_match >= 0:
                         first_end: i64 = first_match + sview_len(first).i64()
                         second_match: mutable i64 = 0
                         if second != "":
-                            second_match <- string_view_suffix(line_text, first_end).index(second)
+                            second_match <- string_view_suffix(line_text, first_end).find(second)
                         if second_match >= 0:
                             second_end: mutable i64 = first_end
                             if second != "":
                                 second_end <- first_end + second_match + sview_len(second).i64()
-                            if third == "" or string_view_suffix(line_text, second_end).index(third) >= 0:
+                            if third == "" or string_view_suffix(line_text, second_end).find(third) >= 0:
                                 found <- true
                                 phase <- SearchPhase.Done
                                 -> Search
@@ -286,10 +346,10 @@ module EsSourceFunctionScope:
                         elif line_prefix and line_text.startswith(needle):
                             found <- true
                             phase <- SearchPhase.Done
-                        elif not line_prefix and line_text.index(needle) >= 0:
+                        elif not line_prefix and line_text.find(needle) >= 0:
                             found <- true
                             phase <- SearchPhase.Done
-                    elif line_text.index(start_marker) >= 0:
+                    elif line_text.find(start_marker) >= 0:
                         inside_block <- true
                     -> Search
 
@@ -377,10 +437,10 @@ module EsSourceFunctionScope:
                         phase <- SearchPhase.Done
                         -> Search
                     line_text: sview = bytes_view(line)
-                    if line_text.index(second) >= 0:
+                    if line_text.find(second) >= 0:
                         found <- true if first_seen
                         phase <- SearchPhase.Done
-                    elif line_text.index(first) >= 0:
+                    elif line_text.find(first) >= 0:
                         first_seen <- true
                     -> Search
 
@@ -548,7 +608,7 @@ module EsSourceFunctionScope:
                     if record.eof and record.count == 0:
                         phase <- SearchPhase.Done
                         -> Search
-                    matches <- matches + 1 if bytes_view(line).index(needle) >= 0
+                    matches <- matches + 1 if bytes_view(line).find(needle) >= 0
                     -> Search
 
                 Search, SearchPhase.Done:
@@ -561,7 +621,7 @@ module EsSourceFunctionScope:
 
 
         def contains(source: sview, needle: sview) -> bool:
-            return source.index(needle) >= 0
+            return source.find(needle) >= 0
 
 
         def first_line_number(source: sview, needle: sview) -> usize:
@@ -586,7 +646,7 @@ module EsSourceFunctionScope:
                     line_length: usize = line_end - line_start
                     line: sview = string_view_prefix(string_view_suffix(source, line_start.i64()), line_length.i64())
                     line_number <- line_number + 1
-                    if line.index(needle) >= 0:
+                    if line.find(needle) >= 0:
                         matched_line <- line_number
                         phase <- LineSearchPhase.Done
                         -> Scan
@@ -620,7 +680,7 @@ module EsSourceFunctionScope:
                     line_length: usize = line_end - line_start
                     line: sview = string_view_prefix(string_view_suffix(source, line_start.i64()), line_length.i64())
                     line_number <- line_number + 1
-                    matched_line <- line_number if line.index(needle) >= 0
+                    matched_line <- line_number if line.find(needle) >= 0
                     line_start <- line_end + 1
                     -> Scan
 
@@ -640,6 +700,6 @@ module EsSourceFunctionScope:
                     line_end <- line_end + 1
                 line_length: usize = line_end - line_start
                 line: sview = string_view_prefix(string_view_suffix(source, line_start.i64()), line_length.i64())
-                matches <- matches + 1 if line.index(needle) >= 0
+                matches <- matches + 1 if line.find(needle) >= 0
                 line_start <- line_end + 1
             return matches
