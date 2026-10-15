@@ -40,7 +40,7 @@ bounded environment model used by the interpreted candidate. The bounded
 validation wrapper rejects symlinked source paths, so this port is stored
 beside the reference as a regular file.
 
-The colocated port at SHA-256
+An earlier colocated-port revision at SHA-256
 `3bcf10854c463e937871116fdb05aa0e95597f170f03c01cb165a8cdefef2941` passed
 bounded lowering on 2026-10-15 with pinned compiler revision
 `5241b2aed51641a217ca44ac4ee116ee66ac96e6` (binary SHA-256
@@ -49,7 +49,10 @@ native configuration `ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec493336
 exit status 0 and sampled peak RSS 29,728 KiB. Retained evidence is
 `.validation/ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439/logs/lowering.T8fJ3W`
 and its `.meta` file. This verifies parsing, include resolution and lowering
-only; it does not execute the script or establish behavioral parity.
+only; it does not execute the script or establish behavioral parity. The
+current sidecar has SHA-256
+`c44538638203cfa1e69f9470a7702a8af4977e18d76c1f9dbbb209073a86076c`; the
+older lowering record does not qualify the current bytes.
 
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and

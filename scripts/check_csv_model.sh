@@ -217,7 +217,7 @@ for parity_port_pattern in \
     'using EsJson' \
     'using EsRecordNumeric' \
     'using EsSchemaNumeric' \
-    'failure == CsvContractError.UnexpectedEnd' \
+    'failure == EsCsv::CsvContractError.UnexpectedEnd' \
     'The Python reference ignores argv' \
     'struct BatchOutput:' \
     'def batch_output()' \

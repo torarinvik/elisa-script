@@ -285,7 +285,7 @@ done
 
 rg -Fq '`EsSchema`' "$docs"
 rg -Fq '`EsSchemaCsv` materializes completed CSV/TSV records' "$docs"
-rg -Fq '`EsSchemaToml` binds resolved TOML configuration' "$docs"
+rg -Fq '`EsSchemaToml` binds a resolved typed TOML configuration to the common' "$docs"
 rg -Fq 'Schema type graphs validate recursive array items' "$docs"
 rg -Fq '`validate_schema_json_record_against` rechecks those annotations' "$docs"
 rg -Fq 'header/positional projection once per call' "$docs"

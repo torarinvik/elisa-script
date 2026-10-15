@@ -24,7 +24,7 @@ commands, unknown options, missing values, duplicate options, unexpected
 boolean values, empty/pass-through positionals, build/test defaults, and
 explicit-empty-over-default precedence.
 
-The colocated port at SHA-256
+An earlier colocated-port revision at SHA-256
 `76e40ad766e1604aa1c217c21e1f6f3c6561f9d84e1fdc76d19c589f1a0b8e68` passed
 bounded lowering on 2026-10-15 with the pinned compiler revision
 `5241b2aed51641a217ca44ac4ee116ee66ac96e6` (binary SHA-256
@@ -32,8 +32,11 @@ bounded lowering on 2026-10-15 with the pinned compiler revision
 native configuration `ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439`,
 exit status 0 and sampled peak RSS 31,648 KiB. Retained evidence is
 `.validation/ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439/logs/lowering.aQGpkR`
-and its `.meta` file. Lowering does not execute the 17-case matrix; the
-launcher test below remains the required behavioral parity check.
+and its `.meta` file. The current sidecar is pinned by the launcher at
+`75693344ce0f885c14b3ac67b07878f130be490e861e85e3e0d8f2a8e0d207c9`; that
+lowering record does not qualify the current bytes. Lowering also does not
+execute the 17-case matrix; the launcher test below remains the required
+behavioral parity check.
 
 `test/script_parity/application_cli_launcher_test.elisascript` invokes Python
 once and the public ElisaScript launcher twice, for the oracle port and
