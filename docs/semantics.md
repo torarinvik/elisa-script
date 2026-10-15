@@ -1397,12 +1397,13 @@ execution evidence remain platform-qualified work.
 
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes, subject to the interpreter's 64 MiB file-input safety
-ceiling. It contributes the same `File.Read` effect and adds `FileIoError` to the
-enclosing error row. Open, seek, read, and close failures, including an oversized
-file, remain errors; a failed read is never confused with a successfully read empty
-file. Empty paths and paths containing an embedded NUL are rejected before the
-POSIX boundary, including when a nominal `Path` arrives through a dynamic
-constructor or host call.
+ceiling. It validates the bytes as strict UTF-8 before returning the text; use
+`read_bytes` for arbitrary binary data. It contributes the same `File.Read`
+effect and adds `FileIoError` to the enclosing error row. Open, seek, read, and
+close failures, invalid UTF-8, and oversized files remain errors; a failed read
+is never confused with a successfully read empty file. Empty paths and paths
+containing an embedded NUL are rejected before the POSIX boundary, including
+when a nominal `Path` arrives through a dynamic constructor or host call.
 The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
 
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or

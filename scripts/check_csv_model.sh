@@ -18,12 +18,14 @@ schema_csv="$repo_root/src/runtime/schema_csv_materializer.elisa"
 schema_file_reader="$repo_root/src/runtime/schema_csv_file_posix.elisa"
 file_writer="$repo_root/src/runtime/csv_record_file_writer_posix.elisa"
 parity_reference="$repo_root/test/fixtures/script_parity/csv_io/reference.py"
+parity_reference_port="$repo_root/test/fixtures/script_parity/csv_io/reference.elisascript"
 parity_candidate="$repo_root/test/fixtures/script_parity/csv_io/candidate.elisascript"
 parity_expected="$repo_root/test/fixtures/script_parity/csv_io/expected.txt"
 parity_contract="$repo_root/test/fixtures/script_parity/csv_io/CONTRACT.md"
 parity_launcher="$repo_root/test/script_parity/csv_io_launcher_test.elisascript"
+parity_reference_port_test="$repo_root/test/script_parity/csv_io_reference_port_test.elisascript"
 
-for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher"; do
+for required_file in "$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_reference_port" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher" "$parity_reference_port_test"; do
     [[ -f "$required_file" ]] || { printf 'csv model audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 
@@ -39,7 +41,7 @@ source_bytes() {
     printf '%s' "$measured"
 }
 
-source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher")
+source_paths=("$model" "$ir" "$fixture" "$runtime_fixture" "$docs" "$parser" "$encoder" "$framer" "$file_reader" "$schema_csv" "$schema_file_reader" "$file_writer" "$parity_reference" "$parity_reference_port" "$parity_candidate" "$parity_expected" "$parity_contract" "$parity_launcher" "$parity_reference_port_test")
 total_bytes=0
 for source_path in "${source_paths[@]}"; do
     source_size="$(source_bytes "$source_path")" || { printf 'csv model audit: missing %s\n' "$source_path" >&2; exit 1; }
@@ -197,6 +199,11 @@ done
 
 for parity_candidate_pattern in \
     'module EsCsvIoParityCandidate:' \
+    'using EsCsvMaterialize' \
+    'using EsEncoding' \
+    'using EsJson' \
+    'using EsRecordNumeric' \
+    'using EsSchemaNumeric' \
     'materialize_csv_schema_batch(' \
     'encode_csv_record(' \
     'blåbær' \
@@ -204,13 +211,49 @@ for parity_candidate_pattern in \
     rg -Fq "$parity_candidate_pattern" "$parity_candidate"
 done
 
+for parity_port_pattern in \
+    'module EsCsvIoReferencePort:' \
+    'using EsCsvMaterialize' \
+    'using EsJson' \
+    'using EsRecordNumeric' \
+    'using EsSchemaNumeric' \
+    'failure == CsvContractError.UnexpectedEnd' \
+    'The Python reference ignores argv' \
+    'struct BatchOutput:' \
+    'def batch_output()' \
+    'malformed=error'; do
+    rg -Fq "$parity_port_pattern" "$parity_reference_port"
+done
+
 for parity_launcher_pattern in \
-    'csv_reader_writer_public_launcher_matches_python_reference_and_golden' \
+    'csv_reader_writer_public_launcher_matches_python_reference_port_candidate_and_golden' \
+    'REFERENCE_PORT_SCRIPT' \
+    'SourceHashes::REFERENCE_PORT' \
+    'SourceHashes::CORE_RUNTIME_PRELUDE' \
+    'SourceHashes::CORE_RUNTIME_STRINGS' \
+    'SourceHashes::CORE_RUNTIME' \
+    'reference_port_runner' \
+    'reference_extra_argv_runner' \
+    'reference_port_extra_argv_runner' \
+    'port_comparison' \
+    'extra_argv_comparison' \
+    '"--ignored"' \
     'PYTHONIOENCODING' \
     'ELISASCRIPT_VALIDATION_REAUTHORIZED' \
     'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' \
     'SourceHashes::SCHEMA_CSV'; do
     rg -Fq "$parity_launcher_pattern" "$parity_launcher"
+done
+
+for parity_port_test_pattern in \
+    'include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime_prelude.elisa"' \
+    'include "../../vendor/elisa-compiler/elisacore_std/elisacore_runtime_strings.elisa"' \
+    'include "../../vendor/elisa-compiler/elisacore_std/runtime.elisa"' \
+    'csv_io_reference_port_matches_python_golden' \
+    'EsCsvIoReferencePort::batch_output()' \
+    'assert actual.status == 0i64' \
+    'malformed=error'; do
+    rg -Fq "$parity_port_test_pattern" "$parity_reference_port_test"
 done
 
 for parity_expected_pattern in \
@@ -223,6 +266,7 @@ for parity_expected_pattern in \
 done
 
 rg -Fq 'does not claim full Python `csv` compatibility' "$parity_contract"
+rg -Fq 'extra option-looking argument and an empty argument' "$parity_contract"
 rg -Fq '`test/script_parity/csv_io_launcher_test.elisascript`' "$docs"
 
 for framer_fixture_pattern in \

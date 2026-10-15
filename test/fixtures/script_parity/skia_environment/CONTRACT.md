@@ -34,9 +34,22 @@ connect the model to a live recipe or process capture. The typed invalid-UTF-8
 classification is not yet Python's exact `UnicodeDecodeError` text or recipe
 framework exception propagation.
 
-The colocated `reference.elisascript` path is a relative symlink to
-`scripts/get_skia_environment_interpreted.elisascript`, keeping one interpreted
-implementation beside the Python reference without duplicating its source.
+The colocated `reference.elisascript` is a regular ElisaScript port of the
+Python reference and keeps the original BSD license notice. It shares the
+bounded environment model used by the interpreted candidate. The bounded
+validation wrapper rejects symlinked source paths, so this port is stored
+beside the reference as a regular file.
+
+The colocated port at SHA-256
+`3bcf10854c463e937871116fdb05aa0e95597f170f03c01cb165a8cdefef2941` passed
+bounded lowering on 2026-10-15 with pinned compiler revision
+`5241b2aed51641a217ca44ac4ee116ee66ac96e6` (binary SHA-256
+`8623ee8dabd773976e370f553cd91457703c4098d135a3d1648cc72609b1b915`), O0
+native configuration `ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439`,
+exit status 0 and sampled peak RSS 29,728 KiB. Retained evidence is
+`.validation/ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439/logs/lowering.T8fJ3W`
+and its `.meta` file. This verifies parsing, include resolution and lowering
+only; it does not execute the script or establish behavioral parity.
 
 Candidate: `scripts/get_skia_environment.elisascript`. This source-only native
 POSIX adapter candidate uses `EsEnvironmentLookup`'s typed presence value and
@@ -273,13 +286,15 @@ still require compilation and execution qualification.
 
 ## Dormant interpreted public-launcher matrix (authored, not executed)
 
-`test/script_parity/skia_environment_launcher_test.elisascript` targets the new
-interpreted companion through the public argv ABI: launcher executable, copied
-`.elisascript` filename, then the exact script arguments. It never invokes a
-compiler or compiles a candidate. The native candidate remains unchanged; both
-matrices now pin the expanded shared oracle. That module imports neither
-candidate, and supplies seventeen ordinary cases. A reference must first match
-status 0, empty stderr and its literal stdout before the candidate can launch.
+`test/script_parity/skia_environment_launcher_test.elisascript` compares the
+Python oracle, colocated `reference.elisascript` port, and interpreted
+companion through the public argv ABI. It never invokes a compiler or compiles
+a candidate. The native candidate remains unchanged; both matrices pin the
+expanded shared oracle. That module imports neither ElisaScript implementation
+and supplies seventeen ordinary cases. Python and the candidate run from
+private copies; the port runs from its pinned source path so its runtime include
+remains source-relative. Each must match status 0, empty stderr, and literal
+stdout before the case succeeds.
 
 The public entry gates filesystem/hash/child work on all of these inputs:
 
@@ -318,10 +333,10 @@ and complete include closure need separate qualification as well.
 
 The copied fixture has exactly three files and three directories: `reference.py`,
 the candidate under `scripts/`, and its model under `src/runtime/`. Includes remain
-source-relative. Both processes use the same private cwd, fresh replacement
+source-relative. All three processes use the same private cwd, fresh replacement
 environment (`LC_ALL=C` and literal fixture entries only), and binary stdin
 sentinel. Python uses `-I -S -B -X utf8`; no PATH, HOME, credentials, compiler or
-validation variables are inherited by either child. The launcher must be usable
+validation variables are inherited by any child. The launcher must be usable
 without those variables. Files, directory entries, source bytes and permission
 modes are checked around each run; original source/tool identities are rechecked
 on both success and ordinary failure paths.

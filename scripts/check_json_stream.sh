@@ -38,7 +38,7 @@ for boundary in \
     'json_stream_finish_record' \
     'session.pending_cr and byte == 10u8' \
     'return not session.in_string and session.depth == 0' \
-    'not json_stream_increment\(session.record_bytes, session.policy.max_record_bytes\)' \
+    'not json_stream_increment(session.record_bytes, session.policy.max_record_bytes)' \
     'in_string' \
     'escaped' \
     'JsonStreamError.DepthUnderflow' \
@@ -54,11 +54,11 @@ for boundary in \
     'JsonStreamError.UnterminatedValue' \
     'session.state == JsonStreamState.Ready' \
     'session.state == JsonStreamState.Complete' \
-    'session.input_bytes <- session.input_bytes \+ 1' \
+    'session.input_bytes <- session.input_bytes + 1' \
     'JsonStreamEvent.RecordEnd' \
     'JsonStreamEvent.Cancel' \
     'JsonStreamState.Complete'; do
-    rg -q "$boundary" "$model"
+    rg -Fq "$boundary" "$model"
 done
 
 for fixture_pattern in \

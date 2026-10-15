@@ -1,7 +1,8 @@
 # C06 JSON value-semantics parity slice
 
-The Python reference and Elisascript candidate load the same bounded JSON
-object, emit a deterministic projection, and serialize the loaded object as
+The Python reference, colocated `reference.elisascript` translation, and
+Elisascript candidate load the same bounded JSON object, emit a deterministic
+projection, and serialize the loaded object as
 compact UTF-8 JSON. It covers an integer larger than
 64 bits, nested object/array access, Unicode strings, booleans, null versus a
 missing member, and Python's default last-value-wins behavior for duplicate
@@ -12,12 +13,18 @@ parsed, sealed value document; the original document remains unchanged.
 The JSON Lines slice parses multiple records in memory, including an
 unterminated final record, and compares compact serialization in record order.
 A second path reads a checked-in `.jsonl` file through the bounded file-stream
-adapter and compares the same per-record output against Python. Both process
-outputs and the checked-in golden are compared. One malformed record is also
-required to be rejected by both implementations; exception class wording and
-diagnostic text are intentionally not compared.
+adapter and compares the same per-record output against Python. Process outputs
+from all three implementations and the checked-in golden are compared. One
+malformed record is also required to be rejected by both ElisaScript
+implementations; exception class wording and diagnostic text are intentionally
+not compared.
 
 This is a deliberately narrow behavior slice, not a claim of full Python
 `json` compatibility. Numeric conversion/formatting beyond the exact integer
 lexeme, custom decoder hooks, non-finite numbers, and error wording remain
 separate acceptance work.
+
+The bounded launcher test executes the colocated oracle port directly and
+compares its status, stdout, and stderr with Python and the golden. Runtime
+parity remains unqualified until that exact test is executed under the bounded
+wrapper.

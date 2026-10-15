@@ -33,13 +33,28 @@ def wait_for_release_file(path: str, process_id: int) -> bool:
         except FileNotFoundError:
             time.sleep(0.01)
             continue
+        except OSError:
+            # A symlink, unreadable path, or other open failure is not a
+            # valid release token; fail closed with the same status as bad
+            # file contents instead of leaking a traceback.
+            return False
+
+        read_ok = False
+        received = b""
         try:
             metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 32:
-                return False
-            received = os.read(descriptor, 33)
+            if stat.S_ISREG(metadata.st_mode) and metadata.st_size <= 32:
+                received = os.read(descriptor, 33)
+                read_ok = True
+        except OSError:
+            pass
         finally:
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                read_ok = False
+        if not read_ok:
+            return False
         if received == expected:
             return True
         time.sleep(0.01)

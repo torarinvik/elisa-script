@@ -1,9 +1,11 @@
 # Elisa Engine source-length audit
 
 Reference: `../elisa-engine/scripts/check_source_length.py`.
-The colocated `reference.elisascript` path is a relative symlink to
-`scripts/check_elisa_engine_source_length.elisascript`, so the Python snapshot
-and its single Elisascript implementation are discoverable together.
+The colocated `reference.elisascript` is a regular source port of the Python
+reference. It resolves its project root from the colocated path and imports the
+shared engine source-length and bounded-stream models. The bounded validation
+wrapper rejects symlinked source paths, so the port is stored beside the
+reference as a regular file.
 Candidate: `scripts/check_elisa_engine_source_length.elisascript`.
 The original Python script and its callers are unchanged.
 
@@ -38,11 +40,12 @@ reader currently uses the Darwin POSIX adapter; invalid-UTF-8 filenames and
 platform-specific path collation are not qualified.
 
 `test/script_parity/elisa_engine_source_length_launcher_test.elisascript` adds
-a dormant public-launcher matrix. It pins the original Python file, a fixture
-snapshot, candidate/include closure, launcher roles, and tool identities; uses
-fresh sibling-project roots with spaces; reference-admits exact status/stdout/
-stderr before starting the candidate; then compares an independent literal
-observation. The process adapter's top-level source is pinned to its committed
+a dormant public-launcher matrix. It pins the original Python file, colocated
+port, fixture snapshot, candidate/include closure, launcher roles, and tool
+identities; uses fresh sibling-project roots with spaces; reference-admits exact
+status/stdout/stderr, calls the port's `observe_root()` against the same
+isolated project, then starts the candidate and compares an independent
+literal observation. The process adapter's top-level source is pinned to its committed
 snapshot; its transitive test/compiler/runtime closure still needs independent
 operator qualification. Authored cases cover no oversized source (with only the staged
 short reference beneath `scripts`), a non-directory root, 600/601

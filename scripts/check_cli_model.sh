@@ -120,7 +120,7 @@ rg -Fq 'diagnostic_check_accepts_modules_without_main_and_never_executes' "$repo
 rg -Fq 'strict_engine_diagnostic_rejects_interpreter_fallback' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'cli_parser_resets_reused_request_state' "$repo_root/test/ir/elisascript_runner_test.elisa"
 rg -Fq 'request.report_format == CliReportFormat.Human' "$repo_root/test/ir/elisascript_runner_test.elisa"
-rg -Fq 'bounded C-string scan' "$contract"
+rg -Fq 'Each script argument is scanned as a bounded C string.' "$contract"
 rg -Fq -- '--format human|json|junit' "$contract"
 rg -Fq -- '--select NAME' "$contract"
 rg -Fq 'ArgumentBytes' "$contract"

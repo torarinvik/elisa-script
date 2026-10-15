@@ -13,20 +13,42 @@ override defaults, including explicit empty strings. Errors are observable as
 status 2 and a single stable stderr line. Automatic help styling is outside
 this fixture.
 
-`reference.py` implements the contract independently in Python. The ElisaScript
-candidate calls `EsConfigCli` and `EsConfig::resolve_config_layers`, then
-serializes observations with the same small framing protocol. `expected.txt` is
-an independent golden covering 17 cases:
+`reference.py` implements the contract independently in Python.
+`reference.elisascript` ports that oracle through `EsConfigCli` and
+`EsConfig::resolve_config_layers`; `candidate.elisascript` exercises the same
+public models as the candidate implementation. Both serialize observations
+with the same small framing protocol. `expected.txt` is an independent golden
+covering 17 cases:
 successful parsing forms, both help levels, empty values, missing/unknown
 commands, unknown options, missing values, duplicate options, unexpected
 boolean values, empty/pass-through positionals, build/test defaults, and
 explicit-empty-over-default precedence.
 
+The colocated port at SHA-256
+`76e40ad766e1604aa1c217c21e1f6f3c6561f9d84e1fdc76d19c589f1a0b8e68` passed
+bounded lowering on 2026-10-15 with the pinned compiler revision
+`5241b2aed51641a217ca44ac4ee116ee66ac96e6` (binary SHA-256
+`8623ee8dabd773976e370f553cd91457703c4098d135a3d1648cc72609b1b915`), O0
+native configuration `ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439`,
+exit status 0 and sampled peak RSS 31,648 KiB. Retained evidence is
+`.validation/ca925b4f935cc7075260fe521e4040b2758d8a5fd10c850ff0ec4933361bb439/logs/lowering.aQGpkR`
+and its `.meta` file. Lowering does not execute the 17-case matrix; the
+launcher test below remains the required behavioral parity check.
+
 `test/script_parity/application_cli_launcher_test.elisascript` invokes Python
-once and the public ElisaScript launcher once; both execute the whole matrix
-in-process to avoid repeated compiler launches. It requires explicit
-reauthorization, the pinned compiler path, a recorded launcher hash, and the
-active RSS guard, and compares each side to the golden as well as to each
-other. Hash pins bind source and interpreter bytes to the fixture. The test is
-not runtime evidence until the safety hold is explicitly lifted and this exact
-test is executed under the bounded wrapper.
+once and the public ElisaScript launcher twice, for the oracle port and
+candidate; each executes the whole matrix in-process to avoid repeated compiler
+launches. It requires explicit reauthorization, the pinned compiler path,
+recorded source and launcher hashes, and the active RSS guard. Each output,
+status, and diagnostic stream must match the independent golden, and both
+ElisaScript programs must also match Python. Runtime parity remains unqualified
+until this exact test is executed under the bounded wrapper.
+
+Two bounded `-emit test` attempts on 2026-10-15 were stopped by the 512 MiB
+sampled RSS guard: the launcher matrix reached 573,440 KiB, and the smaller
+reference-port golden test reached 573,776 KiB. Neither produced test output.
+Their metadata is in
+`.validation/559321b6196f71e963c0b223fe1a396e2ccf184c7a758ee8ba9a29ab09f0ed37/logs/test.9mN8CK.meta`
+and
+`.validation/559321b6196f71e963c0b223fe1a396e2ccf184c7a758ee8ba9a29ab09f0ed37/logs/test.IDAnj7.meta`;
+these failures are resource-limit evidence, not behavioral parity results.

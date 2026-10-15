@@ -29,6 +29,11 @@ if [ "${ELISASCRIPT_VALIDATION_REAUTHORIZED:-0}" != "1" ]; then
     exit 125
 fi
 
+runner_mode=core-test
+if [ "${1:-}" = "--public-launcher" ]; then
+    runner_mode=public-launcher
+fi
+
 expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"
 expected_compiler_dir="$(CDPATH= cd -P -- "${expected_compiler_path%/*}" 2>/dev/null && pwd -P)"
 if [ -z "$expected_compiler_dir" ]; then
@@ -50,6 +55,79 @@ compiler_path="$canonical_compiler_dir/$compiler_name"
 if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then
     echo "run_bounded_test: refusing compiler other than the canonical local StructPy compiler: $expected_compiler_path" >&2
     exit 2
+fi
+runner_path="$compiler_path"
+public_launcher_path=""
+public_launcher_entry_path=""
+public_launcher_verified_path=""
+public_launcher_sha256=""
+if [ "$runner_mode" = "public-launcher" ]; then
+    public_launcher_path="${ELISASCRIPT_PUBLIC_LAUNCHER:-}"
+    public_launcher_sha256="${ELISASCRIPT_PUBLIC_LAUNCHER_SHA256:-}"
+    case "$public_launcher_path" in
+        /*) ;;
+        *)
+            echo "run_bounded_test: public-launcher mode requires an absolute launcher path" >&2
+            exit 2
+            ;;
+    esac
+    case "$public_launcher_sha256" in
+        ''|*[!0-9a-f]*)
+            echo "run_bounded_test: public-launcher SHA-256 pin must be lowercase hexadecimal" >&2
+            exit 2
+            ;;
+    esac
+    if [ "${#public_launcher_sha256}" -ne 64 ]; then
+        echo "run_bounded_test: public-launcher SHA-256 pin must contain 64 characters" >&2
+        exit 2
+    fi
+    if [ ! -f "$public_launcher_path" ] || [ ! -x "$public_launcher_path" ]; then
+        echo "run_bounded_test: refusing missing or non-executable public launcher" >&2
+        exit 2
+    fi
+    public_launcher_dir="${public_launcher_path%/*}"
+    public_launcher_name="${public_launcher_path##*/}"
+    canonical_public_launcher_dir="$(CDPATH= cd -P -- "$public_launcher_dir" 2>/dev/null && pwd -P)"
+    if [ -z "$canonical_public_launcher_dir" ]; then
+        echo "run_bounded_test: unable to resolve public launcher directory" >&2
+        exit 2
+    fi
+    public_launcher_path="$canonical_public_launcher_dir/$public_launcher_name"
+    public_launcher_entry_path="$public_launcher_path"
+    if [ -L "$public_launcher_path" ]; then
+        public_launcher_target="$(/usr/bin/readlink "$public_launcher_path" 2>/dev/null || true)"
+        if [ -z "$public_launcher_target" ]; then
+            echo "run_bounded_test: unable to resolve public launcher symlink" >&2
+            exit 2
+        fi
+        case "$public_launcher_target" in
+            /*) ;;
+            *) public_launcher_target="$canonical_public_launcher_dir/$public_launcher_target" ;;
+        esac
+        public_launcher_target_dir="${public_launcher_target%/*}"
+        public_launcher_target_name="${public_launcher_target##*/}"
+        canonical_public_launcher_target_dir="$(CDPATH= cd -P -- "$public_launcher_target_dir" 2>/dev/null && pwd -P)"
+        if [ -z "$canonical_public_launcher_target_dir" ]; then
+            echo "run_bounded_test: unable to resolve public launcher symlink target directory" >&2
+            exit 2
+        fi
+        public_launcher_path="$canonical_public_launcher_target_dir/$public_launcher_target_name"
+    fi
+    if [ -L "$public_launcher_path" ]; then
+        echo "run_bounded_test: refusing a chained public launcher symlink" >&2
+        exit 2
+    fi
+    if [ ! -f "$public_launcher_path" ] || [ ! -x "$public_launcher_path" ]; then
+        echo "run_bounded_test: public launcher symlink target is missing or non-executable" >&2
+        exit 2
+    fi
+    actual_public_launcher_sha256="$(/usr/bin/shasum -a 256 "$public_launcher_path" | /usr/bin/awk 'NR == 1 { print $1 }')"
+    if [ "$actual_public_launcher_sha256" != "$public_launcher_sha256" ]; then
+        echo "run_bounded_test: public launcher does not match its SHA-256 pin" >&2
+        exit 2
+    fi
+    public_launcher_verified_path="$public_launcher_path"
+    runner_path="$public_launcher_entry_path"
 fi
 
 setsid_path="${ELISASCRIPT_SETSID:-}"
@@ -86,9 +164,30 @@ if [ ! -x /usr/bin/shasum ]; then
     echo "run_bounded_test: refusing to launch without the pinned source-hash tool" >&2
     exit 125
 fi
+if [ "$runner_mode" = "public-launcher" ] && [ ! -x /usr/bin/readlink ]; then
+    echo "run_bounded_test: refusing public-launcher mode without the pinned symlink resolver" >&2
+    exit 125
+fi
+if [ "$runner_mode" = "public-launcher" ] && [ ! -x /bin/ln ]; then
+    echo "run_bounded_test: refusing public-launcher mode without the pinned hard-link tool" >&2
+    exit 125
+fi
 
-if [ "$#" -ne 1 ]; then
-    echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript" >&2
+launcher_argument_present=0
+launcher_argument=""
+if [ "$runner_mode" = "public-launcher" ]; then
+    if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ "$1" != "--public-launcher" ]; then
+        echo "usage: run_bounded_test.sh --public-launcher SOURCE.elisascript [ONE_SCRIPT_ARGUMENT]" >&2
+        exit 2
+    fi
+    public_launcher_source="$2"
+    if [ "$#" -eq 3 ]; then
+        launcher_argument_present=1
+        launcher_argument="$3"
+    fi
+    set -- "$public_launcher_source"
+elif [ "$#" -lt 1 ]; then
+    echo "usage: run_bounded_test.sh SOURCE_TEST.elisascript [...]" >&2
     exit 2
 fi
 
@@ -321,6 +420,7 @@ kill_process_tree_immediately() {
 compiler_pid=""
 compiler_pgid=""
 source_snapshot=""
+source_snapshot_base=""
 session_dir=""
 session_ready_file=""
 session_release_file=""
@@ -459,6 +559,10 @@ cleanup_bounded_test() {
         rm -f "$source_snapshot" 2>/dev/null || true
         source_snapshot=""
     fi
+    if [ -n "$source_snapshot_base" ]; then
+        rm -f "$source_snapshot_base" 2>/dev/null || true
+        source_snapshot_base=""
+    fi
     if [ -n "$log_file" ] && [ "$metadata_finalized" -eq 0 ]; then
         if [ -n "$metadata_file" ]; then
             printf '%s\n' 'run_status=incomplete_or_interrupted' >>"$metadata_file" 2>/dev/null || true
@@ -563,6 +667,25 @@ for source_file in "$@"; do
         echo "run_bounded_test: unable to create a private sibling source snapshot; refusing to launch" >&2
         exit 125
     }
+    if [ -z "$source_snapshot" ]; then
+        echo "run_bounded_test: unable to create a private sibling source snapshot; refusing to launch" >&2
+        exit 125
+    fi
+    if [ "$runner_mode" = "public-launcher" ]; then
+        source_snapshot_base="$source_snapshot"
+        source_snapshot="$source_snapshot_base.elisascript"
+        if ! /bin/ln "$source_snapshot_base" "$source_snapshot"; then
+            echo "run_bounded_test: unable to add the public source extension to the private snapshot; refusing to launch" >&2
+            exit 125
+        fi
+        if ! rm -f "$source_snapshot_base"; then
+            rm -f "$source_snapshot" 2>/dev/null || true
+            source_snapshot="$source_snapshot_base"
+            echo "run_bounded_test: unable to release the extensionless private snapshot; refusing to launch" >&2
+            exit 125
+        fi
+        source_snapshot_base=""
+    fi
     if ! head -c "$((source_limit_bytes + 1))" <"$source_file" >"$source_snapshot"; then
         echo "run_bounded_test: unable to capture bounded source bytes; refusing to launch" >&2
         exit 125
@@ -624,13 +747,20 @@ for source_file in "$@"; do
     snapshot_path_hex="$(printf '%s' "$source_snapshot" | od -An -tx1 | tr -d '[:space:]')"
     working_directory_hex="$(pwd -P | od -An -tx1 | tr -d '[:space:]')"
     if ! (set -C; {
-        printf 'compiler_path=%s\ncompiler_revision=%s\ncompiler_binary_revision=%s\ncompiler_binary_modified=%s\ncompiler_sha256=%s\n' "$compiler_path" "$validation_compiler_revision" "$validation_compiler_binary_revision" "$validation_compiler_binary_modified" "$validation_compiler_sha256"
+        printf 'runner_mode=%s\nrunner_path=%s\ncompiler_path=%s\ncompiler_revision=%s\ncompiler_binary_revision=%s\ncompiler_binary_modified=%s\ncompiler_sha256=%s\n' "$runner_mode" "$runner_path" "$compiler_path" "$validation_compiler_revision" "$validation_compiler_binary_revision" "$validation_compiler_binary_modified" "$validation_compiler_sha256"
+        if [ "$runner_mode" = "public-launcher" ]; then
+            printf 'public_launcher_entry_path=%s\npublic_launcher_verified_path=%s\npublic_launcher_sha256=%s\nlauncher_argument_present=%s\nlauncher_argument_hex=%s\n' "$public_launcher_entry_path" "$public_launcher_verified_path" "$public_launcher_sha256" "$launcher_argument_present" "$(printf '%s' "$launcher_argument" | od -An -tx1 | tr -d '[:space:]')"
+        fi
         printf 'configuration_key=%s\noptimization=O0\ntarget=native\nmode=test\nlog_dir_hex=%s\n' "$validation_configuration_key" "$(printf '%s' "$validation_log_dir" | od -An -tx1 | tr -d '[:space:]')"
         printf 'wrapper=run_bounded_test\nsource_path_hex=%s\n' "$source_path_hex"
         printf 'snapshot_path_hex=%s\n' "$snapshot_path_hex"
         printf 'working_directory_hex=%s\nstarted_epoch=%s\n' "$working_directory_hex" "$started_at"
         printf 'source_bytes=%s\nsource_sha256=%s\nsource_limit_bytes=%s\nrss_limit_kb=%s\nrss_poll_interval_seconds=%s\ntime_limit_seconds=%s\nconfigured_log_limit_bytes=%s\neffective_log_limit_bytes=%s\nretained_log_budget_bytes=%s\n' "$source_bytes" "$source_sha256" "$source_limit_bytes" "$rss_limit_kb" "$rss_poll_interval_seconds" "$time_limit_seconds" "$log_limit_bytes" "$effective_log_limit_bytes" "$retained_log_budget_bytes"
-        printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=test\nargv4_hex=%s\n' "$compiler_path" "$snapshot_path_hex"
+        if [ "$runner_mode" = "public-launcher" ]; then
+            printf 'argv0=%s\nscript_path_hex=%s\n' "$runner_path" "$snapshot_path_hex"
+        else
+            printf 'argv0=%s\nargv1=-O0\nargv2=-emit\nargv3=test\nargv4_hex=%s\n' "$runner_path" "$snapshot_path_hex"
+        fi
     } >"$metadata_file") 2>/dev/null; then
         echo "run_bounded_test: unable to create run metadata; refusing to launch" >&2
         exit 125
@@ -648,7 +778,15 @@ for source_file in "$@"; do
         session_ready_file="$session_dir/ready"
         session_release_file="$session_dir/release"
     fi
-    ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
+    if [ "$runner_mode" = "public-launcher" ]; then
+        if [ "$launcher_argument_present" -eq 1 ]; then
+            ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$runner_path" "$source_snapshot" "$launcher_argument" >"$log_file" 2>&1 &
+        else
+            ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$runner_path" "$source_snapshot" >"$log_file" 2>&1 &
+        fi
+    else
+        ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$runner_path" -O0 -emit test "$source_snapshot" >"$log_file" 2>&1 &
+    fi
     compiler_pid=$!
     compiler_pgid=""
     if [ "$private_session_helper" -eq 1 ]; then
@@ -857,16 +995,25 @@ for source_file in "$@"; do
     # exit path so the EXIT trap cannot mistake a reused PID for our compiler.
     compiler_pid=""
     compiler_pgid=""
-    echo "$source_file exit=$compiler_exit max_observed_rss_kb=$peak_rss_kb rss_samples=$rss_sample_count rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard log=$log_file metadata=$metadata_file"
+    if [ "$runner_mode" = "public-launcher" ]; then
+        echo "$source_file exit=$compiler_exit max_observed_rss_kb=$peak_rss_kb rss_samples=$rss_sample_count rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard log=$log_file metadata=$metadata_file" >&2
+    else
+        echo "$source_file exit=$compiler_exit max_observed_rss_kb=$peak_rss_kb rss_samples=$rss_sample_count rss_guard=$rss_guard timeout_guard=$timeout_guard output_guard=$output_guard log=$log_file metadata=$metadata_file"
+    fi
     if [ "$compiler_exit" -ne 0 ] || [ "$rss_guard" -ne 0 ] || [ "$timeout_guard" -ne 0 ] || [ "$output_guard" -ne 0 ]; then
         tail -80 "$log_file"
         exit 1
+    fi
+    if [ "$runner_mode" = "public-launcher" ] && ! cat "$log_file"; then
+        echo "run_bounded_test: unable to replay completed public-launcher output" >&2
+        exit 125
     fi
     if ! rm -f "$source_snapshot"; then
         echo "run_bounded_test: unable to remove the completed source snapshot; preserving run evidence" >&2
         exit 125
     fi
     source_snapshot=""
+    source_snapshot_base=""
     log_file=""
     metadata_file=""
     metadata_finalized=0

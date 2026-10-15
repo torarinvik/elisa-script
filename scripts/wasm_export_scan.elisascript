@@ -172,25 +172,15 @@ module EsWasmExportScan:
             failure: sview = ""
 
 
-        enum LinePhase of u8:
-            Scan
-            Done
-
-
-        enum PathPhase of u8:
+        const enum PathPhase of u8:
             ScanComponents
             AppendMissingSuffix
             Done
 
 
-        enum FlattenPhase of u8:
+        const enum FlattenPhase of u8:
             ResolvePending
             ConsumeStack
-            Done
-
-
-        enum BoundedReadPhase of u8:
-            ReadChunk
             Done
 
 
@@ -789,59 +779,47 @@ module EsWasmExportScan:
             if not stat_bounded_source_path(path_pointer, named_after_open) or (named_after_open.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or not source_file_identity_matches(opened_stat, named_after_open):
                 _ = elisascript_posix_close(descriptor)
                 return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-            phase: mutable BoundedReadPhase = BoundedReadPhase.ReadChunk
             interrupted_reads: mutable usize = 0
 
-            machine over phase while phase != BoundedReadPhase.Done:
-                state ReadChunk
-                start ReadChunk
+            while true:
+                remaining: usize = maximum_bytes - source.count
+                probe_capacity: usize = remaining + 1
+                capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
+                chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
+                amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
+                if amount < 0:
+                    errno: mutable i32& = wasm_export_scan_errno()
+                    if errno[0] == DarwinErrno::EINTR and interrupted_reads < Limits::SOURCE_READ_EINTR_RETRIES:
+                        interrupted_reads <- interrupted_reads + 1
+                        continue
+                    _ = elisascript_posix_close(descriptor)
+                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
 
-                ReadChunk, BoundedReadPhase.ReadChunk:
-                    remaining: usize = maximum_bytes - source.count
-                    probe_capacity: usize = remaining + 1
-                    capacity: usize = probe_capacity if probe_capacity < chunk.count else chunk.count
-                    chunk_pointer: mutable u8& = (&chunk[0]).cast[mutable u8&]
-                    amount: isize = elisascript_posix_read(descriptor, chunk_pointer.cast[mutable void&], capacity)
-                    if amount < 0:
-                        errno: mutable i32& = wasm_export_scan_errno()
-                        if errno[0] == DarwinErrno::EINTR and interrupted_reads < Limits::SOURCE_READ_EINTR_RETRIES:
-                            interrupted_reads <- interrupted_reads + 1
-                            -> ReadChunk
+                if amount == 0:
+                    completed_stat: mutable ElisascriptStat = zeroed
+                    if not fstat_bounded_source_descriptor(descriptor, completed_stat) or not source_file_snapshot_matches(opened_stat, completed_stat):
                         _ = elisascript_posix_close(descriptor)
                         return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-
-                    if amount == 0:
-                        phase <- BoundedReadPhase.Done
-                        completed_stat: mutable ElisascriptStat = zeroed
-                        if not fstat_bounded_source_descriptor(descriptor, completed_stat) or not source_file_snapshot_matches(opened_stat, completed_stat):
-                            _ = elisascript_posix_close(descriptor)
-                            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-                        named_completed_stat: mutable ElisascriptStat = zeroed
-                        if not stat_bounded_source_path(path_pointer, named_completed_stat) or not source_file_snapshot_matches(opened_stat, named_completed_stat):
-                            _ = elisascript_posix_close(descriptor)
-                            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-                        if elisascript_posix_close(descriptor) != 0:
-                            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
-                        return BoundedSourceRead{source: bytes_view(source)}
-
-                    read_count: usize = amount.usize()
-                    if read_count > capacity:
+                    named_completed_stat: mutable ElisascriptStat = zeroed
+                    if not stat_bounded_source_path(path_pointer, named_completed_stat) or not source_file_snapshot_matches(opened_stat, named_completed_stat):
                         _ = elisascript_posix_close(descriptor)
                         return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                    if elisascript_posix_close(descriptor) != 0:
+                        return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                    return BoundedSourceRead{source: bytes_view(source)}
 
-                    if read_count > remaining:
-                        _ = elisascript_posix_close(descriptor)
-                        return BoundedSourceRead{exceeded_limit: true}
+                read_count: usize = amount.usize()
+                if read_count > capacity:
+                    _ = elisascript_posix_close(descriptor)
+                    return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
 
-                    for offset in 0..<read_count |source, chunk|:
-                        source.push(chunk[offset])
-                    interrupted_reads <- 0
-                    -> ReadChunk
+                if read_count > remaining:
+                    _ = elisascript_posix_close(descriptor)
+                    return BoundedSourceRead{exceeded_limit: true}
 
-                Done, BoundedReadPhase.Done:
-                    break
-
-            return BoundedSourceRead{failure: "unable to read source/include: " + path_text}
+                for offset in 0..<read_count |source, chunk|:
+                    source.push(chunk[offset])
+                interrupted_reads <- 0
 
 
         def parse_include_directive(line: sview) -> IncludeDirective:
@@ -930,30 +908,26 @@ module EsWasmExportScan:
             symlink_hops: mutable usize = 0
             phase: mutable PathPhase = PathPhase.ScanComponents
 
-            machine over phase while phase != PathPhase.Done:
-                state ScanComponents
-                state AppendMissingSuffix
-                start ScanComponents
-
-                ScanComponents, PathPhase.ScanComponents:
+            while phase != PathPhase.Done:
+                if phase == PathPhase.ScanComponents:
                     if component_cursor >= components.count:
                         phase <- PathPhase.AppendMissingSuffix
-                        -> AppendMissingSuffix
+                        continue
                     component: sview = components[component_cursor]
                     component_cursor <- component_cursor + 1
                     if component == ".":
-                        -> ScanComponents
+                        continue
                     if component == "..":
                         if suffix.count != 0:
                             _ = suffix.pop()
-                            -> ScanComponents
+                            continue
                         parent: Path = current.parent()
                         parent <- path("/") if parent == path("") and path_is_absolute(current)
                         current <- parent if parent != current
-                        -> ScanComponents
+                        continue
                     if suffix.count != 0:
                         suffix.push(component)
-                        -> ScanComponents
+                        continue
                     if not path_join_spelling_fits(current, component):
                         return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
                     candidate: Path = current.joinpath(component)
@@ -988,7 +962,7 @@ module EsWasmExportScan:
                         components <- expanded_components
                         component_cursor <- 0
                         current <- path("/") if path_is_absolute(target_path)
-                        -> ScanComponents
+                        continue
                     if exists:
                         resolved_component: Path = try path_real(candidate) else err:
                             return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
@@ -997,24 +971,20 @@ module EsWasmExportScan:
                         current <- resolved_component
                     else:
                         suffix.push(component)
-                    -> ScanComponents
+                    continue
 
-                AppendMissingSuffix, PathPhase.AppendMissingSuffix:
+                if phase == PathPhase.AppendMissingSuffix:
                     if suffix_cursor >= suffix.count:
                         phase <- PathPhase.Done
-                        -> AppendMissingSuffix
+                        continue
                     component: sview = suffix[suffix_cursor]
                     if not path_join_spelling_fits(current, component):
                         return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
                     current <- current.joinpath(component)
                     suffix_cursor <- suffix_cursor + 1
-                    -> AppendMissingSuffix
+                    continue
 
-                AppendMissingSuffix, PathPhase.Done:
-                    break
-
-                ScanComponents, PathPhase.Done:
-                    break
+                return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
 
             if len(f"{current}") >= Limits::PATH_BYTES:
                 return PathResolution{path: input_path, failure: "unable to resolve source/include path"}
@@ -1046,15 +1016,11 @@ module EsWasmExportScan:
             path_component_work: mutable usize = 0
             phase: mutable FlattenPhase = FlattenPhase.ResolvePending
 
-            machine over phase while phase != FlattenPhase.Done:
-                state ResolvePending
-                state ConsumeStack
-                start ResolvePending
-
-                ResolvePending, FlattenPhase.ResolvePending:
+            while phase != FlattenPhase.Done:
+                if phase == FlattenPhase.ResolvePending:
                     if not has_pending:
                         phase <- FlattenPhase.ConsumeStack
-                        -> ConsumeStack
+                        continue
 
                     resolution: PathResolution = resolve_non_strict(pending_path, path_component_work)
                     if resolution.failure != "":
@@ -1068,7 +1034,7 @@ module EsWasmExportScan:
                     if seen.contains(current_path):
                         has_pending <- false
                         phase <- FlattenPhase.ConsumeStack
-                        -> ConsumeStack
+                        continue
 
                     if frames.count >= Limits::INCLUDE_DEPTH:
                         return FlattenedSource{failure: "WASM include depth exceeds Elisascript scan limit"}
@@ -1101,20 +1067,19 @@ module EsWasmExportScan:
                     frames.push(SourceFrame{path: current_path, source: normalized})
                     has_pending <- false
                     phase <- FlattenPhase.ConsumeStack
-                    -> ConsumeStack
+                    continue
 
-                ConsumeStack, FlattenPhase.ConsumeStack:
+                if phase == FlattenPhase.ConsumeStack:
                     if frames.count == 0:
                         phase <- FlattenPhase.Done
-                        -> ConsumeStack
+                        continue
 
                     frame_index: usize = frames.count - 1
                     frame: mutable SourceFrame = frames[frame_index]
                     if frame.cursor >= len(frame.source):
                         _ = frames.pop()
                         _ = active.pop()
-                        phase <- FlattenPhase.ConsumeStack
-                        -> ConsumeStack
+                        continue
 
                     line_start: usize = frame.cursor
                     line_end: mutable usize = line_start
@@ -1147,54 +1112,37 @@ module EsWasmExportScan:
                         pending_path <- requested_path
                         has_pending <- true
                         phase <- FlattenPhase.ResolvePending
-                        -> ResolvePending
+                        continue
 
                     if not append_text(output, frame.source[line_start:line_end], Limits::SOURCE_BYTES):
                         return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
-                    phase <- FlattenPhase.ConsumeStack
-                    -> ConsumeStack
+                    continue
 
-                ResolvePending, FlattenPhase.Done:
-                    break
-
-                ConsumeStack, FlattenPhase.Done:
-                    break
+                return FlattenedSource{failure: "WASM source exceeds Elisascript scan limit"}
 
             return FlattenedSource{source: bytes_view(output)}
 
 
         def source_lines(source: sview) -> (lines: darray[sview], failure: sview) can[Memory.Allocate, Abort.Panic]:
             lines: mutable darray[sview] = []
-            phase: mutable LinePhase = LinePhase.Scan
             cursor: mutable usize = 0
             line_start: mutable usize = 0
 
-            machine over phase while phase != LinePhase.Done:
-                state Scan
-                start Scan
+            while cursor < len(source):
+                width: usize = python_line_width(source, cursor)
+                if width == 0:
+                    cursor <- cursor + 1
+                    continue
+                if lines.count >= Limits::SOURCE_LINES:
+                    return (lines, "WASM source line count exceeds Elisascript scan limit")
+                lines.push(source[line_start:cursor])
+                cursor <- cursor + width
+                line_start <- cursor
 
-                Scan, LinePhase.Scan if cursor >= len(source):
-                    if line_start < len(source):
-                        if lines.count >= Limits::SOURCE_LINES:
-                            return (lines, "WASM source line count exceeds Elisascript scan limit")
-                        lines.push(source[line_start:len(source)])
-                    phase <- LinePhase.Done
-                    -> Scan
-
-                Scan, LinePhase.Scan:
-                    width: usize = python_line_width(source, cursor)
-                    if width == 0:
-                        cursor <- cursor + 1
-                        -> Scan
-                    if lines.count >= Limits::SOURCE_LINES:
-                        return (lines, "WASM source line count exceeds Elisascript scan limit")
-                    lines.push(source[line_start:cursor])
-                    cursor <- cursor + width
-                    line_start <- cursor
-                    -> Scan
-
-                Scan, LinePhase.Done:
-                    break
+            if line_start < len(source):
+                if lines.count >= Limits::SOURCE_LINES:
+                    return (lines, "WASM source line count exceeds Elisascript scan limit")
+                lines.push(source[line_start:len(source)])
 
             return (lines, "")
 
@@ -1597,7 +1545,7 @@ module EsWasmExportScan:
                 component_mode <- arguments[0] == Syntax::COMPONENT_OPTION or arguments[0] == Syntax::BUILD_COMPONENT_PAYLOAD_OPTION
             option_mode: bool = payload_mode or flatten_mode or component_mode
             if (option_mode and arguments.count != 2) or (not option_mode and arguments.count != 1):
-                print("usage: wasm export scan <source> | --component <source> | --build-payload <source> | --build-component-payload <source> | --flatten-payload <source>")
+                _ = write_stderr("usage: wasm export scan <source> | --component <source> | --build-payload <source> | --build-component-payload <source> | --flatten-payload <source>\n")
                 return 2i64
 
             source_operand: sview = arguments[1] if option_mode else arguments[0]
@@ -1608,7 +1556,7 @@ module EsWasmExportScan:
                 value <- flatten_payload_path_response(source_path) if flatten_mode
                 value
             if response.status != 0:
-                print("wasm export scan: " + response.failure)
+                _ = write_stderr("wasm export scan: " + response.failure + "\n")
                 return 1i64
             print(bytes_view(response.encoded.bytes))
             return response.status

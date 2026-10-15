@@ -6,7 +6,14 @@
 # while an empty value remains an intentional value. The resolver owns no file,
 # process, or global-environment effects.
 
+include "hash_model.elisa"
+include "text_view_compat.elisa"
+
+using EsTextViewCompat
+
 module EsConfig:
+    using EsTextViewCompat
+
     public:
         const module Limits:
             LAYERS: usize = 4
@@ -33,7 +40,7 @@ module EsConfig:
 
         struct ConfigLayer:
             source: ConfigSource
-            entries: darray[ConfigEntry] = []
+            entries: mutable darray[ConfigEntry] = []
 
 
         struct ConfigValue:
@@ -74,9 +81,10 @@ module EsConfig:
 
 
         def config_key_valid(key: sview) -> bool:
-            return false if sview_len(key) == 0
-            for index in 0..<sview_len(key) |key|:
-                byte: u8 = sview_at(key, index)
+            key_length: usize = EsTextViewCompat::length(key, Limits::VALUE_BYTES)
+            return false if key_length == 0
+            for index in 0..<key_length |key|:
+                byte: u8 = EsTextViewCompat::byte_at(key, index)
                 return false if byte < 32 or byte == 127 or byte == 61
             return true
 
@@ -84,18 +92,21 @@ module EsConfig:
         def config_value_valid(value: sview) -> bool:
             # Process arguments and environment values may contain line breaks;
             # only NUL is unrepresentable at the host C-string boundary.
-            return not sview_contains_byte(value, 0)
+            value_length: usize = EsTextViewCompat::length(value, Limits::VALUE_BYTES)
+            for index in 0..<value_length |value|:
+                return false if EsTextViewCompat::byte_at(value, index) == 0
+            return true
 
 
         def config_entry_bytes(key: sview, value: sview) -> usize:
-            return sview_len(key) + sview_len(value) + 2
+            return EsTextViewCompat::length(key, Limits::VALUE_BYTES) + EsTextViewCompat::length(value, Limits::VALUE_BYTES) + 2
 
 
         def config_entry_fits(current: usize, key: sview, value: sview, limit: usize) -> bool:
             return false if current > limit
             remaining: mutable usize = limit - current
-            key_bytes: usize = sview_len(key)
-            value_bytes: usize = sview_len(value)
+            key_bytes: usize = EsTextViewCompat::length(key, Limits::VALUE_BYTES)
+            value_bytes: usize = EsTextViewCompat::length(value, Limits::VALUE_BYTES)
             return false if key_bytes > remaining
             remaining <- remaining - key_bytes
             return false if value_bytes > remaining
@@ -103,8 +114,58 @@ module EsConfig:
             return remaining >= 2
 
 
+        def config_sview_less(left: sview, right: sview) -> bool:
+            left_length: usize = EsTextViewCompat::length(left, Limits::VALUE_BYTES)
+            right_length: usize = EsTextViewCompat::length(right, Limits::VALUE_BYTES)
+            shared: usize = left_length if left_length < right_length else right_length
+            for index in 0..<shared |left, right|:
+                left_byte: u8 = EsTextViewCompat::byte_at(left, index)
+                right_byte: u8 = EsTextViewCompat::byte_at(right, index)
+                return left_byte < right_byte if left_byte != right_byte
+            return left_length < right_length
+
+
+        # The pinned compiler predates its global `sorted` helper. Use an
+        # in-place heapsort here so validation stays O(n log n) under the
+        # configured 4096-entry ceiling on both compiler versions.
+        def config_sview_sift_down(values: mutable darray[sview]&, root_start: usize, end: usize) -> void:
+            root: mutable usize = root_start
+            while root < end / 2 |values, root, end|:
+                child: usize = root * 2 + 1
+                swap: mutable usize = root
+                swap <- child if config_sview_less(values[swap], values[child])
+                swap <- child + 1 if child + 1 < end and config_sview_less(values[swap], values[child + 1])
+                return if swap == root
+                temporary: sview = values[root]
+                values[root] <- values[swap]
+                values[swap] <- temporary
+                root <- swap
+
+
+        def config_sort_sviews(values: mutable darray[sview]&) -> void:
+            start: mutable usize = values.count / 2
+            while start > 0 |values, start|:
+                start <- start - 1
+                config_sview_sift_down(values, start, values.count)
+            end: mutable usize = values.count
+            while end > 1 |values, end|:
+                end <- end - 1
+                temporary: sview = values[0]
+                values[0] <- values[end]
+                values[end] <- temporary
+                config_sview_sift_down(values, 0, end)
+
+
+        def config_sorted_sviews(keys: darray[sview]) -> darray[sview] can[Memory.Allocate, Abort.Panic]:
+            ordered: mutable darray[sview] = []
+            for key in keys |keys, ordered|:
+                ordered.push(key)
+            config_sort_sviews(ordered)
+            return ordered
+
+
         def config_keys_unique(keys: darray[sview]) -> bool can[Memory.Allocate, Abort.Panic]:
-            ordered: darray[sview] = sorted(keys)
+            ordered: darray[sview] = config_sorted_sviews(keys)
             for index in 1..<ordered.count |ordered|:
                 return false if ordered[index - 1] == ordered[index]
             return true
@@ -117,7 +178,9 @@ module EsConfig:
 
         def config_key_hash(key: sview) -> u64:
             hash: mutable u64 = Hash::FNV_OFFSET
-            for byte in key |key, hash|:
+            key_length: usize = EsTextViewCompat::length(key, Limits::VALUE_BYTES)
+            for index in 0..<key_length |key, hash|:
+                byte: u8 = EsTextViewCompat::byte_at(key, index)
                 hash <- EsHash::hash_wrapping_multiply_u64(hash ^ byte.u64(), Hash::FNV_PRIME)
             return hash
 
@@ -163,8 +226,8 @@ module EsConfig:
             for index in 0..<layer.entries.count |layer|:
                 entry: ConfigEntry = layer.entries[index]
                 raise ConfigError.InvalidKey if not config_key_valid(entry.key)
-                raise ConfigError.KeyTooLong if sview_len(entry.key) >= Limits::KEY_BYTES
-                raise ConfigError.ValueTooLong if sview_len(entry.value) >= Limits::VALUE_BYTES
+                raise ConfigError.KeyTooLong if EsTextViewCompat::length(entry.key, Limits::VALUE_BYTES) >= Limits::KEY_BYTES
+                raise ConfigError.ValueTooLong if EsTextViewCompat::length(entry.value, Limits::VALUE_BYTES) >= Limits::VALUE_BYTES
                 raise ConfigError.InvalidValue if not config_value_valid(entry.value)
                 raise ConfigError.LayerBytesExceeded if not config_entry_fits(layer_bytes, entry.key, entry.value, Limits::LAYER_BYTES)
                 layer_bytes <- layer_bytes + config_entry_bytes(entry.key, entry.value)
@@ -181,8 +244,8 @@ module EsConfig:
                 value: ConfigValue = values[index]
                 raise ConfigError.InvalidSource if not config_source_valid(value.source)
                 raise ConfigError.InvalidKey if not config_key_valid(value.key)
-                raise ConfigError.KeyTooLong if sview_len(value.key) >= Limits::KEY_BYTES
-                raise ConfigError.ValueTooLong if sview_len(value.value) >= Limits::VALUE_BYTES
+                raise ConfigError.KeyTooLong if EsTextViewCompat::length(value.key, Limits::VALUE_BYTES) >= Limits::KEY_BYTES
+                raise ConfigError.ValueTooLong if EsTextViewCompat::length(value.value, Limits::VALUE_BYTES) >= Limits::VALUE_BYTES
                 raise ConfigError.InvalidValue if not config_value_valid(value.value)
                 raise ConfigError.OutputBytesExceeded if not config_entry_fits(output_bytes, value.key, value.value, Limits::OUTPUT_BYTES)
                 output_bytes <- output_bytes + config_entry_bytes(value.key, value.value)
@@ -230,7 +293,7 @@ module EsConfig:
             keys: mutable darray[sview] = []
             for value in result |keys|:
                 keys.push(value.key)
-            ordered_keys: darray[sview] = sorted(keys)
+            ordered_keys: darray[sview] = config_sorted_sviews(keys)
             ordered_values: mutable darray[ConfigValue] = []
             for key in ordered_keys |result, index_slots, key, ordered_values|:
                 index: usize = try config_index_find(result, index_slots, key)
@@ -243,7 +306,7 @@ module EsConfig:
         def lookup_config_value(values: darray[ConfigValue], key: sview) -> ConfigLookup error[ConfigError] can[Memory.Allocate, Abort.Panic]:
             try config_values_valid(values)
             raise ConfigError.InvalidKey if not config_key_valid(key)
-            raise ConfigError.KeyTooLong if sview_len(key) >= Limits::KEY_BYTES
+            raise ConfigError.KeyTooLong if EsTextViewCompat::length(key, Limits::VALUE_BYTES) >= Limits::KEY_BYTES
             index: usize = config_value_index(values, key)
             return ConfigLookup{} if index == values.count
             return ConfigLookup{present: true, value: values[index].value, source: values[index].source}

@@ -48,8 +48,8 @@ for contract in \
     'advance_json_stream(reader.stream, JsonStreamEvent.Byte, byte)' \
     'advance_json_stream(reader.stream, JsonStreamEvent.RecordEnd)' \
     'parse_json_document(lexed)' \
-    'advance_data_decoder(reader.decoder, DataDecoderEvent.Token' \
-    'advance_data_decoder(reader.decoder, DataDecoderEvent.Record' \
+    'advance_data_decoder(decoder, DataDecoderEvent.Token' \
+    'advance_data_decoder(decoder, DataDecoderEvent.Record' \
     'reader.failure_record_start <- reader.record_start' \
     'reader.stream.policy.allow_empty_records' \
     'json_stream_byte_is_boundary_candidate(reader.stream, byte)' \

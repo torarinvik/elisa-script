@@ -29,6 +29,7 @@ toml_pyproject_data="$repo_root/test/runtime/config_toml_pyproject_fixture.toml"
 toml_hugo_data="$repo_root/test/runtime/config_toml_hugo_fixture.toml"
 application_cli_root="$repo_root/test/fixtures/script_parity/application_cli"
 application_cli_reference="$application_cli_root/reference.py"
+application_cli_reference_port="$application_cli_root/reference.elisascript"
 application_cli_candidate="$application_cli_root/candidate.elisascript"
 application_cli_golden="$application_cli_root/expected.txt"
 application_cli_contract="$application_cli_root/CONTRACT.md"
@@ -43,7 +44,7 @@ toml_manifest_parity="$repo_root/test/script_parity/toml_manifest_launcher_test.
 docs="$repo_root/docs/ir.md"
 ledger="$repo_root/docs/capabilities/ledger.md"
 
-for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$toml_pyproject_data" "$toml_hugo_data" "$application_cli_reference" "$application_cli_candidate" "$application_cli_golden" "$application_cli_contract" "$application_cli_parity" "$toml_manifest_reference" "$toml_manifest_candidate" "$toml_manifest_golden" "$toml_manifest_precedence_golden" "$toml_manifest_contract" "$toml_manifest_parity" "$docs" "$ledger"; do
+for required_file in "$model" "$json_model" "$environment_model" "$cli_model" "$json_file_model" "$toml_model" "$toml_file_model" "$ir" "$fixture" "$runtime_fixture" "$json_fixture" "$environment_fixture" "$cli_fixture" "$integration_fixture" "$json_file_fixture" "$json_file_data" "$toml_fixture" "$toml_file_fixture" "$toml_file_data" "$toml_cargo_data" "$toml_pyproject_data" "$toml_hugo_data" "$application_cli_reference" "$application_cli_reference_port" "$application_cli_candidate" "$application_cli_golden" "$application_cli_contract" "$application_cli_parity" "$toml_manifest_reference" "$toml_manifest_candidate" "$toml_manifest_golden" "$toml_manifest_precedence_golden" "$toml_manifest_contract" "$toml_manifest_parity" "$docs" "$ledger"; do
     [[ -f "$required_file" ]] || { printf 'config audit: missing %s\n' "$required_file" >&2; exit 1; }
 done
 for toml_boundary in \
@@ -166,7 +167,9 @@ for boundary in \
     'config_values_valid'; do
     rg -Fq "$boundary" "$model"
 done
-rg -Fq 'return not sview_contains_byte(value, 0)' "$model"
+rg -Fq 'def config_value_valid(value: sview) -> bool:' "$model"
+rg -Fq 'value_length: usize = EsTextViewCompat::length(value, Limits::VALUE_BYTES)' "$model"
+rg -Fq 'return false if EsTextViewCompat::byte_at(value, index) == 0' "$model"
 for json_boundary in \
     'module EsConfigJson:' \
     'def flat_json_config_layer(' \
@@ -214,16 +217,21 @@ rg -Fq 'value_start: mutable usize = short_offset + 1' "$cli_model"
 rg -Fq 'short_offset <- short_offset + 1' "$cli_model"
 rg -Fq 'ConfigCliError.EmbeddedNul' "$cli_fixture"
 rg -Fq 'application_cli_public_launcher_matches_independent_python_and_goldens' "$application_cli_parity"
+rg -Fq 'REFERENCE_PORT_SCRIPT' "$application_cli_parity"
+rg -Fq 'public-elisascript-application-cli-reference-port' "$application_cli_parity"
 rg -Fq 'arguments: [f"{candidate_path}", "--parity-batch"]' "$application_cli_parity"
 rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$application_cli_parity"
+rg -Fq 'reference_port_run.exit_status != 0 or reference_port_run.stdout != golden' "$application_cli_parity"
 rg -Fq 'return false if candidate_run.exit_status != 0 or candidate_run.stdout != golden' "$application_cli_parity"
 rg -Fq '"--parity-batch"' "$application_cli_reference"
+rg -Fq '"--parity-batch"' "$application_cli_reference_port"
 rg -Fq '"--parity-batch"' "$application_cli_candidate"
 reference_case_order="$(sed -n '/^CASES = \[$/,/^]/s/^[[:space:]]*("\([^"]*\)".*/\1/p' "$application_cli_reference")"
+reference_port_case_order="$(sed -n '/def fixture_names()/,/^[[:space:]]*]/s/^[[:space:]]*"\([^"]*\)".*/\1/p' "$application_cli_reference_port")"
 candidate_case_order="$(sed -n '/def fixture_cases()/,/^[[:space:]]*]/s/.*CliFixtureCase{name: "\([^"]*\)".*/\1/p' "$application_cli_candidate")"
 golden_case_order="$(sed -n 's/^case=//p' "$application_cli_golden")"
-if [[ "$reference_case_order" != "$candidate_case_order" || "$reference_case_order" != "$golden_case_order" ]]; then
-    printf 'config model audit: application CLI case ordering differs across reference, candidate, and golden\n' >&2
+if [[ "$reference_case_order" != "$reference_port_case_order" || "$reference_case_order" != "$candidate_case_order" || "$reference_case_order" != "$golden_case_order" ]]; then
+    printf 'config model audit: application CLI case ordering differs across Python, ElisaScript port, candidate, and golden\n' >&2
     exit 1
 fi
 rg -Fq 'resolve_config_layers([defaults, parsed.parsed.layer])' "$application_cli_candidate"

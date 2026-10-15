@@ -252,6 +252,16 @@ This wrapper invokes `-emit test` and applies the same RSS and timeout limits.
 Keep executable repros small and bounded; do not send a large interpreter fixture
 through the test emitter after an RSS incident.
 
+For script-level parity checks that use interpreter host built-ins, the wrapper
+also accepts `--public-launcher SOURCE.elisascript [ONE_SCRIPT_ARGUMENT]`. Set
+`ELISASCRIPT_PUBLIC_LAUNCHER` and its matching
+`ELISASCRIPT_PUBLIC_LAUNCHER_SHA256`; the wrapper verifies the executable pin,
+snapshots the source beside the original file, and applies the same process-group,
+RSS, timeout, and output guards while the launcher runs. On success it replays
+the launcher's captured output to stdout so callers can compare it with a golden
+file. The pinned Core compiler identity is still recorded alongside the launcher
+identity, while execution uses the public launcher runtime.
+
 Elisascript source files use the `.elisascript` extension. The canonical source
 loader and runner tests should be the first checks after a compiler rebuild because
 they exercise parsing, semantic checking, lowering, verification, and execution

@@ -6,9 +6,11 @@ snapshot in `reference.py` has SHA-256
 The public launcher checks that the live neighboring reference has this exact
 hash both before and after its matrix, so local fixture drift cannot silently
 turn the test into parity against a stale Python snapshot.
-The colocated `reference.elisascript` path is a relative symlink to
-`scripts/check_wasmbrowser_source_length.elisascript`, so the Python snapshot
-and its single Elisascript implementation are discoverable together.
+The colocated `reference.elisascript` is a regular source port of the Python
+reference. It resolves the same source root from its own path and uses the
+shared streaming UTF-8 line counter. The bounded validation wrapper rejects
+symlinked source paths, so the port is stored beside the reference as a
+regular file.
 
 Candidate: `scripts/check_wasmbrowser_source_length.elisascript`, with a pure
 counter in `src/runtime/source_length_model.elisa` and a descriptor-verified
@@ -94,17 +96,20 @@ Extra command-line arguments are ignored by both scripts.
 ## Authored public-launcher matrix (not executed)
 
 `test/script_parity/source_length_launcher_test.elisascript` creates an isolated
-sibling-project workspace with spaces in its name and launches both programs
-from `/`. It covers missing src, regular-file src, root-symlink src, empty src,
+sibling-project workspace with spaces in its name, launches Python and the
+candidate from `/`, and calls the port's `observe_root()` against that same
+isolated project root. It covers missing src, regular-file src, root-symlink src, empty src,
 the 600-CRLF boundary, a 601-line
 mixed-terminator/Unicode/control-byte source, seven oversized hidden/Unicode/
 prefix-colliding paths in exact diagnostic order, case-sensitive suffix
 filtering, a file symlink, and a descendant directory-symlink cycle. Each run
 asserts independently expected status/stdout/stderr as well as agreement.
-Extra wrapper arguments are supplied to both programs and must be ignored. A
-candidate launch through a final symlink in a different relative-include
-directory checks that root selection follows the resolved candidate file, not
-the symlink's parent directory.
+Extra wrapper arguments are supplied to both processes and must be ignored.
+The port's returned status and exact stdout/stderr buffers must also match the
+Python observation before the candidate runs. A candidate launch through a
+final symlink in a different relative-include directory checks that root
+selection follows the resolved candidate file, not the symlink's parent
+directory.
 
 The single-file phase now consumes 13 independently authored cases from
 `test/script_parity/source_length_cases.elisa`, which imports neither the

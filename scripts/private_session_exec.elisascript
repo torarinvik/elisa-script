@@ -1,0 +1,508 @@
+# ElisaScript port of private_session_exec.py. Establish the new session in
+# this process, verify the POSIX identity invariant, then replace this process
+# with execvp so the caller continues to observe the command's PID and status.
+
+include "../src/runtime/process_posix.elisa"
+include "../src/runtime/directory_posix.elisa"
+include "../src/runtime/stdio_posix.elisa"
+include "../src/runtime/file_posix.elisa"
+include "../src/runtime/time_posix.elisa"
+include "../src/runtime/environment_lookup_model.elisa"
+include "../src/runtime/environment_lookup_posix.elisa"
+include "../src/runtime/environment_posix.elisa"
+include "../src/runtime/unicode16_printability.elisa"
+
+using EsEnvironmentLookup
+using EsMonotonicTime
+using EsRuntime
+
+
+module EsPrivateSessionExec:
+    private:
+        const module Limits:
+            ERROR_TEXT_BYTES: usize = 4096
+            RELEASE_BYTES: usize = 33
+            RELEASE_FILE_MAX_BYTES: usize = 32
+            RELEASE_TIMEOUT_MICROSECONDS: u64 = 10000000u64
+            RELEASE_POLL_MICROSECONDS: u32 = 10000u32
+
+
+        const module Syntax:
+            HEX: sview = "0123456789abcdef"
+
+
+        const enum ReleaseReadState of u8:
+            Missing
+            Contents
+            Invalid
+            Failed
+
+
+        struct ReleaseRead:
+            state: ReleaseReadState
+            bytes: darray[u8] = []
+            error_number: i32 = 0i32
+            failure: sview = ""
+
+
+        const enum ReleaseWaitState of u8:
+            Released
+            TimedOut
+            Failed
+
+
+        struct ReleaseWait:
+            state: ReleaseWaitState
+            failure: sview = ""
+
+
+        def utf8_width(first: u8) -> usize:
+            return 1 if first <= 127u8
+            return 2 if first >= 194u8 and first <= 223u8
+            return 3 if first >= 224u8 and first <= 239u8
+            return 4 if first >= 240u8 and first <= 244u8
+            return 1
+
+
+        def utf8_codepoint_at(text: sview, offset: usize, width: usize) -> usize:
+            first: usize = sview_at(text, offset).usize()
+            if width == 2:
+                second: usize = sview_at(text, offset + 1).usize()
+                return ((first & 31) << 6) | (second & 63)
+            if width == 3:
+                second: usize = sview_at(text, offset + 1).usize()
+                third: usize = sview_at(text, offset + 2).usize()
+                return ((first & 15) << 12) | ((second & 63) << 6) | (third & 63)
+            if width == 4:
+                second: usize = sview_at(text, offset + 1).usize()
+                third: usize = sview_at(text, offset + 2).usize()
+                fourth: usize = sview_at(text, offset + 3).usize()
+                return ((first & 7) << 18) | ((second & 63) << 12) | ((third & 63) << 6) | (fourth & 63)
+            return first
+
+
+        def valid_utf8_codepoint(text: sview, offset: usize, width: usize) -> bool:
+            return true if width == 1 and sview_at(text, offset) < 128u8
+            return false if width == 1
+            return false if offset > len(text)
+            return false if width > len(text) - offset
+            for index in 1..<width |text, offset|:
+                byte: u8 = sview_at(text, offset + index)
+                return false if byte < 128u8 or byte > 191u8
+            codepoint: usize = utf8_codepoint_at(text, offset, width)
+            if width == 2:
+                return codepoint >= 128
+            if width == 3:
+                return codepoint >= 2048 and (codepoint < 55296 or codepoint > 57343)
+            if width == 4:
+                return codepoint >= 65536 and codepoint <= 1114111
+            return false
+
+
+        def append_unicode_escape(output: mutable darray[u8]&, codepoint: usize) -> void can[Memory.Allocate, Abort.Panic]:
+            digits: usize = 4 if codepoint <= 65535 else 8
+            output.push(92u8)
+            output.push(117u8) if digits == 4
+            output.push(85u8) if digits == 8
+            for digit_index in 0..<digits |output, codepoint, digits|:
+                shift: usize = (digits - digit_index - 1) * 4
+                output.push(sview_at(Syntax::HEX, (codepoint >> shift) & 15))
+
+
+        # Match CPython's str repr quoting and escapes for the helper's
+        # diagnostic filename, including the pinned Unicode 16 printability
+        # table used by the repository's existing Python parity fixtures.
+        def python_repr(text: sview) -> sview can[Memory.Allocate, Abort.Panic]:
+            quote: mutable u8 = 39u8
+            has_single: bool = text.index("'") >= 0
+            has_double: bool = text.index("\"") >= 0
+            quote <- 34u8 if has_single and not has_double
+            output: mutable darray[u8] = []
+            output.push(quote)
+            cursor: mutable usize = 0
+            while cursor < len(text) |output, text, quote, cursor|:
+                byte: u8 = sview_at(text, cursor)
+                scalar_width: usize = utf8_width(byte)
+                if byte >= 128u8 and not valid_utf8_codepoint(text, cursor, scalar_width):
+                    append_unicode_escape(output, 56320 + byte.usize())
+                    cursor <- cursor + 1
+                    continue
+                if scalar_width > 1:
+                    codepoint: usize = utf8_codepoint_at(text, cursor, scalar_width)
+                    if codepoint > 255 and EsUnicode16Printability::is_nonprintable(codepoint):
+                        append_unicode_escape(output, codepoint)
+                        cursor <- cursor + scalar_width
+                        continue
+                if byte == 194u8 and cursor + 1 < len(text) and sview_at(text, cursor + 1) == 160u8:
+                    output.push(92u8)
+                    output.push(120u8)
+                    output.push(97u8)
+                    output.push(48u8)
+                    cursor <- cursor + 2
+                    continue
+                if byte == 194u8 and cursor + 1 < len(text):
+                    continuation: u8 = sview_at(text, cursor + 1)
+                    if (continuation >= 128u8 and continuation <= 159u8) or continuation == 173u8:
+                        output.push(92u8)
+                        output.push(120u8)
+                        output.push(sview_at(Syntax::HEX, (continuation >> 4u8).usize()))
+                        output.push(sview_at(Syntax::HEX, (continuation & 15u8).usize()))
+                        cursor <- cursor + 2
+                        continue
+                if byte == 92u8 or byte == quote:
+                    output.push(92u8)
+                    output.push(byte)
+                elif byte == 10u8:
+                    output.push(92u8)
+                    output.push(110u8)
+                elif byte == 13u8:
+                    output.push(92u8)
+                    output.push(114u8)
+                elif byte == 9u8:
+                    output.push(92u8)
+                    output.push(116u8)
+                elif byte < 32u8 or byte == 127u8:
+                    output.push(92u8)
+                    output.push(120u8)
+                    output.push(sview_at(Syntax::HEX, ((byte >> 4u8) & 15u8).usize()))
+                    output.push(sview_at(Syntax::HEX, (byte & 15u8).usize()))
+                else:
+                    output.push(byte)
+                cursor <- cursor + 1
+            output.push(quote)
+            return bytes_view(output)
+
+
+        def c_string_view(value: cstr) -> sview can[Unsafe.PointerCast]:
+            bytes: u8& = value.cast[u8&]
+            count: mutable usize = 0
+            while count < Limits::ERROR_TEXT_BYTES and bytes[count] != 0u8 |bytes, count|:
+                count <- count + 1
+            return sview(bytes, 0, count)
+
+
+        def error_message(error_number: i32) -> sview can[Blocking.IO, Unsafe.PointerCast]:
+            return c_string_view(elisascript_posix_strerror(error_number.int()))
+
+
+        def operating_system_error(error_number: i32) -> sview can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            return "[Errno " + format_int(error_number.int()) + "] " + error_message(error_number)
+
+
+        def c_string_storage(text: sview) -> darray[u8] can[Memory.Allocate, Abort.Panic]:
+            storage: mutable darray[u8] = []
+            storage.reserve(len(text) + 1)
+            for byte in text |storage|:
+                storage.push(byte)
+            storage.push(0u8)
+            return storage
+
+
+        def monotonic_now(result: mutable EsMonotonicTime::MonotonicTimestamp&) -> bool can[Blocking.IO]:
+            while true |result|:
+                status: int = elisascript_posix_monotonic_time(result)
+                return true if status == 0
+                return false if status != -1
+                native_error: mutable i32& = elisascript_posix_errno()
+                return false if native_error[0] != DarwinErrno::EINTR
+
+
+        def write_ready_file(path_text: sview, process_id: int) -> sview can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            path_storage: mutable darray[u8] = c_string_storage(path_text)
+            path_pointer: cstr = (&path_storage[0]).cast[cstr]
+            flags: int = DarwinOpenFlags::WRONLY | DarwinOpenFlags::CREATE | DarwinOpenFlags::EXCLUSIVE | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: mutable int = -1
+            while descriptor < 0 |path_pointer, flags, descriptor|:
+                descriptor <- elisascript_posix_open(path_pointer, flags, 384u32)
+                if descriptor < 0:
+                    return "open returned an unsupported status" if descriptor != -1
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    if native_error[0] == DarwinErrno::EINTR:
+                        continue
+                    error_number: i32 = native_error[0]
+                    return operating_system_error(error_number) + ": " + python_repr(path_text)
+
+            payload_text: sview = format_int(process_id) + "\n"
+            payload: mutable darray[u8] = []
+            for byte in payload_text |payload|:
+                payload.push(byte)
+            offset: mutable usize = 0
+            failure: mutable sview = ""
+            while offset < payload.count |payload, offset, failure|:
+                remaining: usize = payload.count - offset
+                buffer: mutable u8& = (&payload[offset]).cast[mutable u8&]
+                written: isize = elisascript_posix_write(descriptor, buffer.cast[mutable void&], remaining)
+                if written < 0:
+                    if written != -1:
+                        failure <- "write returned an unsupported status"
+                        break
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    if native_error[0] == DarwinErrno::EINTR:
+                        continue
+                    failure <- operating_system_error(native_error[0])
+                    break
+                if written == 0 or written.usize() > remaining:
+                    failure <- "short write while publishing session readiness"
+                    break
+                offset <- offset + written.usize()
+
+            close_status: int = elisascript_posix_close(descriptor)
+            if close_status != 0:
+                if close_status == -1:
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    failure <- operating_system_error(native_error[0])
+                else:
+                    failure <- "close returned an unsupported status"
+            return failure
+
+
+        def read_release_file(path_text: sview) -> ReleaseRead can[Blocking.IO, Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            path_storage: mutable darray[u8] = c_string_storage(path_text)
+            path_pointer: cstr = (&path_storage[0]).cast[cstr]
+            flags: int = DarwinOpenFlags::RDONLY | DarwinOpenFlags::NONBLOCK | DarwinOpenFlags::NOFOLLOW | DarwinOpenFlags::CLOSE_ON_EXEC
+            descriptor: mutable int = -1
+            while descriptor < 0 |path_pointer, flags, descriptor|:
+                descriptor <- elisascript_posix_open(path_pointer, flags, 0u32)
+                if descriptor < 0:
+                    return ReleaseRead{state: ReleaseReadState.Failed, failure: "open returned an unsupported status"} if descriptor != -1
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    if native_error[0] == DarwinErrno::EINTR:
+                        continue
+                    error_number: i32 = native_error[0]
+                    return ReleaseRead{state: ReleaseReadState.Missing} if error_number == DarwinErrno::ENOENT
+                    return ReleaseRead{state: ReleaseReadState.Failed, error_number: error_number}
+
+            information: mutable ElisascriptStat = zeroed
+            stat_status: mutable int = -1
+            stat_error: mutable i32 = 0i32
+            stat_failure: mutable sview = ""
+            while stat_status != 0 |descriptor, information, stat_status, stat_error, stat_failure|:
+                stat_status <- elisascript_posix_fstat(descriptor, information)
+                if stat_status != 0:
+                    if stat_status == -1:
+                        native_error: mutable i32& = elisascript_posix_errno()
+                        stat_error <- native_error[0]
+                    else:
+                        stat_error <- 0i32
+                        stat_failure <- "fstat returned an unsupported status"
+                    continue if stat_error == DarwinErrno::EINTR
+                    break
+            if stat_status != 0:
+                close_status: int = elisascript_posix_close(descriptor)
+                if close_status != 0:
+                    if close_status == -1:
+                        native_error: mutable i32& = elisascript_posix_errno()
+                        stat_error <- native_error[0]
+                        stat_failure <- ""
+                    else:
+                        stat_failure <- "close returned an unsupported status"
+                return ReleaseRead{state: ReleaseReadState.Failed, error_number: stat_error, failure: stat_failure}
+            if (information.mode & DarwinStatMode::MASK) != DarwinStatMode::REGULAR or information.size < 0 or information.size > Limits::RELEASE_FILE_MAX_BYTES.i64():
+                close_status: int = elisascript_posix_close(descriptor)
+                if close_status != 0:
+                    return ReleaseRead{state: ReleaseReadState.Failed, failure: "close returned an unsupported status"} if close_status != -1
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    return ReleaseRead{state: ReleaseReadState.Failed, error_number: native_error[0]}
+                return ReleaseRead{state: ReleaseReadState.Invalid}
+
+            buffer: mutable darray[u8] = []
+            buffer.reserve(Limits::RELEASE_BYTES)
+            for _ in 0..<Limits::RELEASE_BYTES |buffer|:
+                buffer.push(0u8)
+            buffer_pointer: mutable u8& = (&buffer[0]).cast[mutable u8&]
+            amount: mutable isize = -1
+            read_error: mutable i32 = 0i32
+            read_failure: mutable sview = ""
+            while amount < 0 |descriptor, buffer_pointer, amount, read_error, read_failure|:
+                amount <- elisascript_posix_read(descriptor, buffer_pointer.cast[mutable void&], Limits::RELEASE_BYTES)
+                if amount < 0:
+                    if amount == -1:
+                        native_error: mutable i32& = elisascript_posix_errno()
+                        read_error <- native_error[0]
+                    else:
+                        read_error <- 0i32
+                        read_failure <- "read returned an unsupported status"
+                    continue if read_error == DarwinErrno::EINTR
+                    break
+            close_status: int = elisascript_posix_close(descriptor)
+            if close_status != 0:
+                if close_status == -1:
+                    native_error: mutable i32& = elisascript_posix_errno()
+                    read_error <- native_error[0]
+                    read_failure <- ""
+                else:
+                    read_failure <- "close returned an unsupported status"
+            return ReleaseRead{state: ReleaseReadState.Failed, error_number: read_error, failure: read_failure} if amount < 0 or close_status != 0
+            return ReleaseRead{state: ReleaseReadState.Invalid} if amount.usize() > Limits::RELEASE_BYTES
+            contents: mutable darray[u8] = []
+            for index in 0..<amount.usize() |buffer, contents|:
+                contents.push(buffer[index])
+            return ReleaseRead{state: ReleaseReadState.Contents, bytes: contents}
+
+
+        def wait_for_release_file(path_text: sview, process_id: int) -> ReleaseWait can[Blocking.IO, Memory.Allocate, Abort.Panic, Console.Format, Unsafe.PointerCast]:
+            expected: sview = format_int(process_id) + "\n"
+            start: mutable EsMonotonicTime::MonotonicTimestamp = zeroed
+            if not monotonic_now(start):
+                return ReleaseWait{state: ReleaseWaitState.Failed, failure: "private_session_exec: monotonic clock unavailable"}
+            while true |path_text, start, expected|:
+                now: mutable EsMonotonicTime::MonotonicTimestamp = zeroed
+                if not monotonic_now(now):
+                    return ReleaseWait{state: ReleaseWaitState.Failed, failure: "private_session_exec: monotonic clock unavailable"}
+                elapsed: mutable u64 = 0u64
+                catch EsMonotonicTime::monotonic_elapsed_microseconds(start, now):
+                    ok value:
+                        elapsed <- value
+                    error failure:
+                        _ = failure
+                        return ReleaseWait{state: ReleaseWaitState.Failed, failure: "private_session_exec: monotonic clock moved backwards"}
+                return ReleaseWait{state: ReleaseWaitState.TimedOut} if elapsed >= Limits::RELEASE_TIMEOUT_MICROSECONDS
+
+                observed: ReleaseRead = read_release_file(path_text)
+                if observed.state == ReleaseReadState.Invalid:
+                    return ReleaseWait{state: ReleaseWaitState.TimedOut}
+                if observed.state == ReleaseReadState.Failed:
+                    # Python's OSError from opening, inspecting, or reading a
+                    # malformed release path means the release was not valid.
+                    return ReleaseWait{state: ReleaseWaitState.TimedOut}
+                if observed.state == ReleaseReadState.Contents and bytes_view(observed.bytes) == expected:
+                    return ReleaseWait{state: ReleaseWaitState.Released}
+
+                sleep_status: int = elisascript_posix_usleep(Limits::RELEASE_POLL_MICROSECONDS)
+                if sleep_status != 0:
+                    if sleep_status == -1:
+                        native_error: mutable i32& = elisascript_posix_errno()
+                        continue if native_error[0] == DarwinErrno::EINTR
+                        error_text: sview = operating_system_error(native_error[0])
+                        return ReleaseWait{state: ReleaseWaitState.Failed, failure: "private_session_exec: cannot wait for session release: " + error_text}
+                    return ReleaseWait{state: ReleaseWaitState.Failed, failure: "private_session_exec: sleep returned an unsupported status"}
+
+
+        def argument_storage(arguments: darray[sview]) -> darray[darray[u8]] can[Memory.Allocate, Abort.Panic]:
+            owned: mutable darray[darray[u8]] = []
+            owned.reserve(arguments.count)
+            for argument in arguments |owned|:
+                bytes: mutable darray[u8] = []
+                bytes.reserve(len(argument) + 1)
+                for byte in argument |bytes|:
+                    bytes.push(byte)
+                bytes.push(0u8)
+                owned.push(bytes)
+            return owned
+
+
+        def exec_vector(owned: darray[darray[u8]]) -> darray[cstr] can[Memory.Allocate, Abort.Panic, Unsafe.PointerCast]:
+            argv: mutable darray[cstr] = []
+            argv.reserve(owned.count + 1)
+            for index in 0..<owned.count |argv, owned|:
+                argv.push((&owned[index][0]).cast[cstr])
+            # C requires the terminal null pointer. Reuse an owned slot and
+            # zero the pointer-width bytes after all argv storage has finished
+            # growing, so the vector is stable when execvp is entered.
+            argv.push(argv[0])
+            terminator: mutable void& = (&argv[argv.count - 1]).cast[mutable void&]
+            _ = memset(terminator, 0, size_of(uintptr))
+            return argv
+
+
+    public:
+        def run(arguments: darray[sview]) -> i64 can[Blocking.IO, Environment.Read, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, Unsafe.PointerCast]:
+            if arguments.count == 0:
+                _ = write_stderr("private_session_exec: expected a command\n")
+                return 2i64
+
+            # Build and retain every C string before changing process identity.
+            owned: darray[darray[u8]] = argument_storage(arguments)
+            argv: darray[cstr] = exec_vector(owned)
+            argv_pointer: void& = (&argv[0]).cast[void&]
+            command_pointer: cstr = argv[0]
+
+            session: int = elisascript_posix_setsid()
+            if session < 0:
+                if session != -1:
+                    _ = write_stderr("private_session_exec: setsid returned an unsupported status\n")
+                    return 1i64
+                native_error: mutable i32& = elisascript_posix_errno()
+                error_number: i32 = native_error[0]
+                message: sview = error_message(error_number)
+                diagnostic: sview = f"private_session_exec: setsid failed: [Errno {error_number}] {message}\n"
+                _ = write_stderr(diagnostic)
+                return 1i64
+
+            process_id: int = elisascript_posix_getpid()
+            if elisascript_posix_getsid(0) != process_id or elisascript_posix_getpgid(0) != process_id:
+                _ = write_stderr("private_session_exec: new session does not own its process group\n")
+                return 1i64
+
+            ready_value: mutable EsEnvironmentLookup::Value = EsEnvironmentLookup::Value{present: false}
+            release_value: mutable EsEnvironmentLookup::Value = EsEnvironmentLookup::Value{present: false}
+            catch EsEnvironmentLookup::lookup("ELISASCRIPT_SESSION_READY_FILE"):
+                ok value:
+                    ready_value <- value
+                error failure:
+                    _ = failure
+                    _ = write_stderr("private_session_exec: invalid session handshake paths\n")
+                    return 1i64
+            catch EsEnvironmentLookup::lookup("ELISASCRIPT_SESSION_RELEASE_FILE"):
+                ok value:
+                    release_value <- value
+                error failure:
+                    _ = failure
+                    _ = write_stderr("private_session_exec: invalid session handshake paths\n")
+                    return 1i64
+
+            ready_file: sview = ready_value.bytes if ready_value.present else ""
+            release_file: sview = release_value.bytes if release_value.present else ""
+            ready_name: mutable darray[u8] = c_string_storage("ELISASCRIPT_SESSION_READY_FILE")
+            release_name: mutable darray[u8] = c_string_storage("ELISASCRIPT_SESSION_RELEASE_FILE")
+            ready_name_pointer: cstr = (&ready_name[0]).cast[cstr]
+            release_name_pointer: cstr = (&release_name[0]).cast[cstr]
+            ready_unset: int = elisascript_posix_unsetenv(ready_name_pointer)
+            if ready_unset != 0:
+                if ready_unset != -1:
+                    _ = write_stderr("private_session_exec: unsetenv returned an unsupported status\n")
+                    return 1i64
+                native_error: mutable i32& = elisascript_posix_errno()
+                _ = write_stderr("private_session_exec: cannot remove ready-file environment variable: " + operating_system_error(native_error[0]) + "\n")
+                return 1i64
+            release_unset: int = elisascript_posix_unsetenv(release_name_pointer)
+            if release_unset != 0:
+                if release_unset != -1:
+                    _ = write_stderr("private_session_exec: unsetenv returned an unsupported status\n")
+                    return 1i64
+                native_error: mutable i32& = elisascript_posix_errno()
+                _ = write_stderr("private_session_exec: cannot remove release-file environment variable: " + operating_system_error(native_error[0]) + "\n")
+                return 1i64
+
+            if (ready_file != "") != (release_file != ""):
+                _ = write_stderr("private_session_exec: incomplete session handshake paths\n")
+                return 1i64
+            if ready_file != "":
+                write_failure: sview = write_ready_file(ready_file, process_id)
+                if write_failure != "":
+                    _ = write_stderr("private_session_exec: cannot publish session readiness: " + write_failure + "\n")
+                    return 1i64
+                release_result: ReleaseWait = wait_for_release_file(release_file, process_id)
+                if release_result.state == ReleaseWaitState.Failed:
+                    _ = write_stderr(release_result.failure + "\n")
+                    return 1i64
+                if release_result.state != ReleaseWaitState.Released:
+                    _ = write_stderr("private_session_exec: session release was missing or invalid\n")
+                    return 125i64
+
+            returned: int = elisascript_posix_execvp(command_pointer, argv_pointer)
+            if returned != -1:
+                _ = write_stderr("private_session_exec: execvp returned unexpectedly\n")
+                return 126i64
+            # Sample errno before formatting, allocating, or calling strerror.
+            native_error: mutable i32& = elisascript_posix_errno()
+            error_number: i32 = native_error[0]
+            quoted_command: sview = python_repr(arguments[0])
+            message: sview = error_message(error_number)
+            diagnostic: sview = f"private_session_exec: cannot execute {quoted_command}: [Errno {error_number}] {message}: {quoted_command}\n"
+            _ = write_stderr(diagnostic)
+            return 127i64 if error_number == 2i32 else 126i64
+
+
+def main(arguments: darray[sview]) -> i64 can[Blocking.IO, Environment.Read, Memory.Allocate, Abort.Panic, Console.Format, Console.Write, Unsafe.PointerCast]:
+    return EsPrivateSessionExec::run(arguments)

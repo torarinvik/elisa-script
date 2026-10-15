@@ -9,7 +9,9 @@ test_wrapper="$script_dir/run_bounded_test.sh"
 stopper="$script_dir/stop_bounded_validation.sh"
 snapshot_library="$script_dir/validation_process_snapshot.sh"
 session_helper="$script_dir/private_session_exec.py"
+session_helper_port="$script_dir/private_session_exec.elisascript"
 session_helper_test="$(CDPATH= cd -- "$script_dir/.." && pwd)/test/validation/private_session_exec_test.sh"
+session_helper_port_test="$(CDPATH= cd -- "$script_dir/.." && pwd)/test/validation/private_session_exec_port_test.sh"
 
 for wrapper in "$lowering" "$test_wrapper" "$stopper"; do
     if [[ ! -f "$wrapper" || ! -x "$wrapper" ]]; then
@@ -29,13 +31,27 @@ if [[ ! -f "$session_helper_test" || ! -x "$session_helper_test" ]]; then
     printf 'validation wrapper audit: missing or non-executable private session test %s\n' "$session_helper_test" >&2
     exit 1
 fi
+if [[ ! -f "$session_helper_port" ]]; then
+    printf 'validation wrapper audit: missing private session ElisaScript port %s\n' "$session_helper_port" >&2
+    exit 1
+fi
+if [[ ! -f "$session_helper_port_test" || ! -x "$session_helper_port_test" ]]; then
+    printf 'validation wrapper audit: missing or non-executable private session port test %s\n' "$session_helper_port_test" >&2
+    exit 1
+fi
 rg -Fq 'os.setsid()' "$session_helper"
 rg -Fq 'os.getsid(0) != process_id or os.getpgid(0) != process_id' "$session_helper"
 rg -Fq 'ELISASCRIPT_SESSION_READY_FILE' "$session_helper"
 rg -Fq 'ELISASCRIPT_SESSION_RELEASE_FILE' "$session_helper"
 rg -Fq 'PID=SID=PGID' "$session_helper_test"
+rg -Fq 'elisascript_posix_setsid()' "$session_helper_port"
+rg -Fq 'elisascript_posix_execvp(command_pointer, argv_pointer)' "$session_helper_port"
+rg -Fq 'ELISASCRIPT_SESSION_READY_FILE' "$session_helper_port"
+rg -Fq 'ELISASCRIPT_SESSION_RELEASE_FILE' "$session_helper_port"
+rg -Fq 'ready-file mode' "$session_helper_port_test"
+rg -Fq 'permission-denied exec differs from Python' "$session_helper_port_test"
 
-sh -n "$lowering" "$test_wrapper" "$stopper" "$snapshot_library"
+sh -n "$lowering" "$test_wrapper" "$stopper" "$snapshot_library" "$session_helper_test" "$session_helper_port_test"
 
 for checker in "$script_dir"/check_*.sh; do
     [[ "$checker" == "$script_dir/check_validation_wrappers.sh" ]] && continue
@@ -58,7 +74,6 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'process already reparented after escape can evade' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
     rg -Fq 'expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"' "$wrapper"
-    rg -Fq 'if [ "$#" -ne 1 ]; then' "$wrapper"
     rg -Fq 'compiler_path="$canonical_compiler_dir/$compiler_name"' "$wrapper"
     rg -Fq 'if [ "$compiler_path" != "$expected_compiler_path" ] || [ ! -f "$compiler_path" ] || [ ! -x "$compiler_path" ]; then' "$wrapper"
     rg -q 'refusing symlinked compiler path' "$wrapper"
@@ -86,6 +101,12 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'source_bytes=%s\nsource_sha256=%s\nsource_limit_bytes=%s\n' "$wrapper"
     rg -Fq 'snapshot_path_hex=%s\n' "$wrapper"
     rg -Fq 'source_snapshot="$(mktemp "$source_parent/.elisascript-validation.XXXXXXXX")"' "$wrapper"
+    if [ "$wrapper" = "$test_wrapper" ]; then
+        rg -Fq 'source_snapshot_base="$source_snapshot"' "$wrapper"
+        rg -Fq 'source_snapshot="$source_snapshot_base.elisascript"' "$wrapper"
+            rg -Fq 'if ! /bin/ln "$source_snapshot_base" "$source_snapshot"; then' "$wrapper"
+        rg -Fq 'rm -f "$source_snapshot_base" 2>/dev/null || true' "$wrapper"
+    fi
     rg -Fq 'rm -f "$source_snapshot"' "$wrapper"
     rg -q 'process_tree_identities "\$process_root_pid"' "$wrapper"
     rg -Fq 'process_snapshot_row_limit=16384' "$wrapper"
@@ -117,7 +138,20 @@ for wrapper in "$lowering" "$test_wrapper"; do
             rg -Fq 'ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit lowered "$source_snapshot"' "$wrapper"
             ;;
         "$test_wrapper")
-            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$compiler_path" -O0 -emit test "$source_snapshot"' "$wrapper"
+            rg -Fq 'runner_mode=core-test' "$wrapper"
+            rg -Fq 'if [ "${1:-}" = "--public-launcher" ]; then' "$wrapper"
+            rg -Fq 'public_launcher_sha256="${ELISASCRIPT_PUBLIC_LAUNCHER_SHA256:-}"' "$wrapper"
+            rg -Fq 'actual_public_launcher_sha256="$(/usr/bin/shasum -a 256 "$public_launcher_path"' "$wrapper"
+            rg -Fq 'public_launcher_path="$canonical_public_launcher_dir/$public_launcher_name"' "$wrapper"
+            rg -Fq 'runner_path="$public_launcher_entry_path"' "$wrapper"
+            rg -Fq 'public_launcher_target="$(/usr/bin/readlink "$public_launcher_path"' "$wrapper"
+            rg -Fq 'refusing a chained public launcher symlink' "$wrapper"
+            rg -Fq 'if [ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ "$1" != "--public-launcher" ]; then' "$wrapper"
+            rg -Fq 'source_limit_bytes=65536' "$wrapper"
+            rg -Fq 'source_snapshot="$source_snapshot_base.elisascript"' "$wrapper"
+            rg -Fq '/bin/ln "$source_snapshot_base" "$source_snapshot"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$runner_path" "$source_snapshot" "$launcher_argument"' "$wrapper"
+            rg -Fq 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD=active ELISASCRIPT_SESSION_READY_FILE="$session_ready_file" ELISASCRIPT_SESSION_RELEASE_FILE="$session_release_file" PATH="$validation_caller_path" "$setsid_path" "$runner_path" -O0 -emit test "$source_snapshot"' "$wrapper"
             ;;
     esac
     rg -q 'compiler_pgid' "$wrapper"
