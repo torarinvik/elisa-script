@@ -84,22 +84,21 @@ before changing the compiler pin or treating any validation result as
 reproducible.
 
 Use the compiler built from the local Elisa-core checkout when changing stage0 or
-stage1 compiler code. Validation is currently fail-closed after an RSS incident:
-the checked-in process-group watchdog refuses to launch unless the user explicitly
-sets `ELISASCRIPT_VALIDATION_REAUTHORIZED=1`. Do not set that override without a
-small, bounded repro and an explicit decision to resume validation. When validation
-is authorized, use the local compiler path and watchdog:
+stage1 compiler code. The checked-in validation wrappers remain fail-closed by
+default and require `ELISASCRIPT_VALIDATION_REAUTHORIZED=1` for each explicitly
+authorized bounded run. A task-scoped authorization is recorded in
+[`validation-baseline.md`](validation-baseline.md); it is not standing approval.
+When validation is authorized, use the pinned compiler path and watchdog:
 
 The environment variable below is a manual gate, not standing approval. It must be
 set only when the user has explicitly reauthorized validation in the active task.
 
-The latest Elisa-compiler remote head was read-only verified on 2026-09-24 as
-`ec4c7b93e6b0ef849dc5001df964f860c485018b` (`Protect shared arena cache across
-threads`). The sibling `../Elisa-compiler` checkout is at
-`2e9d5bf5afb26aabbec15d1059b8f4c2abde82fd` and has an uncommitted change in
-`src/semantic/resolve_generic_call_types.elisa`; it is not treated as a clean,
-reproducible latest-source checkout. The remote-tip check is provenance only:
-no fetch, checkout, build, or compiler invocation was performed.
+The Elisa-compiler remote head was read-only verified on 2026-10-15 as
+`8b81a19e10bee7dee10feaa390ebf081d6641abc`. The sibling `../Elisa-compiler`
+checkout matches that revision but has uncommitted compiler changes, so it is
+not a clean build input. This self-hosted compiler source does not include the
+ElisaScript interpreter's `Path` and host extensions; the adapted compiler and
+runtime below remain the relevant environment for those features.
 
 `vendor/elisa-compiler` remains an adapted snapshot, not a mirror of that remote
 tip. It includes the focused lexer buffer-return optimization, compatible
@@ -107,24 +106,19 @@ semantic lookup-index fast paths, and selected correctness fixes described by
 its source history; newer arena-cache, allocator, and ABI/backend changes have
 not been imported. Do not call the vendor tree current with upstream until a
 clean source revision is reconciled and each change is reviewed for compatibility.
-The separate Elisa-core source and the guarded local compiler path remain
-subject to the validation hold above; source freshness does not authorize a run.
+The vendor tree remains adapted and is not a mirror of the latest self-hosted
+compiler. Refreshing it requires a deliberate compatibility review; source
+freshness alone does not authorize a run.
 
-The separate Go Elisa-core source checkout currently visible (read-only
-rechecked 2026-09-20) is clean at revision
-`90228b6ff38091324f1f19ec7b81bbd2f39825bf` on its `main` branch at
-`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/Elisa-core`. It
-includes nested-expression effect inference and generic private-field
-validation fixes. It is five commits ahead of its checked `origin/main` at the
-time of observation. The explicitly safety-pinned `structpy-tree/compiler/bin/elisac`
-path is absent in this workspace; the ignored executable in the Elisa-core
-main-worktree was built from an older revision with `vcs.modified=true`, so it
-is neither a reproducible build of this revision nor an authorized validation
-target. Do not substitute it into a wrapper or build anything while the
-validation hold is active. After explicit reauthorization, create an isolated
-clean checkout of the exact Go compiler revision, build an executable there,
-record its digest in `docs/validation-baseline.md`, and update the wrapper pin
-before any fixture run.
+The Go Elisa-core remote `main` was read-only verified on 2026-10-15 at
+`5241b2aed51641a217ca44ac4ee116ee66ac96e6`. A clean detached worktree at
+`/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree`
+is pinned to that revision, and its compiler binary was freshly rebuilt from
+the clean source. The revision, binary digest, and bounded-run results are in
+[`validation-baseline.md`](validation-baseline.md). The Core compiler is useful
+for Core source fixtures; its direct `-emit test` path does not inject
+ElisaScript interpreter types such as `Path`, so it cannot establish runtime
+parity for scripts that depend on those extensions.
 
 ```sh
 ELISASCRIPT_VALIDATION_REAUTHORIZED=1 \
