@@ -14,10 +14,9 @@ Latest metadata recheck: 2026-09-25
 
 ## Current-task validation identity recheck (2026-10-15)
 
-The active Elisa-Proof migration request explicitly authorizes incremental
-compiler verification of its small script ports. The checked-in bounded
-wrappers and their process, RSS, time, and output guards remain required. This
-authorization is scoped to that active task.
+The user explicitly reauthorized bounded compiler and test validation in the
+active task. The checked-in wrappers and their process, RSS, time, and output
+guards remain required. This authorization is scoped to that task only.
 
 Before the first port check, `scripts/validation_identity.sh` verified the
 canonical compiler against its clean source checkout without launching it:
@@ -34,8 +33,17 @@ After that identity check, the compiler was freshly rebuilt from this clean
 checkout with `GOMAXPROCS=2 make build` in its `compiler` directory. The new
 binary retained the same SHA-256 and matching clean VCS stamp shown above. The
 wrapper pin already names this canonical worktree path, so no wrapper path
-change was needed. The bounded port result is recorded separately after its
-guarded compiler run completes.
+change was needed.
+
+The first bounded source run lowered its input successfully (exit 0, peak
+sampled RSS 12,240 KB, with no timeout, RSS, or output guard trip). The bounded
+execution attempt exited 1 during type checking because the pinned Core compiler
+reported names and types unavailable in this direct test environment. The
+runtime documents that the interpreter supplies nominal `Path` typing; this
+direct compiler invocation bypasses that interpreter context. All process and
+resource guards remained clear. This is an incomplete test-environment result,
+not runtime-parity evidence. Logs and metadata remain in the ignored
+`.validation` directory, keyed to the compiler identity above.
 
 ## Elisascript worktree
 
