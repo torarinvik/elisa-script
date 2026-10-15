@@ -225,6 +225,32 @@ for parity_port_pattern in \
     rg -Fq "$parity_port_pattern" "$parity_reference_port"
 done
 
+reference_port_module_imports="$(sed -n '/^module EsCsvIoReferencePort:/,/^    private:/p' "$parity_reference_port")"
+for parity_module_import in \
+    'using EsCsv' \
+    'using EsCsvEncode' \
+    'using EsCsvMaterialize' \
+    'using EsCsvParser' \
+    'using EsData' \
+    'using EsSchema' \
+    'using EsSchemaNumeric' \
+    'using EsSchemaCsv'; do
+    printf '%s\n' "$reference_port_module_imports" | rg -Fq "$parity_module_import"
+done
+
+candidate_module_imports="$(sed -n '/^module EsCsvIoParityCandidate:/,/^    private:/p' "$parity_candidate")"
+for parity_module_import in \
+    'using EsCsv' \
+    'using EsCsvEncode' \
+    'using EsCsvMaterialize' \
+    'using EsCsvParser' \
+    'using EsData' \
+    'using EsSchema' \
+    'using EsSchemaNumeric' \
+    'using EsSchemaCsv'; do
+    printf '%s\n' "$candidate_module_imports" | rg -Fq "$parity_module_import"
+done
+
 for parity_launcher_pattern in \
     'csv_reader_writer_public_launcher_matches_python_reference_port_candidate_and_golden' \
     'REFERENCE_PORT_SCRIPT' \

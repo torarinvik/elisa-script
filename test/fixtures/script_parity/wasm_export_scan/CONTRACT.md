@@ -1,7 +1,7 @@
 # WASM export scanner parity contract
 
 Reference: `Elisa-compiler/scripts/wasm_export_scan.py` at commit
-`0019dfcfff405b98369dd1b51562619668e29707` (`main`). Do not silently switch
+`ee50240f9e0de8046708c7153f320c89b222bbb7` (`main`). Do not silently switch
 to the separate `wasm-sdk-compiler` worktree: it is three commits behind and
 maps `int` to `i64`, while the pinned main scanner, facade, documentation, and
 unit assertion agree on `int -> i32` for wasm32. The source scanner is an
@@ -443,15 +443,19 @@ source-only and has not been executed. Aggregate include-graph bytes and
 unique-file rejection are also covered only by candidate-only generated source
 cases and have not been executed.
 
-The separate `test/script_parity/wasm_export_scan_launcher_test.elisascript`
-source compares the configured launcher executable process against the pinned
-Python process across every checked-in top-level `.input` case, including
-positive output, target-regex compatibility, duplicate-export, greedy-header,
-ABI, and no-export failures, plus diamond, mixed-quote, missing, nested, and
-cyclic include graphs and the checked-in U+2028 line-separator and
-`unicode_repr.input` fixtures. The test first resolves each input to an absolute
-path and passes that single argument to both processes, matching the real
-caller's path shape. This checks
+The colocated `scripts/wasm_export_scan_reference.elisascript` entrypoint
+reuses the bounded scanner implementation in `wasm_export_scan.elisascript`;
+the Python adapter's runtime and Git pins protect the independent oracle and
+are specific to test orchestration. The separate
+`test/script_parity/wasm_export_scan_launcher_test.elisascript` source compares
+the pinned Python process, the colocated ElisaScript entrypoint, and the
+production launcher process across every checked-in top-level `.input` case.
+Cases include positive output, target-regex compatibility, duplicate-export,
+greedy-header, ABI, and no-export failures, plus diamond, mixed-quote, missing,
+nested, and cyclic include graphs and the checked-in U+2028 line-separator and
+`unicode_repr.input` fixtures. The test resolves each input to an absolute path
+and gives all three processes the same path and mode operands, matching the
+real caller's path shape. This checks
 the CLI invocation contract only; it does not modify or prove caller adoption.
 The test requires
 `ELISASCRIPT_PUBLIC_LAUNCHER` to name an absolute path and

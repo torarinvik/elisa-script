@@ -14,7 +14,7 @@ from pathlib import Path
 from types import ModuleType
 
 
-PINNED_COMMIT = "0019dfcfff405b98369dd1b51562619668e29707"
+PINNED_COMMIT = "ee50240f9e0de8046708c7153f320c89b222bbb7"
 # The candidate's Python-compatible diagnostic repr follows this reference
 # runtime's Unicode printability table. Refuse other runtimes instead of
 # silently changing the parity oracle when PATH resolves a different Python.

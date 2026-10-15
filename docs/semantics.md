@@ -1397,14 +1397,23 @@ execution evidence remain platform-qualified work.
 
 `read_text(path: Path) -> sview error[FileIoError]` reads a whole file without
 discarding embedded bytes, subject to the interpreter's 64 MiB file-input safety
-ceiling. It validates the bytes as strict UTF-8 before returning the text; use
-`read_bytes` for arbitrary binary data. It contributes the same `File.Read`
-effect and adds `FileIoError` to the enclosing error row. Open, seek, read, and
-close failures, invalid UTF-8, and oversized files remain errors; a failed read
-is never confused with a successfully read empty file. Empty paths and paths
-containing an embedded NUL are rejected before the POSIX boundary, including
-when a nominal `Path` arrives through a dynamic constructor or host call.
+ceiling. It contributes the same `File.Read` effect and adds `FileIoError` to
+the enclosing error row. Open, seek, read, and close failures, including an oversized
+file, remain errors; a failed read is never confused with a successfully read empty
+file. Empty paths and paths containing an embedded NUL are rejected before the
+POSIX boundary, including when a nominal `Path` arrives through a dynamic
+constructor or host call.
 The shell-oriented `cat(path)` spelling is a typed alias for the same operation.
+
+`read_text_bounded(path: Path, maximum_bytes: usize) -> sview
+error[FileIoError] can[File.Read]` reads at most the requested number of source
+bytes, with a hard maximum of 16 MiB. It follows symlinks but accepts only a
+regular file, uses a nonblocking descriptor, compares the named and opened file
+identity and metadata around the read, retries interrupted metadata/open/read
+calls within a four-retry bound, and rejects malformed UTF-8. The returned
+view owns permanent backing storage. The byte limit bounds admitted input size;
+dynamic-array growth may require additional transient allocation. Use
+`read_bytes` when arbitrary binary input is required.
 
 `write_text(path: Path, contents: sview) -> usize error[FileIoError]` replaces or
 creates a file and returns the exact byte count written. It contributes `File.Write`
