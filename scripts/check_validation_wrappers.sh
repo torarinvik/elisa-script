@@ -40,7 +40,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED:-0' "$wrapper"
     rg -q 'elisascript-validation\.disabled' "$wrapper"
     rg -q 'sampled and reactive, not an OS-enforced hard memory cap' "$wrapper"
-    rg -q 'double-forked process' "$wrapper"
+    rg -q 'process already reparented after escape can evade' "$wrapper"
     rg -q 'Go projects/structpy-tree/compiler/bin/elisac' "$wrapper"
     rg -Fq 'expected_compiler_path="/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac"' "$wrapper"
     rg -Fq 'if [ "$#" -ne 1 ]; then' "$wrapper"
@@ -89,7 +89,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
     rg -Fq 'signal_process_tree_identities "$process_tree_snapshot" TERM' "$wrapper"
     rg -Fq 'signal_process_tree_identities "$process_tree_snapshot" KILL' "$wrapper"
     rg -Uq 'if process_identity_matches "\$signal_process_pid" "\$signal_process_group" "\$signal_process_start"; then\n[[:space:]]+kill "-\$signal_process_kind" "\$signal_process_pid"' "$wrapper"
-    rg -Uq 'kill_process_tree_immediately\(\).*?signal_process_tree_identities "\$process_tree_snapshot" KILL' "$wrapper"
+    rg -Uq '(?s)kill_process_tree_immediately\(\).*?signal_process_tree_identities "\$process_tree_snapshot" KILL' "$wrapper"
     rg -q 'setsid_path' "$wrapper"
     rg -q 'case "\$setsid_path" in' "$wrapper"
     case "$wrapper" in
@@ -143,7 +143,7 @@ for wrapper in "$lowering" "$test_wrapper"; do
         exit 1
     fi
     rg -q 'validation_lease' "$wrapper"
-    rg -Uq 'acquire_validation_lease\n\nif \[ -e "\$validation_disabled_file" \] \|\| \[ -L "\$validation_disabled_file" \]; then' "$wrapper"
+    rg -Uq '(?s)acquire_validation_lease\n\n# Close the startup race with stop_bounded_validation\.sh:.*?if \[ -e "\$validation_disabled_file" \] \|\| \[ -L "\$validation_disabled_file" \]; then' "$wrapper"
     rg -Fq 'PATH="$validation_caller_path" ELISA_LOCAL_COMPILER="$compiler_path"' "$wrapper"
     rg -Fq '/bin/sh "$script_dir/validation_identity.sh"' "$wrapper"
     rg -q 'validation_compiler_binary_revision' "$wrapper"
@@ -250,11 +250,26 @@ rg -Fq 'RSS row-limit overflow' "$snapshot_fixture"
 rg -Fq 'descendant escaping the isolated process group is rejected' "$snapshot_fixture"
 for parity_test in "$repo_root"/test/script_parity/*_launcher_test.elisascript; do
     rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD' "$parity_test"
-    rg -q 'assert rss_guard == "active"' "$parity_test"
-    rg -q 'getenv\("ELISASCRIPT_VALIDATION_REAUTHORIZED"' "$parity_test"
-    rg -Fq 'assert reauthorized == "1"' "$parity_test"
-    rg -Fq '/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac' "$parity_test"
-    rg -q 'assert compiler == .*pinned_compiler_path\(\)' "$parity_test"
+    if rg -Fq 'include "skia_environment_launcher_plan.elisa"' "$parity_test"; then
+        rg -q 'Pins::COMPILER' "$parity_test"
+        rg -q 'ELISASCRIPT_VALIDATION_REAUTHORIZED.*(==|!=) "1"' "$parity_test"
+        rg -q 'ELISASCRIPT_BOUNDED_TEST_RSS_GUARD.*(==|!=) "active"' "$parity_test"
+        rg -q 'authorize\(|validate_roles\(' "$parity_test"
+        rg -Fq 'include "skia_environment_launcher_plan.elisa"' "$parity_test"
+        rg -Fq '/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac' "$repo_root/test/script_parity/skia_environment_launcher_plan.elisa"
+    elif [[ "$parity_test" == */canonical_wrappers_launcher_test.elisascript ]]; then
+        rg -q 'rss_guard: environment_value\("ELISASCRIPT_BOUNDED_TEST_RSS_GUARD"\) == "active"' "$parity_test"
+        rg -q 'reauthorized: environment_value\("ELISASCRIPT_VALIDATION_REAUTHORIZED"\) == "1"' "$parity_test"
+        rg -q 'EsCanonicalWrapperGate::validate\(' "$parity_test"
+        rg -Fq 'include "canonical_wrapper_gate.elisa"' "$parity_test"
+        rg -Fq '/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac' "$repo_root/test/script_parity/canonical_wrapper_gate.elisa"
+    else
+        rg -q 'assert rss_guard == "active"' "$parity_test"
+        rg -q 'getenv\("ELISASCRIPT_VALIDATION_REAUTHORIZED"' "$parity_test"
+        rg -Fq 'assert reauthorized == "1"' "$parity_test"
+        rg -Fq '/Users/torarinvikbjarko/Documents/Coding Projects/Go projects/structpy-tree/compiler/bin/elisac' "$parity_test"
+        rg -q 'assert compiler == .*pinned_compiler_path\(\)' "$parity_test"
+    fi
 done
 
 rg -q 'emergency-stop latch' "$stopper"

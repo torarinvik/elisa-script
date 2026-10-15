@@ -1,5 +1,15 @@
 # Elisascript development builds
 
+## Compiler-free audit maintenance — 2026-10-15
+
+The wrapper audit now accepts the wrapper's current reparented-process limitation wording and
+checks the canonical-wrapper and shared Skia launcher-gate forms without requiring every parity
+fixture to inline the compiler pin. Both forms still require explicit reauthorization, the bounded
+RSS guard, and the exact StructPy compiler identity. The resource-policy audit now follows the
+shared `EsStdinReadBudget::read_capacity` helper used by both chunked and line-oriented stdin
+reads, and verifies the shared output ledger parameter in direct bytecode execution. Both audits
+are compiler-free and pass; this change does not lift the compiler/test-wrapper validation hold.
+
 > **2026-09-15 native launcher update:** The engine task authorized bounded native
 > integration work, and its check now passes. See [the validation record](engine-check-validation.md)
 > for compiler fixes, installation, and test evidence. The historical pinned wrappers
