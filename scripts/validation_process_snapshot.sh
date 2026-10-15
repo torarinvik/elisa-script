@@ -48,7 +48,7 @@ validation_process_identity_matches_from_snapshot() {
         status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || NF != 8 ||
-            $4 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ || $5 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ ||
+            $4 !~ /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/ || $5 !~ /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/ ||
             $6 !~ /^[0-9][0-9]?$/ || $7 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ ||
             $8 !~ /^[0-9][0-9][0-9][0-9]$/ { malformed = 1; exit }
         {
@@ -207,7 +207,7 @@ validation_process_tree_identities_from_snapshot() {
         status_seen { malformed = 1; exit }
         ++process_rows > row_limit { overflow = 1; exit }
         $1 !~ /^[0-9]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || NF != 8 ||
-            $4 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ || $5 !~ /^[A-Za-z][A-Za-z][A-Za-z]$/ ||
+            $4 !~ /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)$/ || $5 !~ /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/ ||
             $6 !~ /^[0-9][0-9]?$/ || $7 !~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ || $8 !~ /^[0-9][0-9][0-9][0-9]$/ { malformed = 1; exit }
         {
             pid = $1
