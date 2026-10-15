@@ -21,10 +21,15 @@ unset ELISASCRIPT_SESSION_READY_FILE ELISASCRIPT_SESSION_RELEASE_FILE || true
 temporary_parent="${TMPDIR:-/tmp}"
 test_root="$(mktemp -d "$temporary_parent/elisascript-session-port.XXXXXXXX")"
 child_pid=""
+watchdog_pid=""
 ready_file=""
 release_file=""
 
 cleanup() {
+    if [ -n "$watchdog_pid" ]; then
+        kill -TERM "$watchdog_pid" 2>/dev/null || true
+        wait "$watchdog_pid" 2>/dev/null || true
+    fi
     if [ -n "$child_pid" ]; then
         kill -KILL "$child_pid" 2>/dev/null || true
         wait "$child_pid" 2>/dev/null || true
@@ -221,6 +226,67 @@ run_symlink_release() {
     return 0
 }
 
+run_release_timeout() {
+    helper_kind="$1"
+    label="$2"
+    release_kind="$3"
+    ready_file="$test_root/$label.ready"
+    release_file="$test_root/$label.release"
+    stdout_file="$test_root/$label.stdout"
+    stderr_file="$test_root/$label.stderr"
+    if [ "$release_kind" = wrong-token ]; then
+        printf 'not a session token\n' >"$release_file"
+    fi
+    launch_helper "$helper_kind" /usr/bin/python3 -c 'pass' >"$stdout_file" 2>"$stderr_file" &
+    child_pid=$!
+
+    ready=0
+    attempt=0
+    while [ "$attempt" -lt 100 ]; do
+        if [ -f "$ready_file" ]; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$child_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+    release_shape_ok=0
+    if [ "$release_kind" = missing ] && [ ! -e "$release_file" ] && [ ! -L "$release_file" ]; then
+        release_shape_ok=1
+    elif [ "$release_kind" = wrong-token ] && [ -f "$release_file" ] && [ ! -L "$release_file" ]; then
+        release_shape_ok=1
+    fi
+    if [ "$ready" -ne 1 ] || [ "$release_shape_ok" -ne 1 ]; then
+        cat "$stderr_file" >&2
+        echo "private-session port test: $helper_kind did not wait on the $release_kind release" >&2
+        return 1
+    fi
+
+    # Both helpers use a ten-second monotonic deadline. Keep a separate
+    # watchdog so a broken implementation cannot hang this shell test forever.
+    /usr/bin/python3 -c 'import os, signal, sys, time; time.sleep(13); os.kill(int(sys.argv[1]), signal.SIGKILL)' "$child_pid" &
+    watchdog_pid=$!
+    expected_stderr="$(printf 'private_session_exec: session release was missing or invalid\n')"
+    actual_status=0
+    wait "$child_pid" || actual_status=$?
+    child_pid=""
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    watchdog_pid=""
+    actual_stdout="$(cat "$stdout_file")"
+    actual_stderr="$(cat "$stderr_file")"
+    if [ "$actual_status" -ne 125 ] || [ -n "$actual_stdout" ] || [ "$actual_stderr" != "$expected_stderr" ]; then
+        echo "private-session port test: $helper_kind $release_kind timeout mismatch" >&2
+        return 1
+    fi
+    ready_file=""
+    release_file=""
+    return 0
+}
+
 expected_no_command="$(printf 'private_session_exec: expected a command\n')"
 ready_file=""
 release_file=""
@@ -289,5 +355,9 @@ run_invalid_release python invalid-release-python
 run_invalid_release elisascript invalid-release-elisascript
 run_symlink_release python symlink-release-python
 run_symlink_release elisascript symlink-release-elisascript
+run_release_timeout python missing-release-timeout-python missing
+run_release_timeout elisascript missing-release-timeout-elisascript missing
+run_release_timeout python wrong-release-timeout-python wrong-token
+run_release_timeout elisascript wrong-release-timeout-elisascript wrong-token
 
-echo "private-session helper ports: matched status, streams, PID/PGID, ready-file mode, environment cleanup, and valid/invalid release protocols"
+echo "private-session helper ports: matched status, streams, PID/PGID, ready-file mode, environment cleanup, valid/invalid release protocols, and missing/wrong-token timeouts"

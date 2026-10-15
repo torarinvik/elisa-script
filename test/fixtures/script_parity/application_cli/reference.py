@@ -38,6 +38,8 @@ CASES = [
     ("duplicate-option", ["build", "--jobs=4", "-j8"]),
     ("duplicate-short-bundle", ["build", "-vv"]),
     ("unexpected-boolean-value", ["test", "--verbose=true"]),
+    ("empty-equals-short-with-next", ["build", "-j=", "9"]),
+    ("empty-equals-short-without-next", ["build", "-j="]),
 ]
 
 

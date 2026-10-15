@@ -50,6 +50,11 @@ rg -Fq 'ELISASCRIPT_SESSION_READY_FILE' "$session_helper_port"
 rg -Fq 'ELISASCRIPT_SESSION_RELEASE_FILE' "$session_helper_port"
 rg -Fq 'ready-file mode' "$session_helper_port_test"
 rg -Fq 'permission-denied exec differs from Python' "$session_helper_port_test"
+rg -Fq 'run_release_timeout python missing-release-timeout-python missing' "$session_helper_port_test"
+rg -Fq 'run_release_timeout elisascript missing-release-timeout-elisascript missing' "$session_helper_port_test"
+rg -Fq 'run_release_timeout python wrong-release-timeout-python wrong-token' "$session_helper_port_test"
+rg -Fq 'run_release_timeout elisascript wrong-release-timeout-elisascript wrong-token' "$session_helper_port_test"
+rg -Fq 'time.sleep(13)' "$session_helper_port_test"
 
 sh -n "$lowering" "$test_wrapper" "$stopper" "$snapshot_library" "$session_helper_test" "$session_helper_port_test"
 

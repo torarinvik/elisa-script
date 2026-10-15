@@ -253,7 +253,9 @@ for application_cli_case in \
     'missing-value' \
     'duplicate-option' \
     'duplicate-short-bundle' \
-    'unexpected-boolean-value'; do
+    'unexpected-boolean-value' \
+    'empty-equals-short-with-next' \
+    'empty-equals-short-without-next'; do
     rg -Fq "case=$application_cli_case" "$application_cli_golden"
 done
 rg -Fq 'toml_manifest_public_launcher_matches_independent_python_and_goldens' "$toml_manifest_parity"
